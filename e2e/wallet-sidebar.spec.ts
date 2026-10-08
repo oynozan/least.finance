@@ -1,6 +1,19 @@
 import { expect, test, type Page } from "@playwright/test";
 import { MOCK_DEPOSITS, MOCK_POSITIONS } from "../components/wallet-data";
-import { ADDRESS, installWallet, mockPrivy } from "./privy-mock";
+import {
+  ADDRESS,
+  ARC_PRIMARY_RPC,
+  ARC_RPC,
+  installWallet,
+  mockArcRpc,
+  mockPrivy,
+  refuseNewNetworks,
+  rejectNextChainSwitch,
+  switchWalletAccount,
+  switchWalletChain,
+  walletChainId,
+  walletRequests,
+} from "./privy-mock";
 
 const DEPOSITS = MOCK_DEPOSITS.length;
 const POSITIONS = MOCK_POSITIONS.length;
@@ -8,6 +21,11 @@ const POSITIONS = MOCK_POSITIONS.length;
 const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
 const dock = (page: Page) => page.getByRole("button", { name: `Wallet ${ADDRESS}` });
 const modal = (page: Page) => page.locator("#privy-modal-content");
+const depositButton = (page: Page) => sidebar(page).getByRole("button", { name: "Deposit", exact: true });
+const switchButton = (page: Page) => sidebar(page).getByRole("button", { name: "Switch to Arc" });
+const switchStatus = (page: Page) => sidebar(page).getByRole("status");
+const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: /^Balance/ });
+const showAgain = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 const position = (page: Page, symbol: string) =>
   sidebar(page).getByRole("listitem").filter({ has: page.getByRole("img", { name: symbol }) });
 
@@ -32,6 +50,7 @@ async function connect(page: Page) {
 
 test.beforeEach(async ({ page }) => {
   await mockPrivy(page);
+  await mockArcRpc(page);
   await installWallet(page);
   await page.goto("/");
   await page.evaluate(() => document.fonts.ready);
@@ -90,6 +109,162 @@ test("connecting a wallet opens the sidebar right away and pushes the page", asy
   await expect(sidebar(page).getByText("$12,480")).toBeVisible();
   await expect(sidebar(page).getByRole("button", { name: "Deposit", exact: true })).toBeVisible();
   await shoot(page, "2-sidebar-open");
+});
+
+test("connecting adds Arc to the wallet and switches to it", async ({ page }) => {
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await expect.poll(() => walletChainId(page)).toBe("0x13b2");
+
+  const added = (await walletRequests(page)).filter((r) => r.method === "wallet_addEthereumChain");
+  expect(added.at(-1)?.params).toEqual([
+    {
+      chainId: "0x13b2",
+      chainName: "Arc",
+      nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
+      rpcUrls: ["https://rpc.mainnet.arc.io"],
+      blockExplorerUrls: ["https://explorer.arc.io"],
+    },
+  ]);
+  await expect(depositButton(page)).toBeVisible();
+  await expect(switchButton(page)).toHaveCount(0);
+});
+
+test("a wallet kept off Arc is offered a switch instead of a deposit", async ({ page }) => {
+  await rejectNextChainSwitch(page);
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+
+  await expect(switchButton(page)).toBeVisible();
+  await expect(depositButton(page)).toHaveCount(0);
+  expect(await walletChainId(page)).toBe("0x1");
+  await shoot(page, "12-switch-to-arc");
+
+  await switchButton(page).click();
+  await expect(depositButton(page)).toBeVisible();
+  expect(await walletChainId(page)).toBe("0x13b2");
+});
+
+test("declining the switch keeps the button ready and focused for another try", async ({ page, isMobile }) => {
+  test.skip(isMobile, "keyboard flow is a desktop concern");
+  await rejectNextChainSwitch(page);
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await expect(switchButton(page)).toBeVisible();
+  // Privy hands focus back to the dock button just after its modal closes, so wait for that first.
+  await expect(dock(page)).toBeFocused();
+
+  await rejectNextChainSwitch(page);
+  await switchButton(page).focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => (await walletRequests(page)).filter((r) => r.method === "wallet_switchEthereumChain").length).toBe(2);
+  await expect(switchButton(page)).not.toHaveAttribute("aria-disabled", "true");
+  await expect(switchButton(page)).toBeFocused();
+  await expect(switchStatus(page)).toBeEmpty();
+  expect(await walletChainId(page)).toBe("0x1");
+
+  await page.keyboard.press("Enter");
+  await expect(depositButton(page)).toBeVisible();
+  await expect(depositButton(page)).toBeFocused();
+});
+
+test("a wallet that can't add Arc is told so instead of failing silently", async ({ page }) => {
+  await refuseNewNetworks(page);
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await expect(switchButton(page)).toBeVisible();
+  await expect(switchStatus(page)).toBeEmpty();
+
+  await switchButton(page).click();
+  await expect(switchStatus(page)).toContainText("couldn't switch to Arc");
+  await expect(switchButton(page)).not.toHaveAttribute("aria-disabled", "true");
+  await shoot(page, "13-switch-failed");
+});
+
+test("switching accounts in the wallet still checks its network", async ({ page }) => {
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await expect.poll(() => walletChainId(page)).toBe("0x13b2");
+
+  await switchWalletAccount(page, "0x1111111111111111111111111111111111111111");
+  await switchWalletChain(page, "0x1");
+  await expect(switchButton(page)).toBeVisible();
+  await expect(depositButton(page)).toHaveCount(0);
+});
+
+test("moving the wallet off Arc brings the switch back", async ({ page }) => {
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await expect.poll(() => walletChainId(page)).toBe("0x13b2");
+  await expect(depositButton(page)).toBeVisible();
+
+  await switchWalletChain(page, "0x1");
+  await expect(switchButton(page)).toBeVisible();
+  await expect(depositButton(page)).toHaveCount(0);
+});
+
+test("the balance is the wallet's USDC on Arc", async ({ page }) => {
+  await mockArcRpc(page, 7_250.75);
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+
+  await expect(sidebar(page).getByRole("button", { name: "Balance $7,250.75, show deposits" })).toBeVisible();
+  await expect(sidebar(page).getByText("$7,250")).toBeVisible();
+});
+
+test("the balance refreshes when the page comes back into view", async ({ page }) => {
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await expect(sidebar(page).getByRole("button", { name: "Balance $12,480.52, show deposits" })).toBeVisible();
+
+  await mockArcRpc(page, 13_000);
+  await showAgain(page);
+  await expect(sidebar(page).getByRole("button", { name: "Balance $13,000.00, show deposits" })).toBeVisible();
+  await expect(sidebar(page).getByText("$13,000")).toBeVisible();
+});
+
+test("a failed refresh keeps the last balance", async ({ page }) => {
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await expect(sidebar(page).getByRole("button", { name: "Balance $12,480.52, show deposits" })).toBeVisible();
+
+  let attempts = 0;
+  await page.route(ARC_RPC, (route) => {
+    attempts++;
+    return route.abort();
+  });
+  await showAgain(page);
+  await expect.poll(() => attempts).toBe(3);
+  await page.waitForTimeout(300);
+  await expect(sidebar(page).getByRole("button", { name: "Balance $12,480.52, show deposits" })).toBeVisible();
+});
+
+test("the balance falls back to another Arc RPC when the primary is down", async ({ page }) => {
+  await page.route(ARC_PRIMARY_RPC, (route) => route.abort());
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await expect(sidebar(page).getByRole("button", { name: "Balance $12,480.52, show deposits" })).toBeVisible();
+});
+
+test("a hanging Arc RPC gives up within one poll and shows no balance", async ({ page }) => {
+  test.setTimeout(40_000);
+  await page.route(ARC_RPC, () => {});
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+
+  await expect(balanceButton(page)).toHaveAccessibleName("Balance loading, show deposits");
+  await expect(balanceButton(page)).toHaveAccessibleName("Balance unavailable, show deposits", { timeout: 15_000 });
+});
+
+test("an unreachable Arc RPC shows no balance rather than zero", async ({ page }) => {
+  await page.route(ARC_RPC, (route) => route.abort());
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+
+  await expect(sidebar(page).getByRole("button", { name: "Balance unavailable, show deposits" })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(sidebar(page).getByRole("button", { name: /^Balance/ })).not.toContainText("$");
 });
 
 test("the panel and the page move on one spring", async ({ page }) => {
@@ -388,7 +563,7 @@ test("deposit rows cast only a light shadow", async ({ page, isMobile }) => {
   }
 });
 
-test("depositing adds to the history and the balance", async ({ page, isMobile }) => {
+test("depositing adds to the history", async ({ page, isMobile }) => {
   test.skip(isMobile, "hover flow");
   await connect(page);
   await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
@@ -400,7 +575,6 @@ test("depositing adds to the history and the balance", async ({ page, isMobile }
   await expect(rows).toHaveCount(DEPOSITS + 1);
   await expect(rows.first()).toContainText("+$500.00");
   await expect(rows.first()).toContainText("today");
-  await expect(sidebar(page).getByText("$12,980")).toBeVisible();
 });
 
 test("hovering a position reveals a close button in the PnL's color", async ({ page, isMobile }) => {
@@ -437,7 +611,7 @@ test("hovering a position reveals a close button in the PnL's color", async ({ p
   }
 });
 
-test("closing a position removes it and frees its value", async ({ page, isMobile }) => {
+test("closing a position removes it", async ({ page, isMobile }) => {
   await connect(page);
   await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
   await settle(page);
@@ -449,8 +623,6 @@ test("closing a position removes it and frees its value", async ({ page, isMobil
 
   await expect(position(page, "ETH")).toHaveCount(0);
   await expect(sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem")).toHaveCount(POSITIONS - 1);
-  // 12,480.52 + 2,850 − 96.12
-  await expect(sidebar(page).getByText("$15,234")).toBeVisible();
   await shoot(page, "5-after-close");
 });
 
@@ -458,6 +630,8 @@ test("the close button is reachable by keyboard", async ({ page, isMobile }) => 
   test.skip(isMobile, "keyboard flow is a desktop concern");
   await connect(page);
   await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  // Privy hands focus back to the dock button just after its modal closes, so wait for that first.
+  await expect(dock(page)).toBeFocused();
 
   // The first position's close button follows the deposit button in tab order.
   const close = position(page, "BTC").getByRole("button", { name: "Close BTC position" });

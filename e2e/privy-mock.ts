@@ -148,38 +148,149 @@ export async function mockPrivy(page: Page) {
   );
 }
 
-/** Installs a MetaMask-like EIP-1193 wallet that signs anything. */
+/** Arc's primary RPC and the two providers the app falls back to. */
+export const ARC_RPC = /^https:\/\/rpc\.(blockdaemon\.|drpc\.)?mainnet\.arc\.io\//;
+export const ARC_PRIMARY_RPC = /^https:\/\/rpc\.mainnet\.arc\.io\//;
+
+const USDC = "0x3600000000000000000000000000000000000000";
+
+/** Stands in for Arc's RPC, where only USDC's `balanceOf(ADDRESS)` reads as `usdc`. */
+export async function mockArcRpc(page: Page, usdc = 12_480.52) {
+  const balanceOf = `0x70a08231${ADDRESS.slice(2).padStart(64, "0")}`;
+  const word = (value: bigint) => `0x${value.toString(16).padStart(64, "0")}`;
+  const answer = ({ id, method, params }: { id: number; method: string; params?: unknown[] }) => {
+    const call = params?.[0] as { to?: string; data?: string } | undefined;
+    const result =
+      method === "eth_chainId"
+        ? "0x13b2"
+        : method === "eth_call"
+          ? word(
+              call?.to?.toLowerCase() === USDC && call.data?.toLowerCase() === balanceOf
+                ? BigInt(Math.round(usdc * 1e6))
+                : BigInt(0),
+            )
+          : null;
+    return { jsonrpc: "2.0", id, result };
+  };
+  await page.route(ARC_RPC, async (route) => {
+    const request = route.request();
+    const body = request.method() === "POST" ? request.postDataJSON() : null;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      headers: {
+        "access-control-allow-origin": "*",
+        "access-control-allow-headers": "content-type",
+        "access-control-allow-methods": "POST, OPTIONS",
+      },
+      body: JSON.stringify(Array.isArray(body) ? body.map(answer) : body ? answer(body) : {}),
+    });
+  });
+}
+
+type WalletRequest = { method: string; params?: unknown[] };
+
+// Each evaluate callback casts window itself, as only the callback's source reaches the page.
+type WalletWindow = {
+  ethereum: { request: (request: WalletRequest) => Promise<unknown> };
+  walletRequests: WalletRequest[];
+  rejectChainSwitches?: number;
+  refusesNewNetworks?: boolean;
+  useAccount: (account: string) => void;
+};
+
+/** Every request the dapp has sent the wallet, oldest first. */
+export const walletRequests = (page: Page) =>
+  page.evaluate(() => (window as unknown as WalletWindow).walletRequests);
+
+export const walletChainId = (page: Page) =>
+  page.evaluate(() => (window as unknown as WalletWindow).ethereum.request({ method: "eth_chainId" }));
+
+/** The user picks another network in their wallet. */
+export const switchWalletChain = (page: Page, chainId: string) =>
+  page.evaluate(
+    (chainId) =>
+      (window as unknown as WalletWindow).ethereum.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId }],
+      }),
+    chainId,
+  );
+
+/** The user declines the next network switch the dapp asks for. */
+export const rejectNextChainSwitch = (page: Page) =>
+  page.evaluate(() => {
+    (window as unknown as WalletWindow).rejectChainSwitches = 1;
+  });
+
+/** A wallet that can't add networks, like those with a fixed chain list. */
+export const refuseNewNetworks = (page: Page) =>
+  page.evaluate(() => {
+    (window as unknown as WalletWindow).refusesNewNetworks = true;
+  });
+
+/** The user picks another account in their wallet. */
+export const switchWalletAccount = (page: Page, account: string) =>
+  page.evaluate((account) => (window as unknown as WalletWindow).useAccount(account), account);
+
+/** Installs a MetaMask-like EIP-1193 wallet that signs anything and starts on Ethereum, unaware of Arc. */
 export async function installWallet(page: Page) {
   await page.addInitScript((address) => {
     let connected = false;
+    let account = address;
+    let chainId = "0x1";
+    const knownChains = new Set([chainId]);
+    const state = window as unknown as WalletWindow;
+    state.walletRequests = [];
     const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
     const emit = (event: string, ...args: unknown[]) => listeners[event]?.forEach((fn) => fn(...args));
+    const fail = (code: number, message: string) => Object.assign(new Error(message), { code });
+    state.useAccount = (next) => {
+      account = next;
+      emit("accountsChanged", [next]);
+    };
     const provider = {
       isMetaMask: true,
-      request: async ({ method }: { method: string }) => {
+      request: async ({ method, params }: WalletRequest) => {
+        state.walletRequests.push({ method, params });
+        const target = (params?.[0] as { chainId?: string } | undefined)?.chainId?.toLowerCase();
         switch (method) {
           case "eth_requestAccounts":
           case "wallet_requestPermissions":
             if (!connected) {
               connected = true;
-              setTimeout(() => emit("accountsChanged", [address]));
+              setTimeout(() => emit("accountsChanged", [account]));
             }
             return method === "eth_requestAccounts"
-              ? [address]
-              : [{ parentCapability: "eth_accounts", caveats: [{ type: "restrictReturnedAccounts", value: [address] }] }];
+              ? [account]
+              : [{ parentCapability: "eth_accounts", caveats: [{ type: "restrictReturnedAccounts", value: [account] }] }];
           case "wallet_getPermissions":
             return connected ? [{ parentCapability: "eth_accounts" }] : [];
           case "eth_accounts":
-            return connected ? [address] : [];
+            return connected ? [account] : [];
           case "eth_chainId":
-            return "0x1";
+            return chainId;
           case "net_version":
-            return "1";
+            return String(parseInt(chainId, 16));
           case "personal_sign":
           case "eth_signTypedData_v4":
             return `0x${"ab".repeat(65)}`;
           case "wallet_switchEthereumChain":
+            // The prompt takes a moment, as a real wallet's does.
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            if (state.rejectChainSwitches) {
+              state.rejectChainSwitches--;
+              throw fail(4001, "User rejected the request.");
+            }
+            if (!target || !knownChains.has(target)) throw fail(4902, `Unrecognized chain ID "${target}".`);
+            if (target !== chainId) {
+              chainId = target;
+              setTimeout(() => emit("chainChanged", chainId));
+            }
+            return null;
           case "wallet_addEthereumChain":
+            if (state.refusesNewNetworks) throw new Error("This wallet doesn't support custom networks.");
+            if (target) knownChains.add(target);
             return null;
           default:
             return null;

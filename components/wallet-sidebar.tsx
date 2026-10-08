@@ -13,6 +13,7 @@ import {
   type Transition,
   type Variants,
 } from "motion/react";
+import { useArcNetwork, useUsdcBalance } from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
 import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { canHover } from "./pointer";
@@ -20,7 +21,6 @@ import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
 import { useSidebar } from "./sidebar";
 import {
-  MOCK_BALANCE,
   MOCK_DEPOSITS,
   MOCK_POSITIONS,
   formatUsd,
@@ -106,8 +106,10 @@ function SignedInWallet() {
     if (ready && !authenticated) setOpen(false);
   }, [ready, authenticated, setOpen]);
 
+  const balance = useUsdcBalance(address, open);
+  const { offArc, switching, cantSwitch, switchToArc } = useArcNetwork(address);
+
   // Mock state until positions and deposits come from the backend.
-  const [balance, setBalance] = useState(MOCK_BALANCE);
   const [deposits, setDeposits] = useState(MOCK_DEPOSITS);
   const [positions, setPositions] = useState(MOCK_POSITIONS);
 
@@ -124,14 +126,10 @@ function SignedInWallet() {
   const deposit = () => {
     const entry: Deposit = { id: `d-${Date.now()}`, symbol: "USDC", amount: 500, at: new Date() };
     setDeposits((list) => [entry, ...list]);
-    setBalance((b) => b + entry.amount);
   };
 
   const closePosition = (id: string) => {
-    const closed = positions.find((p) => p.id === id);
-    if (!closed) return;
     setPositions((list) => list.filter((p) => p.id !== id));
-    setBalance((b) => b + closed.size + closed.pnl);
   };
 
   return (
@@ -156,6 +154,10 @@ function SignedInWallet() {
         balance={balance}
         deposits={deposits}
         onDeposit={deposit}
+        offArc={offArc}
+        switching={switching}
+        cantSwitch={cantSwitch}
+        onSwitchToArc={switchToArc}
       />
 
       <div className={styles.positionsFrame}>
@@ -198,13 +200,27 @@ function SignedInWallet() {
 }
 
 type WalletSectionProps = {
-  balance: number;
+  /** USDC on Arc, undefined while loading and null when it couldn't be read. */
+  balance: number | null | undefined;
   deposits: Deposit[];
   onDeposit: () => void;
+  /** The wallet is on another network, so the deposit button switches it to Arc instead. */
+  offArc: boolean;
+  switching: boolean;
+  cantSwitch: boolean;
+  onSwitchToArc: () => void;
 };
 
 /** Balance and the deposit button; hovering it deals out past deposits. */
-function WalletSection({ balance, deposits, onDeposit }: WalletSectionProps) {
+function WalletSection({
+  balance,
+  deposits,
+  onDeposit,
+  offArc,
+  switching,
+  cantSwitch,
+  onSwitchToArc,
+}: WalletSectionProps) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -228,23 +244,50 @@ function WalletSection({ balance, deposits, onDeposit }: WalletSectionProps) {
         type="button"
         className={styles.balanceButton}
         aria-expanded={showHistory}
-        aria-label={`Balance ${formatUsd(balance)}, show deposits`}
+        aria-label={`Balance ${balanceLabel(balance)}, show deposits`}
         onPointerUp={(event) => !canHover(event) && setPinned((p) => !p)}
       >
-        <Balance value={balance} />
+        {balance == null ? (
+          <span className={`${styles.balance} ${styles.balancePending}`}>—</span>
+        ) : (
+          <Balance value={balance} />
+        )}
       </button>
 
-      <motion.button
-        type="button"
-        className={styles.deposit}
-        whileHover={{ scale: 1.04 }}
-        whileTap={{ scale: 0.94 }}
-        transition={spring}
-        onClick={onDeposit}
-      >
-        <PlusIcon className={styles.depositIcon} />
-        Deposit
-      </motion.button>
+      {offArc ? (
+        <motion.button
+          type="button"
+          className={`${styles.deposit} ${styles.switchNetwork}`}
+          // Not `disabled`, which would drop keyboard focus mid-switch.
+          aria-disabled={switching || undefined}
+          whileHover={switching ? undefined : { scale: 1.04 }}
+          whileTap={switching ? undefined : { scale: 0.94 }}
+          transition={spring}
+          onClick={onSwitchToArc}
+        >
+          Switch to Arc
+        </motion.button>
+      ) : (
+        <motion.button
+          type="button"
+          className={styles.deposit}
+          whileHover={{ scale: 1.04 }}
+          whileTap={{ scale: 0.94 }}
+          transition={spring}
+          onClick={onDeposit}
+        >
+          <PlusIcon className={styles.depositIcon} />
+          Deposit
+        </motion.button>
+      )}
+
+      {/* Mounted while off Arc, so screen readers announce the message when it appears. */}
+      {offArc && (
+        <p role="status" className={styles.switchStatus}>
+          {cantSwitch &&
+            "This wallet couldn't switch to Arc. Add Arc (chain ID 5042) in its network settings, or connect another wallet."}
+        </p>
+      )}
 
       {/* Floats over the positions instead of pushing them down. */}
       <AnimatePresence>
@@ -280,6 +323,12 @@ function WalletSection({ balance, deposits, onDeposit }: WalletSectionProps) {
       </AnimatePresence>
     </section>
   );
+}
+
+function balanceLabel(balance: number | null | undefined) {
+  if (balance === undefined) return "loading";
+  if (balance === null) return "unavailable";
+  return formatUsd(balance);
 }
 
 /** Blurred overlays for the scroll container just before them; they show

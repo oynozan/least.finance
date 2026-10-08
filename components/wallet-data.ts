@@ -20,8 +20,6 @@ export type Deposit = {
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000);
 
 // Mock content until positions and deposits come from the backend.
-export const MOCK_BALANCE = 12_480.52;
-
 /** Oldest first; the list renders it bottom-up, so the newest sits on top. */
 export const MOCK_POSITIONS: Position[] = [
   { id: "p-btc", symbol: "BTC", size: 4_200, pnl: 312.4 },

@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { PrivyProvider } from "@privy-io/react-auth";
+import { arc } from "./arc";
 
 const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
 const clientId = process.env.NEXT_PUBLIC_PRIVY_CLIENT_ID || undefined;
@@ -19,6 +20,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       clientId={clientId}
       config={{
         loginMethods: ["wallet"],
+        // Setting a default chain also has Privy ask each wallet to switch to it on connect.
+        defaultChain: arc,
+        supportedChains: [arc],
         appearance: {
           // Base colors only; app/privy.css redefines the full palette.
           theme: "#222220",

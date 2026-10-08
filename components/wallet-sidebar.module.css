@@ -97,6 +97,10 @@
   color: var(--muted);
 }
 
+.balancePending {
+  color: var(--muted);
+}
+
 /* Above the history, so the deposits slide out from underneath it. */
 .deposit {
   position: relative;
@@ -124,6 +128,27 @@
 .depositIcon {
   width: 14px;
   height: 14px;
+}
+
+/* No icon, so the padding evens out. */
+.switchNetwork {
+  padding: 0 20px;
+}
+
+.switchNetwork[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.switchStatus {
+  max-width: 300px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.switchStatus:not(:empty) {
+  margin-top: 12px;
 }
 
 /* Its top edge sits at the deposit button's bottom, so rows emerge from
