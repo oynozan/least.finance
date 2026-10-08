@@ -1,0 +1,88 @@
+.heading {
+  max-width: 18em;
+  font-size: clamp(28px, 1rem + 2.6vw, 47px);
+  font-weight: 500;
+  line-height: 1.36;
+  letter-spacing: -0.02em;
+  word-spacing: -0.07em;
+  text-align: center;
+  color: var(--foreground);
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.pill {
+  display: inline-flex;
+  border-radius: 999px;
+  background: var(--pill);
+  cursor: pointer;
+  outline: none;
+  transition: background-color 160ms ease;
+}
+
+/* The transparent outline is invisible normally but becomes a system focus
+   ring in forced-colors (Windows High Contrast), where backgrounds are reset. */
+.pill:focus-visible {
+  background: var(--pill-hover);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .pill:hover {
+    background: var(--pill-hover);
+  }
+}
+
+/* Width is animated in JS. Clipping only the x axis lets the icons keep
+   overflowing the pill vertically. Positioned so AnimatePresence's
+   popLayout can pin the outgoing option in place. */
+.track {
+  position: relative;
+  display: flex;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+.swap {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.content {
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+  padding: 0 0.32em 0 0.13em;
+  white-space: nowrap;
+}
+
+/* The label is the only baseline-aligned item, so the pill sits on the
+   same baseline as the surrounding heading text. */
+.label {
+  align-self: baseline;
+  line-height: 1.06;
+  padding-bottom: 0.1em;
+}
+
+.icon {
+  display: flex;
+  margin-block: -0.12em;
+  user-select: none;
+}
+
+.chevron {
+  display: flex;
+  align-self: center;
+  width: 0.42em;
+  height: 0.42em;
+  margin: 0 0.32em 0 -0.12em;
+  color: var(--muted);
+}
+
+.chevron svg {
+  width: 100%;
+  height: 100%;
+}
