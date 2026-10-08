@@ -28,6 +28,14 @@ export type ChoiceSlotView = SlotViewBase & {
   value: string;
   selected?: Choice;
   choices: readonly Choice[];
+  /** Present when the picker also takes a typed value. */
+  custom?: {
+    placeholder: string;
+    suffix?: string;
+    /** The value typed text would store, or null if it isn't allowed. */
+    parse: (text: string) => string | null;
+  };
+  wide?: boolean;
 };
 
 export type NumberSlotView = SlotViewBase & {
@@ -138,13 +146,30 @@ export function resolve<I, T extends Str, C>(
       };
     } else {
       const choices = spec.choices(values, ctx);
-      const selected = choices.find((c) => c.value === value);
+      const custom = spec.custom;
+      const typed = custom && value !== "" && custom.parse(value, values, ctx) === value;
+      const selected =
+        choices.find((c) => c.value === value) ?? (typed ? custom.choice(value, values, ctx) : undefined);
       // A value that is no longer offered (a market closed, a coin sold)
       // surfaces as an issue rather than being silently replaced.
       if (!selected || selected.disabled) {
         slotIssues.push({ code: "missing", severity: "incomplete", slot: id, ...spec.missing });
       }
-      slots[id] = { kind: "choice", id, prompt: spec.prompt, hint: spec.hint, value, selected, choices };
+      slots[id] = {
+        kind: "choice",
+        id,
+        prompt: spec.prompt,
+        hint: spec.hint,
+        value,
+        selected,
+        choices,
+        wide: spec.wide,
+        custom: custom && {
+          placeholder: custom.placeholder(values, ctx),
+          suffix: custom.suffix,
+          parse: (text) => custom.parse(text, values, ctx),
+        },
+      };
     }
     issues.push(...slotIssues);
   }

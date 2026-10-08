@@ -10,7 +10,7 @@ type Values = { asset: string; leverage: string; collateralUSD: string };
 type Fixed = { side: Side };
 
 const OPEN_FEE_RATE = 0.0005;
-/** Leverage at or above this gets a warning and the loss tone. */
+/** Leverage at or above this is shown in the loss tone in the picker. */
 const RISKY_LEVERAGE = 20;
 
 const market = (ctx: TradeCtx, asset: string) => ctx.catalog.perps.find((m) => m.asset === asset);
@@ -20,11 +20,29 @@ function liquidationDistance(ctx: TradeCtx, asset: string, leverage: number) {
   return Math.max(1 / leverage - (market(ctx, asset)?.maintenanceMargin ?? 0), 0);
 }
 
-/** The largest step at or below the market's cap. */
+/** Leverage never goes above the market's cap. */
 function clampLeverage(ctx: TradeCtx, asset: string, leverage: string) {
   const max = market(ctx, asset)?.maxLeverage ?? 1;
-  if (Number(leverage) <= max) return leverage;
-  return String([...LEVERAGE_STEPS].reverse().find((step) => step <= max) ?? 1);
+  return Number(leverage) <= max ? leverage : String(max);
+}
+
+/** "7", "7x", "12.5" -> a leverage the market allows, in steps of 0.1. */
+function parseLeverage(ctx: TradeCtx, asset: string, text: string) {
+  const match = /^\s*(\d{1,3}(?:\.\d)?)\s*x?\s*$/i.exec(text);
+  if (!match) return null;
+  const leverage = Number(match[1]);
+  const max = market(ctx, asset)?.maxLeverage ?? 1;
+  return leverage >= 1 && leverage <= max ? String(leverage) : null;
+}
+
+function leverageChoice(ctx: TradeCtx, v: Values & Fixed, leverage: number): Choice {
+  const move = v.side === "long" ? "drop" : "rise";
+  return {
+    value: String(leverage),
+    label: `${leverage}x`,
+    detail: `liquidated on a ${formatPercent(liquidationDistance(ctx, v.asset, leverage))} ${move}`,
+    tone: leverage >= RISKY_LEVERAGE ? "loss" : undefined,
+  };
 }
 
 const verb = (side: Side, label: string, hint: string) => ({
@@ -32,7 +50,7 @@ const verb = (side: Side, label: string, hint: string) => ({
   label,
   hint,
   group: "Leverage",
-  icon: { set: "trend", id: side === "long" ? "up" : "down", tone: side === "long" ? "gain" : "loss" } as const,
+  icon: { set: "verb", id: side },
   fixed: { side } as Fixed,
   cta: (v: Values & Fixed) => `Review ${v.leverage}x ${side}`,
 });
@@ -67,15 +85,14 @@ export const perp = operation({
       missing: { message: "Pick the leverage.", cta: "Pick leverage" },
       choices: (v: Values & Fixed, ctx) => {
         const max = market(ctx, v.asset)?.maxLeverage ?? 1;
-        const move = v.side === "long" ? "drop" : "rise";
-        return LEVERAGE_STEPS.filter((step) => step <= max).map(
-          (step): Choice => ({
-            value: String(step),
-            label: `${step}x`,
-            detail: `liquidated on a ${formatPercent(liquidationDistance(ctx, v.asset, step))} ${move}`,
-            tone: step >= RISKY_LEVERAGE ? "loss" : undefined,
-          }),
-        );
+        return LEVERAGE_STEPS.filter((step) => step <= max).map((step) => leverageChoice(ctx, v, step));
+      },
+      // Any leverage the market allows, not just the listed steps.
+      custom: {
+        placeholder: (v, ctx) => `Custom, 1 to ${market(ctx, v.asset)?.maxLeverage ?? 1}`,
+        suffix: "x",
+        parse: (text, v, ctx) => parseLeverage(ctx, v.asset, text),
+        choice: (value, v, ctx) => leverageChoice(ctx, v, Number(value)),
       },
     },
     collateralUSD: {
@@ -90,19 +107,6 @@ export const perp = operation({
   normalize: (next, _cause, _fixed, ctx) => {
     const leverage = clampLeverage(ctx, next.asset, next.leverage);
     return leverage === next.leverage ? next : { ...next, leverage };
-  },
-  check: (v, ctx) => {
-    const leverage = Number(v.leverage);
-    if (leverage < RISKY_LEVERAGE) return [];
-    const move = formatPercent(liquidationDistance(ctx, v.asset, leverage));
-    return [
-      {
-        code: "risk.leverage",
-        severity: "warning",
-        slot: "leverage",
-        message: `At ${leverage}x, a ${move} move against you wipes out your collateral.`,
-      },
-    ];
   },
   toIntent: (v): Extract<TransactionIntent, { type: "perp" }> => ({
     type: "perp",

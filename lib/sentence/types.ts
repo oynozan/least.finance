@@ -53,9 +53,24 @@ type SlotBase<Term extends string> = {
   term?: Term;
 };
 
+/** Lets a choice slot also take a typed value that isn't in its list. */
+export type CustomChoice<V, Ctx, T extends string> = {
+  /** Placeholder of the picker's input: "Custom, up to 20". */
+  placeholder: (values: V, ctx: Ctx) => string;
+  /** Shown after the input, e.g. "x" for leverage. */
+  suffix?: string;
+  /** The value to store for typed text, or null if it isn't allowed. */
+  parse: (text: string, values: V, ctx: Ctx) => T | null;
+  /** How a typed value reads, on the pill and in the picker. */
+  choice: (value: T, values: V, ctx: Ctx) => Choice<T>;
+};
+
 export type ChoiceSpec<V, Ctx, T extends string, Term extends string> = SlotBase<Term> & {
   kind: "choice";
   choices: (values: V, ctx: Ctx) => readonly Choice<T>[];
+  custom?: CustomChoice<V, Ctx, T>;
+  /** The picker needs room for long labels (e.g. market questions). */
+  wide?: boolean;
 };
 
 export type NumberSpec<V, Ctx, Term extends string> = SlotBase<Term> & {

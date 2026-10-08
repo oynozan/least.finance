@@ -21,7 +21,7 @@ export const prediction = operation({
       label: "Predict",
       hint: "Bet on a yes-or-no question",
       group: "Predictions",
-      icon: { set: "outcome", id: "yes", tone: "gain" },
+      icon: { set: "verb", id: "predict" },
       fixed: {},
       cta: () => "Review prediction",
     },
@@ -47,6 +47,7 @@ export const prediction = operation({
       kind: "choice",
       prompt: "Which question?",
       hint: "Prediction market",
+      wide: true,
       missing: { message: "Pick a question.", cta: "Pick a question" },
       choices: (_v: Values, ctx) =>
         ctx.catalog.markets.map(

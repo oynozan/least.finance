@@ -19,6 +19,7 @@ export const swap = operation({
       label: "Swap",
       hint: "Trade one coin for another",
       group: "Trade",
+      icon: { set: "verb", id: "swap" },
       fixed: {},
       cta: () => "Review swap",
     },

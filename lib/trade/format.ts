@@ -5,7 +5,6 @@ const usdWhole = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 const units = new Intl.NumberFormat("en-US", { maximumSignificantDigits: 4 });
-const grouped = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 
 /** "$1,250.50" */
 export const formatUsd = (value: number) => usd.format(value);
@@ -19,9 +18,6 @@ export function formatUnits(value: number, symbol: string) {
   if (value > 0 && value < 0.0001) return `<0.0001 ${symbol}`;
   return `${units.format(value)} ${symbol}`;
 }
-
-/** "1,250.5" for an amount pill; the input keeps whatever was typed. */
-export const formatAmount = (value: string) => (value === "" ? "" : grouped.format(Number(value)));
 
 /** 0.38 -> "38¢" */
 export const formatCents = (price: number) => `${Math.round(price * 100)}¢`;

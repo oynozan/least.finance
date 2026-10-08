@@ -26,7 +26,8 @@ export function accept<Ctx>(
 ): string | null {
   if (spec.kind === "number") return sanitizeDecimal(raw, spec.decimals, spec.maxIntegerDigits);
   const choice = spec.choices(values, ctx).find((c) => c.value === raw);
-  return choice && !choice.disabled ? choice.value : null;
+  if (choice) return choice.disabled ? null : choice.value;
+  return spec.custom?.parse(raw, values, ctx) ?? null;
 }
 
 function withTerms<T extends Str, C>(
