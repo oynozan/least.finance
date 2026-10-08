@@ -3,6 +3,10 @@ import { MOCK_APP_ID } from "./e2e/privy-mock";
 
 const PORT = 3100;
 
+// Logic tests exercise lib/ directly: no browser, no server.
+const LOGIC = /\.logic\.spec\.ts$/;
+const logicOnly = !!process.env.LOGIC_ONLY;
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -19,13 +23,15 @@ export default defineConfig({
       : { channel: "chrome" }),
   },
   projects: [
+    { name: "logic", testMatch: LOGIC },
     {
       name: "desktop",
+      testIgnore: LOGIC,
       use: { ...devices["Desktop Chrome"], viewport: { width: 1388, height: 736 } },
     },
-    { name: "mobile", use: { ...devices["Pixel 7"] } },
+    { name: "mobile", testIgnore: LOGIC, use: { ...devices["Pixel 7"] } },
   ],
-  webServer: {
+  webServer: logicOnly ? undefined : {
     command: `npm run build && npm run start -- --port ${PORT}`,
     url: `http://localhost:${PORT}`,
     reuseExistingServer: !process.env.CI,
