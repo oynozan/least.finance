@@ -1,0 +1,211 @@
+/* Privy login modal, restyled to match the app.
+ *
+ * Privy derives its palette from `appearance.theme` and lands on navy and
+ * violet secondaries that clash with our warm neutrals, so the tokens are
+ * redefined here. They live on #privy-dialog behind a single generated
+ * class; the id selector outranks it without !important. Structural rules
+ * only use the stable ids and ARIA attributes Privy ships, never its
+ * generated class names. */
+
+#privy-dialog {
+  --privy-color-background: var(--panel);
+  --privy-color-background-2: var(--pill);
+  --privy-color-background-3: var(--pill-hover);
+  --privy-color-background-hover: var(--pill-hover);
+  --privy-color-background-clicked: #3d3d3a;
+  --privy-color-background-disabled: var(--pill);
+  --privy-color-background-interactive: var(--pill);
+  --privy-color-background-interactive-hover: var(--pill-hover);
+  --privy-color-background-interactive-clicked: #3d3d3a;
+
+  --privy-color-foreground: var(--foreground);
+  --privy-color-foreground-2: #c4c4bf;
+  --privy-color-foreground-3: var(--muted);
+  --privy-color-foreground-4: var(--pill-hover);
+  --privy-color-foreground-hover: #fff;
+  --privy-color-foreground-clicked: #fff;
+  --privy-color-foreground-disabled: #5e5e5a;
+  --privy-color-foreground-interactive: var(--foreground);
+  --privy-color-foreground-interactive-hover: #fff;
+
+  /* Monochrome accent: primary actions are light pills with dark text. */
+  --privy-color-accent: var(--foreground);
+  --privy-color-accent-light: #fff;
+  --privy-color-accent-dark: #dcdcd8;
+  --privy-color-foreground-accent: var(--background);
+  --privy-link-navigation-color: var(--foreground);
+
+  --privy-color-success: var(--gain);
+  --privy-color-success-dark: #4fb857;
+  --privy-color-success-light: #8fe396;
+  --privy-color-success-bg: rgb(104 214 112 / 0.12);
+  --privy-color-error: var(--loss);
+  --privy-color-error-dark: #e5574a;
+  --privy-color-error-light: #ff958a;
+  --privy-color-error-bg: rgb(255 107 91 / 0.12);
+  --privy-color-error-bg-hover: rgb(255 107 91 / 0.18);
+  --privy-color-warn: #f7d15b;
+  --privy-color-warn-bg: rgb(247 209 91 / 0.12);
+  --privy-color-info-bg: var(--pill);
+  --privy-color-info-bg-hover: var(--pill-hover);
+
+  --privy-color-border-default: rgb(255 255 255 / 0.06);
+  --privy-color-border-hover: rgb(255 255 255 / 0.12);
+  --privy-color-border-focus: rgb(255 255 255 / 0.35);
+  --privy-color-border-interactive: rgb(255 255 255 / 0.12);
+  --privy-color-border-interactive-hover: rgb(255 255 255 / 0.2);
+
+  --privy-color-icon-default: var(--foreground);
+  --privy-color-icon-muted: var(--muted);
+  --privy-color-icon-subtle: #6b6b67;
+  --privy-color-icon-interactive: var(--foreground);
+  --privy-color-icon-success: var(--gain);
+  --privy-color-icon-error: var(--loss);
+  --privy-color-shadow-elevation: rgb(0 0 0 / 0.5);
+
+  --privy-border-radius-xs: 8px;
+  --privy-border-radius-sm: 12px;
+  --privy-border-radius-md: 18px;
+  --privy-border-radius-mdlg: 22px;
+  --privy-border-radius-lg: 34px;
+}
+
+/* A plain dim instead of Privy's 3px blur, faded in step with the panel. */
+#privy-dialog-backdrop {
+  background: rgb(10 10 9 / 0.55);
+  /* Only the standard property: with both, the CSS minifier keeps just the
+     prefixed one and Chrome stays blurred. */
+  backdrop-filter: none;
+  transition: opacity 240ms ease;
+}
+
+#privy-dialog-backdrop.entering,
+#privy-dialog-backdrop.leaving {
+  opacity: 0;
+}
+
+/* Every font inside the modal comes from Privy's normalize; reset the root
+   so text inherits the app's typeface. */
+#privy-dialog [id^="headlessui-dialog-panel"] > div {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  letter-spacing: -0.01em;
+}
+
+#privy-modal-content {
+  padding: 0 20px;
+  box-shadow:
+    0 0 0 1px rgb(255 255 255 / 0.07),
+    0 28px 70px -12px rgb(0 0 0 / 0.7);
+  /* Screens of different heights spring between each other. */
+  transition: height 520ms var(--spring);
+}
+
+/* Desktop: the panel springs up from slightly below, like the picker. */
+@media (min-width: 441px) {
+  #privy-dialog [id^="headlessui-dialog-panel"] {
+    transition:
+      opacity 200ms ease,
+      transform 560ms var(--spring);
+  }
+
+  #privy-dialog [id^="headlessui-dialog-panel"].entering {
+    opacity: 0;
+    transform: translateY(24px) scale(0.88);
+  }
+
+  #privy-dialog [id^="headlessui-dialog-panel"].leaving {
+    opacity: 0;
+    transform: translateY(12px) scale(0.94);
+    transition:
+      opacity 160ms ease-in,
+      transform 160ms ease-in;
+  }
+}
+
+/* Mobile keeps Privy's bottom sheet, on the same spring. */
+@media (max-width: 440px) {
+  #privy-dialog [id^="headlessui-dialog-panel"] {
+    transition: transform 560ms var(--spring);
+  }
+
+  #privy-modal-content {
+    border-radius: 30px 30px 0 0;
+  }
+}
+
+#privy-modal-content h3 {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+#privy-modal-content p {
+  color: var(--muted);
+}
+
+/* Wallet rows (and other icon-led buttons) become pills. Detected wallets
+   draw their logo as an <svg>, listed ones as an <img>. */
+#privy-modal-content button:has(> div:first-child > :is(img, svg)) {
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 20px 10px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--pill);
+  color: var(--foreground);
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  transition:
+    background-color 160ms ease,
+    transform 360ms var(--spring);
+}
+
+@media (hover: hover) {
+  #privy-modal-content button:has(> div:first-child > :is(img, svg)):hover {
+    background: var(--pill-hover);
+  }
+}
+
+#privy-modal-content button:has(> div:first-child > :is(img, svg)):active {
+  transform: scale(0.97);
+  transition-duration: 120ms;
+}
+
+#privy-modal-content button > div:first-child > :is(img, svg) {
+  border-radius: 12px;
+}
+
+#privy-dialog button[aria-label="close modal"] {
+  width: 30px;
+  height: 30px;
+  padding: 7px;
+  background: var(--pill);
+  color: var(--muted);
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+@media (hover: hover) {
+  #privy-dialog button[aria-label="close modal"]:hover {
+    background: var(--pill-hover);
+    color: var(--foreground);
+  }
+}
+
+#protected-by-privy {
+  opacity: 0.55;
+  transition: opacity 160ms ease;
+}
+
+#protected-by-privy:hover {
+  opacity: 0.9;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #privy-dialog [id^="headlessui-dialog-panel"],
+  #privy-modal-content {
+    transition-duration: 1ms !important;
+  }
+}

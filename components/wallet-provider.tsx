@@ -20,8 +20,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       config={{
         loginMethods: ["wallet"],
         appearance: {
+          // Base colors only; app/privy.css redefines the full palette.
           theme: "#222220",
-          accentColor: "#468df7",
+          accentColor: "#f5f5f3",
           walletChainType: "ethereum-only",
           showWalletLoginFirst: true,
         },

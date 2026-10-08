@@ -18,7 +18,13 @@ Open [http://localhost:3000](http://localhost:3000).
 
 - `app/page.tsx`: page shell (centered layout)
 - `components/hero-heading.tsx`: the heading and its click-to-cycle pills (client component, [Motion](https://motion.dev) springs). Edit `VISUALS`, `CUSTOMIZABLES` and `TOOLS` to change the mock options.
-- `components/connect-wallet.tsx`: the wallet button docked at the bottom, wrapped in `Magnet` (`components/magnet.tsx`). Privy is set up in `components/wallet-provider.tsx`.
+- `components/connect-wallet.tsx`: the wallet button docked at the bottom, wrapped in `Magnet` (`components/magnet.tsx`). Before sign-in it opens Privy's login; after, it toggles the wallet sidebar. Privy is set up in `components/wallet-provider.tsx`, and `app/privy.css` restyles its modal to match the app.
+- `components/sidebar.tsx`: the right-hand sidebar shell. Opening it pushes the page left on a spring (on phones the sidebar covers the screen and the page slides out).
+- `components/wallet-sidebar.tsx`: the sidebar's content: balance, deposit button, deposit history (revealed on hover) and open positions (`components/position-row.tsx`), stacked bottom-up. Balance, deposits and positions are mock data in `components/wallet-data.ts`.
 - `components/icons.tsx`: sticker-style SVG icons for the pills
+
+## Tests
+
+`npm run test:e2e` builds the app and runs the Playwright suite on Chrome. Privy's backend and a MetaMask-like wallet are mocked (`e2e/privy-mock.ts`), so the wallet flow runs offline with a placeholder app ID. Set `PLAYWRIGHT_CHROMIUM_PATH` to run on a Chromium binary instead of installed Chrome.
 
 Tune the springs with the `spring`, `wobble` and `resize` transitions at the top of `components/hero-heading.tsx`.

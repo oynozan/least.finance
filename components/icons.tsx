@@ -280,3 +280,34 @@ export function ChevronIcon(props: IconProps) {
     </svg>
   );
 }
+
+const line = {
+  stroke: "currentColor",
+  strokeWidth: 2,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+} as const;
+
+export function PlusIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path d="M8 3v10M3 8h10" {...line} strokeWidth={2.2} />
+    </svg>
+  );
+}
+
+export function CloseIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path d="M4 4l8 8M12 4l-8 8" {...line} />
+    </svg>
+  );
+}
+
+export function PowerIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+      <path d="M8 2.5V8M4.7 4.6a5 5 0 1 0 6.6 0" {...line} />
+    </svg>
+  );
+}

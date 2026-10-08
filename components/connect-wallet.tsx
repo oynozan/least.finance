@@ -1,8 +1,10 @@
 "use client";
 
-import { usePrivy } from "@privy-io/react-auth";
+import { useLogin, usePrivy } from "@privy-io/react-auth";
 import { motion, type Transition } from "motion/react";
 import { Magnet } from "./magnet";
+import { SIDEBAR_ID, useSidebar } from "./sidebar";
+import { shortenAddress } from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
 import styles from "./connect-wallet.module.css";
 
@@ -28,17 +30,25 @@ export function ConnectWallet() {
 }
 
 function PrivyWalletButton() {
-  const { ready, authenticated, user, login, logout } = usePrivy();
+  const { ready, authenticated, user } = usePrivy();
+  const { open, setOpen, toggle } = useSidebar();
+  // A fresh connection opens the sidebar straight away.
+  const { login } = useLogin({
+    onComplete: ({ wasAlreadyAuthenticated }) => {
+      if (!wasAlreadyAuthenticated) setOpen(true);
+    },
+  });
   const address = user?.wallet?.address;
 
   if (ready && authenticated) {
     return (
       <WalletButton
-        label={address ? shorten(address) : "Connected"}
-        aria-label={address ? `Disconnect wallet ${address}` : "Disconnect wallet"}
-        title="Disconnect"
+        label={address ? shortenAddress(address) : "Connected"}
+        aria-label={address ? `Wallet ${address}` : "Wallet"}
+        aria-expanded={open}
+        aria-controls={SIDEBAR_ID}
         connected
-        onClick={() => logout()}
+        onClick={toggle}
       />
     );
   }
@@ -58,6 +68,8 @@ type WalletButtonProps = {
   disabled?: boolean;
   title?: string;
   "aria-label"?: string;
+  "aria-expanded"?: boolean;
+  "aria-controls"?: string;
   onClick?: () => void;
 };
 
@@ -78,5 +90,3 @@ function WalletButton({ label, connected, disabled, onClick, ...rest }: WalletBu
     </motion.button>
   );
 }
-
-const shorten = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;

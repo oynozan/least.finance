@@ -1,0 +1,93 @@
+.row {
+  --trend: var(--flat);
+
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 8px 8px 10px;
+  border-radius: 22px;
+  background: var(--pill);
+  /* The ring takes the PnL color while the close button is out. */
+  box-shadow: inset 0 0 0 1px transparent;
+  transition:
+    background-color 200ms ease,
+    box-shadow 200ms ease;
+  user-select: none;
+}
+
+.row[data-trend="gain"] {
+  --trend: var(--gain);
+}
+
+.row[data-trend="loss"] {
+  --trend: var(--loss);
+}
+
+.row[data-revealed="true"] {
+  background: var(--pill-hover);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--trend) 22%, transparent);
+}
+
+.logo {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+}
+
+.size {
+  flex: 1;
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pnl {
+  padding-right: 8px;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--trend);
+  white-space: nowrap;
+}
+
+/* Width is sprung in JS between 0 and the button's own width. */
+.closeSlot {
+  display: flex;
+  justify-content: flex-end;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.close {
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--trend) 16%, transparent);
+  color: var(--trend);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+@media (hover: hover) {
+  .close:hover {
+    background: var(--trend);
+    color: var(--background);
+  }
+}
+
+.close:focus-visible {
+  background: var(--trend);
+  color: var(--background);
+  outline: 2px solid transparent;
+}

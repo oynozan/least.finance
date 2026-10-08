@@ -1,0 +1,208 @@
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 18px 0 22px;
+}
+
+.account {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.avatar {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.15);
+}
+
+.iconButton {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--pill);
+  color: var(--muted);
+  cursor: pointer;
+  outline: none;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+.iconButton svg {
+  width: 16px;
+  height: 16px;
+}
+
+.iconButton:focus-visible {
+  background: var(--pill-hover);
+  color: var(--foreground);
+  outline: 2px solid transparent;
+}
+
+@media (hover: hover) {
+  .iconButton:hover {
+    background: var(--pill-hover);
+    color: var(--foreground);
+  }
+}
+
+/* The hover target for the deposit history, so it spans the full width.
+   Stacked above the positions so the history can float over them. */
+.wallet {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 36px 22px 24px;
+}
+
+.balanceButton {
+  text-align: left;
+  cursor: default;
+  outline: none;
+  border-radius: 12px;
+}
+
+.balanceButton:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 0.3);
+  outline-offset: 4px;
+}
+
+.balance {
+  display: block;
+  font-size: clamp(44px, 13vw, 62px);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.045em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cents {
+  font-size: 0.5em;
+  letter-spacing: -0.02em;
+  color: var(--muted);
+}
+
+/* Above the history, so the deposits slide out from underneath it. */
+.deposit {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  margin-top: 20px;
+  padding: 0 20px 0 16px;
+  border-radius: 999px;
+  background: var(--foreground);
+  color: var(--background);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  outline: none;
+}
+
+.deposit:focus-visible {
+  box-shadow: 0 0 0 3px rgb(255 255 255 / 0.3);
+}
+
+.depositIcon {
+  width: 14px;
+  height: 14px;
+}
+
+.history {
+  position: absolute;
+  top: calc(100% - 12px);
+  left: 22px;
+  right: 22px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+}
+
+.depositRow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 42px;
+  padding: 0 16px 0 10px;
+  border-radius: 999px;
+  background: var(--pill-hover);
+  box-shadow: 0 12px 28px -10px rgb(0 0 0 / 0.6);
+  transform-origin: 50% 0;
+}
+
+.depositCoin {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+}
+
+.depositAmount {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.depositWhen {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Positions sit at the bottom and stack upward; the auto margin (rather
+   than justify-content: flex-end) keeps an overflowing list scrollable. */
+.positionsScroller {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px 14px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  transition:
+    opacity 260ms ease,
+    filter 260ms ease,
+    scale 400ms var(--spring);
+}
+
+.positions {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 8px;
+  margin-top: auto;
+  list-style: none;
+}
+
+.empty {
+  padding: 20px 0 8px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* Positions recede while the deposit history floats over them. */
+.wallet[data-history="open"] + .positionsScroller {
+  opacity: 0.3;
+  filter: blur(3px);
+  scale: 0.97;
+}

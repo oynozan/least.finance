@@ -1,0 +1,27 @@
+/* Takes the body's flex slot; its right margin is sprung open in JS. */
+.page {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Position, width and the off-screen bleed are set inline from the same
+   width the page margin uses. No outer shadow: it would peek in from the
+   right edge while the panel is parked off-screen. */
+.panel {
+  position: fixed;
+  top: 0;
+  z-index: 40;
+  height: 100dvh;
+  background: var(--panel);
+  border-left: 1px solid rgb(255 255 255 / 0.06);
+  will-change: transform;
+}
+
+.inner {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
