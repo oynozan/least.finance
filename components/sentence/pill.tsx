@@ -72,8 +72,10 @@ export function PillBody({
                 {icon}
               </motion.span>
             )}
-            {/* The only baseline-aligned item: the pill shares the text's baseline. */}
-            <span className="self-baseline pb-[0.1em] leading-[1.06]">
+            {/* The only baseline-aligned item: the pill shares the text's baseline.
+                Trimmed to cap height and baseline, even padding centers the
+                caps at any size; without text-box, the leading approximates it. */}
+            <span className="self-baseline py-[0.08em] leading-[1.06] [text-box:trim-both_cap_alphabetic] supports-[text-box:trim-both_cap_alphabetic]:py-[calc((1.22em-1cap)/2)]">
               {children}
             </span>
           </motion.span>
