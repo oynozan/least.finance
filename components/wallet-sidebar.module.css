@@ -126,20 +126,35 @@
   height: 14px;
 }
 
-.history {
+/* Its top edge sits at the deposit button's bottom, so rows emerge from
+   under the button rather than being cut off by the scroll edge. */
+.historyFrame {
+  --edge: 48px;
   position: absolute;
-  top: calc(100% - 12px);
-  left: 22px;
-  right: 22px;
+  top: calc(100% - 24px);
+  left: 18px;
+  right: 18px;
   z-index: 1;
+}
+
+/* Side padding keeps the row shadows from being clipped; the bottom
+   padding is the gap above the sidebar's edge, inside the scroll area so
+   the blur band covers it too. */
+.history {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 12px 4px 14px;
   list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
 }
 
 .depositRow {
   position: relative;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -147,7 +162,7 @@
   padding: 0 16px 0 10px;
   border-radius: 999px;
   background: var(--pill-hover);
-  box-shadow: 0 12px 28px -10px rgb(0 0 0 / 0.6);
+  box-shadow: 0 4px 10px -6px rgb(0 0 0 / 0.2);
   transform-origin: 50% 0;
 }
 
@@ -169,9 +184,24 @@
   color: var(--muted);
 }
 
+/* Holds the scroller and its edge overlays; it recedes as one piece. */
+.positionsFrame {
+  --edge: 48px;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  transition:
+    opacity 260ms ease,
+    filter 260ms ease,
+    scale 400ms var(--spring);
+}
+
 /* Positions sit at the bottom and stack upward; the auto margin (rather
    than justify-content: flex-end) keeps an overflowing list scrollable. */
 .positionsScroller {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -179,10 +209,6 @@
   padding: 8px 14px 14px;
   overflow-y: auto;
   scrollbar-width: none;
-  transition:
-    opacity 260ms ease,
-    filter 260ms ease,
-    scale 400ms var(--spring);
 }
 
 .positions {
@@ -201,8 +227,89 @@
 }
 
 /* Positions recede while the deposit history floats over them. */
-.wallet[data-history="open"] + .positionsScroller {
+.wallet[data-history="open"] + .positionsFrame {
   opacity: 0.3;
   filter: blur(3px);
   scale: 0.97;
+}
+
+/* Scroll edges. Where trackScrollEdges marks content hidden past an edge,
+   the list fades its content out over the last --edge pixels (so nothing
+   is cut off by a hard line) and an overlay blurs that same band, ramping
+   up toward the edge. */
+@property --fade-top {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --fade-bottom {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+.history,
+.positionsScroller {
+  /* Eased, and fully clear right at the edge: the overlay's blur clamps at
+     its border, so anything left there would smear into a straight line. */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent calc(var(--fade-top) * 0.2),
+    rgb(0 0 0 / 0.25) calc(var(--fade-top) * 0.55),
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
+    rgb(0 0 0 / 0.25) calc(100% - var(--fade-bottom) * 0.55),
+    transparent calc(100% - var(--fade-bottom) * 0.2)
+  );
+  transition:
+    --fade-top 200ms ease,
+    --fade-bottom 200ms ease;
+}
+
+.history[data-edge-top="true"],
+.positionsScroller[data-edge-top="true"] {
+  --fade-top: var(--edge);
+}
+
+.history[data-edge-bottom="true"],
+.positionsScroller[data-edge-bottom="true"] {
+  --fade-bottom: var(--edge);
+}
+
+.edge {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  height: var(--edge);
+  pointer-events: none;
+  /* Prefixed first: the minifier keeps only the last of the two, and
+     Chrome ignores the -webkit- one. */
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+/* The history is inset from the sidebar's sides; its blur band still
+   spans the full width, so the band has no visible side edges. */
+.historyFrame > .edge {
+  left: -18px;
+  right: -18px;
+}
+
+.edgeTop {
+  top: 0;
+  mask-image: linear-gradient(to bottom, #000, transparent);
+}
+
+.edgeBottom {
+  bottom: 0;
+  mask-image: linear-gradient(to top, #000, transparent);
+}
+
+[data-edge-top="true"] ~ .edgeTop,
+[data-edge-bottom="true"] ~ .edgeBottom {
+  opacity: 1;
 }

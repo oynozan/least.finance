@@ -29,15 +29,49 @@ export const MOCK_POSITIONS: Position[] = [
   { id: "p-sol", symbol: "SOL", size: 1_200, pnl: 0 },
   { id: "p-doge", symbol: "DOGE", size: 640, pnl: 48.9 },
   { id: "p-link", symbol: "LINK", size: 900, pnl: -12.35 },
+  { id: "p-avax", symbol: "AVAX", size: 1_150, pnl: 64.2 },
+  { id: "p-arb", symbol: "ARB", size: 480, pnl: -22.75 },
+  { id: "p-op", symbol: "OP", size: 720, pnl: 15.6 },
+  { id: "p-xrp", symbol: "XRP", size: 1_600, pnl: -140.3 },
+  { id: "p-ada", symbol: "ADA", size: 350, pnl: 0 },
+  { id: "p-dot", symbol: "DOT", size: 560, pnl: 9.85 },
+  { id: "p-uni", symbol: "UNI", size: 820, pnl: -31.4 },
+  { id: "p-aave", symbol: "AAVE", size: 1_380, pnl: 122.15 },
+  { id: "p-atom", symbol: "ATOM", size: 410, pnl: -5.6 },
+  { id: "p-near", symbol: "NEAR", size: 690, pnl: 27.3 },
+];
+
+/** Symbol, USD amount, days ago. Newest first. */
+const depositLog: [CoinSymbol, number, number][] = [
+  ["USDC", 2_500, 2],
+  ["ETH", 1_840.25, 9],
+  ["USDC", 5_000, 23],
+  ["USDC", 3_000, 41],
+  ["USDC", 1_200, 48],
+  ["BTC", 4_120.8, 55],
+  ["USDC", 750, 63],
+  ["SOL", 610.4, 71],
+  ["USDC", 2_000, 84],
+  ["ETH", 980.15, 97],
+  ["USDC", 1_500, 112],
+  ["USDC", 300, 126],
+  ["BTC", 2_264.9, 141],
+  ["USDC", 5_000, 158],
+  ["ETH", 1_420.6, 173],
+  ["USDC", 850, 190],
+  ["SOL", 455.3, 208],
+  ["USDC", 2_500, 229],
+  ["USDC", 1_000, 251],
+  ["ETH", 3_105.75, 276],
 ];
 
 /** Newest first. */
-export const MOCK_DEPOSITS: Deposit[] = [
-  { id: "d-4", symbol: "USDC", amount: 2_500, at: daysAgo(2) },
-  { id: "d-3", symbol: "ETH", amount: 1_840.25, at: daysAgo(9) },
-  { id: "d-2", symbol: "USDC", amount: 5_000, at: daysAgo(23) },
-  { id: "d-1", symbol: "USDC", amount: 3_000, at: daysAgo(41) },
-];
+export const MOCK_DEPOSITS: Deposit[] = depositLog.map(([symbol, amount, days], i) => ({
+  id: `d-${depositLog.length - i}`,
+  symbol,
+  amount,
+  at: daysAgo(days),
+}));
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const usdWhole = new Intl.NumberFormat("en-US", {

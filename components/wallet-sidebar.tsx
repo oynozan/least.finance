@@ -17,6 +17,7 @@ import { CoinIcon } from "./coin-icons";
 import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { canHover } from "./pointer";
 import { PositionRow } from "./position-row";
+import { trackScrollEdges } from "./scroll-edges";
 import { useSidebar } from "./sidebar";
 import {
   MOCK_BALANCE,
@@ -33,29 +34,61 @@ import styles from "./wallet-sidebar.module.css";
 const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 };
 const settle: Transition = { type: "spring", visualDuration: 0.4, bounce: 0.15 };
 
-const positionList: Variants = {
-  hidden: {},
-  // Delayed so rows rise once the panel has mostly arrived.
-  shown: { transition: { staggerChildren: 0.05, delayChildren: 0.18 } },
-};
+// Rows rise bottom-up once the panel has mostly arrived. Only the top rows
+// (the ones in view when the list overflows) take part in the stagger;
+// rows further down land straight away, out of sight.
+const STAGGERED_ROWS = 8;
+const entranceDelay = (index: number, count: number) =>
+  0.12 + Math.max(0, index - Math.max(0, count - STAGGERED_ROWS)) * 0.03;
 
-const depositList: Variants = {
-  hidden: { transition: { staggerChildren: 0.03, staggerDirection: -1 } },
-  shown: { transition: { staggerChildren: 0.05, delayChildren: 0.04 } },
-};
+const deal: Transition = { type: "spring", visualDuration: 0.2, bounce: 0.25 };
 
 // Collapsed, every deposit hides up under the one above it, a little
-// smaller each step back; revealing deals them out into a list.
+// smaller each step back; revealing deals them out into a list. Depth and
+// stagger stop growing after the first few rows, so a long history still
+// reveals as quickly as a short one (and never scales a row past zero).
 const depositRow: Variants = {
-  hidden: (i: number) => ({
-    opacity: 0,
-    y: -18 * (i + 1),
-    scale: 1 - 0.05 * (i + 1),
-    filter: "blur(4px)",
-    transition: { duration: 0.16, ease: "easeIn" },
+  hidden: (i: number) => {
+    const depth = Math.min(i + 1, 4);
+    return {
+      opacity: 0,
+      y: -18 * depth,
+      scale: 1 - 0.05 * depth,
+      filter: "blur(4px)",
+      // Bottom rows tuck away first.
+      transition: { duration: 0.12, ease: "easeIn", delay: (3 - Math.min(i, 3)) * 0.02 },
+    };
+  },
+  shown: (i: number) => ({
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    filter: "blur(0px)",
+    transition: { ...deal, delay: Math.min(i, 7) * 0.03 },
   }),
-  shown: { opacity: 1, y: 0, scale: 1, filter: "blur(0px)", transition: spring },
 };
+
+/** Caps the history at the sidebar's bottom edge, so a long one scrolls. */
+function fitToPanel(list: HTMLOListElement | null) {
+  const panel = list?.closest("aside");
+  if (!list || !panel) return;
+  const fit = () => {
+    const room = panel.getBoundingClientRect().bottom - list.getBoundingClientRect().top;
+    list.style.maxHeight = `${Math.max(room, 0)}px`;
+  };
+  fit();
+  window.addEventListener("resize", fit);
+  return () => window.removeEventListener("resize", fit);
+}
+
+function historyRef(list: HTMLOListElement | null) {
+  const unfit = fitToPanel(list);
+  const untrack = trackScrollEdges(list);
+  return () => {
+    unfit?.();
+    untrack?.();
+  };
+}
 
 /** The sidebar's content. Renders nothing until a wallet is signed in. */
 export function WalletSidebar() {
@@ -125,33 +158,40 @@ function SignedInWallet() {
         onDeposit={deposit}
       />
 
-      <div className={styles.positionsScroller}>
-        <motion.ul
-          key={`positions-${openings}`}
-          className={styles.positions}
-          aria-label="Open positions"
-          variants={positionList}
-          initial="hidden"
-          animate={open ? "shown" : "hidden"}
-        >
-          <AnimatePresence mode="popLayout">
-            {positions.map((position) => (
-              <PositionRow key={position.id} position={position} onClose={closePosition} />
-            ))}
+      <div className={styles.positionsFrame}>
+        <div ref={trackScrollEdges} className={styles.positionsScroller}>
+          <motion.ul
+            key={`positions-${openings}`}
+            className={styles.positions}
+            aria-label="Open positions"
+            initial="hidden"
+            animate={open ? "shown" : "hidden"}
+          >
+            <AnimatePresence mode="popLayout">
+              {positions.map((position, i) => (
+                <PositionRow
+                  key={position.id}
+                  position={position}
+                  entranceDelay={entranceDelay(i, positions.length)}
+                  onClose={closePosition}
+                />
+              ))}
+            </AnimatePresence>
+          </motion.ul>
+          <AnimatePresence>
+            {positions.length === 0 && (
+              <motion.p
+                className={styles.empty}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0, transition: { ...settle, delay: 0.25 } }}
+                exit={{ opacity: 0 }}
+              >
+                No open positions
+              </motion.p>
+            )}
           </AnimatePresence>
-        </motion.ul>
-        <AnimatePresence>
-          {positions.length === 0 && (
-            <motion.p
-              className={styles.empty}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0, transition: { ...settle, delay: 0.25 } }}
-              exit={{ opacity: 0 }}
-            >
-              No open positions
-            </motion.p>
-          )}
-        </AnimatePresence>
+        </div>
+        <ScrollEdges />
       </div>
     </MotionConfig>
   );
@@ -209,35 +249,48 @@ function WalletSection({ balance, deposits, onDeposit }: WalletSectionProps) {
       {/* Floats over the positions instead of pushing them down. */}
       <AnimatePresence>
         {showHistory && deposits.length > 0 && (
-          <motion.ol
+          <motion.div
             key="history"
-            className={styles.history}
-            aria-label="Deposits"
-            variants={depositList}
+            className={styles.historyFrame}
             initial="hidden"
             animate="shown"
             exit="hidden"
           >
-            <AnimatePresence initial={false}>
-              {deposits.map((deposit, i) => (
-                <motion.li
-                  key={deposit.id}
-                  layout
-                  custom={i}
-                  variants={depositRow}
-                  className={styles.depositRow}
-                  style={{ zIndex: deposits.length - i }}
-                >
-                  <CoinIcon symbol={deposit.symbol} className={styles.depositCoin} />
-                  <span className={styles.depositAmount}>+{formatUsd(deposit.amount)}</span>
-                  <span className={styles.depositWhen}>{formatWhen(deposit.at)}</span>
-                </motion.li>
-              ))}
-            </AnimatePresence>
-          </motion.ol>
+            <ol ref={historyRef} className={styles.history} aria-label="Deposits">
+              <AnimatePresence>
+                {deposits.map((deposit, i) => (
+                  <motion.li
+                    key={deposit.id}
+                    layout
+                    custom={i}
+                    variants={depositRow}
+                    className={styles.depositRow}
+                    style={{ zIndex: deposits.length - i }}
+                  >
+                    <CoinIcon symbol={deposit.symbol} className={styles.depositCoin} />
+                    <span className={styles.depositAmount}>+{formatUsd(deposit.amount)}</span>
+                    <span className={styles.depositWhen}>{formatWhen(deposit.at)}</span>
+                  </motion.li>
+                ))}
+              </AnimatePresence>
+            </ol>
+            <ScrollEdges />
+          </motion.div>
         )}
       </AnimatePresence>
     </section>
+  );
+}
+
+/** Blurred overlays for the scroll container just before them; they show
+    where `trackScrollEdges` marks content hidden past an edge. They sit
+    outside the scroller so the blur reads the finished, scrolled picture. */
+function ScrollEdges() {
+  return (
+    <>
+      <span className={`${styles.edge} ${styles.edgeTop}`} data-edge="top" aria-hidden="true" />
+      <span className={`${styles.edge} ${styles.edgeBottom}`} data-edge="bottom" aria-hidden="true" />
+    </>
   );
 }
 

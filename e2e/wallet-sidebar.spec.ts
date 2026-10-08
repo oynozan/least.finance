@@ -1,5 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
+import { MOCK_DEPOSITS, MOCK_POSITIONS } from "../components/wallet-data";
 import { ADDRESS, installWallet, mockPrivy } from "./privy-mock";
+
+const DEPOSITS = MOCK_DEPOSITS.length;
+const POSITIONS = MOCK_POSITIONS.length;
 
 const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
 const dock = (page: Page) => page.getByRole("button", { name: `Wallet ${ADDRESS}` });
@@ -144,7 +148,7 @@ test("hovering the balance deals out past deposits", async ({ page, isMobile }) 
   await expect(deposits).toHaveCount(0);
 
   await sidebar(page).getByRole("button", { name: /^Balance/ }).hover();
-  await expect(deposits.getByRole("listitem")).toHaveCount(4);
+  await expect(deposits.getByRole("listitem")).toHaveCount(DEPOSITS);
   await expect(deposits.getByRole("listitem").first()).toContainText("+$2,500.00");
   await shoot(page, "3-deposits");
 
@@ -159,6 +163,231 @@ test("hovering the balance deals out past deposits", async ({ page, isMobile }) 
   await expect(deposits).toHaveCount(0);
 });
 
+test("past deposits are dealt out on reveal, not shown instantly", async ({ page, isMobile }) => {
+  test.skip(isMobile, "hover only");
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await settle(page);
+
+  // Record every deposit row's opacity and vertical offset each frame.
+  type Frame = { t: number; rows: { opacity: number; y: number; scale: number }[] };
+  await page.evaluate(() => {
+    const frames: Frame[] = [];
+    (window as unknown as { depositFrames: Frame[] }).depositFrames = frames;
+    const start = performance.now();
+    const tick = () => {
+      const rows = document.querySelectorAll('[aria-label="Deposits"] > li');
+      if (rows.length) {
+        frames.push({
+          t: performance.now(),
+          rows: [...rows].map((row) => {
+            const style = getComputedStyle(row);
+            const matrix = new DOMMatrix(style.transform);
+            return { opacity: +style.opacity, y: matrix.m42, scale: matrix.a };
+          }),
+        });
+      }
+      if (performance.now() - start < 2_000) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await sidebar(page).getByRole("button", { name: /^Balance/ }).hover();
+  await page.waitForTimeout(1_500);
+  const recorded = await page.evaluate(
+    () => (window as unknown as { depositFrames: Frame[] }).depositFrames,
+  );
+  const frames = recorded.map((frame) => frame.rows);
+
+  expect(frames.length, "rows were sampled").toBeGreaterThan(10);
+  const first = frames[0];
+  expect(first).toHaveLength(DEPOSITS);
+  for (const row of first) {
+    expect(row.opacity, "each row starts hidden").toBeLessThan(0.5);
+    expect(row.y, "each row starts tucked up under the one above").toBeLessThan(-5);
+    expect(row.scale, "no row is scaled past zero, however long the list").toBeGreaterThan(0.5);
+  }
+  for (const row of frames.at(-1)!) {
+    expect(row.opacity).toBe(1);
+    expect(Math.abs(row.y)).toBeLessThan(0.5);
+  }
+
+  // Staggered top to bottom: no row lands before the one above it, and at
+  // some point the top row is clearly ahead of the rows below.
+  const visibleAt = first.map((_, i) => frames.findIndex((frame) => frame[i].opacity > 0.9));
+  expect(visibleAt.every((frame) => frame >= 0)).toBe(true);
+  expect(visibleAt).toEqual([...visibleAt].sort((a, b) => a - b));
+  const later = Math.min(7, DEPOSITS - 1);
+  expect(
+    frames.some((frame) => frame[0].opacity - frame[later].opacity > 0.2),
+    "the top row leads the rows below it",
+  ).toBe(true);
+
+  // Quick: every row has settled in place shortly after the history appears.
+  const settledAt = recorded.findIndex((frame) =>
+    frame.rows.every((row) => row.opacity === 1 && Math.abs(row.y) < 0.5),
+  );
+  const revealMs = recorded[settledAt].t - recorded[0].t;
+  test.info().annotations.push({ type: "reveal", description: `${Math.round(revealMs)}ms` });
+  console.log(`deposit reveal settled in ${Math.round(revealMs)}ms`);
+  expect(revealMs, "the whole deal-out settles quickly").toBeLessThan(500);
+});
+
+test("a long deposit history stays inside the sidebar and scrolls", async ({ page, isMobile }) => {
+  test.skip(isMobile, "hover only; the tap-pinned history is covered below");
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await settle(page);
+
+  const history = sidebar(page).getByRole("list", { name: "Deposits" });
+  await sidebar(page).getByRole("button", { name: /^Balance/ }).hover();
+  await expect(history.getByRole("listitem")).toHaveCount(DEPOSITS);
+  await shoot(page, "6-long-history");
+
+  const box = await history.evaluate((list) => ({
+    bottom: list.getBoundingClientRect().bottom,
+    panelBottom: list.closest("aside")!.getBoundingClientRect().bottom,
+    overflows: list.scrollHeight > list.clientHeight,
+  }));
+  expect(box.bottom, "the history ends above the sidebar's bottom edge").toBeLessThanOrEqual(box.panelBottom);
+  expect(box.overflows, "20 deposits don't fit, so the history scrolls").toBe(true);
+
+  const oldest = history.getByRole("listitem").last();
+  await expect(oldest).toContainText(`+$${MOCK_DEPOSITS.at(-1)!.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`);
+  await expect(oldest).not.toBeInViewport();
+
+  // Wheel over the history scrolls it, not the positions behind it.
+  const positionsTop = () =>
+    page.evaluate(() => document.querySelector('[aria-label="Open positions"]')!.parentElement!.scrollTop);
+  const before = await positionsTop();
+  await history.hover();
+  for (let i = 0; i < 6; i++) await page.mouse.wheel(0, 400);
+  await expect(oldest).toBeInViewport();
+  await expect.poll(() => history.evaluate((list) => list.scrollTop)).toBeGreaterThan(0);
+  expect(await positionsTop()).toBe(before);
+  await expect(history, "still open while scrolling it").toBeVisible();
+  await shoot(page, "7-long-history-scrolled");
+});
+
+test("many positions scroll inside the sidebar and enter quickly", async ({ page }) => {
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await page.keyboard.press("Escape");
+  await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+  await settle(page);
+
+  // Time from reopening until every position in view has landed.
+  const entranceMs = await page.evaluate(async () => {
+    const panel = document.getElementById("wallet-sidebar")!;
+    const dock = document.querySelector<HTMLButtonElement>('[aria-controls="wallet-sidebar"]')!;
+    const start = performance.now();
+    dock.click();
+    while (performance.now() - start < 3_000) {
+      await new Promise(requestAnimationFrame);
+      const list = panel.querySelector('[aria-label="Open positions"]');
+      const scroller = list?.parentElement;
+      if (!list || !scroller) continue;
+      const view = scroller.getBoundingClientRect();
+      const inView = [...list.children].filter((row) => {
+        const box = row.getBoundingClientRect();
+        return box.bottom > view.top && box.top < view.bottom;
+      });
+      const landed = inView.every((row) => {
+        const style = getComputedStyle(row);
+        return style.opacity === "1" && Math.abs(new DOMMatrix(style.transform).m42) < 0.5;
+      });
+      if (inView.length > 0 && landed) return performance.now() - start;
+    }
+    return Infinity;
+  });
+  console.log(`positions entrance settled in ${Math.round(entranceMs)}ms`);
+  expect(entranceMs, "the positions in view land soon after opening").toBeLessThan(850);
+
+  const rows = sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem");
+  await expect(rows).toHaveCount(POSITIONS);
+  const scroller = await rows.first().evaluate((row) => {
+    const list = row.closest("ul")!.parentElement!;
+    return {
+      overflows: list.scrollHeight > list.clientHeight,
+      bottom: list.getBoundingClientRect().bottom,
+      panelBottom: list.closest("aside")!.getBoundingClientRect().bottom,
+    };
+  });
+  expect(scroller.overflows, `${POSITIONS} positions don't fit, so they scroll`).toBe(true);
+  expect(scroller.bottom).toBeLessThanOrEqual(scroller.panelBottom + 0.5);
+
+  // The oldest position sits at the bottom of the scroll range.
+  await expect(position(page, "BTC")).toBeAttached();
+  await position(page, "BTC").scrollIntoViewIfNeeded();
+  await expect(position(page, "BTC")).toBeInViewport();
+  await shoot(page, "8-many-positions");
+});
+
+test("scrollable lists blur only the edges that hide more content", async ({ page, isMobile }) => {
+  test.skip(isMobile, "hover and wheel");
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await settle(page);
+
+  // Each scroller fades its content out over the band an overlay blurs.
+  const edges = (scroller: ReturnType<typeof sidebar>) =>
+    scroller.evaluate((el) => {
+      const overlay = (side: string) =>
+        getComputedStyle(el.parentElement!.querySelector(`:scope > [data-edge="${side}"]`)!);
+      const style = getComputedStyle(el);
+      return {
+        top: +overlay("top").opacity,
+        bottom: +overlay("bottom").opacity,
+        blur: [overlay("top").backdropFilter, overlay("bottom").backdropFilter],
+        fade: [style.getPropertyValue("--fade-top"), style.getPropertyValue("--fade-bottom")],
+        edge: style.getPropertyValue("--edge"),
+      };
+    });
+  const expectEdges = async (scroller: ReturnType<typeof sidebar>, top: number, bottom: number) => {
+    await expect.poll(async () => (await edges(scroller)).top).toBe(top);
+    await expect.poll(async () => (await edges(scroller)).bottom).toBe(bottom);
+    const { blur, fade, edge } = await edges(scroller);
+    expect(blur).toEqual(["blur(8px)", "blur(8px)"]);
+    expect(fade).toEqual([top ? edge : "0px", bottom ? edge : "0px"]);
+  };
+
+  // Positions: more below at first, more above once scrolled to the end.
+  const positions = sidebar(page).getByRole("list", { name: "Open positions" }).locator("xpath=..");
+  await expectEdges(positions, 0, 1);
+  await shoot(page, "9-positions-bottom-edge");
+  await positions.hover();
+  await page.mouse.wheel(0, 120);
+  await expectEdges(positions, 1, 1);
+  for (let i = 0; i < 6; i++) await page.mouse.wheel(0, 400);
+  await expectEdges(positions, 1, 0);
+  await shoot(page, "10-positions-top-edge");
+
+  // Deposit history: the same, inside the floating list.
+  await sidebar(page).getByRole("button", { name: /^Balance/ }).hover();
+  const history = sidebar(page).getByRole("list", { name: "Deposits" });
+  await expect(history.getByRole("listitem")).toHaveCount(DEPOSITS);
+  await expectEdges(history, 0, 1);
+  await history.hover();
+  for (let i = 0; i < 6; i++) await page.mouse.wheel(0, 400);
+  await expectEdges(history, 1, 0);
+  await shoot(page, "11-history-top-edge");
+});
+
+test("deposit rows cast only a light shadow", async ({ page, isMobile }) => {
+  test.skip(isMobile, "hover only");
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+  await sidebar(page).getByRole("button", { name: /^Balance/ }).hover();
+
+  const rows = sidebar(page).getByRole("list", { name: "Deposits" }).getByRole("listitem");
+  await expect(rows).toHaveCount(DEPOSITS);
+  for (const shadow of await rows.evaluateAll((els) => els.map((el) => getComputedStyle(el).boxShadow))) {
+    // e.g. "rgba(0, 0, 0, 0.2) 0px 4px 10px -6px"
+    const [, alpha, blur] = shadow.match(/rgba\(0, 0, 0, ([\d.]+)\) -?[\d.]+px -?[\d.]+px ([\d.]+)px/) ?? [];
+    expect(Number(alpha), `shadow "${shadow}" is light`).toBeLessThanOrEqual(0.25);
+    expect(Number(blur), `shadow "${shadow}" is tight`).toBeLessThanOrEqual(12);
+  }
+});
+
 test("depositing adds to the history and the balance", async ({ page, isMobile }) => {
   test.skip(isMobile, "hover flow");
   await connect(page);
@@ -168,7 +397,7 @@ test("depositing adds to the history and the balance", async ({ page, isMobile }
   await deposit.hover();
   await deposit.click();
   const rows = sidebar(page).getByRole("list", { name: "Deposits" }).getByRole("listitem");
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(DEPOSITS + 1);
   await expect(rows.first()).toContainText("+$500.00");
   await expect(rows.first()).toContainText("today");
   await expect(sidebar(page).getByText("$12,980")).toBeVisible();
@@ -181,7 +410,7 @@ test("hovering a position reveals a close button in the PnL's color", async ({ p
   await settle(page);
 
   const rows = sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem");
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(POSITIONS);
 
   // Bottom to top: the first position sits lowest.
   const tops = await rows.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
@@ -219,7 +448,7 @@ test("closing a position removes it and frees its value", async ({ page, isMobil
   await row.getByRole("button", { name: "Close ETH position" }).click();
 
   await expect(position(page, "ETH")).toHaveCount(0);
-  await expect(sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem")).toHaveCount(4);
+  await expect(sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem")).toHaveCount(POSITIONS - 1);
   // 12,480.52 + 2,850 − 96.12
   await expect(sidebar(page).getByText("$15,234")).toBeVisible();
   await shoot(page, "5-after-close");
@@ -256,7 +485,7 @@ test("on touch, taps stand in for hover", async ({ page, isMobile }) => {
   await settle(page);
 
   await sidebar(page).getByRole("button", { name: /^Balance/ }).tap();
-  await expect(sidebar(page).getByRole("list", { name: "Deposits" }).getByRole("listitem")).toHaveCount(4);
+  await expect(sidebar(page).getByRole("list", { name: "Deposits" }).getByRole("listitem")).toHaveCount(DEPOSITS);
   await shoot(page, "3-deposits");
   await sidebar(page).getByRole("button", { name: /^Balance/ }).tap();
   await expect(sidebar(page).getByRole("list", { name: "Deposits" })).toHaveCount(0);

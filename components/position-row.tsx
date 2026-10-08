@@ -9,15 +9,18 @@ import styles from "./position-row.module.css";
 
 const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 };
 const reveal: Transition = { type: "spring", visualDuration: 0.3, bounce: 0.2 };
+const rise: Transition = { type: "spring", visualDuration: 0.26, bounce: 0.25 };
 
-/** Driven by the list, which staggers rows bottom-up as the sidebar opens. */
+/** Driven by the list as the sidebar opens; each row brings its own delay. */
 const rowVariants: Variants = {
   hidden: { opacity: 0, y: 28, scale: 0.94 },
-  shown: { opacity: 1, y: 0, scale: 1 },
+  shown: (delay: number) => ({ opacity: 1, y: 0, scale: 1, transition: { ...rise, delay } }),
 };
 
 type PositionRowProps = {
   position: Position;
+  /** Seconds to wait before rising in when the sidebar opens. */
+  entranceDelay: number;
   onClose: (id: string) => void;
   ref?: Ref<HTMLLIElement>;
 };
@@ -26,7 +29,7 @@ type PositionRowProps = {
  * One open position: logo, size and PnL, nothing else. Hovering (or
  * focusing, or tapping on touch) slides in a close button tinted by the PnL.
  */
-export function PositionRow({ position, onClose, ref }: PositionRowProps) {
+export function PositionRow({ position, entranceDelay, onClose, ref }: PositionRowProps) {
   const { id, symbol, size, pnl } = position;
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -42,6 +45,7 @@ export function PositionRow({ position, onClose, ref }: PositionRowProps) {
       data-trend={trend}
       data-revealed={revealed}
       variants={rowVariants}
+      custom={entranceDelay}
       exit={{ opacity: 0, x: 72, scale: 0.9, transition: { duration: 0.22, ease: [0.4, 0, 1, 1] } }}
       transition={spring}
       onPointerEnter={(event) => canHover(event) && setHovered(true)}

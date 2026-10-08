@@ -1,6 +1,7 @@
 import { useId, type JSX, type SVGProps } from "react";
 
-export type CoinSymbol = "BTC" | "ETH" | "SOL" | "DOGE" | "LINK" | "USDC";
+/** Any ticker. Ones without a bespoke mark below get a lettered coin. */
+export type CoinSymbol = string;
 
 type IconProps = SVGProps<SVGSVGElement>;
 
@@ -95,7 +96,7 @@ function UsdCoin(props: IconProps) {
   );
 }
 
-const ICONS: Record<CoinSymbol, (props: IconProps) => JSX.Element> = {
+const ICONS: Partial<Record<CoinSymbol, (props: IconProps) => JSX.Element>> = {
   BTC: Bitcoin,
   ETH: Ether,
   SOL: Solana,
@@ -104,7 +105,29 @@ const ICONS: Record<CoinSymbol, (props: IconProps) => JSX.Element> = {
   USDC: UsdCoin,
 };
 
+/** The ticker's first two letters on a hue seeded by the ticker. */
+function LetterCoin({ symbol, ...props }: IconProps & { symbol: CoinSymbol }) {
+  const hue = [...symbol].reduce((h, char) => (h * 31 + char.charCodeAt(0)) % 360, 17);
+  return (
+    <Coin fill={`hsl(${hue} 50% 44%)`} {...props}>
+      <text
+        x={16}
+        y={16}
+        dy="0.36em"
+        textAnchor="middle"
+        fill="#fff"
+        fontFamily="inherit"
+        fontSize={12.5}
+        fontWeight={700}
+        letterSpacing={-0.4}
+      >
+        {symbol.slice(0, 2)}
+      </text>
+    </Coin>
+  );
+}
+
 export function CoinIcon({ symbol, ...props }: IconProps & { symbol: CoinSymbol }) {
   const Icon = ICONS[symbol];
-  return <Icon {...props} />;
+  return Icon ? <Icon {...props} /> : <LetterCoin symbol={symbol} {...props} />;
 }
