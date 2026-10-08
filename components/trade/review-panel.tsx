@@ -36,7 +36,8 @@ export function ReviewPanel() {
   const showing = open && sidebarView === "review";
 
   // Remount on every opening, so the entrance replays and an earlier
-  // "nothing was sent" doesn't linger.
+  // "nothing was sent" doesn't linger. Closing leaves the content as it is,
+  // so it slides away whole.
   const [openings, setOpenings] = useState(0);
   const [wasShowing, setWasShowing] = useState(showing);
   if (showing !== wasShowing) {
@@ -61,12 +62,12 @@ export function ReviewPanel() {
           <CloseIcon className="size-4" />
         </motion.button>
       </header>
-      <ReviewBody key={openings} showing={showing} onDone={() => setOpen(false)} />
+      <ReviewBody key={openings} onDone={() => setOpen(false)} />
     </MotionConfig>
   );
 }
 
-function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void }) {
+function ReviewBody({ onDone }: { onDone: () => void }) {
   const { view, wallet } = useTrade();
   const [sent, setSent] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -99,7 +100,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
       className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-[22px] pt-8 pb-6 [scrollbar-width:none]"
       variants={sections}
       initial="hidden"
-      animate={showing ? "shown" : "hidden"}
+      animate="shown"
     >
       <motion.p
         variants={rise}
