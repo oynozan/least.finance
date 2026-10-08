@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { SidebarShell } from "@/components/sidebar";
+import { ReviewPanel } from "@/components/trade/review-panel";
+import { TradeProvider } from "@/components/trade/trade-provider";
 import { WalletProvider } from "@/components/wallet-provider";
 import { WalletSidebar } from "@/components/wallet-sidebar";
 import "./globals.css";
@@ -12,9 +14,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Create visual languages",
-  description:
-    "A tool to create visual languages, customize type, and build interfaces with Cursor.",
+  title: "Trade Everything",
+  description: "Trade with one sentence: swap, buy, sell, go long or short, or predict.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -22,7 +23,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="en" className={inter.variable}>
       <body>
         <WalletProvider>
-          <SidebarShell panel={<WalletSidebar />}>{children}</SidebarShell>
+          <TradeProvider>
+            <SidebarShell panel={<WalletSidebar />} review={<ReviewPanel />}>
+              {children}
+            </SidebarShell>
+          </TradeProvider>
         </WalletProvider>
       </body>
     </html>

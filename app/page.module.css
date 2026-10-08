@@ -1,5 +1,5 @@
-/* Block padding is symmetric so the heading stays centered while leaving
-   room for the wallet button docked at the bottom. */
+/* Block padding is symmetric so the sentence stays centered, leaving room
+   for the wallet and Review buttons docked at the bottom. */
 .main {
   position: relative;
   flex: 1;

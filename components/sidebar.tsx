@@ -3,6 +3,7 @@
 import {
   createContext,
   use,
+  useCallback,
   useEffect,
   useState,
   useSyncExternalStore,
@@ -17,10 +18,17 @@ import {
 } from "motion/react";
 import styles from "./sidebar.module.css";
 
+/** What the sidebar shows: the wallet, or the review of a trade. */
+export type SidebarView = "wallet" | "review";
+
 type SidebarState = {
   open: boolean;
   setOpen: (open: boolean) => void;
+  /** Opens the wallet, or closes it if the wallet is already showing. */
   toggle: () => void;
+  view: SidebarView;
+  /** Opens the sidebar on the given view. */
+  show: (view: SidebarView) => void;
 };
 
 const SidebarContext = createContext<SidebarState | null>(null);
@@ -57,8 +65,26 @@ const viewportWidth = () => window.innerWidth;
  * sidebar covers everything, so the page slides out whole instead of being
  * squeezed to nothing.
  */
-export function SidebarShell({ children, panel }: { children: ReactNode; panel: ReactNode }) {
-  const [open, setOpen] = useState(false);
+export function SidebarShell({
+  children,
+  panel,
+  review,
+}: {
+  children: ReactNode;
+  /** The wallet view. */
+  panel: ReactNode;
+  /** The trade review view. */
+  review: ReactNode;
+}) {
+  const [open, setOpenState] = useState(false);
+  const [view, setView] = useState<SidebarView>("wallet");
+  // A plain open (e.g. after connecting from the dock) shows the wallet
+  // rather than an old review. Closing keeps the view, so it stays in place
+  // while the panel slides away.
+  const setOpen = useCallback((next: boolean) => {
+    setOpenState(next);
+    if (next) setView("wallet");
+  }, []);
   const fixedWidth = useSyncExternalStore(subscribeResize, sidebarWidth, () => WIDTH);
   const viewport = useSyncExternalStore(subscribeResize, viewportWidth, () => 0);
   const fullScreen = fixedWidth === 0;
@@ -83,9 +109,22 @@ export function SidebarShell({ children, panel }: { children: ReactNode; panel: 
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+  }, [open, setOpen]);
 
-  const state: SidebarState = { open, setOpen, toggle: () => setOpen((o) => !o) };
+  const show = (next: SidebarView) => {
+    setView(next);
+    setOpenState(true);
+  };
+  const state: SidebarState = {
+    open,
+    setOpen,
+    toggle: () => (open && view === "wallet" ? setOpen(false) : show("wallet")),
+    view,
+    show,
+  };
+  // The wallet panel only counts as open while it is the one showing, so
+  // opening a review doesn't replay its entrance or refresh its balance.
+  const walletState: SidebarState = { ...state, open: open && view === "wallet" };
 
   return (
     <SidebarContext value={state}>
@@ -94,13 +133,20 @@ export function SidebarShell({ children, panel }: { children: ReactNode; panel: 
       </motion.div>
       <motion.aside
         id={SIDEBAR_ID}
-        aria-label="Wallet"
+        aria-label={view === "review" ? "Review" : "Wallet"}
         className={styles.panel}
         inert={!open}
         data-open={open}
         style={{ x, width: width + BLEED, right: -BLEED, paddingRight: BLEED }}
       >
-        <div className={styles.inner}>{panel}</div>
+        <div className={styles.inner}>
+          <div className={styles.view} style={view === "wallet" ? undefined : { display: "none" }}>
+            <SidebarContext value={walletState}>{panel}</SidebarContext>
+          </div>
+          <div className={styles.view} style={view === "review" ? undefined : { display: "none" }}>
+            {review}
+          </div>
+        </div>
       </motion.aside>
     </SidebarContext>
   );

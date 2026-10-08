@@ -25,3 +25,11 @@
   display: flex;
   flex-direction: column;
 }
+
+/* One of the sidebar's views (wallet or review); only one shows at a time. */
+.view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

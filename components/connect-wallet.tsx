@@ -3,6 +3,8 @@
 import { useLogin, usePrivy } from "@privy-io/react-auth";
 import { motion, type Transition } from "motion/react";
 import { Magnet } from "./magnet";
+import { ReviewButton } from "./trade/review-button";
+import { useTrade } from "./trade/trade-provider";
 import { SIDEBAR_ID, useSidebar } from "./sidebar";
 import { shortenAddress } from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
@@ -10,11 +12,14 @@ import styles from "./connect-wallet.module.css";
 
 const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.45 };
 
-/** Pinned to the bottom of the page, outside the hero's centered flow. */
+/** Pinned to the bottom of the page, outside the sentence's centered flow,
+    next to the button that reviews the sentence once a wallet is connected. */
 export function ConnectWallet() {
+  const { wallet } = useTrade();
+  const canReview = wallet.status === "connected" || wallet.status === "demo";
   return (
     <div className={styles.dock}>
-      <Magnet padding={60} magnetStrength={3}>
+      <Magnet padding={30} magnetStrength={4}>
         {walletEnabled ? (
           <PrivyWalletButton />
         ) : (
@@ -25,6 +30,11 @@ export function ConnectWallet() {
           />
         )}
       </Magnet>
+      {canReview && (
+        <Magnet padding={30} magnetStrength={4}>
+          <ReviewButton />
+        </Magnet>
+      )}
     </div>
   );
 }

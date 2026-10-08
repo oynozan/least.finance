@@ -1,9 +1,12 @@
-/* Absolutely positioned so the hero heading stays vertically centered. */
+/* Absolutely positioned so the sentence stays vertically centered. */
 .dock {
   position: absolute;
   left: 50%;
   bottom: max(32px, env(safe-area-inset-bottom));
   transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .button {
