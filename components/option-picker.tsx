@@ -143,7 +143,13 @@ function Panel({ id, title, options, selectedIndex, onSelect, onClose }: PickerP
               className={styles.option}
               variants={itemVariants}
               whileTap={{ scale: 0.96 }}
-              onPointerEnter={() => setActive(i)}
+              // Only a real pointer move picks an option. The panel springs in
+              // under a resting pointer, and the rows sliding past it fire
+              // pointerenter, which would steal the highlight and focus from
+              // the selected option.
+              onPointerMove={(event) => {
+                if (event.movementX || event.movementY) setActive(i);
+              }}
               onClick={() => onSelect(i)}
             >
               {i === active && (

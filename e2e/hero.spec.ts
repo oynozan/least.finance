@@ -122,6 +122,8 @@ test("choosing an item updates the pill", async ({ page, isMobile }) => {
   const agents = picker(page).getByRole("option", { name: "Agents" });
   if (!isMobile) {
     await agents.hover();
+    // A real hover still moves the highlight, and focus with it.
+    await expect(agents).toBeFocused();
     await shoot(page, "3-picker-hover");
   }
   await agents.click();
