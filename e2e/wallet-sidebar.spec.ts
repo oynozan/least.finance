@@ -20,6 +20,7 @@ const POSITIONS = MOCK_POSITIONS.length;
 
 const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
 const dock = (page: Page) => page.getByRole("button", { name: `Wallet ${ADDRESS}` });
+const dockDot = (page: Page) => dock(page).locator('[aria-hidden="true"]');
 const modal = (page: Page) => page.locator("#privy-modal-content");
 const depositButton = (page: Page) => sidebar(page).getByRole("button", { name: "Deposit", exact: true });
 const switchButton = (page: Page) => sidebar(page).getByRole("button", { name: "Switch to Arc" });
@@ -179,6 +180,20 @@ test("a wallet that can't add Arc is told so instead of failing silently", async
   await expect(switchStatus(page)).toContainText("couldn't switch to Arc");
   await expect(switchButton(page)).not.toHaveAttribute("aria-disabled", "true");
   await shoot(page, "13-switch-failed");
+});
+
+test("the dock's dot turns red while the wallet is off Arc", async ({ page }) => {
+  await rejectNextChainSwitch(page);
+  await connect(page);
+  await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+
+  await expect(dock(page)).toHaveAccessibleName(`Wallet ${ADDRESS}, on another network`);
+  await expect(dockDot(page)).toHaveCSS("background-color", LOSS);
+
+  await switchButton(page).click();
+  await expect(depositButton(page)).toBeVisible();
+  await expect(dock(page)).toHaveAccessibleName(`Wallet ${ADDRESS}`);
+  await expect(dockDot(page)).toHaveCSS("background-color", GAIN);
 });
 
 test("switching accounts in the wallet still checks its network", async ({ page }) => {

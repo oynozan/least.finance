@@ -2,6 +2,7 @@
 
 import { useLogin, usePrivy } from "@privy-io/react-auth";
 import { motion, type Transition } from "motion/react";
+import { useArcNetwork } from "./arc-wallet";
 import { Magnet } from "./magnet";
 import { ReviewButton } from "./trade/review-button";
 import { useTrade } from "./trade/trade-provider";
@@ -49,15 +50,19 @@ function PrivyWalletButton() {
     },
   });
   const address = user?.wallet?.address;
+  const { offArc } = useArcNetwork(address);
 
   if (ready && authenticated) {
+    const name = address ? `Wallet ${address}` : "Wallet";
     return (
       <WalletButton
         label={address ? shortenAddress(address) : "Connected"}
-        aria-label={address ? `Wallet ${address}` : "Wallet"}
+        aria-label={offArc ? `${name}, on another network` : name}
+        title={offArc ? "Your wallet is on another network. Open to switch to Arc." : undefined}
         aria-expanded={open}
         aria-controls={SIDEBAR_ID}
         connected
+        offArc={offArc}
         onClick={toggle}
       />
     );
@@ -75,6 +80,7 @@ function PrivyWalletButton() {
 type WalletButtonProps = {
   label: string;
   connected?: boolean;
+  offArc?: boolean;
   disabled?: boolean;
   title?: string;
   "aria-label"?: string;
@@ -83,7 +89,7 @@ type WalletButtonProps = {
   onClick?: () => void;
 };
 
-function WalletButton({ label, connected, disabled, onClick, ...rest }: WalletButtonProps) {
+function WalletButton({ label, connected, offArc, disabled, onClick, ...rest }: WalletButtonProps) {
   return (
     <motion.button
       type="button"
@@ -95,7 +101,9 @@ function WalletButton({ label, connected, disabled, onClick, ...rest }: WalletBu
       transition={spring}
       {...rest}
     >
-      {connected && <span className={styles.dot} aria-hidden="true" />}
+      {connected && (
+        <span className={offArc ? `${styles.dot} ${styles.dotOffArc}` : styles.dot} aria-hidden="true" />
+      )}
       {label}
     </motion.button>
   );
