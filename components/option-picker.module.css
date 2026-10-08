@@ -60,9 +60,12 @@
   outline-offset: -2px;
 }
 
+/* While the highlight springs between rows it overlaps its neighbours, so
+   it sits on a layer below every row's content, not just its own. */
 .highlight {
   position: absolute;
   inset: 0;
+  z-index: 0;
   border-radius: inherit;
   background: var(--pill-hover);
 }
@@ -71,6 +74,7 @@
 .label,
 .check {
   position: relative;
+  z-index: 1;
 }
 
 .icon {

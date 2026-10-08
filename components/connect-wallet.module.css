@@ -1,0 +1,49 @@
+/* Absolutely positioned so the hero heading stays vertically centered. */
+.dock {
+  position: absolute;
+  left: 50%;
+  bottom: max(32px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 24px;
+  border-radius: 999px;
+  background: var(--pill);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 160ms ease;
+}
+
+/* Transparent outline: invisible normally, a system focus ring in
+   forced-colors mode. */
+.button:focus-visible {
+  background: var(--pill-hover);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .button:not(:disabled):hover {
+    background: var(--pill-hover);
+  }
+}
+
+.button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #68d670;
+}
