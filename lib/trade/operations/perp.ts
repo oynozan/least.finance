@@ -10,8 +10,6 @@ type Values = { asset: string; leverage: string; collateralUSD: string };
 type Fixed = { side: Side };
 
 const OPEN_FEE_RATE = 0.0005;
-/** Leverage at or above this is shown in the loss tone in the picker. */
-const RISKY_LEVERAGE = 20;
 
 const market = (ctx: TradeCtx, asset: string) => ctx.catalog.perps.find((m) => m.asset === asset);
 
@@ -41,7 +39,6 @@ function leverageChoice(ctx: TradeCtx, v: Values & Fixed, leverage: number): Cho
     value: String(leverage),
     label: `${leverage}x`,
     detail: `liquidated on a ${formatPercent(liquidationDistance(ctx, v.asset, leverage))} ${move}`,
-    tone: leverage >= RISKY_LEVERAGE ? "loss" : undefined,
   };
 }
 
