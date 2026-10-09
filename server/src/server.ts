@@ -116,7 +116,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
     }
 }
 
-function listen(server: HttpServer, port: number, host: string) {
+function listen(server: HttpServer, port: number, host: string | undefined) {
     return new Promise<void>((resolve, reject) => {
         server.once("error", reject);
         server.listen(port, host, () => {

@@ -25,7 +25,7 @@ describe("loadConfig", () => {
 
     it("fills in defaults", () => {
         const config = load();
-        expect(config.PORT).toBe(4000);
+        expect(config.PORT).toBe(4500);
         expect(config.MONGODB_DB).toBe("TradeEverything");
         expect(config.CORS_ORIGINS).toEqual(["http://localhost:3000"]);
         expect(config.ARC_RPC_URLS).toEqual([

@@ -12,7 +12,11 @@
         "typecheck": "tsc --noEmit",
         "test": "vitest run",
         "test:watch": "vitest",
-        "test:mainnet": "vitest run --config vitest.mainnet.config.ts"
+        "test:mainnet": "vitest run --config vitest.mainnet.config.ts",
+        "mnemonic": "node scripts/mnemonic.ts",
+        "db:up": "docker compose -p trade-everything up -d --wait",
+        "db:down": "docker compose -p trade-everything down",
+        "test:e2e-backend": "node test/e2e/serve.ts"
     },
     "dependencies": {
         "@privy-io/node": "0.35.0",

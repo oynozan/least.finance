@@ -8,7 +8,7 @@ import { arc } from "./arc";
 import { walletEnabled } from "./wallet-provider";
 
 /** The deposit server. Unset in development, it's the local one. */
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4500";
 
 export type Account = {
     state: AccountState;

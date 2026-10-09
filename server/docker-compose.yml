@@ -1,0 +1,28 @@
+# Local MongoDB as a single-node replica set: crediting a deposit is a
+# transaction, and MongoDB only runs those on a replica set. Port 27018
+# keeps clear of a mongod already on the default port.
+services:
+    mongo:
+        image: mongo:7.0
+        command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--port", "27018"]
+        ports:
+            - "127.0.0.1:27018:27018"
+        volumes:
+            - mongo-data:/data/db
+        healthcheck:
+            # Initiates the replica set on first start, then reports whether it's up.
+            test:
+                - CMD
+                - mongosh
+                - --port
+                - "27018"
+                - --quiet
+                - --eval
+                - "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27018' }] }).ok }"
+            interval: 5s
+            timeout: 10s
+            start_period: 10s
+            retries: 10
+
+volumes:
+    mongo-data:

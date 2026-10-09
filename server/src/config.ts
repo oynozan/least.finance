@@ -23,8 +23,9 @@ const usdc = z
 
 const schema = z.object({
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-    HOST: z.string().default("0.0.0.0"),
-    PORT: z.coerce.number().int().min(0).max(65_535).default(4000),
+    /** Unset, it listens on every interface, IPv6 included (so `localhost` reaches it on macOS too). */
+    HOST: z.string().min(1).optional(),
+    PORT: z.coerce.number().int().min(0).max(65_535).default(4500),
     LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
     /** Origins allowed to call the API, comma-separated. */
     CORS_ORIGINS: list(["http://localhost:3000"]),
