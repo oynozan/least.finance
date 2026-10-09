@@ -6,7 +6,7 @@ import { historyRows, optimisticBalance, toUsdc, type AccountState, type History
 import { ensureNetwork } from "@/lib/wallet/network";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
-import { linkedWallets } from "./arc-wallet";
+import { depositWalletAddress, useActiveWallet } from "./arc-wallet";
 import { walletEnabled } from "./wallet-provider";
 
 /** The deposit server. Unset in development, it's the local one. */
@@ -46,11 +46,8 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot, () => IDLE);
     const userId = user?.id;
     // Deposits come from the person's EVM wallet, whichever wallet they're using.
-    const address =
-        user &&
-        (user.wallet?.chainType === "ethereum"
-            ? user.wallet.address
-            : linkedWallets(user).find((w) => w.kind === "evm")?.address);
+    const active = useActiveWallet();
+    const address = user && depositWalletAddress(user, active);
 
     // The latest token getter, without reconnecting whenever its identity changes.
     const accessToken = useRef(getAccessToken);

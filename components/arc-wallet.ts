@@ -99,6 +99,16 @@ export function linkedWallets(user: NonNullable<ReturnType<typeof usePrivy>["use
     );
 }
 
+/** The EVM wallet a deposit is sent from: the active one if it's EVM, else the signed-in one, else the first linked. */
+export function depositWalletAddress(
+    user: NonNullable<ReturnType<typeof usePrivy>["user"]>,
+    active: Partial<Wallet>,
+): string | undefined {
+    if (active.kind === "evm") return active.address;
+    if (user.wallet?.chainType === "ethereum") return user.wallet.address;
+    return linkedWallets(user).find((wallet) => wallet.kind === "evm")?.address;
+}
+
 /** The wallet this person is using: the one they chose last if it's still linked, else their first verified wallet. */
 export function useActiveWallet(): Partial<Wallet> & { setActive: (wallet: Wallet) => void } {
     const { user } = usePrivy();

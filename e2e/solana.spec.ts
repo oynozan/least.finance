@@ -8,6 +8,7 @@ import {
     mockPrivy,
     useWallet,
     useWallet as signInAs,
+    walletRequests,
 } from "./privy-mock";
 
 test("signing in with a Solana wallet opens the account, with Solana in the header", async ({ page }) => {
@@ -104,6 +105,8 @@ const remember = (page: Page, wallet: { kind: "evm" | "solana"; address: string 
     page.evaluate((wallet) => {
         const key = Object.keys(localStorage).find((k) => k.startsWith("active-wallet:"));
         localStorage.setItem(key!, JSON.stringify(wallet));
+        // The page only hears of changes from other tabs; tell it about this one.
+        window.dispatchEvent(new Event("storage"));
     }, wallet);
 
 test("the remembered wallet wins over the most recently linked one", async ({ page }) => {
@@ -153,4 +156,30 @@ test("dismissing the link modal changes nothing", async ({ page }) => {
     await expect(sidebar.locator("header").first().getByRole("img", { name: "Solana" })).toBeVisible();
     await expect(sidebar.getByRole("status")).toHaveText("");
     await expect(deposit).toHaveAttribute("title", title);
+});
+
+test("a both-wallets user active on Solana deposits from their EVM wallet, with its balance shown", async ({ page }) => {
+    test.setTimeout(60_000);
+    const { address, evm } = await signInWithSolana(page);
+    await connectEvmFromDeposit(page);
+    const header = sidebarOf(page).locator("header").first();
+    await expect(header.getByRole("img", { name: "Ethereum" })).toBeVisible({ timeout: 10_000 });
+    // No reload: the mock MetaMask forgets its connection on one, and the deposit needs it.
+    await remember(page, { kind: "solana", address });
+    await expect(header.getByRole("img", { name: "Solana" })).toBeVisible({ timeout: 20_000 });
+
+    const sidebar = sidebarOf(page);
+    await sidebar.getByRole("button", { name: "Deposit", exact: true }).click();
+    const amount = sidebar.getByRole("textbox", { name: "Deposit amount" });
+    await expect(amount).toBeFocused();
+    await expect(sidebar.locator("#deposit-wallet")).toHaveText("In your wallet: $100.00", { timeout: 20_000 });
+    await sidebar.getByRole("button", { name: "Max" }).click();
+    await expect(amount).not.toHaveValue("");
+    await sidebar.getByRole("button", { name: "Deposit", exact: true }).click();
+
+    await expect
+        .poll(async () => (await walletRequests(page)).filter((r) => r.method === "eth_sendTransaction").length)
+        .toBe(1);
+    const sent = (await walletRequests(page)).find((r) => r.method === "eth_sendTransaction");
+    expect(((sent?.params?.[0] as { from?: string }).from ?? "").toLowerCase()).toBe(evm.toLowerCase());
 });

@@ -10,7 +10,7 @@ cp .env.example .env.local   # then add your Privy app ID
 npm run dev
 ```
 
-The wallet button needs `NEXT_PUBLIC_PRIVY_APP_ID` (from the [Privy dashboard](https://dashboard.privy.io)); without it the button renders disabled.
+The wallet button needs `NEXT_PUBLIC_PRIVY_APP_ID` (from the [Privy dashboard](https://dashboard.privy.io)); without it the button renders disabled. Also enable Solana wallets (Solana login) for the app in the Privy dashboard, or signing in with a Solana wallet fails.
 
 Balances and deposits come from the deposit server. Set it up as [server/README.md](server/README.md) describes, then run it beside the app (`npm run dev` in `server/`). The app finds it at `NEXT_PUBLIC_API_URL`, `http://localhost:4500` by default.
 

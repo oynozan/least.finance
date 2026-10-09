@@ -16,7 +16,7 @@ import {
 import { toUsdc, type HistoryRow } from "@/lib/account/state";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
-import { linkedWallets, useActiveWallet, useLinkOtherWallet, useUsdcBalance, useWalletNetwork } from "./arc-wallet";
+import { depositWalletAddress, linkedWallets, useActiveWallet, useLinkOtherWallet, useUsdcBalance, useWalletNetwork } from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
 import { DepositButton } from "./deposit-button";
 import { DepositForm } from "./deposit-form";
@@ -114,7 +114,7 @@ function SignedInWallet() {
     const account = useAccount();
     // The wallet's own USDC, which a deposit draws on.
     // Read again whenever a deposit moves on, so Max doesn't offer what has already been sent.
-    const walletBalance = useUsdcBalance(active.kind === "evm" ? address : undefined, open, account.notice);
+    const walletBalance = useUsdcBalance(user ? depositWalletAddress(user, active) : undefined, open, account.notice);
     const evmNetwork = useWalletNetwork(address);
     const network = active.kind === "solana" ? "solana" : evmNetwork;
 
