@@ -151,7 +151,7 @@ function Options({ title, titleId, choices, selected, custom, wide, onSelect }: 
             </p>
             {custom && (
                 <form
-                    className="mb-1.5 flex items-center gap-2 rounded-full bg-pill py-1.5 pr-1.5 pl-5"
+                    className="mb-1.5 flex items-center gap-2 rounded-full bg-pill py-1.5 pr-1.5 pl-[18px]"
                     onSubmit={(event) => {
                         event.preventDefault();
                         if (parsed) onSelect(parsed);
@@ -249,7 +249,7 @@ function Options({ title, titleId, choices, selected, custom, wide, onSelect }: 
                                                 .join(" ") || undefined
                                         }
                                         tabIndex={isActive ? 0 : -1}
-                                        className={`relative z-10 flex w-full cursor-pointer items-center gap-[0.45em] py-[0.32em] pr-[0.5em] pl-[0.32em] text-left font-medium tracking-[-0.02em] outline-2 -outline-offset-2 outline-transparent focus-visible:outline-solid aria-disabled:cursor-default ${
+                                        className={`relative z-10 flex w-full cursor-pointer items-center gap-[0.45em] px-[18px] py-[0.32em] text-left font-medium tracking-[-0.02em] outline-2 -outline-offset-2 outline-transparent focus-visible:outline-solid aria-disabled:cursor-default ${
                                             wide ? "rounded-[26px]" : "rounded-full"
                                         }`}
                                         variants={itemVariants}
