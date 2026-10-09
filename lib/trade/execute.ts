@@ -7,6 +7,6 @@ export type Submission = { status: "simulated"; intent: TransactionIntent };
  * intent is logged and handed back.
  */
 export async function submitIntent(intent: TransactionIntent): Promise<Submission> {
-  console.info("Trade intent (not executed):", intent);
-  return { status: "simulated", intent };
+    console.info("Trade intent (not executed):", intent);
+    return { status: "simulated", intent };
 }

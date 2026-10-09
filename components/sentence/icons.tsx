@@ -12,10 +12,10 @@ const IconContext = createContext<RenderIcon>(() => null);
  * supplies how each set is drawn.
  */
 export function SentenceIcons({ render, children }: { render: RenderIcon; children: ReactNode }) {
-  return <IconContext value={render}>{children}</IconContext>;
+    return <IconContext value={render}>{children}</IconContext>;
 }
 
 export function SentenceIcon({ icon }: { icon?: IconRef }) {
-  const render = useContext(IconContext);
-  return icon ? render(icon) : null;
+    const render = useContext(IconContext);
+    return icon ? render(icon) : null;
 }

@@ -1,11 +1,11 @@
 /* Block padding is symmetric so the sentence stays centered, leaving room
    for the wallet and Review buttons docked at the bottom. */
 .main {
-  position: relative;
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100dvh;
-  padding: 112px 16px;
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100dvh;
+    padding: 112px 16px;
 }

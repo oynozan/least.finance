@@ -4,30 +4,30 @@
  * USD amounts are decimal strings, so no float rounding sneaks in.
  */
 export type TransactionIntent =
-  | {
-      type: "swap";
-      fromToken: string;
-      toToken: string;
-      amountUSD: string;
-    }
-  | {
-      type: "spot";
-      side: "buy" | "sell";
-      token: string;
-      amountUSD: string;
-    }
-  | {
-      type: "perp";
-      side: "long" | "short";
-      asset: string;
-      leverage: number;
-      collateralUSD: string;
-    }
-  | {
-      type: "prediction";
-      marketId: string;
-      outcomeId: string;
-      amountUSD: string;
-    };
+    | {
+          type: "swap";
+          fromToken: string;
+          toToken: string;
+          amountUSD: string;
+      }
+    | {
+          type: "spot";
+          side: "buy" | "sell";
+          token: string;
+          amountUSD: string;
+      }
+    | {
+          type: "perp";
+          side: "long" | "short";
+          asset: string;
+          leverage: number;
+          collateralUSD: string;
+      }
+    | {
+          type: "prediction";
+          marketId: string;
+          outcomeId: string;
+          amountUSD: string;
+      };
 
 export type IntentType = TransactionIntent["type"];

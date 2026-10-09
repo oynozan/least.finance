@@ -4,4 +4,4 @@
  * should count as taps rather than hovers.
  */
 export const canHover = (event: { pointerType: string }) =>
-  event.pointerType === "mouse" && window.matchMedia("(hover: hover)").matches;
+    event.pointerType === "mouse" && window.matchMedia("(hover: hover)").matches;

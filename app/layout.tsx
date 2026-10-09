@@ -9,27 +9,27 @@ import "./globals.css";
 import "./privy.css";
 
 const inter = Inter({
-  variable: "--font-sans",
-  subsets: ["latin"],
+    variable: "--font-sans",
+    subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "Trade Everything",
-  description: "Trade with one sentence: swap, buy, sell, go long or short, or predict.",
+    title: "Trade Everything",
+    description: "Trade with one sentence: swap, buy, sell, go long or short, or predict.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
-  return (
-    <html lang="en" className={inter.variable}>
-      <body>
-        <WalletProvider>
-          <TradeProvider>
-            <SidebarShell panel={<WalletSidebar />} review={<ReviewPanel />}>
-              {children}
-            </SidebarShell>
-          </TradeProvider>
-        </WalletProvider>
-      </body>
-    </html>
-  );
+    return (
+        <html lang="en" className={inter.variable}>
+            <body>
+                <WalletProvider>
+                    <TradeProvider>
+                        <SidebarShell panel={<WalletSidebar />} review={<ReviewPanel />}>
+                            {children}
+                        </SidebarShell>
+                    </TradeProvider>
+                </WalletProvider>
+            </body>
+        </html>
+    );
 }

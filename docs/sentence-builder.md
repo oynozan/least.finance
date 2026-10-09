@@ -13,12 +13,12 @@ complete and valid, and opens the details and the confirm step in the right-hand
 
 ## Layers
 
-| Layer | What it knows | Files |
-| --- | --- | --- |
-| Engine | Sentences, slots, validation, state. No trading, no React. | `lib/sentence/` |
-| Domain | The four operations, mock market data, intents, execution stub. | `lib/trade/` |
-| Renderer | Generic sentence UI: pills, pickers, the amount input, motion. No trading. | `components/sentence/` |
-| Trade UI | Wires the domain to the renderer, the dock's Review button and the review sidebar. | `components/trade/` |
+| Layer    | What it knows                                                                      | Files                  |
+| -------- | ---------------------------------------------------------------------------------- | ---------------------- |
+| Engine   | Sentences, slots, validation, state. No trading, no React.                         | `lib/sentence/`        |
+| Domain   | The four operations, mock market data, intents, execution stub.                    | `lib/trade/`           |
+| Renderer | Generic sentence UI: pills, pickers, the amount input, motion. No trading.         | `components/sentence/` |
+| Trade UI | Wires the domain to the renderer, the dock's Review button and the review sidebar. | `components/trade/`    |
 
 ## An operation
 
