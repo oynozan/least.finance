@@ -99,22 +99,43 @@ test("the linked wallet is still the one in use after a reload", async ({ page }
     await expect(header.getByRole("img", { name: "Solana" })).toHaveCount(0);
 });
 
-test("a remembered wallet that is no longer linked falls back to a linked one", async ({ page }) => {
+/** Overwrites the wallet the app remembers as active, the way the app stores it. */
+const remember = (page: Page, wallet: { kind: "evm" | "solana"; address: string }) =>
+    page.evaluate((wallet) => {
+        const key = Object.keys(localStorage).find((k) => k.startsWith("active-wallet:"));
+        localStorage.setItem(key!, JSON.stringify(wallet));
+    }, wallet);
+
+test("the remembered wallet wins over the most recently linked one", async ({ page }) => {
+    const { address, evm } = await signInWithSolana(page);
+    await connectEvmFromDeposit(page);
+    const header = sidebarOf(page).locator("header").first();
+    // The EVM wallet is now both the latest linked and the active one.
+    await expect(header.getByRole("img", { name: "Ethereum" })).toBeVisible({ timeout: 10_000 });
+
+    await remember(page, { kind: "solana", address });
+    await page.reload();
+
+    await expect(header.getByRole("img", { name: "Solana" })).toBeVisible({ timeout: 20_000 });
+    await expect(header).toContainText(`${address.slice(0, 6)}…${address.slice(-4)}`);
+    await expect(header).not.toContainText(evm.slice(0, 6));
+});
+
+test("a remembered wallet that is no longer linked falls back to the first linked one", async ({ page }) => {
     const { address, evm } = await signInWithSolana(page);
     await connectEvmFromDeposit(page);
     await expect(sidebarOf(page).locator("header").first().getByRole("img", { name: "Ethereum" })).toBeVisible({
         timeout: 10_000,
     });
     const stranger = randomAddress();
-    await page.evaluate((stranger) => {
-        const key = Object.keys(localStorage).find((k) => k.startsWith("active-wallet:"));
-        localStorage.setItem(key!, JSON.stringify({ kind: "evm", address: stranger }));
-    }, stranger);
+    await remember(page, { kind: "evm", address: stranger });
 
     await page.reload();
     const header = sidebarOf(page).locator("header").first();
-    await expect(header).toContainText(new RegExp(`${address.slice(0, 6)}|${evm.slice(0, 6)}`), { timeout: 20_000 });
+    await expect(header).toContainText(`${address.slice(0, 6)}…${address.slice(-4)}`, { timeout: 20_000 });
     await expect(header).not.toContainText(stranger.slice(0, 6));
+    await expect(header).not.toContainText(evm.slice(0, 6));
+    await expect(header.getByRole("img", { name: "Solana" })).toBeVisible();
 });
 
 test("dismissing the link modal changes nothing", async ({ page }) => {
