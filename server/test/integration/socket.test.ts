@@ -296,8 +296,12 @@ describe("session expiry", () => {
 });
 
 describe("handshake rate limit", () => {
-    test("the 31st connection in a minute from one address is turned away", async () => {
-        const own = await startStack({ mongoUri: inject("mongoUri"), anvilUrl: inject("anvilUrl") });
+    test("connections past the per-minute limit from one address are turned away", async () => {
+        const own = await startStack({
+            mongoUri: inject("mongoUri"),
+            anvilUrl: inject("anvilUrl"),
+            env: { SOCKET_HANDSHAKES_PER_MINUTE: "30" },
+        });
         try {
             const user = await own.user();
             const results = [];

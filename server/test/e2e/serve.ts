@@ -49,6 +49,8 @@ const config = loadConfig({
     DEPOSIT_POLL_MS: "200",
     // anvil mines only when sent a transaction, so the head would never get past a lag.
     DEPOSIT_SCAN_LAG_BLOCKS: "0",
+    // Every browser in the suite connects from this machine.
+    SOCKET_HANDSHAKES_PER_MINUTE: "100000",
     DEPOSIT_RECEIPT_TIMEOUT_MS: "4000",
 });
 const server = await startServer(config, pino({ level: config.LOG_LEVEL }));

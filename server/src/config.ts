@@ -31,6 +31,8 @@ const schema = z.object({
     CORS_ORIGINS: list(["http://localhost:3000"]),
     /** How many reverse proxies sit in front, so client IPs (and rate limits) come from the right hop. */
     TRUST_PROXY: z.coerce.number().int().min(0).default(0),
+    /** Socket connections a minute from one IP. Users behind one NAT share it, so it's generous. */
+    SOCKET_HANDSHAKES_PER_MINUTE: z.coerce.number().int().min(1).default(120),
 
     MONGODB_URI: z.string().min(1),
     MONGODB_DB: z.string().min(1).default("TradeEverything"),

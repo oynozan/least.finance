@@ -37,7 +37,11 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         connectTimeout: 10_000,
     });
 
-    const handshakes = new RateLimiterMemory({ keyPrefix: "handshake", points: 30, duration: 60 });
+    const handshakes = new RateLimiterMemory({
+        keyPrefix: "handshake",
+        points: config.SOCKET_HANDSHAKES_PER_MINUTE,
+        duration: 60,
+    });
     const events = new RateLimiterMemory({ keyPrefix: "event", points: 40, duration: 10 });
     // Reports make the server watch the chain for a while, so they get a tighter limit of their own.
     const reports = new RateLimiterMemory({ keyPrefix: "report", points: 20, duration: 60 });
