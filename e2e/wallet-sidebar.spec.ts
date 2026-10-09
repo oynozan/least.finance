@@ -1,11 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import { MOCK_POSITIONS } from "../components/wallet-data";
-import { seedDeposits } from "./backend";
+import { randomSolanaAddress, seedDeposits } from "./backend";
 import { HISTORY, HISTORY_TOTAL } from "./fixtures";
 import {
     addressOf,
     ARC_PRIMARY_RPC,
     ARC_RPC,
+    installSolanaWallet,
     installWallet,
     lockWallet,
     mockArcRpc,
@@ -155,7 +156,9 @@ test("the header shows the network the wallet is on", async ({ page }) => {
 test("a locked wallet leaves the header with an unknown network", async ({ page }) => {
     await openWallet(page);
     await lockWallet(page);
-    await expect(sidebar(page).locator("header").getByRole("img", { name: "Unknown network", exact: true })).toBeVisible();
+    await expect(
+        sidebar(page).locator("header").getByRole("img", { name: "Unknown network", exact: true }),
+    ).toBeVisible();
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
 });
 
@@ -693,4 +696,20 @@ test("on touch, taps stand in for hover", async ({ page, isMobile }) => {
         GAIN,
     );
     await shoot(page, "4-tap-btc");
+});
+
+test("an EVM-first user connects a Solana wallet from the sidebar", async ({ page }) => {
+    const solana = randomSolanaAddress();
+    await installSolanaWallet(page, solana);
+    await page.reload();
+    await openWallet(page, { history: true });
+    await expect(balanceButton(page)).toHaveAccessibleName(`Balance ${HISTORY_BALANCE}, show deposits`);
+
+    await sidebar(page).getByRole("button", { name: "Connect another wallet" }).click();
+    await modal(page).getByRole("button", { name: "Phantom" }).click();
+
+    await expect(sidebar(page).locator("header").first().getByRole("img", { name: "Solana" })).toBeVisible({
+        timeout: 10_000,
+    });
+    await expect(balanceButton(page)).toHaveAccessibleName(`Balance ${HISTORY_BALANCE}, show deposits`);
 });

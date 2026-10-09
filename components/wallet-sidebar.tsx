@@ -16,11 +16,11 @@ import {
 import { toUsdc, type HistoryRow } from "@/lib/account/state";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
-import { useActiveWallet, useUsdcBalance, useWalletNetwork } from "./arc-wallet";
+import { linkedWallets, useActiveWallet, useLinkOtherWallet, useUsdcBalance, useWalletNetwork } from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
 import { DepositButton } from "./deposit-button";
 import { DepositForm } from "./deposit-form";
-import { CloseIcon, PowerIcon } from "./icons";
+import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { NetworkLogo } from "./network-icons";
 import { canHover } from "./pointer";
 import { PositionRow } from "./position-row";
@@ -96,10 +96,15 @@ export function WalletSidebar() {
 }
 
 function SignedInWallet() {
-    const { ready, authenticated, logout } = usePrivy();
+    const { ready, authenticated, logout, user } = usePrivy();
     const { open, setOpen } = useSidebar();
     const active = useActiveWallet();
-    const address = active?.address;
+    const linkOther = useLinkOtherWallet();
+    const address = active.address;
+    const linked = user ? linkedWallets(user) : [];
+    const hasEvm = linked.some((wallet) => wallet.kind === "evm");
+    // The kind they don't have yet; EVM if they have both.
+    const otherKind = hasEvm && !linked.some((wallet) => wallet.kind === "solana") ? "solana" : "evm";
 
     // Signing out from anywhere also folds the sidebar away.
     useEffect(() => {
@@ -109,9 +114,9 @@ function SignedInWallet() {
     const account = useAccount();
     // The wallet's own USDC, which a deposit draws on.
     // Read again whenever a deposit moves on, so Max doesn't offer what has already been sent.
-    const walletBalance = useUsdcBalance(active?.kind === "evm" ? address : undefined, open, account.notice);
+    const walletBalance = useUsdcBalance(active.kind === "evm" ? address : undefined, open, account.notice);
     const evmNetwork = useWalletNetwork(address);
-    const network = active?.kind === "solana" ? "solana" : evmNetwork;
+    const network = active.kind === "solana" ? "solana" : evmNetwork;
 
     // Mock positions until trading is live.
     const [positions, setPositions] = useState(MOCK_POSITIONS);
@@ -139,6 +144,9 @@ function SignedInWallet() {
                         {shortenAddress(address)}
                     </span>
                 )}
+                <IconButton label="Connect another wallet" onClick={() => linkOther(otherKind)}>
+                    <PlusIcon />
+                </IconButton>
                 <IconButton label="Disconnect" onClick={() => logout()}>
                     <PowerIcon />
                 </IconButton>
@@ -157,6 +165,8 @@ function SignedInWallet() {
                 notice={account.notice}
                 onDeposit={account.deposit}
                 onStartDeposit={account.dismissNotice}
+                needsEvm={!hasEvm}
+                onConnectEvm={() => linkOther("evm")}
             />
 
             <div className={styles.positionsFrame}>
@@ -211,6 +221,9 @@ type WalletSectionProps = {
     notice: DepositNotice | null;
     onDeposit: (amount: string) => Promise<DepositResult>;
     onStartDeposit: () => void;
+    /** They have no EVM wallet, which a deposit needs. */
+    needsEvm: boolean;
+    onConnectEvm: () => void;
 };
 
 /** Balance and the deposit button; hovering it deals out past deposits. */
@@ -223,6 +236,8 @@ function WalletSection({
     notice,
     onDeposit,
     onStartDeposit,
+    needsEvm,
+    onConnectEvm,
 }: WalletSectionProps) {
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
@@ -273,7 +288,9 @@ function WalletSection({
                 <DepositButton
                     notice={notice}
                     disabled={minDeposit === null}
+                    needsEvm={needsEvm}
                     onClick={() => {
+                        if (needsEvm) return onConnectEvm();
                         if (minDeposit === null) return;
                         onStartDeposit();
                         setEntering(true);

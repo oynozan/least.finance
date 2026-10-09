@@ -39,7 +39,7 @@ function PrivyWalletButton() {
             if (!wasAlreadyAuthenticated) setOpen(true);
         },
     });
-    const address = useActiveWallet()?.address;
+    const address = useActiveWallet().address;
 
     if (ready && authenticated) {
         return (

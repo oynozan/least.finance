@@ -90,35 +90,39 @@ const appConfig = {
 
 const now = () => Math.floor(Date.now() / 1000);
 
-const user = (id: string, address: string) => ({
+/** A wallet linked to the mocked user; later links carry a later verification time, as Privy's do. */
+type Linked = { address: string; verifiedAt: number };
+
+const linkedAccount = ({ address, verifiedAt }: Linked) =>
+    isSolana(address)
+        ? {
+              type: "wallet",
+              address,
+              chain_type: "solana",
+              wallet_client: "unknown",
+              wallet_client_type: "phantom",
+              connector_type: "solana_adapter",
+              verified_at: verifiedAt,
+              first_verified_at: verifiedAt,
+              latest_verified_at: verifiedAt,
+          }
+        : {
+              type: "wallet",
+              address,
+              chain_type: "ethereum",
+              chain_id: "eip155:1",
+              wallet_client: "unknown",
+              wallet_client_type: "metamask",
+              connector_type: "injected",
+              verified_at: verifiedAt,
+              first_verified_at: verifiedAt,
+              latest_verified_at: verifiedAt,
+          };
+
+const user = (id: string, linked: Linked[]) => ({
     id,
     created_at: now() - 86_400,
-    linked_accounts: [
-        isSolana(address)
-            ? {
-                  type: "wallet",
-                  address,
-                  chain_type: "solana",
-                  wallet_client: "unknown",
-                  wallet_client_type: "phantom",
-                  connector_type: "solana_adapter",
-                  verified_at: now(),
-                  first_verified_at: now(),
-                  latest_verified_at: now(),
-              }
-            : {
-                  type: "wallet",
-                  address,
-                  chain_type: "ethereum",
-                  chain_id: "eip155:1",
-                  wallet_client: "unknown",
-                  wallet_client_type: "metamask",
-                  connector_type: "injected",
-                  verified_at: now(),
-                  first_verified_at: now(),
-                  latest_verified_at: now(),
-              },
-    ],
+    linked_accounts: linked.map(linkedAccount),
     mfa_methods: [],
     has_accepted_terms: true,
     is_guest: false,
@@ -128,6 +132,10 @@ const user = (id: string, address: string) => ({
 export async function mockPrivy(page: Page) {
     const address = addressOf(page);
     const { userId, token } = await signUp(address);
+    // Wallets the person has linked since signing in, as /siwe/link and /siws/link add them.
+    const linked: Linked[] = [{ address, verifiedAt: now() - 3600 }];
+    // The address the latest SIWE or SIWS init was for: the wallet a link is about to verify.
+    let initiated = address;
     await page.route(/https:\/\/auth\.privy\.io\/.*/, async (route: Route) => {
         const url = new URL(route.request().url());
         const path = url.pathname;
@@ -149,25 +157,42 @@ export async function mockPrivy(page: Page) {
         if (route.request().method() === "OPTIONS") return json({});
         const app = path.match(/^\/api\/v1\/apps\/([^/]+)$/);
         if (app) return json({ ...appConfig, id: app[1] });
+        if (path.endsWith("/siwe/init") || path.endsWith("/siws/init")) {
+            const body = route.request().postDataJSON() as { address?: string } | null;
+            // The wallet sends a checksummed address; the mock keeps Ethereum ones lowercase.
+            initiated =
+                body?.address && !isSolana(body.address) ? body.address.toLowerCase() : (body?.address ?? address);
+        }
         if (path.endsWith("/siwe/init"))
             return json({
                 nonce: "mocknonce123",
-                address,
+                address: initiated,
                 expires_at: new Date(Date.now() + 600_000).toISOString(),
             });
         if (path.endsWith("/siws/init")) return json({ nonce: "mocknonce123" });
-        if (path.endsWith("/siwe/authenticate") || path.endsWith("/siws/authenticate"))
-            return json({
-                user: user(userId, address),
-                token,
-                privy_access_token: token,
-                refresh_token: "refresh",
-                identity_token: null,
-                session_update_action: "set",
-                is_new_user: false,
-            });
+        if (path.endsWith("/siwe/link") || path.endsWith("/siws/link")) {
+            // The link response is the updated user itself.
+            linked.push({ address: initiated, verifiedAt: now() });
+            return json(user(userId, linked));
+        }
+        const session = () => ({
+            user: user(userId, linked),
+            token,
+            privy_access_token: token,
+            refresh_token: "refresh",
+            identity_token: null,
+            session_update_action: "set",
+            is_new_user: false,
+        });
+        // Privy refreshes the session after a link, and again on a reload.
+        if (
+            path.endsWith("/sessions") &&
+            (route.request().postDataJSON() as { refresh_token?: string } | null)?.refresh_token === "refresh"
+        )
+            return json(session());
+        if (path.endsWith("/siwe/authenticate") || path.endsWith("/siws/authenticate")) return json(session());
         if (path.endsWith("/sessions")) return json({ error: "No session" }, 401);
-        if (path.endsWith("/users/me")) return json({ user: user(userId, address) });
+        if (path.endsWith("/users/me")) return json({ user: user(userId, linked) });
         // Analytics and anything else: accept and ignore.
         return json({});
     });
@@ -241,8 +266,8 @@ export const ARC_PRIMARY_RPC = /^https:\/\/rpc\.mainnet\.arc\.io\//;
 const USDC = "0x3600000000000000000000000000000000000000";
 
 /** Stands in for Arc's RPC, where only USDC's `balanceOf` the page's wallet reads as `usdc`. */
-export async function mockArcRpc(page: Page, usdc = 12_480.52) {
-    const balanceOf = `0x70a08231${addressOf(page).slice(2).padStart(64, "0")}`;
+export async function mockArcRpc(page: Page, usdc = 12_480.52, owner = addressOf(page)) {
+    const balanceOf = `0x70a08231${owner.slice(2).padStart(64, "0")}`;
     const word = (value: bigint) => `0x${value.toString(16).padStart(64, "0")}`;
     const answer = ({ id, method, params }: { id: number; method: string; params?: unknown[] }) => {
         const call = params?.[0] as { to?: string; data?: string } | undefined;
@@ -326,7 +351,6 @@ export const dropNextSend = (page: Page) =>
         (window as unknown as WalletWindow).nextSend = "drop";
     });
 
-
 /** The user picks a network in the wallet itself, one it may not have known before. */
 export const moveWalletTo = (page: Page, chainId: string) =>
     page.evaluate((chainId) => (window as unknown as WalletWindow).useChain(chainId), chainId);
@@ -339,7 +363,7 @@ export const lockWallet = (page: Page) => page.evaluate(() => (window as unknown
  * Ethereum, unaware of Arc. Transactions it sends land on the test backend's
  * chain, where the page's wallet is funded.
  */
-export async function installWallet(page: Page) {
+export async function installWallet(page: Page, address = addressOf(page)) {
     await page.exposeFunction("sendToChain", (method: string, params: unknown[]) => chainRpc(method, params));
     await page.addInitScript((address) => {
         let connected = false;
@@ -425,7 +449,8 @@ export async function installWallet(page: Page) {
                         }
                         const tx = { ...(params?.[0] as { chainId?: string }), from: account };
                         // Like real wallets, refuse a transaction meant for another chain.
-                        if (tx.chainId && tx.chainId.toLowerCase() !== chainId) throw fail(-32602, `Expected chain ${tx.chainId}.`);
+                        if (tx.chainId && tx.chainId.toLowerCase() !== chainId)
+                            throw fail(-32602, `Expected chain ${tx.chainId}.`);
                         const { result, error } = await state.sendToChain(method, [tx]);
                         if (error) throw fail(-32603, error.message);
                         return result;
@@ -454,5 +479,5 @@ export async function installWallet(page: Page) {
             );
         window.addEventListener("eip6963:requestProvider", announce);
         announce();
-    }, addressOf(page));
+    }, address);
 }
