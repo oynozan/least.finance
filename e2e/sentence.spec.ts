@@ -98,11 +98,11 @@ test("starts as a swap sentence, with only the sentence on the page", async ({ p
 
 test("the first pill restructures the sentence for each verb", async ({ page }) => {
     await pick(page, "Swap", /^Buy/);
-    expect(await text(page)).toBe("I want to Buy SOL for 10 USD.");
+    expect(await text(page)).toBe("I want to Buy 10 USD of SOL.");
     await shoot(page, "2-buy");
 
     await pick(page, "Buy", /^Sell/);
-    expect(await text(page)).toBe("I want to Sell my SOL for 10 USD.");
+    expect(await text(page)).toBe("I want to Sell 10 USD of my SOL.");
 
     await pick(page, "Sell", /^Long/);
     expect(await text(page)).toBe("I want to Long SOL at 5x leverage with 10 USD.");
@@ -388,15 +388,17 @@ test("the sentence is keyboard operable", async ({ page, isMobile }) => {
     await page.keyboard.press("Enter");
     await expect(picker(page)).toBeHidden();
     await expect(pill(page, "Buy")).toBeFocused();
-    expect(await text(page)).toBe("I want to Buy SOL for 10 USD.");
+    expect(await text(page)).toBe("I want to Buy 10 USD of SOL.");
 
-    // Typeahead jumps to a coin by its first letters.
+    // Typeahead jumps to a coin by its first letters. The amount comes first.
+    await page.keyboard.press("Tab");
+    await expect(amount(page)).toBeFocused();
     await page.keyboard.press("Tab");
     await page.keyboard.press("Enter");
     await page.keyboard.type("li");
     await expect(picker(page).getByRole("option", { name: "LINK" })).toBeFocused();
     await page.keyboard.press("Enter");
-    expect(await text(page)).toBe("I want to Buy LINK for 10 USD.");
+    expect(await text(page)).toBe("I want to Buy 10 USD of LINK.");
     // Escape in a picker closes only the picker.
     await page.keyboard.press("Enter");
     await page.keyboard.press("Escape");

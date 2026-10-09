@@ -12,8 +12,8 @@ type Fixed = { side: Side };
 const FEE_RATE = 0.002;
 
 /**
- * "I want to [Buy] [SOL] for [10 USD]."
- * "I want to [Sell] my [SOL] for [10 USD]."
+ * "I want to [Buy] [10 USD] of [SOL]."
+ * "I want to [Sell] [10 USD] of my [SOL]."
  */
 export const spot = operation({
     id: "spot",
@@ -60,8 +60,8 @@ export const spot = operation({
     defaults: () => ({ token: "SOL", amountUSD: "10" }),
     template: (v) =>
         v.side === "buy"
-            ? [VERB, { slot: "token" }, "for", { slot: "amountUSD" }, "."]
-            : [VERB, "my", { slot: "token" }, "for", { slot: "amountUSD" }, "."],
+            ? [VERB, { slot: "amountUSD" }, "of", { slot: "token" }, "."]
+            : [VERB, { slot: "amountUSD" }, "of my", { slot: "token" }, "."],
     toIntent: (v): Extract<TransactionIntent, { type: "spot" }> => ({
         type: "spot",
         side: v.side,

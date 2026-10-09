@@ -28,8 +28,8 @@ const verb = (verbId: string): SentenceAction => ({ type: "verb", verbId });
 test.describe("sentences", () => {
     test("each verb starts with the sentence from the brief", () => {
         expect(run("swap").view.text).toBe("I want to Swap my ETH to SOL for 10 USD.");
-        expect(run("buy").view.text).toBe("I want to Buy SOL for 10 USD.");
-        expect(run("sell").view.text).toBe("I want to Sell my SOL for 10 USD.");
+        expect(run("buy").view.text).toBe("I want to Buy 10 USD of SOL.");
+        expect(run("sell").view.text).toBe("I want to Sell 10 USD of my SOL.");
         expect(run("long").view.text).toBe("I want to Long BTC at 5x leverage with 100 USD.");
         expect(run("short").view.text).toBe("I want to Short BTC at 5x leverage with 100 USD.");
         expect(run("predict").view.text).toBe("I want to Predict YES on Will BTC reach $150K? with 10 USD.");
@@ -73,9 +73,9 @@ test.describe("sentences", () => {
             "w:want:0",
             "w:to:0",
             "verb",
-            "term:token",
-            "w:for:0",
             "term:amountUSD",
+            "w:of:0",
+            "term:token",
         ]);
         // The period rides on the last pill, so it can never wrap onto its own line.
         expect(swap.at(-1)).toMatchObject({ key: "term:amountUSD", glue: "." });
@@ -85,7 +85,7 @@ test.describe("sentences", () => {
 test.describe("switching verbs", () => {
     test("the amount and the coin carry over", () => {
         const { view } = run("swap", [slot("amountUSD", "25"), slot("toToken", "LINK"), verb("buy")]);
-        expect(view.text).toBe("I want to Buy LINK for 25 USD.");
+        expect(view.text).toBe("I want to Buy 25 USD of LINK.");
         expect(run("swap", [slot("toToken", "LINK"), verb("long")]).view.text).toBe(
             "I want to Long LINK at 5x leverage with 10 USD.",
         );
@@ -96,7 +96,7 @@ test.describe("switching verbs", () => {
         const { view } = run("swap", [slot("toToken", "AVAX"), verb("long")]);
         expect(view.slots.asset.kind === "choice" && view.slots.asset.value).toBe("BTC");
         // USDC can't be bought with USDC: Buy keeps its own coin.
-        expect(run("swap", [slot("toToken", "USDC"), verb("buy")]).view.text).toBe("I want to Buy SOL for 10 USD.");
+        expect(run("swap", [slot("toToken", "USDC"), verb("buy")]).view.text).toBe("I want to Buy 10 USD of SOL.");
     });
 
     test("operation-only choices are kept when coming back", () => {
@@ -183,7 +183,7 @@ test.describe("amounts", () => {
         expect(run("swap", over, disconnected).view.blocking).toBeUndefined();
         expect(run("buy", [slot("amountUSD", "3000")]).view.blocking).toMatchObject({ cta: "Not enough USDC" });
         // Disconnected, every coin can be picked.
-        expect(run("sell", [slot("token", "AVAX")], disconnected).view.text).toBe("I want to Sell my AVAX for 10 USD.");
+        expect(run("sell", [slot("token", "AVAX")], disconnected).view.text).toBe("I want to Sell 10 USD of my AVAX.");
     });
 });
 
