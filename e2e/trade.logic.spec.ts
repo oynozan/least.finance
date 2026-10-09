@@ -13,6 +13,7 @@ import {
 import { CATALOG, MOCK_HOLDINGS } from "@/lib/trade/catalog";
 import type { TradeCtx, TradeTerms } from "@/lib/trade/context";
 import { TRADE } from "@/lib/trade/registry";
+import { balanceHistory, confirmedActivity, daysSince, depositActivity, mockTrades } from "@/lib/trade/activity";
 
 const connected: TradeCtx = { catalog: CATALOG, holdings: MOCK_HOLDINGS };
 const disconnected: TradeCtx = { catalog: CATALOG, holdings: null };
@@ -184,6 +185,84 @@ test.describe("amounts", () => {
         expect(run("buy", [slot("amountUSD", "3000")]).view.blocking).toMatchObject({ cta: "Not enough USDC" });
         // Disconnected, every coin can be picked.
         expect(run("sell", [slot("token", "AVAX")], disconnected).view.text).toBe("I want to Sell 10 USD of my AVAX.");
+    });
+});
+
+test.describe("the amount's dropdown", () => {
+    const amount = (view: ReturnType<typeof run>["view"], id = "amountUSD") => {
+        const slot = view.slots[id];
+        if (slot.kind !== "number") throw new Error(`${id} isn't a number slot`);
+        return slot;
+    };
+
+    test("the slider spans the bounds, or the spec's range where a wallet doesn't cap it", () => {
+        expect(amount(run("swap", [], disconnected).view).range).toEqual({ min: 1, max: 10_000, capped: false });
+        expect(amount(run("buy", [], disconnected).view).range).toEqual({ min: 1, max: 10_000, capped: false });
+        // Connected, the top is what the wallet holds of the coin being paid with.
+        const swap = amount(run("swap").view).range!;
+        expect(swap.capped).toBe(true);
+        expect(swap.max).toBeCloseTo(MOCK_HOLDINGS.ETH * CATALOG.tokens.find((t) => t.symbol === "ETH")!.priceUSD, 6);
+        // Positions start at $10, and the bottom says so.
+        expect(amount(run("long", [], disconnected).view, "collateralUSD").range).toMatchObject({ min: 10 });
+    });
+
+    test("each operation says what the amount comes to", () => {
+        expect(amount(run("swap").view).summary).toBe("You get ≈ 0.06773 SOL");
+        expect(amount(run("buy").view).summary).toBe("You get ≈ 0.06793 SOL");
+        expect(amount(run("sell").view).summary).toBe("You sell ≈ 0.06793 SOL");
+        expect(amount(run("long").view, "collateralUSD").summary).toBe("A $500 position");
+        expect(amount(run("predict").view).summary).toBe("Pays $26.32 if YES");
+        // Nothing to say about an empty amount.
+        expect(amount(run("swap", [slot("amountUSD", "")]).view).summary).toBeUndefined();
+    });
+});
+
+test.describe("balance history", () => {
+    const now = new Date(2026, 9, 9, 15, 0);
+    const at = (daysAgo: number, hour = 12) => new Date(2026, 9, 9 - daysAgo, hour);
+
+    test("a bar a day, ending today, with deposits apart from PnL", () => {
+        const activity = [
+            depositActivity({ key: "a", amountUSD: 500, at: at(10) }),
+            depositActivity({ key: "b", amountUSD: 100, at: at(2) }),
+            ...mockTrades(now).filter((a) => a.kind === "close"),
+        ];
+        const days = balanceHistory(activity, 7, now);
+        expect(days).toHaveLength(7);
+        expect(days.at(-1)!.day).toEqual(new Date(2026, 9, 9));
+        // Everything before the first day is carried in.
+        const before = activity.filter((a) => a.at < days[0].day).reduce((sum, a) => sum + a.change, 0);
+        expect(days[0].balance).toBeCloseTo(before + days[0].pnl + days[0].deposited, 6);
+        const twoDaysAgo = days.at(-3)!;
+        expect(twoDaysAgo.deposited).toBe(100);
+        // The balance ends at the sum of every change.
+        expect(days.at(-1)!.balance).toBeCloseTo(
+            activity.reduce((sum, a) => sum + a.change, 0),
+            6,
+        );
+    });
+
+    test("fees alone don't count as a day's realized PnL", () => {
+        const trades = mockTrades(now);
+        const days = balanceHistory(trades, 30, now);
+        const feeOnly = days.filter((d) => d.pnl !== 0 && d.realized === 0);
+        expect(feeOnly.length).toBeGreaterThan(0);
+        for (const d of feeOnly) expect(d.pnl).toBeLessThan(0);
+        expect(daysSince(trades, now)).toBe(30);
+    });
+
+    test("a trade confirmed in Review is listed but moves nothing", () => {
+        const confirmed = confirmedActivity(
+            { type: "perp", side: "long", asset: "BTC", leverage: 5, collateralUSD: "100" },
+            now,
+            "c",
+        );
+        expect(confirmed).toMatchObject({
+            title: "Long BTC 5x",
+            detail: "A $500 position",
+            change: 0,
+            simulated: true,
+        });
     });
 });
 

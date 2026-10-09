@@ -71,3 +71,22 @@ export function PowerIcon(props: IconProps) {
         </svg>
     );
 }
+
+/** A rising line: the trade page. */
+export function TrendIcon(props: IconProps) {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+            <path d="M2 11.5 6 7.5l2.75 2.75L14 5" {...line} />
+            <path d="M10 5h4v4" {...line} />
+        </svg>
+    );
+}
+
+/** Rounded bars: the balance history. */
+export function BarsIcon(props: IconProps) {
+    return (
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+            <path d="M3.5 13V9M8 13V3.5M12.5 13V7" {...line} strokeWidth={2.4} />
+        </svg>
+    );
+}

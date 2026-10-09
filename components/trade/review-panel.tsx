@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { MotionConfig, motion, type Variants } from "motion/react";
+import { confirmedTrades } from "@/lib/trade/activity";
 import { submitIntent } from "@/lib/trade/execute";
 import { CloseIcon } from "@/components/icons";
 import { spring } from "@/components/sentence/motion";
@@ -82,6 +83,8 @@ function ReviewBody({ onDone }: { onDone: () => void }) {
         if (!view.intent || view.blocking) return;
         setSending(true);
         await submitIntent(view.intent);
+        // Listed on the PnL page, marked as not sent.
+        confirmedTrades.add(view.intent);
         setSending(false);
         setSent(intentKey);
     };

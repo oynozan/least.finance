@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { AccountProvider } from "@/components/account-provider";
+import { ConnectWallet } from "@/components/connect-wallet";
+import { Dock } from "@/components/dock";
 import { SidebarShell } from "@/components/sidebar";
 import { ReviewPanel } from "@/components/trade/review-panel";
 import { TradeProvider } from "@/components/trade/trade-provider";
@@ -28,6 +30,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
                         <TradeProvider>
                             <SidebarShell panel={<WalletSidebar />} review={<ReviewPanel />}>
                                 {children}
+                                {/* On every page: the wallet up top, the dock at the bottom. */}
+                                <ConnectWallet />
+                                <Dock />
                             </SidebarShell>
                         </TradeProvider>
                     </AccountProvider>

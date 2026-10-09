@@ -7,9 +7,15 @@ The page is one sentence whose pills are the inputs:
 - I want to **[Long]** **[BTC]** at **[5x]** leverage with **[100 USD]**. (and Short)
 - I want to **[Predict]** **[YES]** on **[Will BTC reach $150K?]** with **[10 USD]**.
 
-The first pill picks the verb; changing it rebuilds the rest of the sentence. The page shows nothing
-else: the green **Review** button next to the wallet button stays disabled until the sentence is
-complete and valid, and opens the details and the confirm step in the right-hand sidebar.
+The first pill picks the verb; changing it rebuilds the rest of the sentence. Every pill drops down
+from where it sits: choices drop a list, and the amount drops a field to type into and a slider to
+drag, with what the amount comes to ("You get ≈ 0.0443 SOL") under it. The sentence follows both
+live, and the amount's digits roll ([NumberFlow](https://number-flow.barvian.me)).
+
+The page shows nothing else. The wallet button sits up top; the dock at the bottom (after React Bits'
+Dock) holds the page tiles, Trade and PnL, and the green **Review** button, which stays disabled until
+the sentence is complete and valid and opens the details and the confirm step in the right-hand
+sidebar.
 
 ## Layers
 
@@ -27,7 +33,8 @@ Each operation is one file in `lib/trade/operations/`, written with `operation({
 
 - `verbs`: the pills that pick it, and the values each verb fixes (Buy fixes `side: "buy"`).
 - `slots`: a spec for every value it stores. Either a `choice` (allowed values from `choices(values, ctx)`,
-  optionally a `custom` typed value, e.g. leverage) or a `number` (decimals, prefix/suffix, `bounds`).
+  optionally a `custom` typed value, e.g. leverage) or a `number` (decimals, prefix/suffix, `bounds`,
+  the slider's `range` where no bound sets an end, and a `summary` of what the amount comes to).
   Each spec also has its copy: the picker `prompt`, the accessible `hint`, and a `missing` message.
 - `defaults(ctx)`, `template(values)` (words, `VERB`, `{ slot }`; falsy items are dropped),
   `normalize` (keep values consistent: a swap's coins never match, leverage stays under the cap),
@@ -51,12 +58,25 @@ Nothing in `components/` changes. A compile-time check in the registry fails if 
 operation or an operation produces something that isn't in `TransactionIntent`. New icon sets (say,
 chain logos) are one case in `components/trade/trade-icons.tsx`.
 
+## The PnL page
+
+`/pnl` charts the balance by day (7 days, 30 days, or back to the first activity) and lists every
+operation under it. Pointing at a bar, or arrowing through them, rolls the figures to that day. The
+balance only moves with deposits, realized PnL and fees; a bar takes the gain or loss tone only when a
+position closed that day.
+
+The list is the account's real deposits, the trades confirmed in Review this session (marked "Not
+sent"), and a mock trade history (`lib/trade/activity.ts`) until trading is live, like the mock
+positions in the sidebar. The demo, without a wallet, uses mock deposits too.
+
 ## Tests
 
 - `npm run test:logic`: the engine and operations, no browser (`e2e/trade.logic.spec.ts`).
-- `npm run test:e2e`: the sentence in Chrome on desktop and a phone (`e2e/sentence.spec.ts`).
+- `npm run test:e2e`: the sentence in Chrome on desktop and a phone (`e2e/sentence.spec.ts`), and the
+  dock and the PnL page (`e2e/pnl.spec.ts`).
 
 ## Not built yet
 
-Real prices, balances and quotes; execution (`lib/trade/execute.ts` only logs the intent);
-slippage and order types; markets with more than two outcomes; picker search.
+Real prices, balances and quotes; execution (`lib/trade/execute.ts` only logs the intent); a real
+trade history and balance history from the server; slippage and order types; markets with more than
+two outcomes; picker search.

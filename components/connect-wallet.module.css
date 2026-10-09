@@ -1,12 +1,10 @@
-/* Absolutely positioned so the sentence stays vertically centered. */
-.dock {
+/* Absolutely positioned so the page's content stays vertically centered. */
+.top {
     position: absolute;
+    z-index: 20;
     left: 50%;
-    bottom: max(32px, env(safe-area-inset-bottom));
+    top: max(20px, env(safe-area-inset-top));
     transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: 12px;
 }
 
 .button {

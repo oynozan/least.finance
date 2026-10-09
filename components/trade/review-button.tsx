@@ -27,7 +27,7 @@ export function ReviewButton() {
                 aria-expanded={reviewing}
                 aria-controls="wallet-sidebar"
                 title={disabled ? view.blocking?.message : undefined}
-                className={`h-[52px] rounded-full px-6 text-[17px] font-semibold tracking-[-0.01em] whitespace-nowrap outline-2 outline-offset-2 outline-transparent transition-colors duration-200 focus-visible:outline-solid ${
+                className={`h-12 rounded-full px-6 text-[17px] font-semibold tracking-[-0.01em] whitespace-nowrap outline-2 outline-offset-2 outline-transparent transition-colors duration-200 focus-visible:outline-solid ${
                     disabled ? "cursor-default bg-pill text-muted" : "cursor-pointer bg-gain text-background"
                 }`}
                 whileHover={disabled ? undefined : { scale: 1.05 }}

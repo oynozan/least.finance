@@ -5,9 +5,12 @@ import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 const trade = (page: Page) => page.getByRole("region", { name: "Trade" });
 const pill = (page: Page, name: string | RegExp) =>
     trade(page).getByRole("button", { name, exact: typeof name === "string" });
-const amount = (page: Page) => trade(page).getByRole("textbox");
 // Privy keeps a dialog of its own in the page; ours are marked.
 const picker = (page: Page) => page.locator("[data-floating-dialog]:not([data-closing])");
+/** The amount pill; it drops down a field and a slider. */
+const amountPill = (page: Page) => trade(page).getByRole("button", { name: /USD$/ });
+const amountField = (page: Page) => picker(page).getByRole("textbox");
+const slider = (page: Page) => picker(page).getByRole("slider");
 const review = (page: Page) => page.getByRole("button", { name: "Review", exact: true });
 const sidebar = (page: Page) => page.locator("#wallet-sidebar");
 
@@ -29,6 +32,15 @@ async function text(page: Page) {
             })
             .join(" "),
     );
+}
+
+/** Types an amount into the amount's dropdown, then closes it with Enter. */
+async function setAmount(page: Page, value: string) {
+    await amountPill(page).click();
+    await expect(amountField(page)).toBeVisible();
+    await amountField(page).fill(value);
+    await amountField(page).press("Enter");
+    await expect(picker(page)).toBeHidden();
 }
 
 async function pick(page: Page, from: string | RegExp, option: string | RegExp) {
@@ -82,7 +94,7 @@ test("starts as a swap sentence, with only the sentence on the page", async ({ p
     expect(await text(page)).toBe("I want to Swap my ETH to SOL for 10 USD.");
     expect(await strayText(page)).toEqual([]);
     await expect(pill(page, "Swap")).toHaveAttribute("aria-haspopup", "dialog");
-    await expect(amount(page)).toHaveValue("10");
+    await expect(amountPill(page)).toHaveAccessibleName("10 USD");
     // The details stay out of sight until Review is pressed.
     await expect(page.getByRole("region", { name: "Details" })).toBeHidden();
     // Review only appears once a wallet is connected.
@@ -91,13 +103,15 @@ test("starts as a swap sentence, with only the sentence on the page", async ({ p
     await connect(page);
     await expect(review(page)).not.toHaveAttribute("aria-disabled");
     await expect(review(page)).toHaveCSS("background-color", "rgb(104, 214, 112)");
-    // The Review button sits next to the wallet button.
-    const [wallet, button] = await Promise.all([
+    // The wallet button sits above the sentence; Review is in the dock below it.
+    await expect(page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: "Review" })).toBeVisible();
+    const [wallet, sentence, button] = await Promise.all([
         page.getByRole("button", { name: /^Wallet/ }).boundingBox(),
+        trade(page).boundingBox(),
         review(page).boundingBox(),
     ]);
-    expect(Math.abs(wallet!.y + wallet!.height / 2 - (button!.y + button!.height / 2))).toBeLessThan(2);
-    expect(button!.x).toBeGreaterThan(wallet!.x + wallet!.width);
+    expect(wallet!.y + wallet!.height).toBeLessThan(sentence!.y);
+    expect(button!.y).toBeGreaterThan(sentence!.y + sentence!.height);
     await shoot(page, "1-swap");
 });
 
@@ -170,7 +184,7 @@ test("persisting pills glide to their new places", async ({ page, isMobile }) =>
 
 test("Review stays disabled until the sentence is complete and valid", async ({ page }) => {
     await connect(page);
-    await amount(page).fill("");
+    await setAmount(page, "");
     await expect(review(page)).toHaveAttribute("aria-disabled", "true");
     await expect(review(page)).toHaveAccessibleDescription("Enter an amount.");
     // Forced: Playwright won't click an aria-disabled button on its own, and a
@@ -180,26 +194,29 @@ test("Review stays disabled until the sentence is complete and valid", async ({ 
     await page.waitForTimeout(300);
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
 
-    await amount(page).fill("0.5");
+    await setAmount(page, "0.5");
     await expect(review(page)).toHaveAttribute("aria-disabled", "true");
     await expect(review(page)).toHaveAccessibleDescription("The minimum is $1.");
     // The page itself shows nothing but the sentence: the amount turns red.
     expect(await strayText(page)).toEqual([]);
-    await expect(amount(page)).toHaveCSS("color", "rgb(255, 107, 91)");
+    await expect(amountPill(page)).toHaveCSS("color", "rgb(255, 107, 91)");
 
-    await amount(page).fill("1,250.009");
-    await expect(amount(page)).toHaveValue("1250.00");
-    // Leaving and re-entering the field never rewrites what was typed.
-    await amount(page).blur();
-    await expect(amount(page)).toHaveValue("1250.00");
-    await amount(page).fill("25");
-    await expect(amount(page)).toHaveValue("25");
+    await amountPill(page).click();
+    await amountField(page).fill("1,250.009");
+    await expect(amountField(page)).toHaveValue("1250.00");
+    // Closing and reopening the dropdown never rewrites what was typed.
+    await amountField(page).press("Enter");
+    await amountPill(page).click();
+    await expect(amountField(page)).toHaveValue("1250.00");
+    await amountField(page).fill("25");
+    await expect(amountField(page)).toHaveValue("25");
+    await amountField(page).press("Enter");
     await expect(review(page)).not.toHaveAttribute("aria-disabled");
 });
 
-test("the amount grows with every digit and never scrolls", async ({ page }) => {
+test("the amount field grows with every digit and never scrolls", async ({ page }) => {
     const field = () =>
-        amount(page).evaluate((input: HTMLInputElement) => {
+        amountField(page).evaluate((input: HTMLInputElement) => {
             const digits = document.createRange();
             digits.selectNodeContents(input.previousElementSibling!);
             return {
@@ -208,7 +225,8 @@ test("the amount grows with every digit and never scrolls", async ({ page }) => 
                 hidden: input.scrollWidth - input.clientWidth,
             };
         });
-    await amount(page).click();
+    await amountPill(page).click();
+    await amountField(page).click();
     await page.keyboard.press("ControlOrMeta+a");
     await page.keyboard.press("Backspace");
     for (const digit of "109912345") {
@@ -216,8 +234,11 @@ test("the amount grows with every digit and never scrolls", async ({ page }) => 
         // Only the caret's room past the digits, and nothing scrolled away.
         expect(await field()).toEqual({ spare: expect.closeTo(2, 1), scrolled: 0, hidden: 0 });
     }
+    // The pill behind follows as it's typed, its digits rolling.
+    await expect(amountPill(page)).toHaveAccessibleName("109912345 USD");
+    await expect(amountPill(page).locator("number-flow-react")).toHaveCount(1);
     // Each engine sizes a bare input its own way; that width must never count.
-    await amount(page).evaluate((input: HTMLInputElement) => (input.size = 40));
+    await amountField(page).evaluate((input: HTMLInputElement) => (input.size = 40));
     expect(await field()).toEqual({ spare: expect.closeTo(2, 1), scrolled: 0, hidden: 0 });
 });
 
@@ -342,10 +363,10 @@ test("Review opens the details in the sidebar, then confirms", async ({ page, is
     else await review(page).click();
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
 
-    await amount(page).fill("5000");
+    await setAmount(page, "5000");
     await expect(review(page)).toHaveAttribute("aria-disabled", "true");
     await expect(review(page)).toHaveAccessibleDescription("That's more than your $4,013.00 of ETH.");
-    await amount(page).fill("100");
+    await setAmount(page, "100");
 
     await review(page).click();
     await expect(page.getByRole("complementary", { name: "Review" })).toBeVisible();
@@ -398,7 +419,7 @@ for (const [seeded, blocked] of [
             `Balance $${Number(seeded).toLocaleString("en-US")}.00, show deposits`,
         );
         await pick(page, "Swap", /^Buy/);
-        await amount(page).fill("3000");
+        await setAmount(page, "3000");
         if (blocked) {
             await expect(review(page)).toHaveAttribute("aria-disabled", "true");
             await expect(review(page)).toHaveAccessibleDescription("You have $2,400.00 USDC to spend.");
@@ -421,7 +442,7 @@ test("the sentence is keyboard operable", async ({ page, isMobile }) => {
 
     // Typeahead jumps to a coin by its first letters. The amount comes first.
     await page.keyboard.press("Tab");
-    await expect(amount(page)).toBeFocused();
+    await expect(amountPill(page)).toBeFocused();
     await page.keyboard.press("Tab");
     await page.keyboard.press("Enter");
     await page.keyboard.type("li");
@@ -454,7 +475,9 @@ test("phones wrap the sentence without overflowing", async ({ page, isMobile }) 
 test("the sentence grows on big screens, and still fits above the dock", async ({ page, isMobile }) => {
     test.skip(isMobile, "desktop sizes");
     const size = () =>
-        trade(page).evaluate((root) => parseFloat(getComputedStyle(root.querySelector("[data-part]")!.parentElement!).fontSize));
+        trade(page).evaluate((root) =>
+            parseFloat(getComputedStyle(root.querySelector("[data-part]")!.parentElement!).fontSize),
+        );
     const sizes: Record<string, number> = {};
     for (const [width, height] of [
         [1280, 800],
@@ -476,7 +499,7 @@ test("the sentence grows on big screens, and still fits above the dock", async (
     // A short window holds it back, so it doesn't run off the screen.
     expect(sizes["2560x700"]).toBeLessThan(sizes["2560x1440"]);
 
-    // The longest sentence stays clear of the dock.
+    // The longest sentence stays clear of the wallet button above and the dock below.
     for (const [width, height] of [
         [2560, 1440],
         [3440, 1440],
@@ -486,10 +509,95 @@ test("the sentence grows on big screens, and still fits above the dock", async (
         if (width === 2560 && height === 1440) await pick(page, "Swap", /^Predict/);
         await page.waitForTimeout(500);
         const sentence = (await trade(page).boundingBox())!;
-        const dock = (await page.getByRole("button", { name: "Connect wallet" }).boundingBox())!;
-        expect(sentence.y).toBeGreaterThanOrEqual(0);
+        const wallet = (await page.getByRole("button", { name: "Connect wallet" }).boundingBox())!;
+        const dock = (await page.getByRole("navigation", { name: "Pages" }).boundingBox())!;
+        expect(sentence.y).toBeGreaterThan(wallet.y + wallet.height);
         expect(sentence.y + sentence.height).toBeLessThan(dock.y);
         expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
         await shoot(page, `big-${width}x${height}`);
+    }
+});
+
+test("the amount drops down under its pill, and dragging rolls the sentence live", async ({ page, isMobile }) => {
+    await amountPill(page).click();
+    await expect(amountField(page)).toBeVisible();
+    // A dropdown: it opens right under the pill, overlapping it sideways.
+    const [anchor, panel] = await Promise.all([amountPill(page).boundingBox(), picker(page).boundingBox()]);
+    expect(panel!.y).toBeGreaterThanOrEqual(anchor!.y + anchor!.height);
+    expect(panel!.y).toBeLessThan(anchor!.y + anchor!.height + 24);
+    expect(panel!.x).toBeLessThan(anchor!.x + anchor!.width);
+    expect(panel!.x + panel!.width).toBeGreaterThan(anchor!.x);
+    // What the amount comes to, and the slider's ends (no wallet, so no cap).
+    await expect(picker(page)).toContainText("You get ≈ 0.06773 SOL");
+    await expect(picker(page)).toContainText("1 USD");
+    await expect(picker(page)).toContainText("10K USD");
+    await expect(slider(page)).toHaveAttribute("aria-valuenow", "10");
+
+    // Dragging right raises the amount as the pointer moves, in round steps.
+    const track = (await slider(page).boundingBox())!;
+    const y = track.y + track.height / 2;
+    const seen: string[] = [];
+    if (!isMobile) {
+        await page.mouse.move(track.x + track.width * 0.27, y);
+        await page.mouse.down();
+        for (const f of [0.4, 0.55, 0.7]) {
+            await page.mouse.move(track.x + track.width * f, y, { steps: 4 });
+            seen.push((await amountPill(page).getAttribute("aria-label"))!);
+        }
+        await page.mouse.up();
+    } else {
+        await slider(page).tap({ position: { x: track.width * 0.7, y: track.height / 2 } });
+        seen.push((await amountPill(page).getAttribute("aria-label"))!);
+    }
+    const values = seen.map((label) => Number(label.replace(" USD", "")));
+    for (let i = 1; i < values.length; i++) expect(values[i]).toBeGreaterThan(values[i - 1]);
+    for (const value of values) {
+        const step = Math.max(1, 10 ** (Math.floor(Math.log10(value)) - 1));
+        expect(value % step).toBe(0);
+    }
+    await expect(amountField(page)).toHaveValue(String(values.at(-1)));
+    // The pill's digits roll to the new amount instead of being swapped.
+    await expect(amountPill(page).locator("number-flow-react")).toHaveCount(1);
+    await shoot(page, "8-amount-slider");
+
+    // Keys step it, and End jumps to the top of the range.
+    await slider(page).focus();
+    await page.keyboard.press("End");
+    await expect(amountPill(page)).toHaveAccessibleName("10000 USD");
+    // Steps keep two significant figures.
+    await page.keyboard.press("ArrowLeft");
+    await expect(amountPill(page)).toHaveAccessibleName("9900 USD");
+    await page.keyboard.press("Escape");
+    await expect(picker(page)).toBeHidden();
+    await expect(amountPill(page)).toBeFocused();
+});
+
+test("with a wallet, the slider tops out at what it can spend", async ({ page }) => {
+    await connect(page);
+    await amountPill(page).click();
+    await expect(slider(page)).toHaveAttribute("aria-valuemax", /^4013(\.\d+)?$/);
+    await expect(picker(page)).toContainText("4,013 USD");
+    await slider(page).focus();
+    await page.keyboard.press("End");
+    await expect(amountField(page)).toHaveValue(/^4013(\.\d+)?$/);
+    await expect(review(page)).not.toHaveAttribute("aria-disabled");
+    // Typing past it turns the amount red and says why, in the dropdown only.
+    await amountField(page).fill("5000");
+    await expect(picker(page)).toContainText("That's more than your $4,013.00 of ETH.");
+    await expect(amountField(page)).toHaveCSS("color", "rgb(255, 107, 91)");
+});
+
+test("pickers drop down from their pill too", async ({ page }) => {
+    for (const name of ["Swap", "ETH"]) {
+        await pill(page, name).click();
+        await expect(picker(page)).toBeVisible();
+        const [anchor, panel] = await Promise.all([pill(page, name).boundingBox(), picker(page).boundingBox()]);
+        const below = panel!.y >= anchor!.y + anchor!.height;
+        const above = panel!.y + panel!.height <= anchor!.y;
+        expect(below || above).toBe(true);
+        expect(panel!.x).toBeLessThan(anchor!.x + anchor!.width);
+        expect(panel!.x + panel!.width).toBeGreaterThan(anchor!.x);
+        await page.keyboard.press("Escape");
+        await expect(picker(page)).toBeHidden();
     }
 });
