@@ -97,6 +97,25 @@ test("a transaction on another chain is dropped", async () => {
     expect((await bestQuote(providers, request)).provider).toBe("right-chain");
 });
 
+test("a quote with nothing to sign is dropped", async () => {
+    const providers = [
+        quoting("no-txs", { txs: [], usdcOut: 9n * 10n ** 21n }),
+        quoting("honest", { usdcOut: 2000n * 10n ** 18n }),
+    ];
+
+    expect((await bestQuote(providers, request)).provider).toBe("honest");
+});
+
+test("a quote for another amount or another coin is dropped", async () => {
+    const providers = [
+        quoting("other-amount", { amountIn: request.amount * 2n, usdcOut: 9n * 10n ** 21n }),
+        quoting("other-coin", { coin: "ethereum:USDC", usdcOut: 8n * 10n ** 21n }),
+        quoting("honest", { usdcOut: 2000n * 10n ** 18n }),
+    ];
+
+    expect((await bestQuote(providers, request)).provider).toBe("honest");
+});
+
 test("no usable quote is an unavailable error", async () => {
     const providers = [
         quoting("pays-nothing", { usdcOut: 0n }),

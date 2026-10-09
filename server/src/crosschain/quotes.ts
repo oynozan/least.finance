@@ -7,14 +7,18 @@ const QUOTE_TIMEOUT_MS = 3_000;
 const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /**
- * Whether a provider's quote does what was asked: it pays native USDC on Arc (by address, never by symbol)
- * to the requested recipient, refunds the requested wallet, and only has the user sign on the coin's chain.
+ * Whether a provider's quote does what was asked: it takes the requested coin and amount, pays native USDC on Arc
+ * (by address, never by symbol) to the requested recipient, refunds the requested wallet, and has the user sign
+ * at least one transaction, all on the coin's chain.
  */
 export function checkQuote(quote: Quote, request: QuoteRequest): boolean {
     return (
+        quote.coin === request.coin.key &&
+        quote.amountIn === request.amount &&
         ARC_USDC_TOKENS.some((token) => sameAddress(token, quote.destinationToken)) &&
         sameAddress(quote.recipient, request.recipient) &&
         sameAddress(quote.refundTo, request.refundTo) &&
+        quote.txs.length > 0 &&
         quote.txs.every((tx) => tx.chainId === request.coin.chainId) &&
         quote.usdcOut > 0n
     );
