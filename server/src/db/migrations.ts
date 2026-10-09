@@ -17,6 +17,7 @@ export async function mergeAccountsByPerson(client: MongoClient, collections: Co
     // The old wallet index treats a missing wallet as null, so it has to go before the field does.
     await dropIndex(accounts, "wallet_unique");
     await dropIndex(accounts, "privy_user");
+    await dropStalePersonIndex(accounts);
 
     let merged = 0;
     const groups = await accounts
@@ -97,6 +98,18 @@ async function mergeInto(
         });
     } finally {
         await session.endSession();
+    }
+}
+
+/** The planner skips a `$type` partial index for an equality lookup, so an index built that way is rebuilt with `$gt`. */
+async function dropStalePersonIndex(accounts: Collections["accounts"]) {
+    const indexes = await accounts.indexes().catch((error: unknown) => {
+        if (error instanceof MongoServerError && error.code === NAMESPACE_NOT_FOUND) return [];
+        throw error;
+    });
+    const current = indexes.find((index) => index.name === "privy_user_unique");
+    if (current && JSON.stringify(current.partialFilterExpression) !== JSON.stringify({ privyUserId: { $gt: "" } })) {
+        await dropIndex(accounts, "privy_user_unique");
     }
 }
 

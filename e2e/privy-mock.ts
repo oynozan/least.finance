@@ -1,5 +1,9 @@
 import type { Page, Route } from "@playwright/test";
+import { getAddressEncoder, type Address } from "@solana/kit";
 import { chainRpc, randomAddress, signUp } from "./backend";
+
+/** Ethereum addresses start 0x; anything else a test signs in with is a Solana one. */
+const isSolana = (address: string) => !address.startsWith("0x");
 
 /**
  * Stands in for Privy's backend (auth.privy.io), which tests can't reach:
@@ -18,7 +22,8 @@ const wallets = new WeakMap<Page, string>();
  */
 /** Signs `page` in with a wallet another page already uses, as a second tab or a later visit would. Call it first. */
 export function useWallet(page: Page, address: string) {
-    wallets.set(page, address.toLowerCase());
+    // A Solana address is case-sensitive.
+    wallets.set(page, isSolana(address) ? address : address.toLowerCase());
 }
 
 export function addressOf(page: Page) {
@@ -56,7 +61,7 @@ const appConfig = {
     farcaster_auth: false,
     passkey_auth: false,
     telegram_auth: false,
-    solana_wallet_auth: false,
+    solana_wallet_auth: true,
     passkeys_for_signup_enabled: false,
     disable_plus_emails: false,
     require_users_accept_terms: false,
@@ -89,18 +94,30 @@ const user = (id: string, address: string) => ({
     id,
     created_at: now() - 86_400,
     linked_accounts: [
-        {
-            type: "wallet",
-            address,
-            chain_type: "ethereum",
-            chain_id: "eip155:1",
-            wallet_client: "unknown",
-            wallet_client_type: "metamask",
-            connector_type: "injected",
-            verified_at: now(),
-            first_verified_at: now(),
-            latest_verified_at: now(),
-        },
+        isSolana(address)
+            ? {
+                  type: "wallet",
+                  address,
+                  chain_type: "solana",
+                  wallet_client: "unknown",
+                  wallet_client_type: "phantom",
+                  connector_type: "solana_adapter",
+                  verified_at: now(),
+                  first_verified_at: now(),
+                  latest_verified_at: now(),
+              }
+            : {
+                  type: "wallet",
+                  address,
+                  chain_type: "ethereum",
+                  chain_id: "eip155:1",
+                  wallet_client: "unknown",
+                  wallet_client_type: "metamask",
+                  connector_type: "injected",
+                  verified_at: now(),
+                  first_verified_at: now(),
+                  latest_verified_at: now(),
+              },
     ],
     mfa_methods: [],
     has_accepted_terms: true,
@@ -138,7 +155,8 @@ export async function mockPrivy(page: Page) {
                 address,
                 expires_at: new Date(Date.now() + 600_000).toISOString(),
             });
-        if (path.endsWith("/siwe/authenticate"))
+        if (path.endsWith("/siws/init")) return json({ nonce: "mocknonce123" });
+        if (path.endsWith("/siwe/authenticate") || path.endsWith("/siws/authenticate"))
             return json({
                 user: user(userId, address),
                 token,
@@ -162,6 +180,57 @@ export async function mockPrivy(page: Page) {
             headers: { "access-control-allow-origin": "*" },
             body: JSON.stringify({ data: [], listings: {}, count: 0 }),
         }),
+    );
+}
+
+/**
+ * Installs a Phantom-like Wallet Standard wallet for the page's Solana
+ * address. It registers when the page loads and again whenever the app asks
+ * for wallets, so it is found whichever side comes up first.
+ */
+export async function installSolanaWallet(page: Page, address: string) {
+    const publicKey = Array.from(getAddressEncoder().encode(address as Address));
+    await page.addInitScript(
+        ({ address, publicKey }) => {
+            const chains = ["solana:mainnet"];
+            const account = {
+                address,
+                publicKey: new Uint8Array(publicKey),
+                chains,
+                features: ["solana:signMessage"],
+            };
+            const wallet = {
+                version: "1.0.0",
+                name: "Phantom",
+                icon: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ab9ff2'/></svg>",
+                chains,
+                accounts: [] as (typeof account)[],
+                features: {
+                    "standard:connect": {
+                        version: "1.0.0",
+                        connect: async () => {
+                            wallet.accounts = [account];
+                            return { accounts: wallet.accounts };
+                        },
+                    },
+                    "standard:events": { version: "1.0.0", on: () => () => {} },
+                    "solana:signMessage": {
+                        version: "1.0.0",
+                        signMessage: async (...inputs: { message: Uint8Array }[]) =>
+                            inputs.map(({ message }) => ({ signedMessage: message, signature: new Uint8Array(64) })),
+                    },
+                },
+            };
+            const register = () =>
+                window.dispatchEvent(
+                    new CustomEvent("wallet-standard:register-wallet", {
+                        detail: (api: { register: (wallet: unknown) => void }) => api.register(wallet),
+                    }),
+                );
+            window.addEventListener("wallet-standard:app-ready", register);
+            register();
+        },
+        { address, publicKey },
     );
 }
 

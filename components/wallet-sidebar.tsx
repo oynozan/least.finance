@@ -16,7 +16,7 @@ import {
 import { toUsdc, type HistoryRow } from "@/lib/account/state";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
-import { useUsdcBalance, useWalletNetwork } from "./arc-wallet";
+import { useActiveWallet, useUsdcBalance, useWalletNetwork } from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
 import { DepositButton } from "./deposit-button";
 import { DepositForm } from "./deposit-form";
@@ -96,9 +96,10 @@ export function WalletSidebar() {
 }
 
 function SignedInWallet() {
-    const { ready, authenticated, user, logout } = usePrivy();
+    const { ready, authenticated, logout } = usePrivy();
     const { open, setOpen } = useSidebar();
-    const address = user?.wallet?.address;
+    const active = useActiveWallet();
+    const address = active?.address;
 
     // Signing out from anywhere also folds the sidebar away.
     useEffect(() => {
@@ -108,8 +109,9 @@ function SignedInWallet() {
     const account = useAccount();
     // The wallet's own USDC, which a deposit draws on.
     // Read again whenever a deposit moves on, so Max doesn't offer what has already been sent.
-    const walletBalance = useUsdcBalance(address, open, account.notice);
-    const network = useWalletNetwork(address);
+    const walletBalance = useUsdcBalance(active?.kind === "evm" ? address : undefined, open, account.notice);
+    const evmNetwork = useWalletNetwork(address);
+    const network = active?.kind === "solana" ? "solana" : evmNetwork;
 
     // Mock positions until trading is live.
     const [positions, setPositions] = useState(MOCK_POSITIONS);

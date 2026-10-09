@@ -7,14 +7,16 @@ import { exportJWK, exportSPKI, generateKeyPair, SignJWT, type CryptoKey } from 
  * it: it serves users by DID and signs access tokens the way Privy does
  * (ES256, issuer privy.io, audience the app ID).
  */
+export type FakeWallet = string | { address: string; chain: "ethereum" | "solana" };
+
 export type FakePrivy = {
     url: string;
     appId: string;
     appSecret: string;
     /** The SPKI PEM the server verifies tokens with. */
     verificationKey: string;
-    /** Creates or replaces a user and the Ethereum wallets linked to it. */
-    setUser(userId: string, wallets: string[]): void;
+    /** Creates or replaces a user and the wallets linked to it; a plain string is an Ethereum address. */
+    setUser(userId: string, wallets: FakeWallet[]): void;
     deleteUser(userId: string): void;
     token(userId: string, options?: { expiresInSeconds?: number; appId?: string; issuer?: string }): Promise<string>;
     /** GET /v1/users/:id requests served so far. */
@@ -29,7 +31,7 @@ export async function startFakePrivy(appId = "test-app-id"): Promise<FakePrivy> 
     const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
     const verificationKey = await exportSPKI(publicKey);
     const jwk = { ...(await exportJWK(publicKey)), kid: "test", alg: "ES256", use: "sig" };
-    const users = new Map<string, string[]>();
+    const users = new Map<string, FakeWallet[]>();
     let failing = { count: 0, status: 500 };
 
     const server = createServer((req, res) => {
@@ -95,8 +97,8 @@ function sign(
         .sign(key);
 }
 
-/** The shape Privy's GET /v1/users/:id returns, with external Ethereum wallets linked. */
-function userJson(userId: string, wallets: string[]) {
+/** The shape Privy's GET /v1/users/:id returns, with external wallets linked. */
+function userJson(userId: string, wallets: FakeWallet[]) {
     const now = Math.floor(Date.now() / 1000);
     return {
         id: userId,
@@ -105,17 +107,21 @@ function userJson(userId: string, wallets: string[]) {
         is_guest: false,
         mfa_methods: [],
         linked_accounts: [
-            ...wallets.map((address) => ({
-                type: "wallet",
-                chain_type: "ethereum",
-                address,
-                wallet_client: "unknown",
-                wallet_client_type: "metamask",
-                connector_type: "injected",
-                verified_at: now,
-                first_verified_at: now,
-                latest_verified_at: now,
-            })),
+            ...wallets.map((wallet) => {
+                const { address, chain } = typeof wallet === "string" ? { address: wallet, chain: "ethereum" } : wallet;
+                const solana = chain === "solana";
+                return {
+                    type: "wallet",
+                    chain_type: chain,
+                    address,
+                    wallet_client: "unknown",
+                    wallet_client_type: solana ? "phantom" : "metamask",
+                    connector_type: solana ? "solana_adapter" : "injected",
+                    verified_at: now,
+                    first_verified_at: now,
+                    latest_verified_at: now,
+                };
+            }),
             // Not a wallet, so never a match.
             {
                 type: "email",

@@ -2,6 +2,7 @@
 
 import { useLogin, usePrivy } from "@privy-io/react-auth";
 import { motion, type Transition } from "motion/react";
+import { useActiveWallet } from "./arc-wallet";
 import { Magnet } from "./magnet";
 import { SIDEBAR_ID, useSidebar } from "./sidebar";
 import { shortenAddress } from "./wallet-data";
@@ -30,7 +31,7 @@ export function ConnectWallet() {
 }
 
 function PrivyWalletButton() {
-    const { ready, authenticated, user } = usePrivy();
+    const { ready, authenticated } = usePrivy();
     const { open, setOpen, toggle } = useSidebar();
     // A fresh connection opens the sidebar straight away.
     const { login } = useLogin({
@@ -38,7 +39,7 @@ function PrivyWalletButton() {
             if (!wasAlreadyAuthenticated) setOpen(true);
         },
     });
-    const address = user?.wallet?.address;
+    const address = useActiveWallet()?.address;
 
     if (ready && authenticated) {
         return (

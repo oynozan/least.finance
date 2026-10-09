@@ -1,3 +1,4 @@
+import { getAddressDecoder } from "@solana/kit";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 
 /**
@@ -20,7 +21,10 @@ async function call<T>(path: string, body: unknown): Promise<T> {
 /** A fresh wallet for each test, so tests sharing the backend never see each other's deposits. */
 export const randomAddress = () => privateKeyToAddress(generatePrivateKey()).toLowerCase();
 
-/** A Privy user owning `address`, its real access token, and USDC in the wallet to deposit. */
+/** A fresh Solana wallet address (base58, case-sensitive) for a test that signs in with Solana. */
+export const randomSolanaAddress = () => getAddressDecoder().decode(crypto.getRandomValues(new Uint8Array(32)));
+
+/** A Privy user owning `address`, its real access token, and (for an Ethereum wallet) USDC in it to deposit. */
 export const signUp = (address: string, usdc = "20000") =>
     call<{ userId: string; token: string }>("/users", { address, usdc });
 

@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { PrivyProvider } from "@privy-io/react-auth";
+import { toSolanaWalletConnectors } from "@privy-io/react-auth/solana";
 import { bsc, mainnet } from "viem/chains";
 import { arc } from "./arc";
 
@@ -24,12 +25,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
                 // No default chain, which would have Privy switch every wallet on connect; these are the networks a deposit can switch to.
                 supportedChains: [arc, mainnet, bsc],
                 // Coinbase's smart wallet only runs on its own chain list, so offer the extension and app instead.
-                externalWallets: { coinbaseWallet: { config: { preference: { options: "eoaOnly" } } } },
+                externalWallets: {
+                    coinbaseWallet: { config: { preference: { options: "eoaOnly" } } },
+                    solana: { connectors: toSolanaWalletConnectors() },
+                },
                 appearance: {
                     // Base colors only; app/privy.css redefines the full palette.
                     theme: "#222220",
                     accentColor: "#f5f5f3",
-                    walletChainType: "ethereum-only",
+                    walletChainType: "ethereum-and-solana",
                     showWalletLoginFirst: true,
                     // Wallets that can add Arc; detected extensions bring in Rabby, and any other installed wallet too.
                     walletList: [
@@ -38,6 +42,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
                         "rainbow",
                         "coinbase_wallet",
                         "wallet_connect",
+                        "detected_solana_wallets",
+                        "phantom",
                     ],
                 },
             }}

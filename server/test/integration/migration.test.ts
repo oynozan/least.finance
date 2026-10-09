@@ -233,6 +233,37 @@ test("a database that still has wallet_unique and several accounts migrates", as
     expect(running.server.services.database.migration).toEqual({ rekeyed: 3, merged: 0 });
 });
 
+/** Whether the winning plan for AccountService.find's query reads the person index. */
+async function usesPersonIndex(running: Stack, privyUserId: string) {
+    const plan = await collections(running)
+        .accounts.find({ privyUserId }, { sort: { createdAt: 1, depositIndex: 1 } })
+        .explain("queryPlanner");
+    const text = JSON.stringify((plan as { queryPlanner: { winningPlan: unknown } }).queryPlanner.winningPlan);
+    return text.includes('"IXSCAN"') && text.includes('"privy_user_unique"');
+}
+
+test("a lookup by privyUserId uses the person index", async () => {
+    const did = newDid();
+    const running = await boot(async (db) => {
+        await seedAccount(db, did, "1");
+    });
+    expect(await usesPersonIndex(running, did)).toBe(true);
+});
+
+test("a database that still has the old $type person index gets the new one", async () => {
+    const did = newDid();
+    const running = await boot(async (db) => {
+        await mongo.db(db).collection("accounts").createIndex(
+            { privyUserId: 1 },
+            { unique: true, name: "privy_user_unique", partialFilterExpression: { privyUserId: { $type: "string" } } },
+        );
+        await seedAccount(db, did, "1");
+    });
+    const index = (await collections(running).accounts.indexes()).find((i) => i.name === "privy_user_unique");
+    expect(index?.partialFilterExpression).toEqual({ privyUserId: { $gt: "" } });
+    expect(await usesPersonIndex(running, did)).toBe(true);
+});
+
 test("running the migration again changes nothing", async () => {
     const did = newDid();
     const running = await boot(async (db) => {

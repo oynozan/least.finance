@@ -58,7 +58,16 @@ const { services } = server;
 const chain = chainHelpers(anvil.url);
 
 /** The Privy DID the mock gives a wallet, so one address is always one user. */
-const userIdOf = (address: string) => `did:privy:e2e${address.slice(2).toLowerCase()}`;
+const userIdOf = (address: string) =>
+    `did:privy:e2e${isSolanaAddress(address) ? address : address.slice(2).toLowerCase()}`;
+
+/** Base58 and case-sensitive, unlike an Ethereum address. */
+function isSolanaAddress(address: string) {
+    return !address.startsWith("0x") && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+}
+
+/** An Ethereum address checksummed, a Solana one as it came. */
+const normalize = (address: unknown) => (isSolanaAddress(String(address)) ? String(address) : getAddress(String(address)));
 
 type Seeded = { amount: string; daysAgo: number };
 
@@ -71,7 +80,7 @@ function objectIdAt(at: Date) {
 }
 
 /** Writes deposit history straight to the database, as if it had been credited over time. */
-async function seed(address: Address, deposits: Seeded[]) {
+async function seed(address: string, deposits: Seeded[]) {
     const account = await services.accounts.open(userIdOf(address));
     const { client, collections } = services.database;
     const now = Date.now();
@@ -124,13 +133,17 @@ async function seed(address: Address, deposits: Seeded[]) {
 const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>> = {
     /** Signs a wallet in: a Privy user that owns it, a real access token, and USDC to deposit. */
     "/users": async ({ address, usdc = "20000" }) => {
-        const wallet = getAddress(String(address));
+        const wallet = normalize(address);
         const userId = userIdOf(wallet);
-        privy.setUser(userId, [wallet]);
-        await chain.fund(wallet, String(usdc));
+        if (isSolanaAddress(wallet)) {
+            privy.setUser(userId, [{ address: wallet, chain: "solana" }]);
+        } else {
+            privy.setUser(userId, [wallet]);
+            await chain.fund(wallet as Address, String(usdc));
+        }
         return { userId, token: await privy.token(userId) };
     },
-    "/seed": async ({ address, deposits }) => seed(getAddress(String(address)), deposits as Seeded[]),
+    "/seed": async ({ address, deposits }) => seed(normalize(address), deposits as Seeded[]),
     /** The browser wallet's way onto the chain; anvil signs for funded test wallets. */
     "/rpc": async ({ method, params }) => {
         const response = await fetch(emulator.url, {
@@ -147,7 +160,7 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
         return { txHash: await chain.send(from, getAddress(String(to)), String(usdc)) };
     },
     "/account": async ({ address }) => {
-        const account = await services.accounts.find(userIdOf(getAddress(String(address))));
+        const account = await services.accounts.find(userIdOf(normalize(address)));
         if (!account) return null;
         return {
             depositAddress: getAddress(account.depositAddress),
@@ -181,7 +194,11 @@ const control = createServer(async (req, res) => {
     if (req.method !== "POST" || !route) return send(res, 404, { error: "Not found" });
     try {
         const body = await readJson(req);
-        if ("address" in body && !isAddress(String(body.address), { strict: false })) {
+        if (
+            "address" in body &&
+            !isAddress(String(body.address), { strict: false }) &&
+            !isSolanaAddress(String(body.address))
+        ) {
             return send(res, 400, { error: "Bad address" });
         }
         send(res, 200, await route(body));

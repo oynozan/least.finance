@@ -116,7 +116,7 @@ async function ensureIndexes({ accounts, deposits, ledger }: Collections) {
                 key: { privyUserId: 1 },
                 name: "privy_user_unique",
                 unique: true,
-                partialFilterExpression: { privyUserId: { $type: "string" } },
+                partialFilterExpression: { privyUserId: { $gt: "" } },
             },
             {
                 key: { formerDepositAddresses: 1 },
