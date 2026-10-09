@@ -128,16 +128,15 @@ export function NumberSlot({ view, onChange, onFocusChange, describedBy }: Numbe
             >
                 <span className="inline-flex items-baseline">
                     {view.prefix && <span className="text-muted">{view.prefix}</span>}
-                    {/* The hidden copy sizes the grid cell; the input fills it. */}
-                    <span className="inline-grid">
-                        <span aria-hidden="true" className="invisible col-start-1 row-start-1 whitespace-pre">
+                    {/* The hidden copy sets the width and the input lies over it, so
+                        the input's own intrinsic width, which each engine sizes
+                        differently, never stretches or squeezes the pill. */}
+                    <span className="relative inline-block">
+                        <span aria-hidden="true" className="invisible whitespace-pre">
                             {shown || view.placeholder}
                         </span>
                         <input
                             type="text"
-                            // The hidden copy sets the width; without this the input's
-                            // default 20-character size would stretch the pill.
-                            size={1}
                             inputMode="decimal"
                             enterKeyHint="done"
                             autoComplete="off"
@@ -156,7 +155,9 @@ export function NumberSlot({ view, onChange, onFocusChange, describedBy }: Numbe
                                 setFocused(false);
                                 onFocusChange?.(false);
                             }}
-                            className="col-start-1 row-start-1 w-full min-w-[1ch] border-0 bg-transparent p-0 text-inherit outline-none placeholder:text-muted"
+                            // 2px past the copy holds the caret at the end; WebKit
+                            // would otherwise scroll the digits to show it.
+                            className="absolute top-0 left-0 h-full w-[calc(100%+2px)] border-0 bg-transparent p-0 text-inherit outline-none placeholder:text-muted"
                             style={{ font: "inherit", letterSpacing: "inherit" }}
                         />
                     </span>

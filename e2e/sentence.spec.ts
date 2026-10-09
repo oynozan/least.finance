@@ -192,6 +192,30 @@ test("Review stays disabled until the sentence is complete and valid", async ({ 
     await expect(review(page)).not.toHaveAttribute("aria-disabled");
 });
 
+test("the amount grows with every digit and never scrolls", async ({ page }) => {
+    const field = () =>
+        amount(page).evaluate((input: HTMLInputElement) => {
+            const digits = document.createRange();
+            digits.selectNodeContents(input.previousElementSibling!);
+            return {
+                spare: input.getBoundingClientRect().width - digits.getBoundingClientRect().width,
+                scrolled: input.scrollLeft,
+                hidden: input.scrollWidth - input.clientWidth,
+            };
+        });
+    await amount(page).click();
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.press("Backspace");
+    for (const digit of "109912345") {
+        await page.keyboard.type(digit);
+        // Only the caret's room past the digits, and nothing scrolled away.
+        expect(await field()).toEqual({ spare: expect.closeTo(2, 1), scrolled: 0, hidden: 0 });
+    }
+    // Each engine sizes a bare input its own way; that width must never count.
+    await amount(page).evaluate((input: HTMLInputElement) => (input.size = 40));
+    expect(await field()).toEqual({ spare: expect.closeTo(2, 1), scrolled: 0, hidden: 0 });
+});
+
 test("a coin is never swapped into itself", async ({ page }) => {
     await pill(page, "SOL").click();
     const eth = picker(page).getByRole("option", { name: "ETH" });
