@@ -216,6 +216,8 @@ type WalletWindow = {
     /** What the wallet does with the next transaction it's asked to send. */
     nextSend?: "reject" | "drop";
     useAccount: (account: string) => void;
+    useChain: (chainId: string) => void;
+    lock: () => void;
     sendToChain: (method: string, params: unknown[]) => Promise<{ result?: unknown; error?: { message: string } }>;
 };
 
@@ -264,6 +266,13 @@ export const dropNextSend = (page: Page) =>
 export const switchWalletAccount = (page: Page, account: string) =>
     page.evaluate((account) => (window as unknown as WalletWindow).useAccount(account), account);
 
+/** The user picks a network in the wallet itself, one it may not have known before. */
+export const moveWalletTo = (page: Page, chainId: string) =>
+    page.evaluate((chainId) => (window as unknown as WalletWindow).useChain(chainId), chainId);
+
+/** The wallet locks: it stops sharing accounts, while the Privy session stays. */
+export const lockWallet = (page: Page) => page.evaluate(() => (window as unknown as WalletWindow).lock());
+
 /**
  * Installs a MetaMask-like EIP-1193 wallet that signs anything and starts on
  * Ethereum, unaware of Arc. Transactions it sends land on the test backend's
@@ -284,6 +293,15 @@ export async function installWallet(page: Page) {
         state.useAccount = (next) => {
             account = next;
             emit("accountsChanged", [next]);
+        };
+        state.useChain = (next) => {
+            chainId = next;
+            knownChains.add(next);
+            emit("chainChanged", next);
+        };
+        state.lock = () => {
+            connected = false;
+            emit("accountsChanged", []);
         };
         const provider = {
             isMetaMask: true,

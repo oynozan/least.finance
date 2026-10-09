@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useWallets } from "@privy-io/react-auth";
 import { isAddress } from "viem";
+import { chainIdOf } from "@/lib/wallet/network";
 import { arc, readUsdcBalance } from "./arc";
 
 const BALANCE_POLL_MS = 15_000;
@@ -50,6 +51,13 @@ export function useUsdcBalance(owner: string | undefined, live: boolean, refresh
     }, [owner, live, refresh]);
 
     return reading && reading.owner === owner ? reading.usdc : undefined;
+}
+
+/** The EVM chain the signed-in wallet is on, else the newest connected wallet's; undefined with none connected here. */
+export function useWalletNetwork(address: string | undefined): number | undefined {
+    const { wallets } = useWallets();
+    const wallet = (address ? wallets.find((w) => w.address.toLowerCase() === address.toLowerCase()) : undefined) ?? wallets[0];
+    return wallet ? chainIdOf(wallet.chainId) : undefined;
 }
 
 /** Whether the signed-in wallet sits on another network, and a way to move it to Arc. */

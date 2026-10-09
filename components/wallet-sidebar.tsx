@@ -16,11 +16,12 @@ import {
 import { toUsdc, type HistoryRow } from "@/lib/account/state";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
-import { useArcNetwork, useUsdcBalance } from "./arc-wallet";
+import { useArcNetwork, useUsdcBalance, useWalletNetwork } from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
 import { DepositButton } from "./deposit-button";
 import { DepositForm } from "./deposit-form";
-import { ArcLogo, CloseIcon, PowerIcon } from "./icons";
+import { CloseIcon, PowerIcon } from "./icons";
+import { NetworkLogo } from "./network-icons";
 import { canHover } from "./pointer";
 import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
@@ -109,6 +110,7 @@ function SignedInWallet() {
     // Read again whenever a deposit moves on, so Max doesn't offer what has already been sent.
     const walletBalance = useUsdcBalance(address, open, account.notice);
     const { offArc, switching, cantSwitch, switchToArc } = useArcNetwork(address);
+    const network = useWalletNetwork(address);
 
     // Mock positions until trading is live.
     const [positions, setPositions] = useState(MOCK_POSITIONS);
@@ -132,7 +134,7 @@ function SignedInWallet() {
             <header className={styles.header}>
                 {address && (
                     <span className={styles.account}>
-                        <ArcLogo className={styles.arcLogo} role="img" aria-hidden={false} aria-label="Arc" />
+                        <NetworkLogo network={network} className={styles.networkLogo} />
                         {shortenAddress(address)}
                     </span>
                 )}

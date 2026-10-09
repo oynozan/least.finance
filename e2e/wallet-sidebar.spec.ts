@@ -7,8 +7,10 @@ import {
     ARC_PRIMARY_RPC,
     ARC_RPC,
     installWallet,
+    lockWallet,
     mockArcRpc,
     mockPrivy,
+    moveWalletTo,
     refuseNewNetworks,
     rejectNextChainSwitch,
     switchWalletAccount,
@@ -140,6 +142,28 @@ test("connecting a wallet opens the sidebar right away and pushes the page", asy
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits");
     await expect(depositButton(page)).toBeVisible();
     await shoot(page, "2-sidebar-open");
+});
+
+test("the header shows the network the wallet is on", async ({ page }) => {
+    await openWallet(page);
+    const header = sidebar(page).locator("header");
+    for (const [chainId, name] of [
+        ["0x1", "Ethereum"],
+        ["0x38", "BNB Chain"],
+        ["0x2105", "Base"],
+        ["0x13b2", "Arc"],
+        ["0x3e7", "Chain 999"],
+    ]) {
+        await moveWalletTo(page, chainId);
+        await expect(header.getByRole("img", { name, exact: true })).toBeVisible();
+    }
+});
+
+test("a locked wallet leaves the header with an unknown network", async ({ page }) => {
+    await openWallet(page);
+    await lockWallet(page);
+    await expect(sidebar(page).locator("header").getByRole("img", { name: "Unknown network", exact: true })).toBeVisible();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
 });
 
 test("connecting adds Arc to the wallet and switches to it", async ({ page }) => {

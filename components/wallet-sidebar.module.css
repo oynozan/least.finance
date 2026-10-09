@@ -18,7 +18,7 @@
 }
 
 /* The account lives on Arc: its mark stands where an avatar would. */
-.arcLogo {
+.networkLogo {
     flex-shrink: 0;
     width: 22px;
     height: 22px;
