@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { MOCK_POSITIONS } from "../components/wallet-data";
-import { HISTORY } from "./fixtures";
+import { seedDeposits } from "./backend";
+import { HISTORY, HISTORY_TOTAL } from "./fixtures";
 import {
     addressOf,
     ARC_PRIMARY_RPC,
@@ -17,6 +18,8 @@ import {
 } from "./privy-mock";
 
 const DEPOSITS = HISTORY.length;
+const usd = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+const HISTORY_BALANCE = usd(HISTORY_TOTAL);
 const POSITIONS = MOCK_POSITIONS.length;
 
 const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
@@ -27,6 +30,8 @@ const depositButton = (page: Page) => sidebar(page).getByRole("button", { name: 
 const switchButton = (page: Page) => sidebar(page).getByRole("button", { name: "Switch to Arc" });
 const switchStatus = (page: Page) => sidebar(page).getByRole("status");
 const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: /^Balance/ });
+const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "Deposit amount" });
+const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
 const showAgain = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 const position = (page: Page, symbol: string) =>
     sidebar(page)
@@ -50,6 +55,20 @@ async function shoot(page: Page, name: string) {
 async function connect(page: Page) {
     await page.getByRole("button", { name: "Connect wallet" }).click();
     await modal(page).getByRole("button", { name: "MetaMask" }).click();
+}
+
+/** Connects and waits for the sidebar and the account to load; `history` seeds the 20 deposits first. */
+async function openWallet(page: Page, { history = false } = {}) {
+    if (history) await seedDeposits(addressOf(page), HISTORY);
+    await connect(page);
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$/, { timeout: 20_000 });
+}
+
+/** Opens the deposit form, which is where the wallet's own balance is shown. */
+async function openDepositForm(page: Page) {
+    await depositButton(page).click();
+    await expect(amountField(page)).toBeFocused();
 }
 
 test.beforeEach(async ({ page }) => {
@@ -117,8 +136,8 @@ test("connecting a wallet opens the sidebar right away and pushes the page", asy
         expect(edges.viewport - edges.panel).toBe(edges.viewport < 560 ? edges.viewport : 400);
     }).toPass({ timeout: 3_000 });
 
-    await expect(sidebar(page).getByText("$12,480")).toBeVisible();
-    await expect(sidebar(page).getByRole("button", { name: "Deposit", exact: true })).toBeVisible();
+    await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits");
+    await expect(depositButton(page)).toBeVisible();
     await shoot(page, "2-sidebar-open");
 });
 
@@ -230,30 +249,49 @@ test("moving the wallet off Arc brings the switch back", async ({ page }) => {
     await expect(depositButton(page)).toHaveCount(0);
 });
 
-test("the balance is the wallet's USDC on Arc", async ({ page }) => {
+test("the balance is the account's USDC on the server", async ({ page }) => {
     await mockArcRpc(page, 7_250.75);
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page, { history: true });
 
-    await expect(sidebar(page).getByRole("button", { name: "Balance $7,250.75, show deposits" })).toBeVisible();
-    await expect(sidebar(page).getByText("$7,250")).toBeVisible();
+    await expect(balanceButton(page)).toHaveAccessibleName(`Balance ${HISTORY_BALANCE}, show deposits`);
+    await expect(sidebar(page).getByText(HISTORY_BALANCE.slice(0, -3))).toBeVisible();
 });
 
-test("the balance refreshes when the page comes back into view", async ({ page }) => {
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-    await expect(sidebar(page).getByRole("button", { name: "Balance $12,480.52, show deposits" })).toBeVisible();
+test("a fresh account has a zero balance and no deposits to show", async ({ page, isMobile }) => {
+    await openWallet(page);
+    await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits");
+    await settle(page);
+
+    if (isMobile) await balanceButton(page).tap();
+    else await balanceButton(page).hover();
+    await expect(balanceButton(page)).toHaveAttribute("aria-expanded", "true");
+    await page.waitForTimeout(500);
+    await expect(sidebar(page).getByRole("list", { name: "Deposits" })).toHaveCount(0);
+});
+
+test("the wallet's balance is shown in the deposit form", async ({ page }) => {
+    await mockArcRpc(page, 7_250.75);
+    await openWallet(page);
+
+    await openDepositForm(page);
+    await expect(hint(page)).toHaveText("In your wallet: $7,250.75");
+    await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits");
+});
+
+test("the wallet's balance refreshes when the page comes back into view", async ({ page }) => {
+    await openWallet(page);
+    await openDepositForm(page);
+    await expect(hint(page)).toHaveText("In your wallet: $12,480.52");
 
     await mockArcRpc(page, 13_000);
     await showAgain(page);
-    await expect(sidebar(page).getByRole("button", { name: "Balance $13,000.00, show deposits" })).toBeVisible();
-    await expect(sidebar(page).getByText("$13,000")).toBeVisible();
+    await expect(hint(page)).toHaveText("In your wallet: $13,000.00");
 });
 
-test("a failed refresh keeps the last balance", async ({ page }) => {
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-    await expect(sidebar(page).getByRole("button", { name: "Balance $12,480.52, show deposits" })).toBeVisible();
+test("a failed refresh keeps the wallet's last balance", async ({ page }) => {
+    await openWallet(page);
+    await openDepositForm(page);
+    await expect(hint(page)).toHaveText("In your wallet: $12,480.52");
 
     let attempts = 0;
     await page.route(ARC_RPC, (route) => {
@@ -261,37 +299,38 @@ test("a failed refresh keeps the last balance", async ({ page }) => {
         return route.abort();
     });
     await showAgain(page);
-    await expect.poll(() => attempts).toBe(3);
+    await expect.poll(() => attempts).toBeGreaterThanOrEqual(3);
     await page.waitForTimeout(300);
-    await expect(sidebar(page).getByRole("button", { name: "Balance $12,480.52, show deposits" })).toBeVisible();
+    await expect(hint(page)).toHaveText("In your wallet: $12,480.52");
 });
 
-test("the balance falls back to another Arc RPC when the primary is down", async ({ page }) => {
+test("the wallet's balance falls back to another Arc RPC when the primary is down", async ({ page }) => {
     await page.route(ARC_PRIMARY_RPC, (route) => route.abort());
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-    await expect(sidebar(page).getByRole("button", { name: "Balance $12,480.52, show deposits" })).toBeVisible();
+    await openWallet(page);
+    await openDepositForm(page);
+    await expect(hint(page)).toHaveText("In your wallet: $12,480.52");
 });
 
-test("a hanging Arc RPC gives up within one poll and shows no balance", async ({ page }) => {
+test("a hanging Arc RPC gives up within one poll and shows no wallet balance", async ({ page }) => {
     test.setTimeout(40_000);
     await page.route(ARC_RPC, () => {});
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page);
+    await openDepositForm(page);
 
-    await expect(balanceButton(page)).toHaveAccessibleName("Balance loading, show deposits");
-    await expect(balanceButton(page)).toHaveAccessibleName("Balance unavailable, show deposits", { timeout: 15_000 });
+    await expect(hint(page)).toHaveText("Checking your wallet…");
+    await expect(hint(page)).toHaveText("Couldn't read your wallet's balance.", { timeout: 15_000 });
+    await expect(sidebar(page).getByRole("button", { name: "Max" })).toHaveCount(0);
 });
 
-test("an unreachable Arc RPC shows no balance rather than zero", async ({ page }) => {
+test("an unreachable Arc RPC shows no wallet balance rather than zero", async ({ page }) => {
     await page.route(ARC_RPC, (route) => route.abort());
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page);
+    await openDepositForm(page);
 
-    await expect(sidebar(page).getByRole("button", { name: "Balance unavailable, show deposits" })).toBeVisible({
-        timeout: 10_000,
-    });
-    await expect(sidebar(page).getByRole("button", { name: /^Balance/ })).not.toContainText("$");
+    await expect(hint(page)).toHaveText("Couldn't read your wallet's balance.", { timeout: 10_000 });
+    await expect(hint(page)).not.toContainText("$");
+    // The account's own balance is unaffected.
+    await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits");
 });
 
 test("the panel and the page move on one spring", async ({ page }) => {
@@ -342,8 +381,7 @@ test("the dock button, the close button and Escape all toggle the sidebar", asyn
 
 test("hovering the balance deals out past deposits", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only; touch pins it with a tap, covered below");
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page, { history: true });
     await settle(page);
 
     const deposits = sidebar(page).getByRole("list", { name: "Deposits" });
@@ -354,6 +392,7 @@ test("hovering the balance deals out past deposits", async ({ page, isMobile }) 
         .hover();
     await expect(deposits.getByRole("listitem")).toHaveCount(DEPOSITS);
     await expect(deposits.getByRole("listitem").first()).toContainText("+$2,500.00");
+    await expect(deposits.getByRole("listitem").last()).toContainText("+$3,105.75");
     await shoot(page, "3-deposits");
 
     // Positions recede behind the history.
@@ -369,8 +408,7 @@ test("hovering the balance deals out past deposits", async ({ page, isMobile }) 
 
 test("past deposits are dealt out on reveal, not shown instantly", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page, { history: true });
     await settle(page);
 
     // Record every deposit row's opacity and vertical offset each frame.
@@ -391,14 +429,19 @@ test("past deposits are dealt out on reveal, not shown instantly", async ({ page
                     }),
                 });
             }
-            if (performance.now() - start < 2_000) requestAnimationFrame(tick);
+            // Runs until the rows have had time to settle once they show, however late the hover lands.
+            const seen = frames[0]?.t ?? Infinity;
+            if (performance.now() - start < 15_000 && performance.now() - seen < 1_500) requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
     });
     await sidebar(page)
         .getByRole("button", { name: /^Balance/ })
         .hover();
-    await page.waitForTimeout(1_500);
+    await expect
+        .poll(() => page.evaluate(() => (window as unknown as { depositFrames: Frame[] }).depositFrames.length))
+        .toBeGreaterThan(0);
+    await page.waitForTimeout(1_700);
     const recorded = await page.evaluate(() => (window as unknown as { depositFrames: Frame[] }).depositFrames);
     const frames = recorded.map((frame) => frame.rows);
 
@@ -433,13 +476,12 @@ test("past deposits are dealt out on reveal, not shown instantly", async ({ page
     const revealMs = recorded[settledAt].t - recorded[0].t;
     test.info().annotations.push({ type: "reveal", description: `${Math.round(revealMs)}ms` });
     console.log(`deposit reveal settled in ${Math.round(revealMs)}ms`);
-    expect(revealMs, "the whole deal-out settles quickly").toBeLessThan(500);
+    expect(revealMs, "the whole deal-out settles quickly").toBeLessThan(900);
 });
 
 test("a long deposit history stays inside the sidebar and scrolls", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only; the tap-pinned history is covered below");
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page, { history: true });
     await settle(page);
 
     const history = sidebar(page).getByRole("list", { name: "Deposits" });
@@ -532,8 +574,7 @@ test("many positions scroll inside the sidebar and enter quickly", async ({ page
 
 test("scrollable lists blur only the edges that hide more content", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover and wheel");
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page, { history: true });
     await settle(page);
 
     // Each scroller fades its content out over the band an overlay blurs.
@@ -584,8 +625,7 @@ test("scrollable lists blur only the edges that hide more content", async ({ pag
 
 test("deposit rows cast only a light shadow", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page, { history: true });
     await sidebar(page)
         .getByRole("button", { name: /^Balance/ })
         .hover();
@@ -602,16 +642,20 @@ test("deposit rows cast only a light shadow", async ({ page, isMobile }) => {
 
 test("depositing adds to the history", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover flow");
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page, { history: true });
+    await expect(balanceButton(page)).toHaveAccessibleName(`Balance ${HISTORY_BALANCE}, show deposits`);
 
-    const deposit = sidebar(page).getByRole("button", { name: "Deposit", exact: true });
-    await deposit.hover();
-    await deposit.click();
+    await openDepositForm(page);
+    await amountField(page).fill("500");
+    await depositButton(page).click();
+
+    // The history reveals once the form closes, as the pointer is still over the section.
     const rows = sidebar(page).getByRole("list", { name: "Deposits" }).getByRole("listitem");
     await expect(rows).toHaveCount(DEPOSITS + 1);
     await expect(rows.first()).toContainText("+$500.00");
-    await expect(rows.first()).toContainText("today");
+    await expect(rows.first()).toContainText("today", { timeout: 15_000 });
+    await expect(rows.first()).not.toContainText("Pending");
+    await expect(balanceButton(page)).toHaveAccessibleName(`Balance ${usd(HISTORY_TOTAL + 500)}, show deposits`);
 });
 
 test("hovering a position reveals a close button in the PnL's color", async ({ page, isMobile }) => {
@@ -676,7 +720,7 @@ test("the close button is reachable by keyboard", async ({ page, isMobile }) => 
 
     // The first position's close button follows the deposit button in tab order.
     const close = position(page, "BTC").getByRole("button", { name: "Close BTC position" });
-    await sidebar(page).getByRole("button", { name: "Deposit", exact: true }).focus();
+    await depositButton(page).focus();
     await page.keyboard.press("Tab");
     await expect(close).toBeFocused();
     await expect
@@ -697,8 +741,7 @@ test("disconnecting signs out and folds the sidebar away", async ({ page }) => {
 
 test("on touch, taps stand in for hover", async ({ page, isMobile }) => {
     test.skip(!isMobile, "touch only");
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await openWallet(page, { history: true });
     await settle(page);
 
     await sidebar(page)

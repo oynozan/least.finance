@@ -10,8 +10,11 @@ const USER_REJECTED = 4001;
 
 type Reading = { owner: string; usdc: number | null };
 
-/** The owner's USDC on Arc, undefined until the first read and null if reads fail before one lands. */
-export function useUsdcBalance(owner: string | undefined, live: boolean) {
+/**
+ * The owner's USDC on Arc, undefined until the first read and null if reads
+ * fail before one lands. A change to `refresh` reads it again at once.
+ */
+export function useUsdcBalance(owner: string | undefined, live: boolean, refresh?: unknown) {
     const [reading, setReading] = useState<Reading>();
 
     useEffect(() => {
@@ -43,7 +46,8 @@ export function useUsdcBalance(owner: string | undefined, live: boolean) {
             clearInterval(timer);
             document.removeEventListener("visibilitychange", read);
         };
-    }, [owner, live]);
+        // `refresh` isn't read inside: a new value only restarts the reads.
+    }, [owner, live, refresh]);
 
     return reading && reading.owner === owner ? reading.usdc : undefined;
 }

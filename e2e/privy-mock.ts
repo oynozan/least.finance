@@ -16,6 +16,11 @@ const wallets = new WeakMap<Page, string>();
  * side by side on one backend each have an account of their own. Lowercase,
  * as a mixed-case address must carry a valid EIP-55 checksum.
  */
+/** Signs `page` in with a wallet another page already uses, as a second tab or a later visit would. Call it first. */
+export function useWallet(page: Page, address: string) {
+    wallets.set(page, address.toLowerCase());
+}
+
 export function addressOf(page: Page) {
     let address = wallets.get(page);
     if (!address) {

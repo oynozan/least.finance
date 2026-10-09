@@ -105,7 +105,8 @@ function SignedInWallet() {
 
     const account = useAccount();
     // The wallet's own USDC, which a deposit draws on.
-    const walletBalance = useUsdcBalance(address, open);
+    // Read again whenever a deposit moves on, so Max doesn't offer what has already been sent.
+    const walletBalance = useUsdcBalance(address, open, account.notice);
     const { offArc, switching, cantSwitch, switchToArc } = useArcNetwork(address);
 
     // Mock positions until trading is live.

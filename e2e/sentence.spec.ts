@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
+import { seedDeposits } from "./backend";
+import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 
 const trade = (page: Page) => page.getByRole("region", { name: "Trade" });
 const pill = (page: Page, name: string | RegExp) =>
@@ -46,6 +47,10 @@ async function connect(page: Page) {
     await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.locator("#privy-modal-content").getByRole("button", { name: "MetaMask" }).click();
     await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    // Spendable USDC comes from the account: let it settle before the sentence is read.
+    await expect(sidebar(page).getByRole("button", { name: /^Balance/ })).not.toHaveAccessibleName(/loading/, {
+        timeout: 10_000,
+    });
     // A fresh connection opens the wallet; fold it away to see the sentence.
     await page.keyboard.press("Escape");
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
@@ -378,6 +383,30 @@ test("Review opens the details in the sidebar, then confirms", async ({ page, is
     await page.getByRole("button", { name: /^Wallet/ }).click();
     await expect(page.getByRole("complementary", { name: "Wallet" })).toBeVisible();
 });
+
+for (const [seeded, blocked] of [
+    ["2400", true],
+    ["3500", false],
+] as const) {
+    test(`a buy of 3000 USD is ${blocked ? "blocked" : "allowed"} with ${seeded} USDC in the account`, async ({
+        page,
+    }) => {
+        // Seeded before connecting, so the session loads it.
+        await seedDeposits(addressOf(page), [{ amount: seeded, daysAgo: 1 }]);
+        await connect(page);
+        await expect(sidebar(page).getByRole("button", { name: /^Balance/ })).toHaveAccessibleName(
+            `Balance $${Number(seeded).toLocaleString("en-US")}.00, show deposits`,
+        );
+        await pick(page, "Swap", /^Buy/);
+        await amount(page).fill("3000");
+        if (blocked) {
+            await expect(review(page)).toHaveAttribute("aria-disabled", "true");
+            await expect(review(page)).toHaveAccessibleDescription("You have $2,400.00 USDC to spend.");
+        } else {
+            await expect(review(page)).not.toHaveAttribute("aria-disabled");
+        }
+    });
+}
 
 test("the sentence is keyboard operable", async ({ page, isMobile }) => {
     test.skip(isMobile, "keyboard flow");

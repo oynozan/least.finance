@@ -41,6 +41,10 @@ const CREDITED_NOTICE_MS = 5_000;
 const MAX_RETRY_MS = 30_000;
 
 const UNREACHABLE: ApiError = { code: "unavailable", message: "Couldn't reach the server. Retrying…" };
+/** Failures worth asking again about; the rest (a wallet that isn't the user's, say) won't change by retrying. */
+const RETRYABLE = new Set<ApiError["code"]>(["unavailable", "internal", "rate_limited"]);
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * The signed-in wallet's account on the server, kept live over a socket.
@@ -56,6 +60,8 @@ export class AccountClient {
     #retry: ReturnType<typeof setTimeout> | undefined;
     #noticeTimer: ReturnType<typeof setTimeout> | undefined;
     #attempt = 0;
+    /** Deposits being confirmed right now, so a reconnect doesn't report one twice. */
+    readonly #confirming = new Set<string>();
 
     constructor(url: string) {
         this.#url = url;
@@ -93,18 +99,7 @@ export class AccountClient {
 
         socket.on("connect", () => {
             this.#attempt = 0;
-            socket
-                .timeout(CONNECT_TIMEOUT_MS)
-                .emitWithAck("wallet:connect", { address: wallet })
-                .then(
-                    (result) => {
-                        if (this.#socket !== socket) return;
-                        if (result.ok) this.#dispatch({ type: "session", session: result.data });
-                        else this.#dispatch({ type: "failed", error: result.error });
-                    },
-                    // No answer: the reconnect that follows binds again.
-                    () => undefined,
-                );
+            void this.#bind(socket, wallet);
         });
         socket.on("deposit:credited", ({ deposit, account }) => {
             this.#dispatch({ type: "credited", deposit, account });
@@ -123,6 +118,31 @@ export class AccountClient {
         });
     }
 
+    /** Binds the socket to the wallet's account, asking again while the server can't answer. */
+    async #bind(socket: AppSocket, wallet: string) {
+        for (let attempt = 0; ; attempt++) {
+            const result = await socket
+                .timeout(CONNECT_TIMEOUT_MS)
+                .emitWithAck("wallet:connect", { address: wallet })
+                .catch(() => null);
+            if (this.#socket !== socket || !socket.connected) return;
+            if (result?.ok) {
+                this.#dispatch({ type: "session", session: result.data });
+                // Deposits still pending from before a reconnect are reported again.
+                const { state } = this.#snapshot;
+                if (state.status === "ready") {
+                    for (const p of state.pending) void this.#confirm(socket, p.txHash, p.amount);
+                }
+                return;
+            }
+            const error = result?.error ?? UNREACHABLE;
+            this.#dispatch({ type: "failed", error });
+            if (!RETRYABLE.has(error.code)) return;
+            await pause(Math.min(MAX_RETRY_MS, 1_000 * 2 ** attempt));
+            if (this.#socket !== socket || !socket.connected) return;
+        }
+    }
+
     disconnect() {
         clearTimeout(this.#retry);
         clearTimeout(this.#noticeTimer);
@@ -131,6 +151,7 @@ export class AccountClient {
         this.#socket = null;
         this.#wallet = null;
         this.#attempt = 0;
+        this.#confirming.clear();
         if (this.#snapshot.state.status !== "idle" || this.#snapshot.notice) {
             this.#snapshot = { state: initialAccountState, notice: null };
             this.#emit();
@@ -166,6 +187,9 @@ export class AccountClient {
             return (error as { code?: unknown }).code === USER_REJECTED ? "cancelled" : "failed";
         }
         if (typeof txHash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) return "failed";
+        // The user signed out or switched wallets while the wallet was open; that account's server
+        // credits the deposit, and it mustn't show up in this one.
+        if (this.#socket !== socket) return "sent";
 
         this.#dispatch({ type: "sent", txHash, amount: value, sentAt: Date.now() });
         this.#notify({ kind: "confirming", amount: value });
@@ -173,14 +197,22 @@ export class AccountClient {
         return "sent";
     }
 
-    /** Has the server credit a sent deposit, or takes it back out if it can't. */
+    /**
+     * Has the server credit a sent deposit, or takes it back out if the server
+     * says it can't be. Losing the connection decides nothing: the deposit
+     * stays pending and is reported again once the socket is back.
+     */
     async #confirm(socket: AppSocket, txHash: Hex, value: bigint) {
+        const key = txHash.toLowerCase();
+        if (this.#confirming.has(key)) return;
+        this.#confirming.add(key);
         const result = await socket
             .timeout(REPORT_TIMEOUT_MS)
             .emitWithAck("deposit:submit", { txHash })
-            .catch(() => null);
-        if (this.#socket !== socket) return;
-        if (result?.ok) {
+            .catch(() => null)
+            .finally(() => this.#confirming.delete(key));
+        if (this.#socket !== socket || result === null) return;
+        if (result.ok) {
             this.#dispatch({ type: "settled", receipt: result.data });
             this.#notify({ kind: "credited", amount: value }, CREDITED_NOTICE_MS);
             return;
@@ -192,12 +224,7 @@ export class AccountClient {
             return;
         }
         this.#dispatch({ type: "reverted", txHash });
-        this.#notify({
-            kind: "reverted",
-            message:
-                result?.error.message ??
-                "Couldn't confirm that deposit yet. If it lands on Arc, it's credited automatically.",
-        });
+        this.#notify({ kind: "reverted", message: result.error.message });
     }
 
     /** Older deposits, past the ones already loaded. */
