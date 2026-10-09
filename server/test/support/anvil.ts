@@ -25,14 +25,14 @@ export function freePort(): Promise<number> {
     });
 }
 
-/** A local chain with Arc's chain ID, mining a block per transaction. */
-export async function startAnvil(port?: number) {
+/** A local chain mining a block per transaction, with Arc's chain ID unless told otherwise. */
+export async function startAnvil(port?: number, options: { chainId?: number } = {}) {
     const chosen = port ?? (await freePort());
     const child = spawn(
         anvilBinary(),
         [
             "--chain-id",
-            "5042",
+            String(options.chainId ?? 5042),
             "--host",
             "127.0.0.1",
             "--port",

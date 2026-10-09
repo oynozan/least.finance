@@ -16,6 +16,12 @@ const list = (fallback: readonly string[]) =>
             return items.length > 0 ? items : [...fallback];
         });
 
+/** An optional secret: left blank in the .env file, it's the same as unset. */
+const optionalKey = z
+    .string()
+    .optional()
+    .transform((value) => value?.trim() || undefined);
+
 const usdc = z
     .string()
     .regex(/^\d+(\.\d{1,18})?$/, "a USDC amount such as 0.01")
@@ -64,6 +70,14 @@ const schema = z.object({
     DEPOSIT_START_BLOCK: z.coerce.number().int().min(0).optional(),
     /** How long a reported transaction may take to show up on chain. */
     DEPOSIT_RECEIPT_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(30_000),
+
+    /** RPCs for the chains deposits are bridged from, tried in order. */
+    ETHEREUM_RPC_URLS: list(["https://ethereum-rpc.publicnode.com"]),
+    BNB_RPC_URLS: list(["https://bsc-dataseed.bnbchain.org"]),
+    RELAY_API_KEY: optionalKey,
+    ACROSS_INTEGRATOR_ID: optionalKey,
+    /** How often a bridge order's status is checked. */
+    ORDER_POLL_MS: z.coerce.number().int().min(100).default(1_500),
 });
 
 export type Config = z.output<typeof schema>;

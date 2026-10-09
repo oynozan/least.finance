@@ -75,6 +75,36 @@ describe("loadConfig", () => {
         expect(() => load({ DEPOSIT_MIN_USDC: value })).toThrow(/DEPOSIT_MIN_USDC/);
     });
 
+    it("defaults the Ethereum and BNB Chain RPCs to public ones", () => {
+        const config = load();
+        expect(config.ETHEREUM_RPC_URLS).toEqual(["https://ethereum-rpc.publicnode.com"]);
+        expect(config.BNB_RPC_URLS).toEqual(["https://bsc-dataseed.bnbchain.org"]);
+    });
+
+    it("parses comma lists of source-chain RPCs, ignoring spaces and empty entries", () => {
+        const config = load({
+            ETHEREUM_RPC_URLS: " https://eth-a.example , ,https://eth-b.example,",
+            BNB_RPC_URLS: "https://bnb-a.example",
+        });
+        expect(config.ETHEREUM_RPC_URLS).toEqual(["https://eth-a.example", "https://eth-b.example"]);
+        expect(config.BNB_RPC_URLS).toEqual(["https://bnb-a.example"]);
+    });
+
+    it("leaves the bridge provider keys unset until given", () => {
+        const config = load();
+        expect(config.RELAY_API_KEY).toBeUndefined();
+        expect(config.ACROSS_INTEGRATOR_ID).toBeUndefined();
+        const set = load({ RELAY_API_KEY: "relay-key", ACROSS_INTEGRATOR_ID: "0xabcd" });
+        expect(set.RELAY_API_KEY).toBe("relay-key");
+        expect(set.ACROSS_INTEGRATOR_ID).toBe("0xabcd");
+    });
+
+    it("polls bridge orders every 1.5 seconds unless told otherwise, and not faster than 100 ms", () => {
+        expect(load().ORDER_POLL_MS).toBe(1_500);
+        expect(load({ ORDER_POLL_MS: "100" }).ORDER_POLL_MS).toBe(100);
+        expect(() => load({ ORDER_POLL_MS: "50" })).toThrow(/ORDER_POLL_MS/);
+    });
+
     it("rejects an out-of-range port", () => {
         expect(() => load({ PORT: "70000" })).toThrow(/PORT/);
     });
