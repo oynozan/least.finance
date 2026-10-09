@@ -43,6 +43,22 @@ export type DepositRules = {
     minDeposit: UsdcAmount;
 };
 
+/** One coin in a wallet on one chain, as the deposit form lists it. */
+export type CoinBalance = {
+    /** The catalog key, like "ethereum:ETH". */
+    coin: string;
+    symbol: string;
+    chainName: string;
+    chainId: number;
+    decimals: number;
+    /** In the coin's own units, as a decimal. */
+    amount: string;
+    /** `amount` less what's kept back for gas, floored at 0. */
+    spendable: string;
+    /** Null when the coin's price is unknown. */
+    usd: number | null;
+};
+
 /** What connecting a wallet hands back: everything the sidebar shows. */
 export type WalletSession = {
     account: AccountView;
