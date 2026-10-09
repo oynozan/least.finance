@@ -19,7 +19,7 @@ import { useAccount } from "./account-provider";
 import { useArcNetwork, useUsdcBalance } from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
 import { DepositForm } from "./deposit-form";
-import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
+import { ArcLogo, CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { canHover } from "./pointer";
 import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
@@ -131,7 +131,7 @@ function SignedInWallet() {
             <header className={styles.header}>
                 {address && (
                     <span className={styles.account}>
-                        <span className={styles.avatar} style={avatarStyle(address)} aria-hidden="true" />
+                        <ArcLogo className={styles.arcLogo} role="img" aria-hidden={false} aria-label="Arc" />
                         {shortenAddress(address)}
                     </span>
                 )}
@@ -441,13 +441,4 @@ function IconButton({ label, onClick, children }: { label: string; onClick: () =
             {children}
         </motion.button>
     );
-}
-
-/** A two-tone gradient seeded by the address, as a tiny identicon. */
-function avatarStyle(address: string) {
-    const seed = parseInt(address.slice(2, 10), 16) || 0;
-    const hue = seed % 360;
-    return {
-        background: `conic-gradient(from ${seed % 180}deg, hsl(${hue} 80% 62%), hsl(${(hue + 70) % 360} 85% 55%), hsl(${hue} 80% 62%))`,
-    };
 }
