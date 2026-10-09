@@ -129,16 +129,6 @@
     height: 14px;
 }
 
-/* No icon, so the padding evens out. */
-.switchNetwork {
-    padding: 0 20px;
-}
-
-.switchNetwork[aria-disabled="true"] {
-    opacity: 0.6;
-    cursor: default;
-}
-
 .deposit[aria-disabled="true"] {
     opacity: 0.6;
     cursor: default;

@@ -35,12 +35,7 @@ const phaseOf = (notice: DepositNotice | null): Phase =>
 
 type DepositButtonProps = {
     notice: DepositNotice | null;
-    /**
-     * Off Arc it switches the wallet's network instead. One button for both,
-     * so focus stays on it when the switch goes through.
-     */
-    variant?: "deposit" | "switch";
-    /** The account hasn't loaded, or a switch is under way. */
+    /** The account hasn't loaded. */
     disabled: boolean;
     onClick: () => void;
 };
@@ -51,11 +46,11 @@ type DepositButtonProps = {
  * and turns from gray to green; once it's credited it fills and holds green
  * with a check, then settles back.
  */
-export function DepositButton({ notice, variant = "deposit", disabled, onClick }: DepositButtonProps) {
+export function DepositButton({ notice, disabled, onClick }: DepositButtonProps) {
     const reduce = useReducedMotion();
     const [fill, animate] = useAnimate<HTMLSpanElement>();
     const [button, animateButton] = useAnimate<HTMLButtonElement>();
-    const target = variant === "switch" ? "idle" : phaseOf(notice);
+    const target = phaseOf(notice);
     // Done and failed hold for a moment, then the button settles back even while the notice stays.
     const [settled, setSettled] = useState<DepositNotice | null>(null);
     const phase = settled === notice && target !== "running" ? "idle" : target;
@@ -103,11 +98,11 @@ export function DepositButton({ notice, variant = "deposit", disabled, onClick }
         <motion.button
             ref={button}
             type="button"
-            className={`${styles.deposit} ${variant === "switch" ? styles.switchNetwork : ""} overflow-hidden`}
+            className={`${styles.deposit} overflow-hidden`}
             aria-disabled={disabled || undefined}
             aria-busy={busy || undefined}
-            data-phase={variant === "deposit" ? phase : undefined}
-            title={disabled && variant === "deposit" ? "Loading your account…" : undefined}
+            data-phase={phase}
+            title={disabled ? "Loading your account…" : undefined}
             // Gray while it works, so the fill reads against it; white again once it settles.
             animate={{
                 backgroundColor: phase === "idle" ? "rgb(245 245 243)" : "rgb(53 53 50)",
@@ -123,31 +118,29 @@ export function DepositButton({ notice, variant = "deposit", disabled, onClick }
                 aria-hidden="true"
                 className="pointer-events-none absolute inset-0 origin-left rounded-[inherit] opacity-0"
             />
-            {variant === "deposit" && (
-                <span className="relative flex size-3.5 items-center justify-center" aria-hidden="true">
-                    <AnimatePresence mode="popLayout" initial={false}>
-                        <motion.span
-                            key={icon}
-                            className="absolute inset-0 flex items-center justify-center"
-                            initial={{ opacity: 0, y: "70%", filter: "blur(3px)" }}
-                            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                            exit={{ opacity: 0, y: "-70%", filter: "blur(3px)" }}
-                            transition={glyph}
-                        >
-                            {icon === "plus" ? (
-                                <PlusIcon className={styles.depositIcon} />
-                            ) : icon === "spinner" ? (
-                                <Spinner />
-                            ) : icon === "check" ? (
-                                <Tick />
-                            ) : (
-                                <CloseIcon className={styles.depositIcon} />
-                            )}
-                        </motion.span>
-                    </AnimatePresence>
-                </span>
-            )}
-            <span className="relative">{variant === "switch" ? "Switch to Arc" : "Deposit"}</span>
+            <span className="relative flex size-3.5 items-center justify-center" aria-hidden="true">
+                <AnimatePresence mode="popLayout" initial={false}>
+                    <motion.span
+                        key={icon}
+                        className="absolute inset-0 flex items-center justify-center"
+                        initial={{ opacity: 0, y: "70%", filter: "blur(3px)" }}
+                        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                        exit={{ opacity: 0, y: "-70%", filter: "blur(3px)" }}
+                        transition={glyph}
+                    >
+                        {icon === "plus" ? (
+                            <PlusIcon className={styles.depositIcon} />
+                        ) : icon === "spinner" ? (
+                            <Spinner />
+                        ) : icon === "check" ? (
+                            <Tick />
+                        ) : (
+                            <CloseIcon className={styles.depositIcon} />
+                        )}
+                    </motion.span>
+                </AnimatePresence>
+            </span>
+            <span className="relative">Deposit</span>
         </motion.button>
     );
 }

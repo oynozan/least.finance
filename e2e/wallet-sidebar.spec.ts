@@ -11,10 +11,6 @@ import {
     mockArcRpc,
     mockPrivy,
     moveWalletTo,
-    refuseNewNetworks,
-    rejectNextChainSwitch,
-    switchWalletAccount,
-    switchWalletChain,
     walletChainId,
     walletRequests,
 } from "./privy-mock";
@@ -26,11 +22,9 @@ const POSITIONS = MOCK_POSITIONS.length;
 
 const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
 const dock = (page: Page) => page.getByRole("button", { name: `Wallet ${addressOf(page)}` });
-const dockDot = (page: Page) => dock(page).locator('[aria-hidden="true"]');
 const modal = (page: Page) => page.locator("#privy-modal-content");
 const depositButton = (page: Page) => sidebar(page).getByRole("button", { name: "Deposit", exact: true });
 const switchButton = (page: Page) => sidebar(page).getByRole("button", { name: "Switch to Arc" });
-const switchStatus = (page: Page) => sidebar(page).getByRole("status");
 const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: /^Balance/ });
 const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "Deposit amount" });
 const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
@@ -183,95 +177,6 @@ test("connecting adds Arc to the wallet and switches to it", async ({ page }) =>
     ]);
     await expect(depositButton(page)).toBeVisible();
     await expect(switchButton(page)).toHaveCount(0);
-});
-
-test("a wallet kept off Arc is offered a switch instead of a deposit", async ({ page }) => {
-    await rejectNextChainSwitch(page);
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-
-    await expect(switchButton(page)).toBeVisible();
-    await expect(depositButton(page)).toHaveCount(0);
-    expect(await walletChainId(page)).toBe("0x1");
-    await shoot(page, "12-switch-to-arc");
-
-    await switchButton(page).click();
-    await expect(depositButton(page)).toBeVisible();
-    expect(await walletChainId(page)).toBe("0x13b2");
-});
-
-test("declining the switch keeps the button ready and focused for another try", async ({ page, isMobile }) => {
-    test.skip(isMobile, "keyboard flow is a desktop concern");
-    await rejectNextChainSwitch(page);
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-    await expect(switchButton(page)).toBeVisible();
-    // Privy hands focus back to the dock button just after its modal closes, so wait for that first.
-    await expect(dock(page)).toBeFocused();
-
-    await rejectNextChainSwitch(page);
-    await switchButton(page).focus();
-    await page.keyboard.press("Enter");
-    await expect
-        .poll(async () => (await walletRequests(page)).filter((r) => r.method === "wallet_switchEthereumChain").length)
-        .toBe(2);
-    await expect(switchButton(page)).not.toHaveAttribute("aria-disabled", "true");
-    await expect(switchButton(page)).toBeFocused();
-    await expect(switchStatus(page)).toBeEmpty();
-    expect(await walletChainId(page)).toBe("0x1");
-
-    await page.keyboard.press("Enter");
-    await expect(depositButton(page)).toBeVisible();
-    await expect(depositButton(page)).toBeFocused();
-});
-
-test("a wallet that can't add Arc is told so instead of failing silently", async ({ page }) => {
-    await refuseNewNetworks(page);
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-    await expect(switchButton(page)).toBeVisible();
-    await expect(switchStatus(page)).toBeEmpty();
-
-    await switchButton(page).click();
-    await expect(switchStatus(page)).toContainText("couldn't switch to Arc");
-    await expect(switchButton(page)).not.toHaveAttribute("aria-disabled", "true");
-    await shoot(page, "13-switch-failed");
-});
-
-test("the dock's dot turns red while the wallet is off Arc", async ({ page }) => {
-    await rejectNextChainSwitch(page);
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-
-    await expect(dock(page)).toHaveAccessibleName(`Wallet ${addressOf(page)}, on another network`);
-    await expect(dockDot(page)).toHaveCSS("background-color", LOSS);
-
-    await switchButton(page).click();
-    await expect(depositButton(page)).toBeVisible();
-    await expect(dock(page)).toHaveAccessibleName(`Wallet ${addressOf(page)}`);
-    await expect(dockDot(page)).toHaveCSS("background-color", GAIN);
-});
-
-test("switching accounts in the wallet still checks its network", async ({ page }) => {
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-    await expect.poll(() => walletChainId(page)).toBe("0x13b2");
-
-    await switchWalletAccount(page, "0x1111111111111111111111111111111111111111");
-    await switchWalletChain(page, "0x1");
-    await expect(switchButton(page)).toBeVisible();
-    await expect(depositButton(page)).toHaveCount(0);
-});
-
-test("moving the wallet off Arc brings the switch back", async ({ page }) => {
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-    await expect.poll(() => walletChainId(page)).toBe("0x13b2");
-    await expect(depositButton(page)).toBeVisible();
-
-    await switchWalletChain(page, "0x1");
-    await expect(switchButton(page)).toBeVisible();
-    await expect(depositButton(page)).toHaveCount(0);
 });
 
 test("the balance is the account's USDC on the server", async ({ page }) => {

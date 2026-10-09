@@ -4,11 +4,16 @@ import { accountOf, sendFromOutside } from "./backend";
 import {
     addressOf,
     dropNextSend,
+    failNextChainSwitch,
+    ignoreNextChainSwitch,
     installWallet,
     mockArcRpc,
     mockPrivy,
+    moveWalletTo,
+    rejectNextChainSwitch,
     rejectNextSend,
     useWallet,
+    walletChainId,
     walletRequests,
 } from "./privy-mock";
 
@@ -19,6 +24,8 @@ const depositButton = (page: Page) => sidebar(page).getByRole("button", { name: 
 const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "Deposit amount" });
 const maxButton = (page: Page) => sidebar(page).getByRole("button", { name: "Max" });
 const cancelButton = (page: Page) => sidebar(page).getByRole("button", { name: "Cancel deposit" });
+/** The form's button while the wallet is asked to approve. */
+const confirming = (page: Page) => sidebar(page).getByRole("button", { name: "Confirm in wallet" });
 const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
 // Read out, not shown: the wallet's balance, or why the amount is too much.
 const wallet = (page: Page) => sidebar(page).locator("#deposit-wallet");
@@ -231,6 +238,61 @@ test("declining in the wallet keeps the form and the amount, and trying again wo
     await expect(amountField(page)).toHaveCount(0);
     expect(await sentTransactions(page)).toHaveLength(2);
     expect(await serverBalance(page)).toBe("10");
+});
+
+test("a deposit from another network switches the wallet to Arc first", async ({ page }) => {
+    await start(page, 1_000);
+    await moveWalletTo(page, "0x1");
+    const before = (await walletRequests(page)).length;
+    await submit(page, "5");
+    await expect.poll(async () => (await sentTransactions(page)).length).toBe(1);
+
+    const after = (await walletRequests(page)).slice(before);
+    const toArc = after.findIndex(
+        (r) =>
+            r.method === "wallet_switchEthereumChain" &&
+            (r.params?.[0] as { chainId?: string } | undefined)?.chainId?.toLowerCase() === "0x13b2",
+    );
+    expect(toArc).toBeGreaterThanOrEqual(0);
+    expect(toArc).toBeLessThan(after.findIndex((r) => r.method === "eth_sendTransaction"));
+    expect(await walletChainId(page)).toBe("0x13b2");
+});
+
+test("declining the network switch keeps the form and sends nothing", async ({ page }) => {
+    await start(page, 1_000);
+    await moveWalletTo(page, "0x1");
+    await rejectNextChainSwitch(page);
+    const before = (await walletRequests(page)).length;
+    await submit(page, "5");
+    await expect
+        .poll(async () => (await walletRequests(page)).slice(before).some((r) => r.method === "wallet_switchEthereumChain"))
+        .toBe(true);
+    await expect(confirming(page)).toBeHidden();
+
+    await expect(amountField(page)).toHaveValue("5");
+    await expect(hint(page)).toHaveText("");
+    expect(await sentTransactions(page)).toHaveLength(0);
+
+    await depositButton(page).click();
+    await expect.poll(async () => (await sentTransactions(page)).length).toBe(1);
+});
+
+test("a wallet that can't switch to Arc is told so in the form", async ({ page }) => {
+    await start(page, 1_000);
+    await moveWalletTo(page, "0x1");
+    await failNextChainSwitch(page);
+    await submit(page, "5");
+    await expect(hint(page)).toContainText("couldn't switch to Arc");
+    expect(await sentTransactions(page)).toHaveLength(0);
+});
+
+test("a wallet that ignores the switch sends nothing", async ({ page }) => {
+    await start(page, 1_000);
+    await moveWalletTo(page, "0x1");
+    await ignoreNextChainSwitch(page);
+    await submit(page, "5");
+    await expect(hint(page)).toContainText("on another network");
+    expect(await sentTransactions(page)).toHaveLength(0);
 });
 
 test("a transaction that never lands is counted at once, then taken back with the server's message", async ({

@@ -16,7 +16,7 @@ import {
 import { toUsdc, type HistoryRow } from "@/lib/account/state";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
-import { useArcNetwork, useUsdcBalance, useWalletNetwork } from "./arc-wallet";
+import { useUsdcBalance, useWalletNetwork } from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
 import { DepositButton } from "./deposit-button";
 import { DepositForm } from "./deposit-form";
@@ -109,7 +109,6 @@ function SignedInWallet() {
     // The wallet's own USDC, which a deposit draws on.
     // Read again whenever a deposit moves on, so Max doesn't offer what has already been sent.
     const walletBalance = useUsdcBalance(address, open, account.notice);
-    const { offArc, switching, cantSwitch, switchToArc } = useArcNetwork(address);
     const network = useWalletNetwork(address);
 
     // Mock positions until trading is live.
@@ -156,10 +155,6 @@ function SignedInWallet() {
                 notice={account.notice}
                 onDeposit={account.deposit}
                 onStartDeposit={account.dismissNotice}
-                offArc={offArc}
-                switching={switching}
-                cantSwitch={cantSwitch}
-                onSwitchToArc={switchToArc}
             />
 
             <div className={styles.positionsFrame}>
@@ -214,11 +209,6 @@ type WalletSectionProps = {
     notice: DepositNotice | null;
     onDeposit: (amount: string) => Promise<DepositResult>;
     onStartDeposit: () => void;
-    /** The wallet is on another network, so the deposit button switches it to Arc instead. */
-    offArc: boolean;
-    switching: boolean;
-    cantSwitch: boolean;
-    onSwitchToArc: () => void;
 };
 
 /** Balance and the deposit button; hovering it deals out past deposits. */
@@ -231,19 +221,15 @@ function WalletSection({
     notice,
     onDeposit,
     onStartDeposit,
-    offArc,
-    switching,
-    cantSwitch,
-    onSwitchToArc,
 }: WalletSectionProps) {
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
     const [pinned, setPinned] = useState(false);
     const [entering, setEntering] = useState(false);
-    const depositing = entering && !offArc && minDeposit !== null;
+    const depositing = entering && minDeposit !== null;
     // The history would cover the positions while an amount is typed in.
     const showHistory = (hovered || focused || pinned) && !depositing;
-    const status = offArc ? (cantSwitch ? SWITCH_FAILED : null) : notice ? null : accountProblem;
+    const status = notice ? null : accountProblem;
 
     return (
         <section
@@ -281,13 +267,11 @@ function WalletSection({
                     onClose={() => setEntering(false)}
                 />
             ) : (
-                // Not `disabled` when it can't act, which would drop keyboard focus mid-switch.
+                // Not `disabled` while the account loads, which would drop keyboard focus.
                 <DepositButton
-                    notice={offArc ? null : notice}
-                    variant={offArc ? "switch" : "deposit"}
-                    disabled={offArc ? switching : minDeposit === null}
+                    notice={notice}
+                    disabled={minDeposit === null}
                     onClick={() => {
-                        if (offArc) return onSwitchToArc();
                         if (minDeposit === null) return;
                         onStartDeposit();
                         setEntering(true);
@@ -296,8 +280,8 @@ function WalletSection({
             )}
 
             {/* Always mounted, so screen readers announce what appears in it. */}
-            <p role="status" className={styles.status} data-tone={statusTone(offArc ? null : notice, status)}>
-                {status ?? (!offArc && notice && <NoticeText notice={notice} />)}
+            <p role="status" className={styles.status} data-tone={statusTone(notice, status)}>
+                {status ?? (notice && <NoticeText notice={notice} />)}
             </p>
 
             {/* Floats over the positions instead of pushing them down. */}
@@ -343,9 +327,6 @@ function WalletSection({
         </section>
     );
 }
-
-const SWITCH_FAILED =
-    "This wallet couldn't switch to Arc. Add Arc (chain ID 5042) in its network settings, or connect another wallet.";
 
 function statusTone(notice: DepositNotice | null, problem: string | null) {
     if (problem) return undefined;

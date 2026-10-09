@@ -83,6 +83,12 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
         // Turned down in the wallet: the amount stays, ready to try again.
         if (result === "cancelled") return;
         if (result === "failed") return setWalletProblem("Your wallet couldn't send the deposit. Try again.");
+        if (result === "switch_failed")
+            return setWalletProblem(
+                "Your wallet couldn't switch to Arc. Add Arc (chain ID 5042) in its network settings, or connect another wallet.",
+            );
+        if (result === "wrong_network")
+            return setWalletProblem("Your wallet is on another network. Switch it to Arc and try again.");
         // Sent: the balance already counts it, and the status line follows its confirmation.
         onClose();
     };

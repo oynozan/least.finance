@@ -3,6 +3,7 @@
 import { createContext, use, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
 import { historyRows, optimisticBalance, toUsdc, type AccountState, type HistoryRow } from "@/lib/account/state";
+import { ensureNetwork } from "@/lib/wallet/network";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
 import { walletEnabled } from "./wallet-provider";
@@ -61,7 +62,9 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         const wallet = wallets.find((w) => address && w.address.toLowerCase() === address.toLowerCase()) ?? wallets[0];
         if (!wallet) return "failed";
         try {
-            if (wallet.chainId !== `eip155:${arc.id}`) await wallet.switchChain(arc.id);
+            const network = await ensureNetwork(wallet, arc.id);
+            if (network === "declined") return "cancelled";
+            if (network !== "ready") return network;
             const provider = await wallet.getEthereumProvider();
             return await client.deposit(amount, { provider, from: wallet.address });
         } catch (error) {

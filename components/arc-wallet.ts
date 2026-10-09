@@ -2,12 +2,9 @@ import { useEffect, useState } from "react";
 import { useWallets } from "@privy-io/react-auth";
 import { isAddress } from "viem";
 import { chainIdOf } from "@/lib/wallet/network";
-import { arc, readUsdcBalance } from "./arc";
+import { readUsdcBalance } from "./arc";
 
 const BALANCE_POLL_MS = 15_000;
-
-/** EIP-1193's code for a request the user turned down in their wallet. */
-const USER_REJECTED = 4001;
 
 type Reading = { owner: string; usdc: number | null };
 
@@ -58,38 +55,4 @@ export function useWalletNetwork(address: string | undefined): number | undefine
     const { wallets } = useWallets();
     const wallet = (address ? wallets.find((w) => w.address.toLowerCase() === address.toLowerCase()) : undefined) ?? wallets[0];
     return wallet ? chainIdOf(wallet.chainId) : undefined;
-}
-
-/** Whether the signed-in wallet sits on another network, and a way to move it to Arc. */
-export function useArcNetwork(address: string | undefined) {
-    const { wallets } = useWallets();
-    const [switching, setSwitching] = useState(false);
-    const [failedOn, setFailedOn] = useState<string>();
-
-    const signedIn = address ? wallets.find((w) => w.address.toLowerCase() === address.toLowerCase()) : undefined;
-    // After an account switch in the wallet app, its newest account still carries its network.
-    const wallet = signedIn ?? wallets[0];
-    const offArc = wallet !== undefined && wallet.chainId !== `eip155:${arc.id}`;
-
-    const switchToArc = async () => {
-        if (!wallet || switching) return;
-        const from = wallet.chainId;
-        setSwitching(true);
-        setFailedOn(undefined);
-        try {
-            await wallet.switchChain(arc.id);
-        } catch (error) {
-            if ((error as { code?: unknown }).code !== USER_REJECTED) setFailedOn(from);
-        } finally {
-            setSwitching(false);
-        }
-    };
-
-    return {
-        offArc,
-        switching,
-        /** The wallet turned the switch down without the user declining it, so it likely can't reach Arc. */
-        cantSwitch: offArc && failedOn === wallet?.chainId,
-        switchToArc,
-    };
 }

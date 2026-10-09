@@ -212,6 +212,8 @@ type WalletWindow = {
     ethereum: { request: (request: WalletRequest) => Promise<unknown> };
     walletRequests: WalletRequest[];
     rejectChainSwitches?: number;
+    /** What the wallet does with the next network switch: fail without a code, or claim success and stay put. */
+    nextSwitch?: "fail" | "ignore";
     refusesNewNetworks?: boolean;
     /** What the wallet does with the next transaction it's asked to send. */
     nextSend?: "reject" | "drop";
@@ -242,6 +244,18 @@ export const switchWalletChain = (page: Page, chainId: string) =>
 export const rejectNextChainSwitch = (page: Page) =>
     page.evaluate(() => {
         (window as unknown as WalletWindow).rejectChainSwitches = 1;
+    });
+
+/** The next network switch fails with an error that carries no code. */
+export const failNextChainSwitch = (page: Page) =>
+    page.evaluate(() => {
+        (window as unknown as WalletWindow).nextSwitch = "fail";
+    });
+
+/** The next network switch answers as if it worked, but the wallet stays where it is. */
+export const ignoreNextChainSwitch = (page: Page) =>
+    page.evaluate(() => {
+        (window as unknown as WalletWindow).nextSwitch = "ignore";
     });
 
 /** A wallet that can't add networks, like those with a fixed chain list. */
@@ -340,6 +354,12 @@ export async function installWallet(page: Page) {
                         if (state.rejectChainSwitches) {
                             state.rejectChainSwitches--;
                             throw fail(4001, "User rejected the request.");
+                        }
+                        if (state.nextSwitch) {
+                            const behavior = state.nextSwitch;
+                            state.nextSwitch = undefined;
+                            if (behavior === "fail") throw new Error("This wallet can't switch networks right now.");
+                            return null;
                         }
                         if (!target || !knownChains.has(target)) throw fail(4902, `Unrecognized chain ID "${target}".`);
                         if (target !== chainId) {

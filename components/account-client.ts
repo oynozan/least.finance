@@ -25,7 +25,7 @@ export type DepositNotice =
     | { kind: "reverted"; message: string };
 
 /** How the wallet took a deposit: turned down, failed to send, or sent (and now being confirmed). */
-export type DepositResult = "cancelled" | "failed" | "sent";
+export type DepositResult = "cancelled" | "failed" | "sent" | "switch_failed" | "wrong_network";
 
 export type AccountSnapshot = { state: AccountState; notice: DepositNotice | null };
 
