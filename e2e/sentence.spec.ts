@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { seedDeposits } from "./backend";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 
@@ -48,6 +48,14 @@ async function pick(page: Page, from: string | RegExp, option: string | RegExp) 
     await expect(picker(page)).toBeVisible();
     await picker(page).getByRole("option", { name: option }).click();
     await expect(picker(page)).toBeHidden();
+}
+
+/** The panel's box once its entrance spring has settled, and the pill's beside it (both in viewport px). */
+async function settledBoxes(page: Page, anchor: Locator) {
+    await expect
+        .poll(() => picker(page).evaluate((panel) => getComputedStyle(panel).transform), { timeout: 3_000 })
+        .toMatch(/^(none|matrix\(1, 0, 0, 1, 0, 0\))$/);
+    return Promise.all([anchor.boundingBox(), picker(page).boundingBox()]);
 }
 
 async function shoot(page: Page, name: string) {
@@ -529,7 +537,7 @@ test("the amount drops down under its pill, and dragging rolls the sentence live
     await amountPill(page).click();
     await expect(amountField(page)).toBeVisible();
     // A dropdown: it opens right under the pill, overlapping it sideways.
-    const [anchor, panel] = await Promise.all([amountPill(page).boundingBox(), picker(page).boundingBox()]);
+    const [anchor, panel] = await settledBoxes(page, amountPill(page));
     expect(panel!.y).toBeGreaterThanOrEqual(anchor!.y + anchor!.height);
     expect(panel!.y).toBeLessThan(anchor!.y + anchor!.height + 24);
     expect(panel!.x).toBeLessThan(anchor!.x + anchor!.width);
@@ -598,7 +606,7 @@ test("pickers drop down from their pill too", async ({ page }) => {
     for (const name of ["Swap", "ETH"]) {
         await pill(page, name).click();
         await expect(picker(page)).toBeVisible();
-        const [anchor, panel] = await Promise.all([pill(page, name).boundingBox(), picker(page).boundingBox()]);
+        const [anchor, panel] = await settledBoxes(page, pill(page, name));
         const below = panel!.y >= anchor!.y + anchor!.height;
         const above = panel!.y + panel!.height <= anchor!.y;
         expect(below || above).toBe(true);
