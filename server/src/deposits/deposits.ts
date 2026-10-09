@@ -86,7 +86,9 @@ export class DepositService {
             throw new AppError("tx_reverted", "That transaction failed on Arc, so nothing was deposited.");
         }
 
-        const transfers = transfersInReceipt(receipt).filter((t) => t.to === account.depositAddress);
+        const transfers = transfersInReceipt(receipt).filter(
+            (t) => t.to === account.depositAddress || account.formerDepositAddresses?.includes(t.to),
+        );
         if (transfers.length === 0) {
             throw new AppError("no_deposit", "That transaction didn't send any USDC to your deposit address.");
         }

@@ -1,4 +1,5 @@
 import { MongoClient, MongoServerError, type Collection, type Db, type Decimal128, type ObjectId } from "mongodb";
+import { mergeAccountsByPerson, type MigrationReport } from "./migrations.ts";
 
 /** A person's account. Addresses are stored lowercase. */
 export type AccountDoc = {
@@ -14,6 +15,8 @@ export type AccountDoc = {
     version: number;
     /** The Arc block height when the account opened; nothing can arrive before it. */
     openedAtBlock: number;
+    /** Deposit addresses of accounts merged into this one; USDC sent to them is still credited here. */
+    formerDepositAddresses?: string[];
     createdAt: Date;
     updatedAt: Date;
 };
@@ -39,7 +42,7 @@ export type DepositDoc = {
 export type LedgerEntryDoc = {
     _id: ObjectId;
     accountId: ObjectId;
-    kind: "deposit";
+    kind: "deposit" | "merge_in" | "merge_out";
     /** Signed wei. */
     amount: Decimal128;
     balanceAfter: Decimal128;
@@ -65,6 +68,7 @@ export type Database = {
     client: MongoClient;
     db: Db;
     collections: Collections;
+    migration: MigrationReport;
     close(): Promise<void>;
 };
 
@@ -85,8 +89,9 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             cursors: db.collection("cursors"),
             counters: db.collection("counters"),
         };
+        const migration = await mergeAccountsByPerson(client, collections);
         await ensureIndexes(collections);
-        return { client, db, collections, close: () => client.close() };
+        return { client, db, collections, migration, close: () => client.close() };
     } catch (error) {
         await client.close();
         throw error;
@@ -107,7 +112,13 @@ async function ensureIndexes({ accounts, deposits, ledger }: Collections) {
         accounts.createIndexes([
             { key: { depositAddress: 1 }, name: "deposit_address_unique", unique: true },
             { key: { depositIndex: 1 }, name: "deposit_index_unique", unique: true },
-            { key: { privyUserId: 1 }, name: "privy_user" },
+            { key: { privyUserId: 1 }, name: "privy_user_unique", unique: true },
+            {
+                key: { formerDepositAddresses: 1 },
+                name: "former_deposit_addresses_unique",
+                unique: true,
+                partialFilterExpression: { formerDepositAddresses: { $exists: true } },
+            },
             { key: { createdAt: 1 }, name: "created_at" },
         ]),
         deposits.createIndexes([
@@ -120,10 +131,6 @@ async function ensureIndexes({ accounts, deposits, ledger }: Collections) {
             { key: { accountId: 1, _id: -1 }, name: "account_history" },
         ]),
     ]);
-    // Accounts were once keyed by wallet; code 27 means the index is already gone.
-    await accounts.dropIndex("wallet_unique").catch((error: unknown) => {
-        if (!(error instanceof MongoServerError && error.code === 27)) throw error;
-    });
 }
 
 export const isDuplicateKey = (error: unknown) => error instanceof MongoServerError && error.code === 11000;

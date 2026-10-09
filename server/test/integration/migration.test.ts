@@ -1,0 +1,306 @@
+import { randomUUID } from "node:crypto";
+import { Decimal128, MongoClient, ObjectId } from "mongodb";
+import { parseUnits, type Address } from "viem";
+import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
+import { afterEach, beforeAll, afterAll, expect, inject, test, vi } from "vitest";
+import { mergeAccountsByPerson } from "../../src/db/migrations.ts";
+import { fromDecimal, toDecimal } from "../../src/db/money.ts";
+import type { Ack, DepositView, WalletSession } from "../../src/protocol.ts";
+import { startStack, type Stack, type User } from "../support/stack.ts";
+
+const wei = (usdc: string) => parseUnits(usdc, 18);
+const newAddress = () => privateKeyToAddress(generatePrivateKey()).toLowerCase() as Address;
+const newDid = () => `did:privy:${randomUUID().replaceAll("-", "")}`;
+
+let mongo: MongoClient;
+beforeAll(async () => {
+    mongo = await MongoClient.connect(inject("mongoUri"));
+});
+afterAll(() => mongo.close());
+
+let stack: Stack | undefined;
+afterEach(async () => {
+    await stack?.stop();
+    stack = undefined;
+});
+
+let nextIndex = 1000;
+let clock = Date.UTC(2026, 0, 1);
+
+type Seed = { id: ObjectId; address: Address; privyUserId: string; wallet: string; usdc: string };
+
+/** An old-style account (keyed by wallet), with one deposit and its ledger entry when it holds funds. */
+async function seedAccount(db: string, privyUserId: string, usdc: string): Promise<Seed> {
+    const id = new ObjectId();
+    const address = newAddress();
+    const wallet = newAddress();
+    const createdAt = new Date((clock += 60_000));
+    const amount = wei(usdc);
+    const funded = amount > 0n;
+    const database = mongo.db(db);
+    await database.collection("accounts").insertOne({
+        _id: id,
+        wallet,
+        privyUserId,
+        depositIndex: nextIndex++,
+        depositAddress: address,
+        balance: toDecimal(amount),
+        version: funded ? 1 : 0,
+        openedAtBlock: 0,
+        createdAt,
+        updatedAt: createdAt,
+    } as never);
+    if (funded) {
+        const depositId = new ObjectId();
+        await database.collection("deposits").insertOne({
+            _id: depositId,
+            accountId: id,
+            chainId: 5042,
+            txHash: `0x${randomUUID().replaceAll("-", "").padEnd(64, "0")}`,
+            logIndex: 0,
+            blockNumber: 1,
+            blockHash: `0x${"11".repeat(32)}`,
+            from: newAddress(),
+            to: address,
+            amount: toDecimal(amount),
+            source: "scan",
+            creditedAt: createdAt,
+        } as never);
+        await database.collection("ledger").insertOne({
+            _id: new ObjectId(),
+            accountId: id,
+            kind: "deposit",
+            amount: toDecimal(amount),
+            balanceAfter: toDecimal(amount),
+            refId: depositId,
+            createdAt,
+        } as never);
+    }
+    return { id, address, privyUserId, wallet, usdc };
+}
+
+/** Starts the stack against a database that already holds `seed`'s documents. */
+async function boot(seed: (db: string) => Promise<void>) {
+    const db = `test_${randomUUID().replaceAll("-", "")}`;
+    await seed(db);
+    stack = await startStack({
+        mongoUri: inject("mongoUri"),
+        anvilUrl: inject("anvilUrl"),
+        env: { MONGODB_DB: db },
+    });
+    return stack;
+}
+
+async function userFor(running: Stack, userId: string): Promise<User> {
+    const wallet = newAddress();
+    running.privy.setUser(userId, [wallet]);
+    await running.chain.fund(wallet, "1000");
+    return { userId, wallet, token: await running.privy.token(userId) };
+}
+
+async function openSession(running: Stack, user: User) {
+    const socket = await running.socket(user);
+    const result = (await socket.timeout(5000).emitWithAck("account:open", {})) as Ack<WalletSession>;
+    if (!result.ok) throw new Error(`account:open failed: ${result.error.code}`);
+    return { socket, session: result.data };
+}
+
+const collections = (running: Stack) => running.server.services.database.collections;
+
+test("a person's single account is re-keyed and keeps its address and balance", async () => {
+    const did = newDid();
+    let only!: Seed;
+    const running = await boot(async (db) => {
+        only = await seedAccount(db, did, "7");
+    });
+
+    const accounts = await collections(running).accounts.find({ privyUserId: did }).toArray();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).not.toHaveProperty("wallet");
+    expect(running.server.services.database.migration).toEqual({ rekeyed: 1, merged: 0 });
+
+    const { session } = await openSession(running, await userFor(running, did));
+    expect(session.account.depositAddress.toLowerCase()).toBe(only.address);
+    expect(session.account.balance).toBe("7");
+});
+
+test("a person's two accounts merge into the older, through the ledger", async () => {
+    const did = newDid();
+    let a!: Seed;
+    let b!: Seed;
+    const running = await boot(async (db) => {
+        a = await seedAccount(db, did, "3");
+        b = await seedAccount(db, did, "2");
+    });
+
+    const accounts = await collections(running).accounts.find({ privyUserId: did }).toArray();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({ _id: a.id, depositAddress: a.address, formerDepositAddresses: [b.address] });
+    expect(fromDecimal(accounts[0]!.balance)).toBe(wei("5"));
+    expect(accounts[0]!.version).toBe(2);
+    expect(running.server.services.database.migration).toEqual({ rekeyed: 1, merged: 1 });
+
+    const { merge_in } = Object.groupBy(await collections(running).ledger.find().toArray(), (entry) => entry.kind) as {
+        merge_in: { refId: ObjectId; accountId: ObjectId }[];
+    };
+    expect(merge_in).toHaveLength(1);
+    expect(merge_in[0]).toMatchObject({ refId: b.id, accountId: a.id });
+
+    const { session } = await openSession(running, await userFor(running, did));
+    expect(session.account.depositAddress.toLowerCase()).toBe(a.address);
+    expect(session.account.balance).toBe("5");
+    expect(session.deposits.items).toHaveLength(2);
+});
+
+test("USDC sent to a merged account's old address credits the survivor", async () => {
+    const did = newDid();
+    let b!: Seed;
+    const running = await boot(async (db) => {
+        await seedAccount(db, did, "3");
+        b = await seedAccount(db, did, "2");
+    });
+    const user = await userFor(running, did);
+    const { socket } = await openSession(running, user);
+    const pushes: { deposit: DepositView }[] = [];
+    socket.on("deposit:credited", (push) => pushes.push(push));
+
+    await running.chain.send(user.wallet, b.address, "1");
+
+    await vi.waitFor(() => expect(pushes).toHaveLength(1), { timeout: 10_000, interval: 50 });
+    const account = await collections(running).accounts.findOne({ privyUserId: did });
+    expect(fromDecimal(account!.balance)).toBe(wei("6"));
+    expect(pushes[0]!.deposit.amount).toBe("1");
+});
+
+test("the ledger still explains every balance after a merge", async () => {
+    const did = newDid();
+    let a!: Seed;
+    let b!: Seed;
+    const running = await boot(async (db) => {
+        a = await seedAccount(db, did, "3");
+        b = await seedAccount(db, did, "2");
+    });
+    const { ledger, accounts } = collections(running);
+
+    const survivor = await accounts.findOne({ _id: a.id });
+    const entries = await ledger.find({ accountId: a.id }).sort({ _id: 1 }).toArray();
+    let running_total = 0n;
+    for (const entry of entries) {
+        running_total += fromDecimal(entry.amount);
+        expect(fromDecimal(entry.balanceAfter)).toBe(running_total);
+    }
+    expect(running_total).toBe(fromDecimal(survivor!.balance));
+
+    const merged = await ledger.find({ accountId: b.id }).toArray();
+    expect(merged.map((entry) => entry.kind).sort()).toEqual(["deposit", "merge_out"]);
+    expect(merged.reduce((sum, entry) => sum + fromDecimal(entry.amount), 0n)).toBe(0n);
+});
+
+test("a database that still has wallet_unique and several accounts migrates", async () => {
+    const running = await boot(async (db) => {
+        await mongo.db(db).collection("accounts").createIndex({ wallet: 1 }, { unique: true, name: "wallet_unique" });
+        for (const usdc of ["1", "0", "4"]) await seedAccount(db, newDid(), usdc);
+    });
+
+    const accounts = await collections(running).accounts.find().toArray();
+    expect(accounts).toHaveLength(3);
+    for (const account of accounts) expect(account).not.toHaveProperty("wallet");
+    expect(running.server.services.database.migration).toEqual({ rekeyed: 3, merged: 0 });
+});
+
+test("running the migration again changes nothing", async () => {
+    const did = newDid();
+    const running = await boot(async (db) => {
+        await seedAccount(db, did, "3");
+        await seedAccount(db, did, "2");
+    });
+    const { client, collections: all } = running.server.services.database;
+    const before = await all.ledger.countDocuments();
+    expect(before).toBe(4);
+
+    expect(await mergeAccountsByPerson(client, all)).toEqual({ rekeyed: 0, merged: 0 });
+    expect(await all.ledger.countDocuments()).toBe(before);
+});
+
+test("a merge cut short by a restart completes once", async () => {
+    const did = newDid();
+    const running = await boot(async (db) => {
+        const a = await seedAccount(db, did, "3");
+        const b = await seedAccount(db, did, "2");
+        await seedAccount(db, did, "4");
+
+        // What the first merge leaves behind when the process dies before the second.
+        const database = mongo.db(db);
+        const gone = await database.collection("accounts").findOneAndDelete({ _id: b.id });
+        await database.collection("accounts").updateOne({ _id: a.id }, {
+            $inc: { balance: gone!.balance, version: 1 },
+            $addToSet: { formerDepositAddresses: b.address },
+        } as never);
+        const after = await database.collection("accounts").findOne({ _id: a.id });
+        await database.collection("ledger").insertMany([
+            {
+                _id: new ObjectId(),
+                accountId: b.id,
+                kind: "merge_out",
+                amount: toDecimal(-wei("2")),
+                balanceAfter: toDecimal(0n),
+                refId: b.id,
+                createdAt: new Date(),
+            },
+            {
+                _id: new ObjectId(),
+                accountId: a.id,
+                kind: "merge_in",
+                amount: toDecimal(wei("2")),
+                balanceAfter: after!.balance,
+                refId: b.id,
+                createdAt: new Date(),
+            },
+        ] as never);
+        await database.collection("deposits").updateMany({ accountId: b.id }, { $set: { accountId: a.id } });
+    });
+
+    const { accounts, ledger } = collections(running);
+    const left = await accounts.find({ privyUserId: did }).toArray();
+    expect(left).toHaveLength(1);
+    expect(fromDecimal(left[0]!.balance)).toBe(wei("9"));
+    expect(left[0]!.formerDepositAddresses).toHaveLength(2);
+    expect(running.server.services.database.migration.merged).toBe(1);
+    expect(await ledger.countDocuments({ kind: "merge_in" })).toBe(2);
+    expect(await ledger.countDocuments({ kind: "merge_out" })).toBe(2);
+});
+
+test("one person can't end up with two accounts", async () => {
+    const did = newDid();
+    const running = await boot(async (db) => {
+        await seedAccount(db, did, "1");
+    });
+    const { accounts } = collections(running);
+    const first = await accounts.findOne({ privyUserId: did });
+
+    await expect(
+        accounts.insertOne({
+            ...first!,
+            _id: new ObjectId(),
+            depositIndex: nextIndex++,
+            depositAddress: newAddress(),
+            balance: Decimal128.fromString("0"),
+        }),
+    ).rejects.toMatchObject({ code: 11000 });
+});
+
+test("two first-time opens at once make one account", async () => {
+    const running = await boot(async () => undefined);
+    const user = await running.user();
+    const [one, two] = await Promise.all([running.socket(user), running.socket(user)]);
+
+    const [a, b] = await Promise.all([
+        one.timeout(5000).emitWithAck("account:open", {}),
+        two.timeout(5000).emitWithAck("account:open", {}),
+    ]);
+
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(a.data.account.depositAddress).toBe(b.data.account.depositAddress);
+    expect(await collections(running).accounts.countDocuments({ privyUserId: user.userId })).toBe(1);
+});

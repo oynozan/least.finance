@@ -102,7 +102,7 @@ export class Ledger {
                 await collections.deposits.insertOne(deposit, { session });
 
                 const account = await collections.accounts.findOneAndUpdate(
-                    { _id: accountId, depositAddress: transfer.to },
+                    { _id: accountId, $or: [{ depositAddress: transfer.to }, { formerDepositAddresses: transfer.to }] },
                     { $inc: { balance: amount, version: 1 }, $set: { updatedAt: now } },
                     { session, returnDocument: "after" },
                 );

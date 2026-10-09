@@ -33,6 +33,7 @@ type Overrides = {
 /** Connects everything, starts listening and starts the deposit scan. */
 export async function startServer(config: Config, logger: Logger, overrides: Overrides = {}): Promise<RunningServer> {
     const database = await connectDatabase(config.MONGODB_URI, config.MONGODB_DB);
+    logger.info(database.migration, "Account migration done");
     try {
         const client = createArcClient(config.ARC_RPC_URLS);
         await assertArc(client);

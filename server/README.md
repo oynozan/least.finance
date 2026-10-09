@@ -29,6 +29,8 @@ npm run dev                    # http://localhost:4500, restarting on changes
 
 The variables are documented in [.env.example](.env.example). The server checks them all at startup and names any that are missing or invalid.
 
+**Deploying the one-account-per-person release:** stop every server instance first. At startup the new code merges each person's accounts into the oldest and deletes the rest. An instance still on the old code would keep a merged address mapped to a deleted account, and its deposit scan would wedge on it.
+
 **`DEPOSIT_MNEMONIC` holds every deposit.** Whoever has it can move the funds, and losing it loses them. Generate it once, keep it in a secret manager, and back it up. Never change it while accounts exist: their deposit addresses come from it. Moving the keys to a KMS or HSM is the next step before this holds real money at scale.
 
 ## API
