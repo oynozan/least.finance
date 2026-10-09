@@ -65,7 +65,16 @@ Step 2 closes a real risk. An Arc USDC deposit is a native-value transfer, so on
 - `authorizeWallet` accepts linked wallets of `chain_type` `ethereum` and `solana`.
 - Solana addresses are base58 and case-sensitive. They are compared exactly, never lowercased.
 
-**Binding.** The socket binds to the signed-in user's account as soon as the token is verified, opening it on first use. It no longer needs a wallet address to know whose account it is. Wallet addresses matter only where a specific wallet does: reading balances, and checking a deposit's sender.
+**Binding.** The socket binds to the signed-in user's account as soon as the token is verified, opening it on first use. It no longer needs a wallet address to know whose account it is. Wallet addresses matter only where a specific wallet does: reading balances, and checking who signs a bridged deposit.
+
+Since the token is checked locally, binding no longer depends on Privy's API. The paths that compare `account.privyUserId` with the signed-in user now compare the account's key:
+
+- the "carry on when Privy can't answer" fallback in `Sessions.#authorize`
+- the socket's `boundAccount` guard and the `deposit:credited` push
+
+`AccountService.#claim`, which moved an account to a wallet's new user, goes. Only Privy's linked-wallet list still needs the API, for balances and sender checks. When Privy can't answer, those use the last list they read.
+
+**Crediting is unchanged.** A deposit is credited to the owner of the deposit address it reached (`registry.lookup(transfer.to)`), exactly once per `(chainId, txHash, logIndex)`. Who sent it plays no part in crediting.
 
 **Migration.**
 
@@ -134,7 +143,7 @@ Reads use `readBalances` from the multichain design (task 3 of its phase 1), wit
 
 - **Balances are pushed at sign-in.** The phase 1 plan's `deposit:balances` request is replaced by the push and `balances:refresh` above.
 - **No loading text.** Its "Checking your wallets…" goes.
-- **Identity.** "Accept a Solana sender only if it is linked to the same Privy user as the account's EVM wallet" becomes "accept any sender linked to the account's Privy user".
+- **Identity.** "Accept a Solana sender only if it is linked to the same Privy user as the account's EVM wallet" becomes "accept any sender linked to the account's Privy user". This applies only to creating a deposit order, where the server checks the source wallet that will sign the bridge's transactions. Crediting still goes by deposit address, as in section 2.
 - **Solana linking** moves from a deposit-list-only step to sign-in or the sidebar, as above.
 - **Order of work.** Sections 1 to 3 of this design come before the multichain phases continue, because they change the account model those phases build on.
 
