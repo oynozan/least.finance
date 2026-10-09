@@ -268,6 +268,14 @@ test("a deposit from another network switches the wallet to Arc first", async ({
     ]);
 });
 
+test("the deposit transaction names Arc's chain, so a wallet elsewhere refuses it", async ({ page }) => {
+    await start(page, 1_000);
+    await submit(page, "5");
+    await expect.poll(async () => (await sentTransactions(page)).length).toBe(1);
+    const [tx] = (await sentTransactions(page))[0].params as [{ chainId?: string }];
+    expect(tx.chainId).toBe("0x13b2");
+});
+
 test("declining the network switch keeps the form and sends nothing", async ({ page }) => {
     await start(page, 1_000);
     await moveWalletTo(page, "0x1");

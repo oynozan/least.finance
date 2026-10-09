@@ -354,7 +354,9 @@ export async function installWallet(page: Page) {
                             const bytes = crypto.getRandomValues(new Uint8Array(32));
                             return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
                         }
-                        const tx = { ...(params?.[0] as object), from: account };
+                        const tx = { ...(params?.[0] as { chainId?: string }), from: account };
+                        // Like real wallets, refuse a transaction meant for another chain.
+                        if (tx.chainId && tx.chainId.toLowerCase() !== chainId) throw fail(-32602, `Expected chain ${tx.chainId}.`);
                         const { result, error } = await state.sendToChain(method, [tx]);
                         if (error) throw fail(-32603, error.message);
                         return result;

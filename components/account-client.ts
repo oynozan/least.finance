@@ -178,6 +178,8 @@ export class AccountClient {
                         from: wallet.from,
                         to: state.account.depositAddress,
                         value: toHex(value),
+                        // Named, so a wallet that has moved to another network refuses it rather than sending that network's coin.
+                        chainId: toHex(state.rules.chainId),
                         maxFeePerGas: toHex(MAX_FEE_PER_GAS),
                         maxPriorityFeePerGas: toHex(PRIORITY_FEE_PER_GAS),
                     },
