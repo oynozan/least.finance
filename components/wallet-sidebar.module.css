@@ -210,6 +210,12 @@
     box-shadow: inset 0 0 0 1px rgb(255 107 91 / 0.55);
 }
 
+/* More than the wallet holds: the amount itself turns red (and shakes, in JS). */
+.amountField[data-over="true"] :is(.amountPrefix, .amountInput) {
+    color: var(--loss);
+    caret-color: var(--loss);
+}
+
 .amountPrefix {
     font-size: 17px;
     font-weight: 600;
@@ -287,6 +293,11 @@
 
 .depositHint[data-tone="error"] {
     color: var(--loss);
+}
+
+/* Kept mounted for screen readers, but takes no room while there's nothing to say. */
+.depositHint:empty {
+    margin-top: 0;
 }
 
 /* Its top edge sits at the deposit button's bottom, so rows emerge from

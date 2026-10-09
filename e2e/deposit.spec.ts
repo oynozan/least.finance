@@ -20,10 +20,30 @@ const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "
 const maxButton = (page: Page) => sidebar(page).getByRole("button", { name: "Max" });
 const cancelButton = (page: Page) => sidebar(page).getByRole("button", { name: "Cancel deposit" });
 const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
+// Read out, not shown: the wallet's balance, or why the amount is too much.
+const wallet = (page: Page) => sidebar(page).locator("#deposit-wallet");
 const status = (page: Page) => sidebar(page).getByRole("status");
 const deposits = (page: Page) => sidebar(page).getByRole("list", { name: "Deposits" });
 
 const DROPPED = "hasn't shown up on Arc";
+const LOSS = "rgb(255, 107, 91)";
+const FOREGROUND = "rgb(245, 245, 243)";
+
+/** Whether the amount field moves sideways within half a second of now. */
+const shakes = (page: Page) =>
+    amountField(page).evaluate(
+        (input) =>
+            new Promise<boolean>((resolve) => {
+                const field = input.closest("label")!;
+                const start = performance.now();
+                const check = () => {
+                    if (new DOMMatrix(getComputedStyle(field).transform).m41 !== 0) return resolve(true);
+                    if (performance.now() - start > 500) return resolve(false);
+                    requestAnimationFrame(check);
+                };
+                check();
+            }),
+    );
 
 async function connect(page: Page, balance = "$0.00") {
     await page.getByRole("button", { name: "Connect wallet" }).click();
@@ -96,7 +116,7 @@ test("the form closes once the wallet sends, and the status clears after a few s
 test("max fills the wallet's balance less the gas reserve, and deposits exactly that", async ({ page }) => {
     await start(page, 1234.567);
     await openForm(page);
-    await expect(hint(page)).toHaveText("In your wallet: $1,234.57");
+    await expect(wallet(page)).toHaveText("In your wallet: $1,234.57");
     await maxButton(page).click();
     await expect(amountField(page)).toHaveValue("1234.55");
 
@@ -109,7 +129,7 @@ test("max fills the wallet's balance less the gas reserve, and deposits exactly 
 test("max is left out when the wallet holds next to nothing", async ({ page }) => {
     await start(page, 0.01);
     await openForm(page);
-    await expect(hint(page)).toHaveText("In your wallet: $0.01");
+    await expect(wallet(page)).toHaveText("In your wallet: $0.01");
     await expect(maxButton(page)).toHaveCount(0);
 });
 
@@ -127,23 +147,41 @@ test("an amount below the minimum is refused, and nothing is sent", async ({ pag
     expect(await serverBalance(page)).toBe("0");
 
     await amountField(page).fill("0.01");
-    await expect(hint(page)).toHaveText("In your wallet: $12,480.52");
+    await expect(hint(page)).toBeEmpty();
+    await expect(wallet(page)).toHaveText("In your wallet: $12,480.52");
     await expect(depositButton(page)).not.toHaveAttribute("aria-disabled");
 });
 
-test("more than the wallet holds, after gas, is refused", async ({ page }) => {
+test("more than the wallet holds, after gas, turns the amount red, shakes it, and is refused", async ({ page }) => {
     await start(page, 100);
     await openForm(page);
-    await expect(hint(page)).toHaveText("In your wallet: $100.00");
+    // Nothing is written under the field: the balance is only read out.
+    await expect(hint(page)).toBeEmpty();
+    await expect(wallet(page)).toHaveText("In your wallet: $100.00");
 
+    let shaking = shakes(page);
     await amountField(page).fill("100");
-    await expect(hint(page)).toHaveText("That's more than your wallet holds, after gas.");
+    expect(await shaking, "going past the wallet shakes the amount").toBe(true);
+    await expect(amountField(page)).toHaveCSS("color", LOSS);
+    await expect(amountField(page)).toHaveAccessibleDescription("That's more than your wallet holds, after gas.");
+    await expect(hint(page)).toBeEmpty();
     await expect(depositButton(page)).toHaveAttribute("aria-disabled", "true");
+
+    // Deleting back down while still too much doesn't shake; trying to send does.
+    await amountField(page).fill("1500");
+    await page.waitForTimeout(600);
+    shaking = shakes(page);
+    await amountField(page).press("Backspace");
+    await expect(amountField(page)).toHaveValue("150");
+    expect(await shaking, "deleting doesn't shake").toBe(false);
+    shaking = shakes(page);
     await depositButton(page).click({ force: true });
+    expect(await shaking, "trying to send shakes").toBe(true);
     expect(await sentTransactions(page)).toHaveLength(0);
 
     await amountField(page).fill("99.99");
-    await expect(hint(page)).toHaveText("In your wallet: $100.00");
+    await expect(amountField(page)).toHaveCSS("color", FOREGROUND);
+    await expect(wallet(page)).toHaveText("In your wallet: $100.00");
     await expect(depositButton(page)).not.toHaveAttribute("aria-disabled");
 });
 

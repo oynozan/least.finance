@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { motion, type Transition } from "motion/react";
+import { motion, useAnimate, useReducedMotion, type Transition } from "motion/react";
 import type { DepositResult } from "./account-client";
 import { CloseIcon } from "./icons";
 import { formatUsd } from "./wallet-data";
@@ -13,6 +13,8 @@ const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 }
 const GAS_RESERVE = 0.01;
 /** USDC's usual precision; Arc's 18 native decimals are more than anyone types. */
 const MAX_DECIMALS = 6;
+
+const OVER_WALLET = "That's more than your wallet holds, after gas.";
 
 /** The most the wallet can send and still pay for gas, to the cent. */
 export const maxDeposit = (walletBalance: number) => Math.max(0, Math.floor((walletBalance - GAS_RESERVE) * 100) / 100);
@@ -48,21 +50,31 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
     const [sending, setSending] = useState(false);
     const [walletProblem, setWalletProblem] = useState<string | null>(null);
 
+    const [field, animateField] = useAnimate<HTMLLabelElement>();
+    const reduceMotion = useReducedMotion();
+
     const amount = normalizeAmount(text);
     const value = amount === null ? 0 : Number(amount);
     const max = walletBalance == null ? null : maxDeposit(walletBalance);
+    const isOver = (v: number) => max !== null && v > max;
+    // More than the wallet holds shows on the amount itself: red, with a shake.
+    const over = isOver(value);
     const issue =
-        amount === null || value === 0
+        amount === null || value === 0 || over
             ? null
             : value < minDeposit
               ? `The minimum deposit is ${formatUsd(minDeposit)}.`
-              : max !== null && value > max
-                ? "That's more than your wallet holds, after gas."
-                : null;
-    const canSend = amount !== null && value > 0 && issue === null && !sending;
+              : null;
+    const canSend = amount !== null && value > 0 && !over && issue === null && !sending;
+
+    const shake = () => {
+        if (!reduceMotion)
+            animateField(field.current, { x: [0, -9, 8, -6, 4, -2, 0] }, { duration: 0.42, ease: "easeOut" });
+    };
 
     const submit = async (event: FormEvent) => {
         event.preventDefault();
+        if (over) return shake();
         if (!canSend || amount === null) return;
         setSending(true);
         setWalletProblem(null);
@@ -75,14 +87,15 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
         onClose();
     };
 
-    const hint =
-        walletProblem ??
-        issue ??
-        (walletBalance === undefined
-            ? "Checking your wallet…"
-            : walletBalance === null
-              ? "Couldn't read your wallet's balance."
-              : `In your wallet: ${formatUsd(walletBalance)}`);
+    // Only problems are written out; the wallet's balance is for screen readers.
+    const hint = walletProblem ?? issue ?? (walletBalance === null ? "Couldn't read your wallet's balance." : null);
+    const wallet = over
+        ? OVER_WALLET
+        : walletBalance === undefined
+          ? "Checking your wallet…"
+          : walletBalance === null
+            ? ""
+            : `In your wallet: ${formatUsd(walletBalance)}`;
 
     return (
         <motion.div
@@ -101,15 +114,20 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
                     }
                 }}
             >
-                <label className={styles.amountField} data-invalid={issue !== null || undefined}>
+                <label
+                    ref={field}
+                    className={styles.amountField}
+                    data-invalid={over || issue !== null || undefined}
+                    data-over={over || undefined}
+                >
                     <span className={styles.amountPrefix} aria-hidden="true">
                         $
                     </span>
                     <input
                         className={styles.amountInput}
                         aria-label="Deposit amount"
-                        aria-describedby="deposit-hint"
-                        aria-invalid={issue !== null || undefined}
+                        aria-describedby="deposit-wallet deposit-hint"
+                        aria-invalid={over || issue !== null || undefined}
                         inputMode="decimal"
                         autoComplete="off"
                         placeholder="0.00"
@@ -118,7 +136,11 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
                         readOnly={sending}
                         value={text}
                         onChange={(event) => {
-                            setText(cleanAmount(event.target.value));
+                            const next = cleanAmount(event.target.value);
+                            const nextValue = Number(normalizeAmount(next) ?? 0);
+                            // Shakes on the way past the wallet, not while deleting back down.
+                            if (isOver(nextValue) && nextValue > value) shake();
+                            setText(next);
                             setWalletProblem(null);
                         }}
                     />
@@ -166,6 +188,9 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
             >
                 {hint}
             </p>
+            <span id="deposit-wallet" className="sr-only" aria-live="polite">
+                {wallet}
+            </span>
         </motion.div>
     );
 }

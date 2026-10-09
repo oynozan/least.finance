@@ -32,6 +32,8 @@ const switchStatus = (page: Page) => sidebar(page).getByRole("status");
 const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: /^Balance/ });
 const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "Deposit amount" });
 const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
+// Read out, not shown: the wallet's balance under the amount field.
+const walletLine = (page: Page) => sidebar(page).locator("#deposit-wallet");
 const showAgain = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 const position = (page: Page, symbol: string) =>
     sidebar(page)
@@ -269,29 +271,31 @@ test("a fresh account has a zero balance and no deposits to show", async ({ page
     await expect(sidebar(page).getByRole("list", { name: "Deposits" })).toHaveCount(0);
 });
 
-test("the wallet's balance is shown in the deposit form", async ({ page }) => {
+test("the deposit form reads out the wallet's balance without writing it under the field", async ({ page }) => {
     await mockArcRpc(page, 7_250.75);
     await openWallet(page);
 
     await openDepositForm(page);
-    await expect(hint(page)).toHaveText("In your wallet: $7,250.75");
+    await expect(walletLine(page)).toHaveText("In your wallet: $7,250.75");
+    await expect(amountField(page)).toHaveAccessibleDescription("In your wallet: $7,250.75");
+    await expect(hint(page)).toBeEmpty();
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits");
 });
 
 test("the wallet's balance refreshes when the page comes back into view", async ({ page }) => {
     await openWallet(page);
     await openDepositForm(page);
-    await expect(hint(page)).toHaveText("In your wallet: $12,480.52");
+    await expect(walletLine(page)).toHaveText("In your wallet: $12,480.52");
 
     await mockArcRpc(page, 13_000);
     await showAgain(page);
-    await expect(hint(page)).toHaveText("In your wallet: $13,000.00");
+    await expect(walletLine(page)).toHaveText("In your wallet: $13,000.00");
 });
 
 test("a failed refresh keeps the wallet's last balance", async ({ page }) => {
     await openWallet(page);
     await openDepositForm(page);
-    await expect(hint(page)).toHaveText("In your wallet: $12,480.52");
+    await expect(walletLine(page)).toHaveText("In your wallet: $12,480.52");
 
     let attempts = 0;
     await page.route(ARC_RPC, (route) => {
@@ -301,14 +305,14 @@ test("a failed refresh keeps the wallet's last balance", async ({ page }) => {
     await showAgain(page);
     await expect.poll(() => attempts).toBeGreaterThanOrEqual(3);
     await page.waitForTimeout(300);
-    await expect(hint(page)).toHaveText("In your wallet: $12,480.52");
+    await expect(walletLine(page)).toHaveText("In your wallet: $12,480.52");
 });
 
 test("the wallet's balance falls back to another Arc RPC when the primary is down", async ({ page }) => {
     await page.route(ARC_PRIMARY_RPC, (route) => route.abort());
     await openWallet(page);
     await openDepositForm(page);
-    await expect(hint(page)).toHaveText("In your wallet: $12,480.52");
+    await expect(walletLine(page)).toHaveText("In your wallet: $12,480.52");
 });
 
 test("a hanging Arc RPC gives up within one poll and shows no wallet balance", async ({ page }) => {
@@ -317,7 +321,7 @@ test("a hanging Arc RPC gives up within one poll and shows no wallet balance", a
     await openWallet(page);
     await openDepositForm(page);
 
-    await expect(hint(page)).toHaveText("Checking your wallet…");
+    await expect(walletLine(page)).toHaveText("Checking your wallet…");
     await expect(hint(page)).toHaveText("Couldn't read your wallet's balance.", { timeout: 15_000 });
     await expect(sidebar(page).getByRole("button", { name: "Max" })).toHaveCount(0);
 });
