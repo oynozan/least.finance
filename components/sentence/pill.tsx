@@ -98,12 +98,13 @@ type PillButtonProps = Omit<PillBodyProps, "pose" | "className"> & {
     "aria-expanded"?: boolean;
     "aria-controls"?: string;
     "aria-invalid"?: boolean;
-    tone?: "default" | "muted" | "loss";
+    tone?: "default" | "muted" | "gain" | "loss";
 };
 
 const TONE = {
     default: "",
     muted: "text-muted",
+    gain: "text-gain",
     loss: "text-loss",
 } as const;
 

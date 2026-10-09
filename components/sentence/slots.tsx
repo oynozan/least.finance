@@ -67,7 +67,7 @@ export function ChoiceSlot({ view, placeholder = "pick one", onChange }: ChoiceS
                 contentKey={selected?.value ?? "none"}
                 icon={selected?.icon && <SentenceIcon icon={selected.icon} />}
                 trailing={<Chevron open={open} />}
-                tone={selected ? (selected.tone === "loss" ? "loss" : "default") : "muted"}
+                tone={selected ? (selected.tone === "gain" || selected.tone === "loss" ? selected.tone : "default") : "muted"}
                 aria-label={selected?.label ?? placeholder}
                 aria-describedby={hintId}
                 aria-haspopup="dialog"

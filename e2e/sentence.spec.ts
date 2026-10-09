@@ -295,6 +295,13 @@ test("leverage follows the market's cap, and any allowed value can be typed", as
     expect(await text(page)).toBe("I want to Long SOL at 20x leverage with 10 USD.");
 });
 
+test("the outcome pill reads green for YES and red for NO", async ({ page }) => {
+    await pick(page, "Swap", /^Predict/);
+    await expect(pill(page, "YES")).toHaveCSS("color", "rgb(104, 214, 112)");
+    await pick(page, "YES", /^NO/);
+    await expect(pill(page, "NO")).toHaveCSS("color", "rgb(255, 107, 91)");
+});
+
 test("the question picker is wide enough for whole questions", async ({ page, isMobile }) => {
     await pick(page, "Swap", /^Predict/);
     await trade(page).locator('[data-slot="marketId"] button').click();
