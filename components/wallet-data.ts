@@ -1,32 +1,60 @@
+import { PREDICTION_MARKETS } from "@/lib/trade/catalog";
 import type { CoinSymbol } from "./coin-icons";
 
-export type Position = {
+type PositionBase = {
     id: string;
+    /** The coin it follows, for the logo. */
     symbol: CoinSymbol;
-    /** Notional size in USD. */
+    /** In USD: the notional for a perp, the stake for a prediction. */
     size: number;
     /** Unrealized PnL in USD. */
     pnl: number;
 };
 
+export type PerpPosition = PositionBase & { kind: "perp"; side: "long" | "short"; leverage: number };
+export type PredictionPosition = PositionBase & { kind: "prediction"; question: string; outcome: "YES" | "NO" };
+/** Swaps settle at once, so only leverage and predictions stay open. */
+export type Position = PerpPosition | PredictionPosition;
+
+/** "Long BTC", or the question a prediction bets on. */
+export const positionTitle = (p: Position) =>
+    p.kind === "perp" ? `${p.side === "long" ? "Long" : "Short"} ${p.symbol}` : p.question;
+
+/** "10x · $4,200", or "YES · $250". */
+export const positionDetail = (p: Position) =>
+    `${p.kind === "perp" ? `${p.leverage}x` : p.outcome} · ${formatSize(p.size)}`;
+
+/** The whole position in words, for its close button. */
+export const positionName = (p: Position) =>
+    p.kind === "perp" ? `${positionTitle(p)} ${p.leverage}x` : `${p.outcome} on ${p.question}`;
+
+const prediction = (
+    id: string,
+    marketId: string,
+    outcome: PredictionPosition["outcome"],
+    size: number,
+    pnl: number,
+): PredictionPosition => {
+    const market = PREDICTION_MARKETS.find((m) => m.id === marketId)!;
+    return { id, kind: "prediction", symbol: market.symbol, question: market.question, outcome, size, pnl };
+};
+
 // Mock content until trading is live.
 /** Oldest first; the list renders it bottom-up, so the newest sits on top. */
 export const MOCK_POSITIONS: Position[] = [
-    { id: "p-btc", symbol: "BTC", size: 4_200, pnl: 312.4 },
-    { id: "p-eth", symbol: "ETH", size: 2_850, pnl: -96.12 },
-    { id: "p-sol", symbol: "SOL", size: 1_200, pnl: 0 },
-    { id: "p-doge", symbol: "DOGE", size: 640, pnl: 48.9 },
-    { id: "p-link", symbol: "LINK", size: 900, pnl: -12.35 },
-    { id: "p-avax", symbol: "AVAX", size: 1_150, pnl: 64.2 },
-    { id: "p-arb", symbol: "ARB", size: 480, pnl: -22.75 },
-    { id: "p-op", symbol: "OP", size: 720, pnl: 15.6 },
-    { id: "p-xrp", symbol: "XRP", size: 1_600, pnl: -140.3 },
-    { id: "p-ada", symbol: "ADA", size: 350, pnl: 0 },
-    { id: "p-dot", symbol: "DOT", size: 560, pnl: 9.85 },
-    { id: "p-uni", symbol: "UNI", size: 820, pnl: -31.4 },
-    { id: "p-aave", symbol: "AAVE", size: 1_380, pnl: 122.15 },
-    { id: "p-atom", symbol: "ATOM", size: 410, pnl: -5.6 },
-    { id: "p-near", symbol: "NEAR", size: 690, pnl: 27.3 },
+    { id: "p-btc", kind: "perp", symbol: "BTC", side: "long", leverage: 10, size: 4_200, pnl: 312.4 },
+    { id: "p-eth", kind: "perp", symbol: "ETH", side: "short", leverage: 5, size: 2_850, pnl: -96.12 },
+    { id: "p-sol", kind: "perp", symbol: "SOL", side: "long", leverage: 3, size: 1_200, pnl: 0 },
+    prediction("p-btc-150k", "btc-150k-2026", "YES", 250, 18.4),
+    { id: "p-doge", kind: "perp", symbol: "DOGE", side: "short", leverage: 2, size: 640, pnl: 48.9 },
+    prediction("p-eth-5k", "eth-5k-2026", "NO", 400, -22.75),
+    { id: "p-link", kind: "perp", symbol: "LINK", side: "long", leverage: 5, size: 900, pnl: -12.35 },
+    { id: "p-avax", kind: "perp", symbol: "AVAX", side: "long", leverage: 3, size: 1_150, pnl: 64.2 },
+    prediction("p-sol-ath", "sol-ath-2026", "YES", 150, 9.85),
+    { id: "p-arb", kind: "perp", symbol: "ARB", side: "short", leverage: 2, size: 480, pnl: -22.75 },
+    { id: "p-op", kind: "perp", symbol: "OP", side: "long", leverage: 5, size: 720, pnl: 15.6 },
+    prediction("p-doge-1", "doge-1-2026", "NO", 300, 4.2),
+    { id: "p-xrp", kind: "perp", symbol: "XRP", side: "short", leverage: 3, size: 1_600, pnl: -140.3 },
 ];
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });

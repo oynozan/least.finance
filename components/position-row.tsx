@@ -4,7 +4,7 @@ import { useState, type Ref } from "react";
 import { motion, type Transition, type Variants } from "motion/react";
 import { CoinIcon } from "./coin-icons";
 import { canHover } from "./pointer";
-import { formatPnl, formatSize, trendOf, type Position } from "./wallet-data";
+import { formatPnl, positionDetail, positionName, positionTitle, trendOf, type Position } from "./wallet-data";
 import styles from "./position-row.module.css";
 
 const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 };
@@ -26,11 +26,13 @@ type PositionRowProps = {
 };
 
 /**
- * One open position: logo, size and PnL, nothing else. Hovering (or
- * focusing, or tapping on touch) slides in a close button tinted by the PnL.
+ * One open position: what it is ("Long BTC", or a prediction's question),
+ * its leverage or outcome with its size, and the PnL. Hovering (or focusing,
+ * or tapping on touch) slides in a close button tinted by the PnL.
  */
 export function PositionRow({ position, entranceDelay, onClose, ref }: PositionRowProps) {
-    const { id, symbol, size, pnl } = position;
+    const { id, symbol, pnl } = position;
+    const title = positionTitle(position);
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
     const [tapped, setTapped] = useState(false);
@@ -57,8 +59,14 @@ export function PositionRow({ position, entranceDelay, onClose, ref }: PositionR
                 if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
             }}
         >
-            <CoinIcon symbol={symbol} className={styles.logo} role="img" aria-hidden={false} aria-label={symbol} />
-            <span className={styles.size}>{formatSize(size)}</span>
+            <CoinIcon symbol={symbol} className={styles.logo} />
+            <span className={styles.text}>
+                {/* A question can run long: it ends in an ellipsis, in full on hover. */}
+                <span className={styles.title} title={title}>
+                    {title}
+                </span>
+                <span className={styles.detail}>{positionDetail(position)}</span>
+            </span>
             <span className={styles.pnl}>{formatPnl(pnl)}</span>
             {/* Always mounted, only collapsed, so keyboard users can tab to it. */}
             <motion.span
@@ -70,7 +78,7 @@ export function PositionRow({ position, entranceDelay, onClose, ref }: PositionR
                 <motion.button
                     type="button"
                     className={styles.close}
-                    aria-label={`Close ${symbol} position`}
+                    aria-label={`Close ${positionName(position)}`}
                     initial={false}
                     animate={revealed ? { scale: 1, x: 0 } : { scale: 0.6, x: 12 }}
                     whileTap={{ scale: 0.9 }}

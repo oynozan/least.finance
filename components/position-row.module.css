@@ -35,13 +35,30 @@
     height: 36px;
 }
 
-.size {
+.text {
     flex: 1;
     min-width: 0;
-    font-size: 17px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.title {
+    overflow: hidden;
+    font-size: 16px;
     font-weight: 500;
+    line-height: 1.25;
     letter-spacing: -0.02em;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.detail {
+    font-size: 13px;
+    line-height: 1.3;
+    color: var(--muted);
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 
 .pnl {

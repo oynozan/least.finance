@@ -35,10 +35,9 @@ const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
 // Read out, not shown: the wallet's balance under the amount field.
 const walletLine = (page: Page) => sidebar(page).locator("#deposit-wallet");
 const showAgain = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-const position = (page: Page, symbol: string) =>
-    sidebar(page)
-        .getByRole("listitem")
-        .filter({ has: page.getByRole("img", { name: symbol }) });
+/** A position by its name: "Long BTC", or a prediction's question. */
+const position = (page: Page, name: string) =>
+    sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem").filter({ hasText: name });
 
 const GAIN = "rgb(104, 214, 112)";
 const LOSS = "rgb(255, 107, 91)";
@@ -570,9 +569,9 @@ test("many positions scroll inside the sidebar and enter quickly", async ({ page
     expect(scroller.bottom).toBeLessThanOrEqual(scroller.panelBottom + 0.5);
 
     // The oldest position sits at the bottom of the scroll range.
-    await expect(position(page, "BTC")).toBeAttached();
-    await position(page, "BTC").scrollIntoViewIfNeeded();
-    await expect(position(page, "BTC")).toBeInViewport();
+    await expect(position(page, "Long BTC")).toBeAttached();
+    await position(page, "Long BTC").scrollIntoViewIfNeeded();
+    await expect(position(page, "Long BTC")).toBeInViewport();
     await shoot(page, "8-many-positions");
 });
 
@@ -675,18 +674,21 @@ test("hovering a position reveals a close button in the PnL's color", async ({ p
     const tops = await rows.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
     expect(tops).toEqual([...tops].sort((a, b) => b - a));
 
-    // No labels: each row is a logo, a size and a PnL.
-    await expect(position(page, "BTC")).toContainText("$4,200");
-    await expect(position(page, "BTC")).toContainText("+$312.40");
-    await expect(position(page, "BTC")).not.toContainText(/size|pnl|cost/i);
+    // Each row names the position, then its leverage or outcome with its size, and its PnL.
+    await expect(position(page, "Long BTC")).toContainText("10x · $4,200");
+    await expect(position(page, "Long BTC")).toContainText("+$312.40");
+    await expect(position(page, "Will BTC reach $150K?")).toContainText("YES · $250");
+    await expect(position(page, "Will BTC reach $150K?")).toContainText("+$18.40");
+    await expect(position(page, "Long BTC")).not.toContainText(/size|pnl|cost/i);
 
-    for (const [symbol, color] of [
-        ["BTC", GAIN],
-        ["ETH", LOSS],
-        ["SOL", FLAT],
+    for (const [name, label, color] of [
+        ["Long BTC", "Close Long BTC 10x", GAIN],
+        ["Short ETH", "Close Short ETH 5x", LOSS],
+        ["Long SOL", "Close Long SOL 3x", FLAT],
+        ["Will ETH flip $5K?", "Close NO on Will ETH flip $5K?", LOSS],
     ] as const) {
-        const row = position(page, symbol);
-        const close = row.getByRole("button", { name: `Close ${symbol} position` });
+        const row = position(page, name);
+        const close = row.getByRole("button", { name: label });
         await expect.poll(() => close.evaluate((el) => el.parentElement!.getBoundingClientRect().width)).toBe(0);
 
         await row.hover();
@@ -694,7 +696,13 @@ test("hovering a position reveals a close button in the PnL's color", async ({ p
             .poll(() => close.evaluate((el) => el.parentElement!.getBoundingClientRect().width))
             .toBeGreaterThan(50);
         await expect(close).toHaveCSS("color", color);
-        await shoot(page, `4-hover-${symbol.toLowerCase()}`);
+        await shoot(
+            page,
+            `4-hover-${name
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, "-")
+                .replace(/-$/, "")}`,
+        );
     }
 });
 
@@ -703,12 +711,12 @@ test("closing a position removes it", async ({ page, isMobile }) => {
     await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
     await settle(page);
 
-    const row = position(page, "ETH");
+    const row = position(page, "Short ETH");
     if (isMobile) await row.tap();
     else await row.hover();
-    await row.getByRole("button", { name: "Close ETH position" }).click();
+    await row.getByRole("button", { name: "Close Short ETH 5x" }).click();
 
-    await expect(position(page, "ETH")).toHaveCount(0);
+    await expect(position(page, "Short ETH")).toHaveCount(0);
     await expect(sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem")).toHaveCount(
         POSITIONS - 1,
     );
@@ -723,7 +731,7 @@ test("the close button is reachable by keyboard", async ({ page, isMobile }) => 
     await expect(dock(page)).toBeFocused();
 
     // The first position's close button follows the deposit button in tab order.
-    const close = position(page, "BTC").getByRole("button", { name: "Close BTC position" });
+    const close = position(page, "Long BTC").getByRole("button", { name: "Close Long BTC 10x" });
     await depositButton(page).focus();
     await page.keyboard.press("Tab");
     await expect(close).toBeFocused();
@@ -731,7 +739,7 @@ test("the close button is reachable by keyboard", async ({ page, isMobile }) => 
         .poll(() => close.evaluate((el) => el.parentElement!.getBoundingClientRect().width))
         .toBeGreaterThan(50);
     await page.keyboard.press("Enter");
-    await expect(position(page, "BTC")).toHaveCount(0);
+    await expect(position(page, "Long BTC")).toHaveCount(0);
 });
 
 test("disconnecting signs out and folds the sidebar away", async ({ page }) => {
@@ -758,7 +766,10 @@ test("on touch, taps stand in for hover", async ({ page, isMobile }) => {
         .tap();
     await expect(sidebar(page).getByRole("list", { name: "Deposits" })).toHaveCount(0);
 
-    await position(page, "BTC").tap();
-    await expect(position(page, "BTC").getByRole("button", { name: "Close BTC position" })).toHaveCSS("color", GAIN);
+    await position(page, "Long BTC").tap();
+    await expect(position(page, "Long BTC").getByRole("button", { name: "Close Long BTC 10x" })).toHaveCSS(
+        "color",
+        GAIN,
+    );
     await shoot(page, "4-tap-btc");
 });
