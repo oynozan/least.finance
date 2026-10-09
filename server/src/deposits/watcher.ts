@@ -130,6 +130,8 @@ export class DepositWatcher {
         const head = Number(await client.getBlockNumber({ cacheTime: 0 }));
         this.#head = head;
         const target = head - confirmations - lagBlocks;
+        // A chain younger than the lag has nothing old enough to scan yet.
+        if (target < 0) return true;
         const cursor = this.#cursor ?? (await this.#loadCursor(target));
 
         this.#backfills.push(...(await registry.refresh(cursor)));

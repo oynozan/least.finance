@@ -296,6 +296,26 @@ describe("findTransfersTo", () => {
         expect(calls).toHaveLength(1);
     });
 
+    it("narrows a block too busy for one query by recipient, filtered or not", async () => {
+        // The RPC answers a single block only for 25 recipients or fewer at a time.
+        const recipients = Array.from({ length: 500 }, (_, i) => addr(i + 1));
+        const { client, calls } = fakeClient((call) => {
+            const to = call.args?.to;
+            if (!to || to.length > 25) return new Error("query exceeds max results 2000");
+            return to.includes(getAddress(addr(321))) ? [fakeLog({ to: addr(321), block: 7, logIndex: 4 })] : [];
+        });
+        const found = await findTransfersTo(client, recipients, 7, 7);
+        expect(found.map((t) => [t.to, t.logIndex])).toEqual([[addr(321), 4]]);
+        // Unfiltered, then 5 chunks of 100, each halved to 50 and then 25.
+        expect(calls.filter((c) => c.args?.to?.length === 25)).toHaveLength(20);
+    });
+
+    it("gives up on a busy block only once it's down to one recipient", async () => {
+        const { client, calls } = fakeClient(() => new Error("query exceeds max results 2000"));
+        await expect(findTransfersTo(client, [addr(1), addr(2)], 4, 4)).rejects.toThrow(/max results/);
+        expect(calls.map((c) => c.args?.to?.length)).toEqual([2, 1]);
+    });
+
     it("rethrows after splitting down to a failing block", async () => {
         const { client } = fakeClient(() => new Error("query exceeds max results 2000"));
         await expect(findTransfersTo(client, [addr(1)], 1, 4)).rejects.toThrow(/max results/);
