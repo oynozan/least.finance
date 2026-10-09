@@ -189,6 +189,7 @@ Who builds which step is agreed between the sessions working in this repo before
 
 ## Not included
 
+- recovering an account after its Privy user is deleted and re-created. The account is reachable only through its Privy user ID, so this would be an operator procedure (proving a wallet linked to the old account)
 - unlinking wallets
 - more than one account per person
 - coins beyond the multichain catalog

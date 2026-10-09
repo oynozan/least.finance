@@ -71,7 +71,7 @@
     - `AccountView = { depositAddress: Hex; balance: UsdcAmount; version: number }`
     - `ClientToServerEvents["account:open"]: (payload: Record<string, never>, ack: (result: Ack<WalletSession>) => void) => void`
 - Produces, in `AccountService`:
-    - `find(privyUserId: string): Promise<AccountDoc | null>`
+    - `find(privyUserId: string): Promise<AccountDoc | null>`, sorted by `{ createdAt: 1, depositIndex: 1 }`. Until Task 2 merges duplicates, it binds to the account that will survive the merge.
     - `open(privyUserId: string): Promise<AccountDoc>`. On a duplicate-key race it re-reads by `privyUserId` and returns the winner. `#claim` is deleted.
 - Produces, in `Sessions`:
     - `open(identity: Identity): Promise<AccountDoc>`
@@ -117,13 +117,14 @@
 - Modify:
     - `server/src/db/mongo.ts`:
         - `AccountDoc.formerDepositAddresses?: string[]`
-        - `LedgerEntryDoc.kind: "deposit" | "merge"`
+        - `LedgerEntryDoc.kind: "deposit" | "merge_in" | "merge_out"`
         - `connectDatabase` runs the migration before `ensureIndexes` and returns its report.
         - Index changes: `privy_user` becomes `privy_user_unique` (unique, after dropping the old name), plus `former_deposit_addresses_unique` (unique, partial on `formerDepositAddresses` existing).
     - `server/src/deposits/registry.ts`: `add`, `load` and `refresh` map every former address to the account too.
     - `server/src/deposits/ledger.ts:104-107`: the credit filter matches `depositAddress` or `formerDepositAddresses`.
     - `server/src/deposits/deposits.ts:89`: the report check accepts former addresses.
     - `server/src/server.ts`: logs the report once at startup.
+    - `server/README.md`: a deploy note. Stop every server instance before deploying this. An instance still on the old code keeps a merged address mapped to a deleted account, and its scan wedges on it.
 
 **Interfaces:**
 - Consumes `AccountService.open(privyUserId)` (Task 1).
@@ -134,14 +135,16 @@
     - `Database` gains `migration: MigrationReport`.
 
 **Merge rules** (the algorithm the tests don't fully pin):
+0. **Drop `wallet_unique` first**, ignoring code 27 for "index not found". It treats a missing `wallet` as null, so a second `$unset` would otherwise fail with E11000.
 1. **Group** accounts by `privyUserId`. For each group with two or more accounts, the survivor is the earliest `createdAt`, with the lowest `depositIndex` breaking a tie.
-2. **Merge each other account into the survivor in its own transaction:**
-    1. `$inc` the survivor's balance by the other's balance, and bump its `version`.
-    2. Insert one ledger entry `{ kind: "merge", accountId: survivor, amount: other.balance, balanceAfter, refId: other._id }`. The unique `(kind, refId)` index makes a rerun a no-op.
-    3. Re-point the other's `deposits` and `ledger` rows to the survivor.
-    4. `$addToSet` the other's `depositAddress` and its own former addresses onto the survivor's `formerDepositAddresses`.
-    5. Delete the other account.
+2. **Merge each other account B into survivor A, in one transaction per B.** This is double entry, so each account's ledger still sums to its balance:
+    1. `findOneAndDelete` B, reading its balance inside the transaction so a credit that landed first isn't lost.
+    2. `$inc` A's balance by B's balance, `$addToSet` B's `depositAddress` and B's own former addresses onto A's `formerDepositAddresses`, and bump A's `version`.
+    3. Insert `{ kind: "merge_out", accountId: B, amount: -B.balance, balanceAfter: 0, refId: B._id }`.
+    4. Insert `{ kind: "merge_in", accountId: A, amount: B.balance, balanceAfter: A's new balance, refId: B._id }`. The unique `(kind, refId)` index makes a rerun a no-op.
+    5. Re-point only B's `deposits` rows to A, for history and for `ledger.credit`'s known-deposit path. B's ledger rows stay on B, and now sum to 0.
 3. **Re-key** with `$unset: { wallet: "" }` on every account that still has the field. `rekeyed` counts those.
+4. **Indexes:** drop the old non-unique `privy_user` (ignoring code 27), then let `ensureIndexes` create `privy_user_unique`.
 
 - [ ] **Step 1: Write the failing tests** in `migration.test.ts`. Each one inserts raw account, deposit and ledger docs with a `MongoClient` into the database that `startStack` will use, then starts the stack:
     - `"a person's single account is re-keyed and keeps its address and balance"`: the doc loses `wallet`. That user's `account:open` returns the same `depositAddress` and balance.
@@ -150,6 +153,8 @@
         - One `merge` ledger entry has `refId` B's id.
         - B's deposits are listed in the survivor's history.
     - `"USDC sent to a merged account's old address credits the survivor"`: after the merge, send 1 USDC to B's old address on the emulator. The survivor's balance becomes 6, and its socket receives `deposit:credited`.
+    - `"the ledger still explains every balance after a merge"`: the survivor's ledger amounts sum to its balance, and each of its entries' `balanceAfter` is the running sum. The merged account's rows sum to 0.
+    - `"a database that still has wallet_unique and several accounts migrates"`: create `wallet_unique` and three single-account people. Startup succeeds, and none of them keeps a `wallet` field.
     - `"running the migration again changes nothing"`: call `mergeAccountsByPerson` a second time. The report is `{ rekeyed: 0, merged: 0 }`, and the ledger count is unchanged.
     - `"a merge cut short by a restart completes once"`: commit the first merge of a three-account person by hand, leaving one to go, then start. One account remains, the balance is the sum, and no merge is counted twice.
     - `"one person can't end up with two accounts"`: after startup, inserting a second account with the same `privyUserId` throws a duplicate-key error.
