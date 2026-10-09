@@ -23,12 +23,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         // Setting a default chain also has Privy ask each wallet to switch to it on connect.
         defaultChain: arc,
         supportedChains: [arc],
+        // Coinbase's smart wallet only runs on its own chain list, so offer the extension and app instead.
+        externalWallets: { coinbaseWallet: { config: { preference: { options: "eoaOnly" } } } },
         appearance: {
           // Base colors only; app/privy.css redefines the full palette.
           theme: "#222220",
           accentColor: "#f5f5f3",
           walletChainType: "ethereum-only",
           showWalletLoginFirst: true,
+          // Wallets that can add Arc; detected extensions bring in Rabby, and any other installed wallet too.
+          walletList: ["detected_ethereum_wallets", "metamask", "rainbow", "coinbase_wallet", "wallet_connect"],
         },
       }}
     >

@@ -84,6 +84,13 @@ test("the Privy modal wears the app's styles", async ({ page }) => {
   await shoot(page, "1-privy-modal");
 });
 
+test("the Privy modal offers only wallets that can use Arc", async ({ page }) => {
+  await page.getByRole("button", { name: "Connect wallet" }).click();
+  await expect(modal(page).getByRole("button", { name: "MetaMask" })).toBeVisible();
+  await expect(modal(page).getByRole("button", { name: "Coinbase Wallet" })).toBeVisible();
+  await expect(modal(page).getByRole("button", { name: "Base", exact: true })).toHaveCount(0);
+});
+
 test("connecting a wallet opens the sidebar right away and pushes the page", async ({ page }) => {
   await expect(sidebar(page)).toHaveAttribute("data-open", "false");
   await connect(page);
