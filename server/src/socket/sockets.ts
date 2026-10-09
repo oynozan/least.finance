@@ -39,6 +39,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
     const handshakes = new RateLimiterMemory({ keyPrefix: "handshake", points: 30, duration: 60 });
     const events = new RateLimiterMemory({ keyPrefix: "event", points: 40, duration: 10 });
+    // Reports make the server watch the chain for a while, so they get a tighter limit of their own.
+    const reports = new RateLimiterMemory({ keyPrefix: "report", points: 20, duration: 60 });
 
     io.use(async (socket, next) => {
         try {
@@ -105,23 +107,38 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("deposit:submit", (payload, ack) =>
             reply(ack, async () => {
                 const { txHash } = parse(depositReport, payload);
+                await reports.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many deposits reported. Try again shortly.");
+                });
                 return services.deposits.report(await boundAccount(socket), txHash);
             }),
         );
     });
 
     bus.on("deposit:credited", ({ deposit, account }) => {
-        io.to(roomOf(deposit.accountId)).emit("deposit:credited", {
-            deposit: depositView(deposit),
-            account: accountView(account),
-        });
+        const payload = { deposit: depositView(deposit), account: accountView(account) };
+        // Only to the wallet's current owner: a socket bound before the wallet moved to another user gets nothing.
+        void io
+            .in(roomOf(deposit.accountId))
+            .fetchSockets()
+            .then((sockets) => {
+                for (const socket of sockets) {
+                    if (socket.data.identity.userId === account.privyUserId) socket.emit("deposit:credited", payload);
+                    else socket.leave(roomOf(deposit.accountId));
+                }
+            });
     });
 
     async function boundAccount(socket: IoSocket) {
         const bound = socket.data.account;
         if (!bound) throw new AppError("wallet_not_connected", "Connect a wallet first.");
         const account = await services.accounts.findById(bound.id);
-        if (!account) throw new AppError("wallet_not_connected", "Connect a wallet first.");
+        // The wallet has since been verified for another Privy user, who owns the account now.
+        if (account && account.privyUserId !== socket.data.identity.userId) {
+            await socket.leave(bound.room);
+            socket.data.account = null;
+        }
+        if (!account || !socket.data.account) throw new AppError("wallet_not_connected", "Connect a wallet first.");
         return account;
     }
 

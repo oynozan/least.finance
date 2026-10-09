@@ -50,13 +50,13 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         });
         const identity =
             overrides.identity ??
-            new PrivyIdentity({
+            (await PrivyIdentity.create({
                 appId: config.PRIVY_APP_ID,
                 appSecret: config.PRIVY_APP_SECRET,
                 verificationKey: config.PRIVY_VERIFICATION_KEY,
                 apiUrl: config.PRIVY_API_URL,
                 logger,
-            });
+            }));
         const accounts = new AccountService({
             collections,
             keyring: createKeyring(config.DEPOSIT_MNEMONIC),
@@ -77,13 +77,14 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             rules: { chainId: ARC_CHAIN_ID, minDeposit: formatUsdc(config.DEPOSIT_MIN_USDC) },
         });
         const watcher = new DepositWatcher({
-            client,
+            clients: config.ARC_RPC_URLS.map((url) => createArcClient([url])),
             collections,
             registry,
             ledger,
             logger: logger.child({ component: "deposit-scan" }),
             pollMs: config.DEPOSIT_POLL_MS,
             confirmations: config.DEPOSIT_CONFIRMATIONS,
+            lagBlocks: config.DEPOSIT_SCAN_LAG_BLOCKS,
             scanRange: config.DEPOSIT_SCAN_RANGE,
             startBlock: config.DEPOSIT_START_BLOCK,
         });

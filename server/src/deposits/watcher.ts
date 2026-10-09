@@ -9,15 +9,29 @@ import type { Backfill, DepositRegistry } from "./registry.ts";
 
 const CURSOR_ID = `deposits:${ARC_CHAIN_ID}`;
 const MAX_BACKOFF_MS = 30_000;
+/** After this many good passes on a fallback RPC, the scan tries the first one again. */
+const RETURN_TO_PRIMARY_AFTER = 300;
 
 type Deps = {
-    client: ArcClient;
+    /**
+     * One client per RPC, in order of preference. A pass reads the head and
+     * the logs from the same one: through a fallback, the logs could come from
+     * a node behind the one that gave the head, which answers "nothing" for
+     * blocks it hasn't seen, and the scan would move past them for good.
+     */
+    clients: ArcClient[];
     collections: Collections;
     registry: DepositRegistry;
     ledger: Ledger;
     logger: Logger;
     pollMs: number;
     confirmations: number;
+    /**
+     * Blocks the scan stays behind the head. A load-balanced RPC can answer
+     * from a node a block or two behind the one that reported the head; the
+     * client's report credits deposits at once, so the scan can afford it.
+     */
+    lagBlocks: number;
     scanRange: number;
     startBlock?: number;
 };
@@ -44,6 +58,9 @@ export class DepositWatcher {
     #lastError: string | null = null;
     /** Addresses learned late, still to be scanned for the blocks already passed. */
     #backfills: Backfill[] = [];
+    /** The RPC this pass uses: the first one, unless it has been failing. */
+    #provider = 0;
+    #goodPasses = 0;
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
@@ -82,46 +99,56 @@ export class DepositWatcher {
                 this.#lastSuccessAt = new Date();
                 this.#lastError = null;
                 backoff = 0;
+                if (this.#provider !== 0 && ++this.#goodPasses >= RETURN_TO_PRIMARY_AFTER) this.#useProvider(0);
                 // While behind, keep going; once level with the head, wait for new blocks.
                 wait = caughtUp ? this.#deps.pollMs : 0;
             } catch (error) {
                 this.#lastError = error instanceof Error ? error.message : String(error);
                 backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : this.#deps.pollMs);
                 wait = backoff;
-                this.#deps.logger.warn({ err: error, retryInMs: wait }, "Deposit scan failed");
+                this.#deps.logger.warn({ err: error, retryInMs: wait, rpc: this.#provider }, "Deposit scan failed");
+                this.#useProvider((this.#provider + 1) % this.#deps.clients.length);
             }
             if (wait > 0) await sleep(wait, undefined, { signal }).catch(() => undefined);
         }
     }
 
+    #useProvider(index: number) {
+        if (index === this.#provider) return;
+        this.#provider = index;
+        this.#goodPasses = 0;
+        this.#deps.logger.info({ rpc: index }, "Deposit scan switched RPC");
+    }
+
     /** One pass: scans the next range of blocks. True once level with the head. */
     async tick(): Promise<boolean> {
-        const { client, registry, scanRange, confirmations } = this.#deps;
+        const { registry, scanRange, confirmations, lagBlocks } = this.#deps;
+        const client = this.#deps.clients[this.#provider]!;
 
         // The head is read before the addresses, so any address added after this
         // point was handed out after these blocks, and can't have deposits in them.
         const head = Number(await client.getBlockNumber({ cacheTime: 0 }));
         this.#head = head;
-        const target = head - confirmations;
+        const target = head - confirmations - lagBlocks;
         const cursor = this.#cursor ?? (await this.#loadCursor(target));
 
         this.#backfills.push(...(await registry.refresh(cursor)));
         while (this.#backfills.length > 0) {
             const [{ address, fromBlock }] = this.#backfills as [Backfill];
-            await this.#scan([address], fromBlock, cursor);
+            await this.#scan(client, [address], fromBlock, cursor);
             this.#backfills.shift();
         }
 
         if (cursor >= target) return true;
         const from = cursor + 1;
         const to = Math.min(target, from + scanRange - 1);
-        await this.#scan(registry.addresses(), from, to);
+        await this.#scan(client, registry.addresses(), from, to);
         await this.#saveCursor(to);
         return to >= target;
     }
 
-    async #scan(addresses: Address[], fromBlock: number, toBlock: number) {
-        const { client, registry, ledger, scanRange } = this.#deps;
+    async #scan(client: ArcClient, addresses: Address[], fromBlock: number, toBlock: number) {
+        const { registry, ledger, scanRange } = this.#deps;
         for (let from = fromBlock; from <= toBlock; from += scanRange) {
             const to = Math.min(toBlock, from + scanRange - 1);
             for (const transfer of await findTransfersTo(client, addresses, from, to)) {

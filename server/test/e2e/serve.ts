@@ -47,6 +47,8 @@ const config = loadConfig({
     ARC_RPC_URLS: emulator.url,
     DEPOSIT_MNEMONIC: generateMnemonic(wordlist),
     DEPOSIT_POLL_MS: "200",
+    // anvil mines only when sent a transaction, so the head would never get past a lag.
+    DEPOSIT_SCAN_LAG_BLOCKS: "0",
     DEPOSIT_RECEIPT_TIMEOUT_MS: "4000",
 });
 const server = await startServer(config, pino({ level: config.LOG_LEVEL }));

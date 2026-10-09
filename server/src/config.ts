@@ -54,6 +54,8 @@ const schema = z.object({
     DEPOSIT_POLL_MS: z.coerce.number().int().min(100).default(1_000),
     /** Blocks to wait past the one holding a deposit. Arc's finality is instant, so none by default. */
     DEPOSIT_CONFIRMATIONS: z.coerce.number().int().min(0).default(0),
+    /** Blocks the chain scan stays behind the head, so a lagging node behind a load balancer can't make it skip any. */
+    DEPOSIT_SCAN_LAG_BLOCKS: z.coerce.number().int().min(0).default(3),
     /** Blocks per log query. Arc's public RPC caps results at 2000, and bigger ranges get split anyway. */
     DEPOSIT_SCAN_RANGE: z.coerce.number().int().min(1).max(10_000).default(500),
     /** Where the very first scan starts; otherwise at the oldest account, or the chain head. */

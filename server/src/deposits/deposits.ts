@@ -10,7 +10,11 @@ import type { DepositPage, DepositReceipt, Hex } from "../protocol.ts";
 import type { Ledger } from "./ledger.ts";
 import { accountView, depositView } from "./views.ts";
 
+/** The receipt poll starts quick, for the usual case, and slows for a transaction that isn't landing. */
 const RECEIPT_POLL_MS = 500;
+const RECEIPT_POLL_MAX_MS = 2_000;
+/** Each check polls the RPC until the transaction lands, so one account can't run many at once. */
+const MAX_CHECKS_PER_ACCOUNT = 3;
 export const MAX_PAGE = 100;
 
 type Deps = {
@@ -26,6 +30,7 @@ export class DepositService {
     readonly #deps: Deps;
     /** Reports of one transaction share a single check. */
     readonly #inFlight = new Map<string, Promise<DepositReceipt>>();
+    readonly #checksPerAccount = new Map<string, number>();
 
     constructor(deps: Deps) {
         this.#deps = deps;
@@ -53,10 +58,24 @@ export class DepositService {
      * lets the client settle an optimistic deposit within a second or two.
      */
     report(account: AccountDoc, txHash: Hash): Promise<DepositReceipt> {
-        const key = `${account._id.toHexString()}:${txHash.toLowerCase()}`;
+        const accountKey = account._id.toHexString();
+        const key = `${accountKey}:${txHash.toLowerCase()}`;
         const running = this.#inFlight.get(key);
         if (running) return running;
-        const check = this.#check(account, txHash.toLowerCase() as Hash).finally(() => this.#inFlight.delete(key));
+
+        const checks = this.#checksPerAccount.get(accountKey) ?? 0;
+        if (checks >= MAX_CHECKS_PER_ACCOUNT) {
+            return Promise.reject(
+                new AppError("rate_limited", "A few deposits are already being checked. Try again in a moment."),
+            );
+        }
+        this.#checksPerAccount.set(accountKey, checks + 1);
+        const check = this.#check(account, txHash.toLowerCase() as Hash).finally(() => {
+            this.#inFlight.delete(key);
+            const left = (this.#checksPerAccount.get(accountKey) ?? 1) - 1;
+            if (left > 0) this.#checksPerAccount.set(accountKey, left);
+            else this.#checksPerAccount.delete(accountKey);
+        });
         this.#inFlight.set(key, check);
         return check;
     }
@@ -97,6 +116,7 @@ export class DepositService {
         const { client, confirmations, receiptTimeoutMs } = this.#deps;
         const deadline = Date.now() + receiptTimeoutMs;
         let receipt: TransactionReceipt | null = null;
+        let pause = RECEIPT_POLL_MS;
         while (Date.now() < deadline) {
             try {
                 receipt ??= await client.getTransactionReceipt({ hash: txHash }).catch((error: unknown) => {
@@ -113,7 +133,8 @@ export class DepositService {
                     cause: error,
                 });
             }
-            await sleep(RECEIPT_POLL_MS);
+            await sleep(Math.min(pause, Math.max(deadline - Date.now(), 0)));
+            pause = Math.min(pause * 1.5, RECEIPT_POLL_MAX_MS);
         }
         throw new AppError(
             "tx_not_found",

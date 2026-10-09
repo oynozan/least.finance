@@ -63,9 +63,11 @@ export class DepositRegistry {
             projection: { _id: 1, depositAddress: 1, openedAtBlock: 1 },
         });
 
+        // Read in full before anything is added: a cursor failing halfway leaves the registry as it was,
+        // and the next refresh finds the same accounts again, backfills included.
+        const fresh = (await cursor.toArray()).filter((account) => !this.#byAddress.has(account.depositAddress));
         const backfills: Backfill[] = [];
-        for await (const account of cursor) {
-            if (this.#byAddress.has(account.depositAddress)) continue;
+        for (const account of fresh) {
             this.add(account);
             if (account.openedAtBlock <= scannedThrough) {
                 backfills.push({ address: account.depositAddress as Address, fromBlock: account.openedAtBlock });

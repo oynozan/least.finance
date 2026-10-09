@@ -1,4 +1,5 @@
-import { APIError, InvalidAuthTokenError, PrivyClient } from "@privy-io/node";
+import { APIError, PrivyClient } from "@privy-io/node";
+import { createRemoteJWKSet, errors, importSPKI, jwtVerify, type CryptoKey, type JWTVerifyGetKey } from "jose";
 import type { Logger } from "pino";
 import { getAddress, isAddress, type Address } from "viem";
 import { AppError } from "../errors.ts";
@@ -38,33 +39,76 @@ const CACHE_LIMIT = 10_000;
 
 type Wallets = { addresses: Set<string>; fetchedAt: number };
 
+const PRIVY_API = "https://api.privy.io";
+
+/**
+ * What a token itself got wrong. Anything else, such as Privy's key set
+ * being unreachable, says nothing about the token, so it isn't a sign-out.
+ */
+const BAD_TOKEN = [
+    errors.JWTExpired,
+    errors.JWTClaimValidationFailed,
+    errors.JWTInvalid,
+    errors.JWSInvalid,
+    errors.JWSSignatureVerificationFailed,
+    errors.JOSEAlgNotAllowed,
+    errors.JWKSNoMatchingKey,
+    errors.JWKSMultipleMatchingKeys,
+];
+
 export class PrivyIdentity implements IdentityProvider {
     readonly #privy: PrivyClient;
+    readonly #appId: string;
+    readonly #key: CryptoKey | JWTVerifyGetKey;
     readonly #logger: Logger;
     readonly #wallets = new Map<string, Wallets>();
     readonly #fetching = new Map<string, Promise<Wallets>>();
 
-    constructor({ appId, appSecret, verificationKey, apiUrl, logger }: Options) {
-        this.#privy = new PrivyClient({
-            appId,
-            appSecret,
-            apiUrl,
-            jwtVerificationKey: verificationKey,
-            timeout: 10_000,
-            maxRetries: 1,
-        });
+    /** Fails here, at startup, if the configured verification key isn't a valid ES256 public key. */
+    static async create({ appId, appSecret, verificationKey, apiUrl, logger }: Options) {
+        // The dashboard's verification key needs no request; otherwise Privy's key set, cached, as its SDK does.
+        const key = verificationKey
+            ? await importSPKI(verificationKey, "ES256").catch((error: unknown) => {
+                  throw new Error("PRIVY_VERIFICATION_KEY isn't a valid ES256 public key (PEM).", { cause: error });
+              })
+            : createRemoteJWKSet(new URL(`${apiUrl ?? PRIVY_API}/v1/apps/${appId}/jwks.json`), {
+                  cacheMaxAge: 60 * 60_000,
+                  cooldownDuration: 30_000,
+                  timeoutDuration: 5_000,
+              });
+        const privy = new PrivyClient({ appId, appSecret, apiUrl, timeout: 10_000, maxRetries: 1 });
+        return new PrivyIdentity(privy, appId, key, logger);
+    }
+
+    private constructor(privy: PrivyClient, appId: string, key: CryptoKey | JWTVerifyGetKey, logger: Logger) {
+        this.#privy = privy;
+        this.#appId = appId;
+        this.#key = key;
         this.#logger = logger;
     }
 
+    /**
+     * Verified here with jose rather than Privy's SDK, which reports a key set
+     * it couldn't fetch as a bad token, and would sign everyone out whenever
+     * Privy is slow.
+     */
     async verify(token: string): Promise<Identity> {
+        const options = {
+            typ: "JWT",
+            algorithms: ["ES256"],
+            issuer: "privy.io",
+            audience: this.#appId,
+            requiredClaims: ["sub", "exp"],
+        };
         try {
-            const claims = await this.#privy.utils().auth().verifyAccessToken(token);
-            return { userId: claims.user_id, expiresAt: claims.expiration * 1000 };
+            const key = this.#key;
+            const { payload } =
+                typeof key === "function" ? await jwtVerify(token, key, options) : await jwtVerify(token, key, options);
+            return { userId: payload.sub!, expiresAt: payload.exp! * 1000 };
         } catch (error) {
-            if (error instanceof InvalidAuthTokenError) {
+            if (BAD_TOKEN.some((type) => error instanceof type)) {
                 throw new AppError("unauthorized", "Your session isn't valid. Sign in again.", { cause: error });
             }
-            // The verification key couldn't be fetched: Privy is unreachable, not the token bad.
             this.#logger.error({ err: error }, "Couldn't verify a Privy access token");
             throw new AppError("unavailable", "Couldn't check your session right now. Try again shortly.", {
                 cause: error,

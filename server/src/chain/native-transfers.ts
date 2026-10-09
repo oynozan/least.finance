@@ -74,29 +74,39 @@ export async function findTransfersTo(
     if (recipients.length === 0 || fromBlock > toBlock) return [];
     const wanted = new Set(recipients.map((address) => address.toLowerCase()));
 
-    const chunks: (Address[] | undefined)[] = [];
-    if (recipients.length <= ADDRESSES_PER_QUERY * MAX_FILTERED_QUERIES) {
-        for (let i = 0; i < recipients.length; i += ADDRESSES_PER_QUERY) {
-            chunks.push(recipients.slice(i, i + ADDRESSES_PER_QUERY).map((address) => getAddress(address)));
-        }
-    } else {
-        chunks.push(undefined);
-    }
+    const all = recipients.map((address) => getAddress(address));
+    const chunks: (Address[] | undefined)[] =
+        all.length <= ADDRESSES_PER_QUERY * MAX_FILTERED_QUERIES ? chunked(all) : [undefined];
 
     const found = new Map<string, NativeTransfer>();
     for (const to of chunks) {
-        for (const transfer of await queryRange(client, to, fromBlock, toBlock)) {
+        for (const transfer of await queryRange(client, to, fromBlock, toBlock, all)) {
             if (wanted.has(transfer.to)) found.set(`${transfer.txHash}:${transfer.logIndex}`, transfer);
         }
     }
     return [...found.values()].sort(byChainOrder);
 }
 
+const chunked = (addresses: Address[]) => {
+    const chunks: Address[][] = [];
+    for (let i = 0; i < addresses.length; i += ADDRESSES_PER_QUERY) {
+        chunks.push(addresses.slice(i, i + ADDRESSES_PER_QUERY));
+    }
+    return chunks;
+};
+
+/**
+ * Logs for `to` (every recipient when undefined) over a block range. Too
+ * much for the RPC, it halves the range; a single block that's still too
+ * much (a busy block, or an airdrop) is narrowed by recipient instead, so no
+ * block can stall the scan.
+ */
 async function queryRange(
     client: ArcClient,
     to: Address[] | undefined,
     fromBlock: number,
     toBlock: number,
+    recipients: Address[],
 ): Promise<NativeTransfer[]> {
     try {
         const logs = await client.getLogs({
@@ -110,13 +120,26 @@ async function queryRange(
         return logs.map(toTransfer).filter((transfer) => transfer !== null);
     } catch (error) {
         const text = errorText(error);
-        if (fromBlock === toBlock || THROTTLED.test(text) || !TOO_MUCH.test(text)) throw error;
-        const middle = Math.floor((fromBlock + toBlock) / 2);
-        const first = await queryRange(client, to, fromBlock, middle);
-        const second = await queryRange(client, to, middle + 1, toBlock);
-        return [...first, ...second];
+        if (THROTTLED.test(text) || !TOO_MUCH.test(text)) throw error;
+        if (fromBlock < toBlock) {
+            const middle = Math.floor((fromBlock + toBlock) / 2);
+            const first = await queryRange(client, to, fromBlock, middle, recipients);
+            const second = await queryRange(client, to, middle + 1, toBlock, recipients);
+            return [...first, ...second];
+        }
+        const narrower = to === undefined ? chunked(recipients) : halves(to);
+        if (narrower.length < 2) throw error;
+        const parts = [];
+        for (const part of narrower) parts.push(...(await queryRange(client, part, fromBlock, toBlock, recipients)));
+        return parts;
     }
 }
+
+const halves = (addresses: Address[]) => {
+    if (addresses.length < 2) return [addresses];
+    const middle = Math.ceil(addresses.length / 2);
+    return [addresses.slice(0, middle), addresses.slice(middle)];
+};
 
 function errorText(error: unknown): string {
     if (!(error instanceof Error)) return String(error);
