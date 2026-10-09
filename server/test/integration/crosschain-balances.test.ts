@@ -1,6 +1,6 @@
 import type { Address } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
-import { expect, inject, test } from "vitest";
+import { beforeAll, expect, inject, test } from "vitest";
 import { createArcClient } from "../../src/chain/arc.ts";
 import { readBalances } from "../../src/crosschain/balances.ts";
 import { COINS, coinByKey } from "../../src/crosschain/catalog.ts";
@@ -17,14 +17,19 @@ const sources = createSourceClients({ ethereum: [inject("ethereumUrl")], bnb: [i
 const arc = createArcClient([inject("anvilUrl")]);
 const prices = fixedPrices({ ETH: 3000, BNB: 600, USDC: 1, USDT: 1 });
 
+// The anvils are fresh, not forks: `balanceOf` on an address with no code makes viem throw, and readBalances
+// calls it on every catalog token. Other files install some of these tokens, so each run installs them all.
+beforeAll(async () => {
+    for (const { chain, token } of COINS) {
+        if (token) await (chain === "bnb" ? bnb : ethereum).installToken(token);
+    }
+});
+
 /** A wallet holding 0.5 ETH on Ethereum, 250 USDT on BNB Chain and 12.5 USDC on Arc. */
 async function holder() {
     const owner = privateKeyToAddress(generatePrivateKey());
     await ethereum.fund(owner, "0.5");
     await arcChain.fund(owner, "12.5");
-    for (const { chain, token } of COINS) {
-        if (token) await (chain === "bnb" ? bnb : ethereum).installToken(token);
-    }
     await bnb.setTokenBalance(coinByKey("bnb:USDT").token as Address, owner, 250n * 10n ** 18n);
     return owner;
 }
