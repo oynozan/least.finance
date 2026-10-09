@@ -18,8 +18,9 @@ import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
 import { useArcNetwork, useUsdcBalance } from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
+import { DepositButton } from "./deposit-button";
 import { DepositForm } from "./deposit-form";
-import { ArcLogo, CloseIcon, PlusIcon, PowerIcon } from "./icons";
+import { ArcLogo, CloseIcon, PowerIcon } from "./icons";
 import { canHover } from "./pointer";
 import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
@@ -277,37 +278,19 @@ function WalletSection({
                     onSubmit={onDeposit}
                     onClose={() => setEntering(false)}
                 />
-            ) : offArc ? (
-                <motion.button
-                    type="button"
-                    className={`${styles.deposit} ${styles.switchNetwork}`}
-                    // Not `disabled`, which would drop keyboard focus mid-switch.
-                    aria-disabled={switching || undefined}
-                    whileHover={switching ? undefined : { scale: 1.04 }}
-                    whileTap={switching ? undefined : { scale: 0.94 }}
-                    transition={spring}
-                    onClick={onSwitchToArc}
-                >
-                    Switch to Arc
-                </motion.button>
             ) : (
-                <motion.button
-                    type="button"
-                    className={styles.deposit}
-                    aria-disabled={minDeposit === null || undefined}
-                    title={minDeposit === null ? "Loading your account…" : undefined}
-                    whileHover={minDeposit === null ? undefined : { scale: 1.04 }}
-                    whileTap={minDeposit === null ? undefined : { scale: 0.94 }}
-                    transition={spring}
+                // Not `disabled` when it can't act, which would drop keyboard focus mid-switch.
+                <DepositButton
+                    notice={offArc ? null : notice}
+                    variant={offArc ? "switch" : "deposit"}
+                    disabled={offArc ? switching : minDeposit === null}
                     onClick={() => {
+                        if (offArc) return onSwitchToArc();
                         if (minDeposit === null) return;
                         onStartDeposit();
                         setEntering(true);
                     }}
-                >
-                    <PlusIcon className={styles.depositIcon} />
-                    Deposit
-                </motion.button>
+                />
             )}
 
             {/* Always mounted, so screen readers announce what appears in it. */}

@@ -422,3 +422,75 @@ test("a deposit doesn't reveal the history while the form is open", async ({ pag
     await balanceButton(page).hover();
     await expect(deposits(page)).toBeVisible();
 });
+
+/** Starts recording the deposit button's phases (idle, running, done, error) as they change. */
+const recordPhases = (page: Page) =>
+    page.evaluate(() => {
+        const phases: string[] = [];
+        (window as unknown as { phases: string[] }).phases = phases;
+        const record = () => {
+            const phase = document.querySelector("#wallet-sidebar [data-phase]")?.getAttribute("data-phase");
+            if (phase && phases.at(-1) !== phase) phases.push(phase);
+        };
+        new MutationObserver(record).observe(document.body, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ["data-phase"],
+        });
+        record();
+    });
+const phases = (page: Page) => page.evaluate(() => (window as unknown as { phases: string[] }).phases);
+
+/** The progress fill inside the deposit button: how far across it is, and its color. */
+const fill = (page: Page) =>
+    depositButton(page).evaluate((button) => {
+        const style = getComputedStyle(button.querySelector("span")!);
+        return {
+            across: new DOMMatrix(style.transform).a,
+            color: style.backgroundColor,
+            opacity: Number(style.opacity),
+        };
+    });
+
+const rgb = (color: string) => color.match(/[\d.]+/g)!.map(Number);
+
+test("the deposit button fills while the deposit confirms, then finishes green", async ({ page }) => {
+    await start(page);
+    await recordPhases(page);
+    await submit(page, "25");
+    await expect(status(page)).toHaveText("Deposited $25.00");
+    await expect(depositButton(page)).toHaveAttribute("data-phase", "done");
+    await expect.poll(async () => (await fill(page)).color).toBe("rgb(104, 214, 112)");
+    expect((await fill(page)).across).toBeCloseTo(1, 2);
+    // Its name doesn't change while it works.
+    await expect(depositButton(page)).toHaveText("Deposit");
+    // It settles back on its own, before the status line clears.
+    await expect(depositButton(page)).toHaveAttribute("data-phase", "idle", { timeout: 5_000 });
+    await expect(status(page)).toHaveText("Deposited $25.00");
+    expect(await phases(page)).toEqual(["idle", "running", "done", "idle"]);
+    await expect.poll(async () => (await fill(page)).opacity).toBe(0);
+});
+
+test("the fill creeps across from gray toward green while the server confirms", async ({ page }) => {
+    await start(page);
+    await dropNextSend(page);
+    await submit(page, "40");
+    await expect(status(page)).toHaveText("Depositing $40.00…");
+    await expect(depositButton(page)).toHaveAttribute("data-phase", "running");
+    await expect(depositButton(page)).toHaveAttribute("aria-busy", "true");
+    const early = await fill(page);
+    await page.waitForTimeout(1_500);
+    const later = await fill(page);
+    expect(later.across).toBeGreaterThan(early.across);
+    expect(later.across).toBeLessThan(0.91);
+    // Greener: the green channel pulls ahead of the red one as it goes.
+    const [r1, g1] = rgb(early.color);
+    const [r2, g2] = rgb(later.color);
+    expect(g2 - r2).toBeGreaterThan(g1 - r1);
+
+    // Never landing, it turns red and settles back.
+    await expect(status(page)).toContainText(DROPPED, { timeout: 20_000 });
+    await expect(depositButton(page)).toHaveAttribute("data-phase", "idle", { timeout: 5_000 });
+    await expect(depositButton(page)).not.toHaveAttribute("aria-busy");
+});
