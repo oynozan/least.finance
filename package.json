@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "test:e2e": "playwright test",
-    "test:logic": "LOGIC_ONLY=1 playwright test --project=logic"
+    "test:logic": "LOGIC_ONLY=1 playwright test --project=logic",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@privy-io/react-auth": "^3.48.0",
@@ -26,6 +28,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.0",
+    "prettier": "3.9.9",
     "tailwindcss": "^4.3.3",
     "typescript": "^5"
   }

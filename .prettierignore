@@ -1,0 +1,15 @@
+node_modules
+.next
+out
+build
+dist
+coverage
+playwright-report
+test-results
+e2e/screenshots
+.impeccable
+package-lock.json
+next-env.d.ts
+*.tsbuildinfo
+# Written and re-added by `next dev`.
+AGENTS.md
