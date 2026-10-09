@@ -214,10 +214,8 @@ type WalletWindow = {
     rejectChainSwitches?: number;
     /** What the wallet does with the next network switch: fail without a code, or claim success and stay put. */
     nextSwitch?: "fail" | "ignore";
-    refusesNewNetworks?: boolean;
     /** What the wallet does with the next transaction it's asked to send. */
     nextSend?: "reject" | "drop";
-    useAccount: (account: string) => void;
     useChain: (chainId: string) => void;
     lock: () => void;
     sendToChain: (method: string, params: unknown[]) => Promise<{ result?: unknown; error?: { message: string } }>;
@@ -228,17 +226,6 @@ export const walletRequests = (page: Page) => page.evaluate(() => (window as unk
 
 export const walletChainId = (page: Page) =>
     page.evaluate(() => (window as unknown as WalletWindow).ethereum.request({ method: "eth_chainId" }));
-
-/** The user picks another network in their wallet. */
-export const switchWalletChain = (page: Page, chainId: string) =>
-    page.evaluate(
-        (chainId) =>
-            (window as unknown as WalletWindow).ethereum.request({
-                method: "wallet_switchEthereumChain",
-                params: [{ chainId }],
-            }),
-        chainId,
-    );
 
 /** The user declines the next network switch the dapp asks for. */
 export const rejectNextChainSwitch = (page: Page) =>
@@ -258,12 +245,6 @@ export const ignoreNextChainSwitch = (page: Page) =>
         (window as unknown as WalletWindow).nextSwitch = "ignore";
     });
 
-/** A wallet that can't add networks, like those with a fixed chain list. */
-export const refuseNewNetworks = (page: Page) =>
-    page.evaluate(() => {
-        (window as unknown as WalletWindow).refusesNewNetworks = true;
-    });
-
 /** The user declines the next transaction in their wallet. */
 export const rejectNextSend = (page: Page) =>
     page.evaluate(() => {
@@ -276,9 +257,6 @@ export const dropNextSend = (page: Page) =>
         (window as unknown as WalletWindow).nextSend = "drop";
     });
 
-/** The user picks another account in their wallet. */
-export const switchWalletAccount = (page: Page, account: string) =>
-    page.evaluate((account) => (window as unknown as WalletWindow).useAccount(account), account);
 
 /** The user picks a network in the wallet itself, one it may not have known before. */
 export const moveWalletTo = (page: Page, chainId: string) =>
@@ -296,7 +274,7 @@ export async function installWallet(page: Page) {
     await page.exposeFunction("sendToChain", (method: string, params: unknown[]) => chainRpc(method, params));
     await page.addInitScript((address) => {
         let connected = false;
-        let account = address;
+        const account = address;
         let chainId = "0x1";
         const knownChains = new Set([chainId]);
         const state = window as unknown as WalletWindow;
@@ -304,10 +282,6 @@ export async function installWallet(page: Page) {
         const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
         const emit = (event: string, ...args: unknown[]) => listeners[event]?.forEach((fn) => fn(...args));
         const fail = (code: number, message: string) => Object.assign(new Error(message), { code });
-        state.useAccount = (next) => {
-            account = next;
-            emit("accountsChanged", [next]);
-        };
         state.useChain = (next) => {
             chainId = next;
             knownChains.add(next);
@@ -368,7 +342,6 @@ export async function installWallet(page: Page) {
                         }
                         return null;
                     case "wallet_addEthereumChain":
-                        if (state.refusesNewNetworks) throw new Error("This wallet doesn't support custom networks.");
                         if (target) knownChains.add(target);
                         return null;
                     case "eth_sendTransaction": {

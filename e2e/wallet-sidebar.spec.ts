@@ -24,7 +24,6 @@ const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet"
 const dock = (page: Page) => page.getByRole("button", { name: `Wallet ${addressOf(page)}` });
 const modal = (page: Page) => page.locator("#privy-modal-content");
 const depositButton = (page: Page) => sidebar(page).getByRole("button", { name: "Deposit", exact: true });
-const switchButton = (page: Page) => sidebar(page).getByRole("button", { name: "Switch to Arc" });
 const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: /^Balance/ });
 const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "Deposit amount" });
 const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
@@ -160,23 +159,16 @@ test("a locked wallet leaves the header with an unknown network", async ({ page 
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
 });
 
-test("connecting adds Arc to the wallet and switches to it", async ({ page }) => {
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
-    await expect.poll(() => walletChainId(page)).toBe("0x13b2");
-
-    const added = (await walletRequests(page)).filter((r) => r.method === "wallet_addEthereumChain");
-    expect(added.at(-1)?.params).toEqual([
-        {
-            chainId: "0x13b2",
-            chainName: "Arc",
-            nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
-            rpcUrls: ["https://rpc.mainnet.arc.io"],
-            blockExplorerUrls: ["https://explorer.arc.io"],
-        },
-    ]);
+test("connecting leaves the wallet on its own network", async ({ page }) => {
+    await openWallet(page);
+    const methods = (await walletRequests(page)).map((r) => r.method);
+    expect(methods).not.toContain("wallet_switchEthereumChain");
+    expect(methods).not.toContain("wallet_addEthereumChain");
+    expect(await walletChainId(page)).toBe("0x1");
+    await expect(sidebar(page).locator("header").getByRole("img", { name: "Ethereum", exact: true })).toBeVisible();
     await expect(depositButton(page)).toBeVisible();
-    await expect(switchButton(page)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: `Wallet ${addressOf(page)}`, exact: true })).toBeVisible();
+    await expect(dock(page).locator('[aria-hidden="true"]')).toHaveCSS("background-color", GAIN);
 });
 
 test("the balance is the account's USDC on the server", async ({ page }) => {

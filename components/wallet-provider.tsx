@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { PrivyProvider } from "@privy-io/react-auth";
+import { bsc, mainnet } from "viem/chains";
 import { arc } from "./arc";
 
 const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
@@ -20,9 +21,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             clientId={clientId}
             config={{
                 loginMethods: ["wallet"],
-                // Setting a default chain also has Privy ask each wallet to switch to it on connect.
-                defaultChain: arc,
-                supportedChains: [arc],
+                // No default chain, which would have Privy switch every wallet on connect; these are the networks a deposit can switch to.
+                supportedChains: [arc, mainnet, bsc],
                 // Coinbase's smart wallet only runs on its own chain list, so offer the extension and app instead.
                 externalWallets: { coinbaseWallet: { config: { preference: { options: "eoaOnly" } } } },
                 appearance: {

@@ -256,6 +256,16 @@ test("a deposit from another network switches the wallet to Arc first", async ({
     expect(toArc).toBeGreaterThanOrEqual(0);
     expect(toArc).toBeLessThan(after.findIndex((r) => r.method === "eth_sendTransaction"));
     expect(await walletChainId(page)).toBe("0x13b2");
+    // A wallet that has never seen Arc is handed its details first.
+    expect(after.filter((r) => r.method === "wallet_addEthereumChain").at(-1)?.params).toEqual([
+        {
+            chainId: "0x13b2",
+            chainName: "Arc",
+            nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
+            rpcUrls: ["https://rpc.mainnet.arc.io"],
+            blockExplorerUrls: ["https://explorer.arc.io"],
+        },
+    ]);
 });
 
 test("declining the network switch keeps the form and sends nothing", async ({ page }) => {
