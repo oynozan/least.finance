@@ -44,6 +44,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
                         "wallet_connect",
                         "detected_solana_wallets",
                         "phantom",
+                        "solflare",
+                        "backpack",
                     ],
                 },
             }}
