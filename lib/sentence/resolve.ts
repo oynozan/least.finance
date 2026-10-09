@@ -45,6 +45,12 @@ export type NumberSlotView = SlotViewBase & {
     suffix?: string;
     decimals: number;
     placeholder: string;
+    /**
+     * The slider's ends: the bounds where they're set, the spec's range
+     * elsewhere. `capped` says the top is a real limit (the wallet's balance).
+     */
+    range?: { min: number; max: number; capped: boolean };
+    summary?: string;
 };
 
 export type SlotView = ChoiceSlotView | NumberSlotView;
@@ -122,10 +128,12 @@ export function resolve<I, T extends Str, C>(
         const slotIssues: Issue[] = [];
 
         if (spec.kind === "number") {
+            const { min, max } = spec.bounds?.(values, ctx) ?? {};
+            const low = min?.value ?? spec.range?.min;
+            const high = max?.value ?? spec.range?.max;
             if (!isEntered(value)) {
                 slotIssues.push({ code: "missing", severity: "incomplete", slot: id, ...spec.missing });
             } else {
-                const { min, max } = spec.bounds?.(values, ctx) ?? {};
                 const amount = Number(value);
                 if (min && amount < min.value) {
                     slotIssues.push({ code: "min", severity: "error", slot: id, message: min.message, cta: min.cta });
@@ -143,6 +151,8 @@ export function resolve<I, T extends Str, C>(
                 suffix: spec.suffix,
                 decimals: spec.decimals,
                 placeholder: spec.placeholder,
+                range: low !== undefined && high !== undefined ? { min: low, max: high, capped: !!max } : undefined,
+                summary: isEntered(value) ? spec.summary?.(values, ctx) : undefined,
             };
         } else {
             const choices = spec.choices(values, ctx);

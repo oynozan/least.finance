@@ -82,6 +82,10 @@ export type NumberSpec<V, Ctx, Term extends string> = SlotBase<Term> & {
     /** Typing is kept to this many digits before the decimal point. */
     maxIntegerDigits?: number;
     bounds?: (values: V, ctx: Ctx) => { min?: Bound; max?: Bound };
+    /** The slider's ends where `bounds` leave them open (no wallet, so no cap). */
+    range?: { min: number; max: number };
+    /** What the amount comes to, under the slider: "You get 0.0443 SOL". */
+    summary?: (values: V, ctx: Ctx) => string | undefined;
 };
 
 export type SlotSpec<V, Ctx, T extends string, Term extends string> =

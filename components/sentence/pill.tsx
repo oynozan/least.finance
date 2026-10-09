@@ -9,6 +9,8 @@ export type IconPose = "rest" | "hover" | "tap";
 type PillBodyProps = {
     /** Identifies the content; a change swaps it with a spring. */
     contentKey: string;
+    /** Re-measures the pill's size when it changes; defaults to `contentKey`. */
+    layoutKey?: string;
     children: ReactNode;
     icon?: ReactNode;
     pose?: IconPose;
@@ -27,6 +29,7 @@ type PillBodyProps = {
  */
 export function PillBody({
     contentKey,
+    layoutKey = contentKey,
     children,
     icon,
     pose = "rest",
@@ -38,7 +41,7 @@ export function PillBody({
     return (
         <motion.span
             layout
-            layoutDependency={contentKey}
+            layoutDependency={layoutKey}
             transition={{ layout: layoutTransition }}
             // A numeric radius is what Motion's scale correction rewrites per frame.
             style={{ borderRadius: 999 }}
@@ -46,7 +49,7 @@ export function PillBody({
         >
             <motion.span
                 layout="position"
-                layoutDependency={contentKey}
+                layoutDependency={layoutKey}
                 transition={{ layout: layoutTransition }}
                 className="relative flex min-w-0 items-center"
             >
@@ -110,6 +113,7 @@ export function PillButton({ ref, onClick, tone = "default", ...props }: PillBut
     const [pressed, setPressed] = useState(false);
     const {
         contentKey,
+        layoutKey,
         children,
         icon,
         trailing,
@@ -153,6 +157,7 @@ export function PillButton({ ref, onClick, tone = "default", ...props }: PillBut
         >
             <PillBody
                 contentKey={contentKey}
+                layoutKey={layoutKey}
                 icon={icon}
                 pose={pose}
                 trailing={trailing}

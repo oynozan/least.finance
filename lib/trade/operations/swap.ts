@@ -50,10 +50,14 @@ export const swap = operation({
                     coinChoice(ctx, t, { detail: t.symbol === v.fromToken ? "Switch sides" : undefined }),
                 ),
         },
-        amountUSD: usdAmount((v: Values, ctx) => ({
-            min: minimum(1),
-            max: holdingCap(ctx, v.fromToken),
-        })),
+        amountUSD: usdAmount(
+            (v: Values, ctx) => ({ min: minimum(1), max: holdingCap(ctx, v.fromToken) }),
+            (v, ctx) => {
+                const to = priceOf(ctx, v.toToken);
+                const amount = Number(v.amountUSD) - NETWORK_FEE_USD;
+                return to && amount > 0 ? `You get ≈ ${formatUnits(amount / to, v.toToken)}` : undefined;
+            },
+        ),
     },
     defaults: () => ({ fromToken: "ETH", toToken: "SOL", amountUSD: "10" }),
     template: () => [VERB, "my", { slot: "fromToken" }, "to", { slot: "toToken" }, "for", { slot: "amountUSD" }, "."],

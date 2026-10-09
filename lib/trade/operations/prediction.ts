@@ -56,7 +56,14 @@ export const prediction = operation({
                     icon: { set: "coin", id: m.symbol },
                 })),
         },
-        amountUSD: usdAmount((_v: Values, ctx) => ({ min: minimum(1), max: spendCap(ctx) })),
+        amountUSD: usdAmount(
+            (_v: Values, ctx) => ({ min: minimum(1), max: spendCap(ctx) }),
+            (v, ctx) => {
+                const outcome = marketOf(ctx, v.marketId)?.outcomes.find((o) => o.id === v.outcomeId);
+                if (!outcome) return undefined;
+                return `Pays ${formatUsd(Number(v.amountUSD) / outcome.price)} if ${outcome.label}`;
+            },
+        ),
     },
     defaults: (ctx: TradeCtx): Values => ({
         outcomeId: "yes",

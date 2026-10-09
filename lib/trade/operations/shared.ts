@@ -3,9 +3,13 @@ import type { Token } from "../catalog";
 import { held, heldUSD, spendableUSD, type TradeCtx } from "../context";
 import { formatUnits, formatUsd, formatUsdShort } from "../format";
 
+/** Where the amount slider tops out while no wallet caps it. */
+const UNCAPPED_MAX_USD = 10_000;
+
 /** A dollar amount bound to the shared `amountUSD` term. */
 export function usdAmount<V>(
     bounds: NumberSpec<V, TradeCtx, "amountUSD">["bounds"],
+    summary?: NumberSpec<V, TradeCtx, "amountUSD">["summary"],
 ): NumberSpec<V, TradeCtx, "amountUSD"> {
     return {
         kind: "number",
@@ -18,6 +22,8 @@ export function usdAmount<V>(
         placeholder: "0",
         missing: { message: "Enter an amount.", cta: "Enter an amount" },
         bounds,
+        range: { min: 1, max: UNCAPPED_MAX_USD },
+        summary,
     };
 }
 

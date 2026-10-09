@@ -93,10 +93,13 @@ export const perp = operation({
             },
         },
         collateralUSD: {
-            ...usdAmount((_v: Values & Fixed, ctx) => ({
-                min: { ...minimum(10), message: "Positions start at $10." },
-                max: spendCap(ctx),
-            })),
+            ...usdAmount(
+                (_v: Values & Fixed, ctx) => ({
+                    min: { ...minimum(10), message: "Positions start at $10." },
+                    max: spendCap(ctx),
+                }),
+                (v) => `A ${formatUsdShort(Number(v.collateralUSD) * (Number(v.leverage) || 1))} position`,
+            ),
             prompt: "How much collateral, in dollars?",
             hint: "Collateral in USD",
         },

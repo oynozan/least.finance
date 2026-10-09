@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { motion, useIsPresent, type Transition, type Variants } from "motion/react";
 import type { Choice } from "@/lib/sentence";
 import { CheckIcon } from "@/components/icons";
@@ -22,6 +22,8 @@ type PickerProps = {
     };
     /** Room for long labels: the panel widens and details go under the label. */
     wide?: boolean;
+    /** The pill it drops down from. */
+    anchor?: RefObject<HTMLElement | null>;
     onSelect: (value: string) => void;
     onClose: () => void;
 };
@@ -45,7 +47,7 @@ const iconVariants: Variants = {
 
 const TONE = { gain: "text-gain", loss: "text-loss", neutral: "" } as const;
 
-/** A centered, dropdown-style list of choices for one slot. */
+/** A dropdown list of choices for one slot, dropped from its pill. */
 export function Picker(props: PickerProps) {
     const titleId = useId();
     return (
@@ -55,6 +57,7 @@ export function Picker(props: PickerProps) {
             id={props.id}
             labelledBy={titleId}
             width={props.wide ? 640 : 440}
+            anchor={props.anchor}
         >
             <Options {...props} titleId={titleId} />
         </FloatingDialog>

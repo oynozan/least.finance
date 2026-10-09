@@ -52,10 +52,18 @@ export const spot = operation({
                         coinChoice(ctx, t, { disabled: v.side === "sell" ? unheld(ctx, t.symbol) : undefined }),
                     ),
         },
-        amountUSD: usdAmount((v: Values & Fixed, ctx) => ({
-            min: minimum(1),
-            max: v.side === "buy" ? spendCap(ctx) : holdingCap(ctx, v.token),
-        })),
+        amountUSD: usdAmount(
+            (v: Values & Fixed, ctx) => ({
+                min: minimum(1),
+                max: v.side === "buy" ? spendCap(ctx) : holdingCap(ctx, v.token),
+            }),
+            (v, ctx) => {
+                const price = priceOf(ctx, v.token);
+                if (!price) return undefined;
+                const coins = formatUnits(Number(v.amountUSD) / price, v.token);
+                return v.side === "buy" ? `You get ≈ ${coins}` : `You sell ≈ ${coins}`;
+            },
+        ),
     },
     defaults: () => ({ token: "SOL", amountUSD: "10" }),
     template: (v) =>
