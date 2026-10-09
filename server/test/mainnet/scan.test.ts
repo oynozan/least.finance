@@ -33,7 +33,6 @@ function account(depositAddress: Address, depositIndex: number) {
     const now = new Date();
     const doc: AccountDoc = {
         _id: new ObjectId(),
-        wallet: privateKeyToAddress(generatePrivateKey()).toLowerCase(),
         privyUserId: `did:privy:${randomUUID().replaceAll("-", "")}`,
         depositIndex,
         depositAddress,
@@ -43,7 +42,7 @@ function account(depositAddress: Address, depositIndex: number) {
         createdAt: now,
         updatedAt: now,
     };
-    privy.setUser(doc.privyUserId, [doc.wallet]);
+    privy.setUser(doc.privyUserId, [privateKeyToAddress(generatePrivateKey())]);
     return { doc, userId: doc.privyUserId };
 }
 
@@ -82,7 +81,7 @@ afterAll(async () => {
 });
 
 async function api<T>(who: { doc: AccountDoc; userId: string }, path: string, body?: unknown): Promise<T> {
-    const response = await fetch(`${server.url}/v1/accounts/${who.doc.wallet}${path}`, {
+    const response = await fetch(`${server.url}/v1/account${path}`, {
         method: body === undefined ? "GET" : "POST",
         headers: {
             authorization: `Bearer ${await privy.token(who.userId)}`,
@@ -160,7 +159,7 @@ test("reporting a transaction the scan already credited changes nothing", async 
 });
 
 test("reporting a transaction that sent nothing to the account is refused", async () => {
-    const response = await fetch(`${server.url}/v1/accounts/${accounts.erc20.doc.wallet}/deposits`, {
+    const response = await fetch(`${server.url}/v1/account/deposits`, {
         method: "POST",
         headers: {
             authorization: `Bearer ${await privy.token(accounts.erc20.userId)}`,

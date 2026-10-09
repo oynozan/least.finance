@@ -34,14 +34,14 @@ async function send(from: Address, to: Address, usdc: string): Promise<Hash> {
 
 async function openUser(server: RunningServer = live()) {
     const user: User = await stack.user();
-    const response = await fetch(`${server.url}/v1/wallets/connect`, {
+    const response = await fetch(`${server.url}/v1/account`, {
         method: "POST",
         headers: { authorization: `Bearer ${user.token}`, "content-type": "application/json" },
-        body: JSON.stringify({ address: user.wallet }),
+        body: JSON.stringify({}),
     });
     expect(response.status).toBe(200);
     const body = (await response.json()) as { account: { depositAddress: Address } };
-    const account = await server.services.database.collections.accounts.findOne({ wallet: user.wallet.toLowerCase() });
+    const account = await server.services.database.collections.accounts.findOne({ privyUserId: user.userId });
     if (!account) throw new Error("account missing");
     return { ...user, depositAddress: body.account.depositAddress, accountId: account._id };
 }
@@ -81,7 +81,7 @@ afterEach(async () => {
     for (const account of await accounts.find().toArray()) {
         const entries = await ledger.find({ accountId: account._id }).toArray();
         const total = entries.reduce((sum, entry) => sum + fromDecimal(entry.amount), 0n);
-        expect(total, `ledger sum of ${account.wallet}`).toBe(fromDecimal(account.balance));
+        expect(total, `ledger sum of ${account.privyUserId}`).toBe(fromDecimal(account.balance));
         expect(await deposits.countDocuments({ accountId: account._id })).toBe(entries.length);
     }
 });
@@ -95,10 +95,10 @@ test("every deposit is credited when the chain caps the results of a log query",
     });
     try {
         const user = await capped.user();
-        const opened = await fetch(`${capped.url}/v1/wallets/connect`, {
+        const opened = await fetch(`${capped.url}/v1/account`, {
             method: "POST",
             headers: { authorization: `Bearer ${user.token}`, "content-type": "application/json" },
-            body: JSON.stringify({ address: user.wallet }),
+            body: JSON.stringify({}),
         }).then((r) => r.json() as Promise<{ account: { depositAddress: Address } }>);
         const address = opened.account.depositAddress;
 
@@ -121,7 +121,7 @@ test("every deposit is credited when the chain caps the results of a log query",
         try {
             const db = server.services.database.collections;
             await expect.poll(() => db.deposits.countDocuments(), { timeout: 15_000, interval: 50 }).toBe(6);
-            const account = await db.accounts.findOne({ wallet: user.wallet.toLowerCase() });
+            const account = await db.accounts.findOne({ privyUserId: user.userId });
             expect(fromDecimal(account!.balance)).toBe(wei("6"));
             expect(account!.version).toBe(6);
             expect(capped.emulator.logQueries - before).toBeGreaterThan(1);
@@ -143,10 +143,10 @@ test("a range the chain refuses as too wide is split until it passes", async () 
     });
     try {
         const user = await capped.user();
-        const opened = await fetch(`${capped.url}/v1/wallets/connect`, {
+        const opened = await fetch(`${capped.url}/v1/account`, {
             method: "POST",
             headers: { authorization: `Bearer ${user.token}`, "content-type": "application/json" },
-            body: JSON.stringify({ address: user.wallet }),
+            body: JSON.stringify({}),
         }).then((r) => r.json() as Promise<{ account: { depositAddress: Address } }>);
         const config = capped.server.services.config;
         await capped.server.close();

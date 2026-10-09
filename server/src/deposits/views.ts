@@ -4,7 +4,6 @@ import { formatUsdc, fromDecimal } from "../db/money.ts";
 import type { AccountView, DepositView, Hex } from "../protocol.ts";
 
 export const accountView = (account: AccountDoc): AccountView => ({
-    wallet: getAddress(account.wallet),
     depositAddress: getAddress(account.depositAddress),
     balance: formatUsdc(fromDecimal(account.balance)),
     version: account.version,

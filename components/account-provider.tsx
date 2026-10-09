@@ -32,7 +32,7 @@ export function useAccount() {
     return context;
 }
 
-/** The connected wallet's account on the server: its balance, deposits, and the way to add one. */
+/** The signed-in person's account on the server: its balance, deposits, and the way to add one. */
 export function AccountProvider({ children }: { children: ReactNode }) {
     if (!walletEnabled) return <Provide snapshot={IDLE}>{children}</Provide>;
     return <PrivyAccountProvider>{children}</PrivyAccountProvider>;
@@ -43,6 +43,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     const { wallets } = useWallets();
     const [client] = useState(() => new AccountClient(API_URL));
     const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot, () => IDLE);
+    const userId = user?.id;
     const address = user?.wallet?.address;
 
     // The latest token getter, without reconnecting whenever its identity changes.
@@ -52,9 +53,9 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     });
 
     useEffect(() => {
-        if (ready && authenticated && address) client.connect(address, () => accessToken.current());
+        if (ready && authenticated && userId) client.connect(userId, () => accessToken.current());
         else client.disconnect();
-    }, [client, ready, authenticated, address]);
+    }, [client, ready, authenticated, userId]);
     useEffect(() => () => client.disconnect(), [client]);
 
     const deposit = async (amount: string): Promise<DepositResult> => {

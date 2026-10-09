@@ -15,7 +15,6 @@ import {
     type WalletSession,
 } from "@/lib/account/state";
 
-const WALLET = "0x00000000000000000000000000000000000000a1" as Hex;
 const DEPOSIT_ADDRESS = "0x00000000000000000000000000000000000000b2" as Hex;
 const RULES = { chainId: 5042, minDeposit: "0.01" };
 
@@ -23,7 +22,6 @@ const hash = (n: number) => `0x${n.toString(16).padStart(64, "0")}` as Hex;
 const oid = (n: number) => n.toString(16).padStart(24, "0");
 
 const account = (balance: string, version: number): AccountView => ({
-    wallet: WALLET,
     depositAddress: DEPOSIT_ADDRESS,
     balance,
     version,

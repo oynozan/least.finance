@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AppError } from "../../src/errors.ts";
-import { connectWallet, depositPage, depositReport, parse } from "../../src/validation.ts";
+import { depositPage, depositReport, parse } from "../../src/validation.ts";
 
 const hash = `0x${"AB".repeat(32)}`;
 const catchError = (fn: () => unknown) => {
@@ -13,22 +13,6 @@ const catchError = (fn: () => unknown) => {
 };
 
 describe("parse", () => {
-    it("accepts a wallet address, trimming it", () => {
-        const address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
-        expect(parse(connectWallet, { address: ` ${address} ` })).toEqual({ address });
-    });
-
-    it.each(["0x123", "hello", "", "0xZZ997970C51812dc3A010C7d01b50e0d17dc79C8"])(
-        "rejects the address '%s'",
-        (address) => {
-            expect(() => parse(connectWallet, { address })).toThrow(AppError);
-        },
-    );
-
-    it("rejects a missing address", () => {
-        expect(() => parse(connectWallet, undefined)).toThrow(AppError);
-    });
-
     it("lowercases a transaction hash", () => {
         expect(parse(depositReport, { txHash: hash })).toEqual({ txHash: hash.toLowerCase() });
     });

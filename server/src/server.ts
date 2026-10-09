@@ -71,8 +71,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             receiptTimeoutMs: config.DEPOSIT_RECEIPT_TIMEOUT_MS,
         });
         const sessions = new Sessions({
-            logger,
-            identity,
             accounts,
             deposits,
             rules: { chainId: ARC_CHAIN_ID, minDeposit: formatUsdc(config.DEPOSIT_MIN_USDC) },

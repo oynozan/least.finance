@@ -73,7 +73,7 @@ test.skipIf(!LIVE_KEY)(
             socket!.once("connect", () => resolve());
             socket!.once("connect_error", reject);
         });
-        const session = await socket.timeout(10_000).emitWithAck("wallet:connect", { address: owner.address });
+        const session = await socket.timeout(10_000).emitWithAck("account:open", {});
         if (!session.ok) throw new Error(session.error.message);
         const depositAddress = session.data.account.depositAddress;
         expect(session.data.account.balance).toBe("0");

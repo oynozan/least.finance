@@ -12,10 +12,8 @@ export type Hex = `0x${string}`;
  */
 export type UsdcAmount = string;
 
-/** A connected wallet's account on the server. */
+/** A person's account on the server. */
 export type AccountView = {
-    /** The connected wallet, checksummed. */
-    wallet: Hex;
     /** The account's own address on Arc: USDC sent here is credited to it. */
     depositAddress: Hex;
     balance: UsdcAmount;
@@ -59,7 +57,7 @@ export type CoinBalance = {
     usd: number | null;
 };
 
-/** What connecting a wallet hands back: everything the sidebar shows. */
+/** What opening the account hands back: everything the sidebar shows. */
 export type WalletSession = {
     account: AccountView;
     deposits: DepositPage;
@@ -96,8 +94,8 @@ export type ApiError = { code: ErrorCode; message: string };
 export type Ack<T> = { ok: true; data: T } | { ok: false; error: ApiError };
 
 export type ClientToServerEvents = {
-    /** Binds the socket to a wallet linked to the signed-in Privy user, opening its account on first use. */
-    "wallet:connect": (payload: { address: string }, ack: (result: Ack<WalletSession>) => void) => void;
+    /** Binds the socket to the signed-in Privy user's account, opening it on first use. */
+    "account:open": (payload: Record<string, never>, ack: (result: Ack<WalletSession>) => void) => void;
     "deposits:list": (payload: { before?: string; limit?: number }, ack: (result: Ack<DepositPage>) => void) => void;
     /** Reports a deposit transaction so it's credited without waiting for the chain scan. */
     "deposit:submit": (payload: { txHash: string }, ack: (result: Ack<DepositReceipt>) => void) => void;

@@ -1,5 +1,4 @@
 import { ObjectId } from "mongodb";
-import type { Address } from "viem";
 import { isDuplicateKey, type AccountDoc, type Collections } from "../db/mongo.ts";
 import { toDecimal } from "../db/money.ts";
 import type { DepositRegistry } from "../deposits/registry.ts";
@@ -15,7 +14,7 @@ type Deps = {
     headBlock: () => Promise<number>;
 };
 
-/** One account per connected wallet, each with its own deposit address on Arc. */
+/** One account per person, each with its own deposit address on Arc. */
 export class AccountService {
     readonly #deps: Deps;
 
@@ -23,30 +22,26 @@ export class AccountService {
         this.#deps = deps;
     }
 
-    find(wallet: string) {
-        return this.#deps.collections.accounts.findOne({ wallet: wallet.toLowerCase() });
+    /** The oldest account when a person has several, the one a merge keeps. */
+    find(privyUserId: string) {
+        return this.#deps.collections.accounts.findOne({ privyUserId }, { sort: { createdAt: 1, depositIndex: 1 } });
     }
 
     findById(id: ObjectId) {
         return this.#deps.collections.accounts.findOne({ _id: id });
     }
 
-    /**
-     * The wallet's account, opened on first use. Callers must have checked
-     * that `privyUserId` controls the wallet.
-     */
-    async open(wallet: Address, privyUserId: string): Promise<AccountDoc> {
+    /** The person's account, opened on first use. */
+    async open(privyUserId: string): Promise<AccountDoc> {
         const { accounts } = this.#deps.collections;
-        const key = wallet.toLowerCase();
 
-        const existing = await accounts.findOne({ wallet: key });
-        if (existing) return this.#claim(existing, privyUserId);
+        const existing = await this.find(privyUserId);
+        if (existing) return existing;
 
         const depositIndex = await this.#nextIndex();
         const now = new Date();
         const account: AccountDoc = {
             _id: new ObjectId(),
-            wallet: key,
             privyUserId,
             depositIndex,
             depositAddress: this.#deps.keyring.addressAt(depositIndex),
@@ -65,22 +60,11 @@ export class AccountService {
             this.#deps.registry.remove(account.depositAddress);
             // Another request opened it first; its index is simply skipped.
             if (!isDuplicateKey(error)) throw error;
-            const winner = await accounts.findOne({ wallet: key });
+            const winner = await this.find(privyUserId);
             if (!winner) throw error;
             this.#deps.registry.add(winner);
-            return this.#claim(winner, privyUserId);
+            return winner;
         }
-    }
-
-    /** A wallet moves with whichever Privy user it's verified for now. */
-    async #claim(account: AccountDoc, privyUserId: string): Promise<AccountDoc> {
-        if (account.privyUserId === privyUserId) return account;
-        const updated = await this.#deps.collections.accounts.findOneAndUpdate(
-            { _id: account._id },
-            { $set: { privyUserId, updatedAt: new Date() } },
-            { returnDocument: "after" },
-        );
-        return updated ?? account;
     }
 
     async #nextIndex(): Promise<number> {

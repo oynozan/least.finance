@@ -10,7 +10,7 @@ afterAll(() => stack?.stop());
 test("a reported deposit is credited and pushed", async () => {
     const user = await stack.user();
     const socket = await stack.socket(user);
-    const session = await socket.timeout(5000).emitWithAck("wallet:connect", { address: user.wallet });
+    const session = await socket.timeout(5000).emitWithAck("account:open", {});
     expect(session.ok).toBe(true);
     if (!session.ok) return;
     const pushed = new Promise((resolve) => socket.once("deposit:credited", resolve));

@@ -35,9 +35,9 @@ function attempt(url: string, auth: Record<string, unknown> | undefined, origin?
     });
 }
 
-async function connect(socket: AppSocket, address: string) {
-    const result = await socket.timeout(5000).emitWithAck("wallet:connect", { address });
-    if (!result.ok) throw new Error(`wallet:connect failed: ${result.error.code}`);
+async function connect(socket: AppSocket) {
+    const result = await socket.timeout(5000).emitWithAck("account:open", {});
+    if (!result.ok) throw new Error(`account:open failed: ${result.error.code}`);
     return result.data;
 }
 
@@ -87,64 +87,61 @@ describe("origin", () => {
     });
 });
 
-describe("wallet:connect", () => {
-    test("an invalid address is a bad request", async () => {
-        const socket = await stack.socket(await stack.user());
-        const result = await socket.timeout(5000).emitWithAck("wallet:connect", { address: "nope" });
-        expect(result).toMatchObject({ ok: false, error: { code: "bad_request" } });
-    });
-
-    test("a missing payload is a bad request", async () => {
-        const socket = await stack.socket(await stack.user());
-        const result = await socket
-            .timeout(5000)
-            .emitWithAck("wallet:connect", undefined as unknown as { address: string });
-        expect(result).toMatchObject({ ok: false, error: { code: "bad_request" } });
-    });
-
-    test("a wallet that isn't linked is forbidden", async () => {
-        const socket = await stack.socket(await stack.user());
-        const stranger = privateKeyToAddress(generatePrivateKey());
-        const result = await socket.timeout(5000).emitWithAck("wallet:connect", { address: stranger });
-        expect(result).toMatchObject({ ok: false, error: { code: "forbidden" } });
-    });
-
-    test("a linked wallet gets its session", async () => {
+describe("account:open", () => {
+    test("binds the signed-in person's account without a wallet address", async () => {
         const user = await stack.user();
         const socket = await stack.socket(user);
-        const result = (await socket
-            .timeout(5000)
-            .emitWithAck("wallet:connect", { address: user.wallet })) as Ack<WalletSession>;
+        const result = (await socket.timeout(5000).emitWithAck("account:open", {})) as Ack<WalletSession>;
         expect(result).toMatchObject({
             ok: true,
             data: {
-                account: { wallet: getAddress(user.wallet), balance: "0", version: 0 },
+                account: { depositAddress: expect.stringMatching(/^0x[0-9a-fA-F]{40}$/), balance: "0", version: 0 },
                 deposits: { items: [], next: null },
                 rules: { chainId: 5042 },
             },
         });
+        if (!result.ok) return;
+        expect(result.data.account).not.toHaveProperty("wallet");
+        const again = (await socket.timeout(5000).emitWithAck("account:open", {})) as Ack<WalletSession>;
+        expect(again.ok && again.data.account.depositAddress).toBe(result.data.account.depositAddress);
+    });
+
+    test("one account per person, however many wallets they've linked", async () => {
+        const w1 = privateKeyToAddress(generatePrivateKey());
+        const w2 = privateKeyToAddress(generatePrivateKey());
+        const userId = `did:privy:${randomUUID().replaceAll("-", "")}`;
+        stack.privy.setUser(userId, [w1, w2]);
+        const user: User = { userId, wallet: w1, token: await stack.privy.token(userId) };
+
+        const first = await connect(await stack.socket(user));
+        const second = await connect(await stack.socket(user));
+        expect(second.account.depositAddress).toBe(first.account.depositAddress);
+        const { accounts } = stack.server.services.database.collections;
+        expect(await accounts.countDocuments({ privyUserId: userId })).toBe(1);
     });
 
     test("an event without an acknowledgement doesn't break the server", async () => {
-        const user = await stack.user();
-        const socket = await stack.socket(user);
+        const socket = await stack.socket(await stack.user());
         const raw = socket as unknown as { emit(event: string, ...args: unknown[]): void };
-        raw.emit("wallet:connect", { address: user.wallet });
-        raw.emit("wallet:connect");
-        const session = await connect(socket, user.wallet);
-        expect(session.account.wallet).toBe(getAddress(user.wallet));
+        raw.emit("account:open", {});
+        raw.emit("account:open");
+        const session = await connect(socket);
+        expect(session.account.balance).toBe("0");
         expect(socket.connected).toBe(true);
     });
 });
 
-describe("before wallet:connect", () => {
-    test("listing deposits needs a connected wallet", async () => {
+describe("before account:open", () => {
+    test("listing deposits needs an open account", async () => {
         const socket = await stack.socket(await stack.user());
         const result = await socket.timeout(5000).emitWithAck("deposits:list", {});
-        expect(result).toMatchObject({ ok: false, error: { code: "wallet_not_connected" } });
+        expect(result).toMatchObject({
+            ok: false,
+            error: { code: "wallet_not_connected", message: "Open your account first." },
+        });
     });
 
-    test("submitting a deposit needs a connected wallet", async () => {
+    test("submitting a deposit needs an open account", async () => {
         const socket = await stack.socket(await stack.user());
         const result = await socket.timeout(5000).emitWithAck("deposit:submit", { txHash: `0x${"ab".repeat(32)}` });
         expect(result).toMatchObject({ ok: false, error: { code: "wallet_not_connected" } });
@@ -158,9 +155,9 @@ describe("deposits", () => {
         const tab1 = await stack.socket(user);
         const tab2 = await stack.socket(user);
         const bystander = await stack.socket(other);
-        const session = await connect(tab1, user.wallet);
-        await connect(tab2, user.wallet);
-        await connect(bystander, other.wallet);
+        const session = await connect(tab1);
+        await connect(tab2);
+        await connect(bystander);
         const pushes1 = collect(tab1);
         const pushes2 = collect(tab2);
         const pushesOther = collect(bystander);
@@ -181,7 +178,7 @@ describe("deposits", () => {
     test("the push carries the deposit and the account, and versions rise by one per deposit", async () => {
         const user = await stack.user();
         const socket = await stack.socket(user);
-        const session = await connect(socket, user.wallet);
+        const session = await connect(socket);
         const pushes = collect(socket);
 
         const first = await stack.chain.send(user.wallet, session.account.depositAddress, "1");
@@ -207,7 +204,7 @@ describe("deposits", () => {
     test("a transfer nobody reported is found by the scan and pushed", async () => {
         const user = await stack.user();
         const socket = await stack.socket(user);
-        const session = await connect(socket, user.wallet);
+        const session = await connect(socket);
         const pushed = new Promise<{ deposit: { amount: string } }>((resolve) =>
             socket.once("deposit:credited", resolve),
         );
@@ -219,8 +216,8 @@ describe("deposits", () => {
         const user = await stack.user();
         const a = await stack.socket(user);
         const b = await stack.socket(user);
-        const session = await connect(a, user.wallet);
-        await connect(b, user.wallet);
+        const session = await connect(a);
+        await connect(b);
 
         const hash = await stack.chain.send(user.wallet, session.account.depositAddress, "5");
         const [ra, rb] = await Promise.all([
@@ -232,38 +229,48 @@ describe("deposits", () => {
         await settle(600);
 
         const { collections } = stack.server.services.database;
-        const account = await collections.accounts.findOne({ wallet: getAddress(user.wallet) });
-        const accountDoc = account ?? (await collections.accounts.findOne({ wallet: user.wallet.toLowerCase() }));
+        const accountDoc = await collections.accounts.findOne({ privyUserId: user.userId });
         expect(accountDoc).not.toBeNull();
         expect(await collections.ledger.countDocuments({ accountId: accountDoc!._id })).toBe(1);
         expect(await collections.deposits.countDocuments({ accountId: accountDoc!._id })).toBe(1);
-        const view = await a.timeout(5000).emitWithAck("wallet:connect", { address: user.wallet });
+        const view = await a.timeout(5000).emitWithAck("account:open", {});
         expect(view).toMatchObject({ ok: true, data: { account: { balance: "5", version: 1 } } });
     });
 });
 
-describe("switching wallets", () => {
-    test("a socket only hears about the wallet it is connected to now", async () => {
-        const w1 = privateKeyToAddress(generatePrivateKey());
-        const w2 = privateKeyToAddress(generatePrivateKey());
-        const userId = `did:privy:${randomUUID().replaceAll("-", "")}`;
-        stack.privy.setUser(userId, [w1, w2]);
-        await stack.chain.fund(w1);
-        await stack.chain.fund(w2);
-        const user: User = { userId, wallet: w1, token: await stack.privy.token(userId) };
+describe("whose account a socket hears about", () => {
+    test("a person's deposits aren't pushed to someone else", async () => {
+        const a = await stack.user();
+        const b = await stack.user();
+        const socketA = await stack.socket(a);
+        const socketB = await stack.socket(b);
+        const sessionA = await connect(socketA);
+        await connect(socketB);
+        const pushesA = collect(socketA);
+        const pushesB = collect(socketB);
 
-        const socket = await stack.socket(user);
-        const s1 = await connect(socket, w1);
-        const s2 = await connect(socket, w2);
-        const pushes = collect(socket);
-
-        await stack.chain.send(w1, s1.account.depositAddress, "1");
-        const second = await stack.chain.send(w2, s2.account.depositAddress, "2");
-        await waitFor(() => expect(pushes).toHaveLength(1), 8000);
+        const hash = await stack.chain.send(a.wallet, sessionA.account.depositAddress, "2");
+        await waitFor(() => expect(pushesA).toHaveLength(1), 8000);
         await settle(600);
-        expect(pushes).toHaveLength(1);
-        expect(pushes[0]!.deposit.txHash).toBe(second);
-        expect(pushes[0]!.deposit.amount).toBe("2");
+        expect(pushesA[0]!.deposit.txHash).toBe(hash);
+        expect(pushesB).toHaveLength(0);
+    });
+
+    test("a new connection with another person's token binds that person's account", async () => {
+        const a = await stack.user();
+        const b = await stack.user();
+        const first = await stack.socket(a);
+        const sessionA = await connect(first);
+        first.disconnect();
+
+        const second = await stack.socket(b);
+        const sessionB = await connect(second);
+        expect(sessionB.account.depositAddress).not.toBe(sessionA.account.depositAddress);
+        const pushes = collect(second);
+
+        await stack.chain.send(a.wallet, sessionA.account.depositAddress, "1");
+        await settle(1000);
+        expect(pushes).toHaveLength(0);
     });
 });
 
@@ -271,7 +278,7 @@ describe("limits", () => {
     test("events past 40 in ten seconds are answered rate_limited", async () => {
         const user = await stack.user();
         const socket = await stack.socket(user);
-        await connect(socket, user.wallet);
+        await connect(socket);
 
         const results = await Promise.all(
             Array.from({ length: 50 }, () => socket.timeout(10_000).emitWithAck("deposits:list", {})),

@@ -4,8 +4,8 @@ Gives every connected wallet an account of its own on the server, so trades and 
 
 ## How deposits work
 
-1. The web app signs in with Privy (wallet login, so Privy has already checked a SIWE signature). It sends the Privy access token over the socket handshake, or as `Authorization: Bearer` over HTTP. The server verifies the token locally, then reads the user's linked wallets from Privy's API (cached for a minute). A wallet counts as the user's only if Privy has it linked, so the app never asks for a signature of its own.
-2. `wallet:connect` opens the wallet's account on first use. Each account gets its own deposit address, derived from `DEPOSIT_MNEMONIC` at `m/44'/60'/0'/0/{index}`; only the index is stored. Index 0 is kept back for the operator.
+1. The web app signs in with Privy (wallet login, so Privy has already checked a SIWE signature). It sends the Privy access token over the socket handshake, or as `Authorization: Bearer` over HTTP. The server verifies the token locally; the token's user is the account's owner, so the app never asks for a signature of its own.
+2. `account:open` opens the signed-in person's account on first use, one per Privy user however many wallets they link. Each account gets its own deposit address, derived from `DEPOSIT_MNEMONIC` at `m/44'/60'/0'/0/{index}`; only the index is stored. Index 0 is kept back for the operator.
 3. The user sends USDC on Arc to that address. The client counts the deposit as soon as the wallet hands back the transaction hash, and reports it (`deposit:submit`); the server waits for the receipt and credits it, usually within a second or two.
 4. A chain scan credits every deposit whether or not anyone reports it, such as one sent from an exchange. It reads the `Transfer` logs Arc's system address `0xff…fe` emits for every native USDC movement (EIP-7708): plain sends, value a contract forwards, and transfers through the ERC-20 view at `0x3600…` alike. The ERC-20 view's own `Transfer` log is ignored, so nothing is credited twice. Gas isn't logged. Arc's finality is instant. Still, each pass reads the head and the logs from one RPC and stays three blocks behind it (`DEPOSIT_SCAN_LAG_BLOCKS`), so a lagging node can't make it skip a block. It moves to the next RPC after a failure. A block busier than the RPC will return at once is read recipient by recipient.
 5. Crediting is one MongoDB transaction: the deposit, the balance (`$inc`, plus a `version` for ordering on the client), and a ledger entry. A unique index on `(chain, tx hash, log index)` makes every repeat a no-op, so the report and the scan can race safely. Pushes go out on `deposit:credited` to every socket bound to the account.
@@ -41,10 +41,10 @@ Everything under `/v1` takes `Authorization: Bearer <Privy access token>`. Error
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /health`                                      | Liveness.                                                                                                                                      |
 | `GET /ready`                                       | 200 once MongoDB answers and the deposit scan has run in the last minute; 503 otherwise. Reports how many blocks the scan is behind.           |
-| `POST /v1/wallets/connect` `{ address }`           | Opens the wallet's account (it must be linked to the signed-in Privy user) and returns the account, its latest deposits and the deposit rules. |
-| `GET /v1/accounts/:wallet`                         | The account.                                                                                                                                   |
-| `GET /v1/accounts/:wallet/deposits?before=&limit=` | Deposits, newest first, up to 100 a page.                                                                                                      |
-| `POST /v1/accounts/:wallet/deposits` `{ txHash }`  | Credits what a transaction sent to the account's deposit address.                                                                              |
+| `POST /v1/account` | Opens the signed-in person's account on first use and returns the account, its latest deposits and the deposit rules. |
+| `GET /v1/account` | The account. |
+| `GET /v1/account/deposits?before=&limit=` | Deposits, newest first, up to 100 a page. |
+| `POST /v1/account/deposits` `{ txHash }` | Credits what a transaction sent to the account's deposit address. |
 
 ### Socket.io
 
@@ -52,7 +52,7 @@ The handshake carries `auth: { token }`; a token that expires gets `session:expi
 
 | Event                                 |                                                                                        |
 | ------------------------------------- | -------------------------------------------------------------------------------------- |
-| `wallet:connect` `{ address }`        | Binds the socket to the wallet's account (opening it) and answers like the HTTP route. |
+| `account:open` `{}` | Binds the socket to the person's account (opening it) and answers like the HTTP route. |
 | `deposits:list` `{ before?, limit? }` | A page of deposits.                                                                    |
 | `deposit:submit` `{ txHash }`         | Like the HTTP route.                                                                   |
 | `deposit:credited` (server → client)  | `{ deposit, account }`, for each deposit as it's credited.                             |
@@ -65,7 +65,7 @@ The types for both live in [src/protocol.ts](src/protocol.ts), which the web app
 - CORS and socket upgrades only from `CORS_ORIGINS`.
 - Rate limits per IP: 300 requests a minute overall, 30 a minute to connect wallets or report deposits, and 120 socket handshakes a minute (`SOCKET_HANDSHAKES_PER_MINUTE`, since users behind one NAT share an IP). Per user: 40 socket events every 10 seconds, 20 reported deposits a minute. An account runs at most 3 deposit checks at once, since each one watches the chain until its transaction lands.
 - Access tokens are verified with the dashboard's verification key when `PRIVY_VERIFICATION_KEY` is set, otherwise with Privy's cached key set. Privy being unreachable is a 503, not a sign-out.
-- When Privy's API can't answer (it's down, or rejects `PRIVY_APP_SECRET`), wallets a user has connected before keep working on that earlier verification; only a wallet new to the user waits for Privy. The server checks its Privy credentials at startup, logs a rejected secret as an error, and `/ready` reports Privy's state (`privy`) without failing over it.
+- When Privy's API can't answer (it's down, or rejects `PRIVY_APP_SECRET`), opening an account and every request after it need no answer from Privy, since the access token is checked locally. The server checks its Privy credentials at startup, logs a rejected secret as an error, and `/ready` reports Privy's state (`privy`) without failing over it.
 - JSON bodies and socket messages are capped at 16 KB, and inputs are validated with zod.
 - Behind a proxy, set `TRUST_PROXY` to its hop count so the rate limits see real client IPs.
 - Tokens and cookies are redacted from the logs, and unexpected errors reach clients as a generic `internal`.

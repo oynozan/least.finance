@@ -7,11 +7,11 @@ import { accountView, depositView } from "../deposits/views.ts";
 import { AppError, isAppError, toApiError } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
 import type { Services } from "../services.ts";
-import { connectWallet, depositPage, depositReport, parse } from "../validation.ts";
+import { depositPage, depositReport, parse } from "../validation.ts";
 
 type SocketData = {
     identity: Identity;
-    /** The account `wallet:connect` bound this socket to. */
+    /** The account `account:open` bound this socket to. */
     account: { id: ObjectId; room: string } | null;
 };
 
@@ -90,10 +90,9 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             );
         });
 
-        socket.on("wallet:connect", (payload, ack) =>
+        socket.on("account:open", (_payload, ack) =>
             reply(ack, async () => {
-                const { address } = parse(connectWallet, payload);
-                const account = await services.sessions.open(socket.data.identity, address);
+                const account = await services.sessions.open(socket.data.identity);
                 const room = roomOf(account._id);
                 const previous = socket.data.account;
                 if (previous && previous.room !== room) await socket.leave(previous.room);
@@ -121,7 +120,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
     bus.on("deposit:credited", ({ deposit, account }) => {
         const payload = { deposit: depositView(deposit), account: accountView(account) };
-        // Only to the wallet's current owner: a socket bound before the wallet moved to another user gets nothing.
+        // Only to the account's owner, whoever else ended up in the room.
         void io
             .in(roomOf(deposit.accountId))
             .fetchSockets()
@@ -135,14 +134,14 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
     async function boundAccount(socket: IoSocket) {
         const bound = socket.data.account;
-        if (!bound) throw new AppError("wallet_not_connected", "Connect a wallet first.");
+        if (!bound) throw new AppError("wallet_not_connected", "Open your account first.");
         const account = await services.accounts.findById(bound.id);
-        // The wallet has since been verified for another Privy user, who owns the account now.
+        // The account belongs to another Privy user than this socket's.
         if (account && account.privyUserId !== socket.data.identity.userId) {
             await socket.leave(bound.room);
             socket.data.account = null;
         }
-        if (!account || !socket.data.account) throw new AppError("wallet_not_connected", "Connect a wallet first.");
+        if (!account || !socket.data.account) throw new AppError("wallet_not_connected", "Open your account first.");
         return account;
     }
 

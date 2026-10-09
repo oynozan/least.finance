@@ -1,10 +1,9 @@
 import { MongoClient, MongoServerError, type Collection, type Db, type Decimal128, type ObjectId } from "mongodb";
 
-/** A connected wallet's account. Addresses are stored lowercase. */
+/** A person's account. Addresses are stored lowercase. */
 export type AccountDoc = {
     _id: ObjectId;
-    wallet: string;
-    /** The Privy user (DID) the wallet was last verified for. */
+    /** The Privy user (DID) the account belongs to. */
     privyUserId: string;
     /** BIP-44 address index of the deposit address, m/44'/60'/0'/0/{index}. Index 0 is kept for the operator. */
     depositIndex: number;
@@ -106,7 +105,6 @@ async function assertTransactions(db: Db) {
 async function ensureIndexes({ accounts, deposits, ledger }: Collections) {
     await Promise.all([
         accounts.createIndexes([
-            { key: { wallet: 1 }, name: "wallet_unique", unique: true },
             { key: { depositAddress: 1 }, name: "deposit_address_unique", unique: true },
             { key: { depositIndex: 1 }, name: "deposit_index_unique", unique: true },
             { key: { privyUserId: 1 }, name: "privy_user" },
@@ -122,6 +120,10 @@ async function ensureIndexes({ accounts, deposits, ledger }: Collections) {
             { key: { accountId: 1, _id: -1 }, name: "account_history" },
         ]),
     ]);
+    // Accounts were once keyed by wallet; code 27 means the index is already gone.
+    await accounts.dropIndex("wallet_unique").catch((error: unknown) => {
+        if (!(error instanceof MongoServerError && error.code === 27)) throw error;
+    });
 }
 
 export const isDuplicateKey = (error: unknown) => error instanceof MongoServerError && error.code === 11000;

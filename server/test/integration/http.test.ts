@@ -32,8 +32,7 @@ async function call(method: string, path: string, { token, body, raw, headers = 
     return { status: response.status, headers: response.headers, json };
 }
 
-const connect = (user: User, address: string = user.wallet, base = stack) =>
-    call("POST", "/v1/wallets/connect", { token: user.token, body: { address } }, base);
+const connect = (user: User, base = stack) => call("POST", "/v1/account", { token: user.token }, base);
 
 async function connected() {
     const user = await stack.user();
@@ -100,7 +99,7 @@ describe("cors", () => {
     });
 
     test("a preflight for connect succeeds for the web origin", async () => {
-        const res = await call("OPTIONS", "/v1/wallets/connect", {
+        const res = await call("OPTIONS", "/v1/account", {
             headers: {
                 origin: WEB_ORIGIN,
                 "access-control-request-method": "POST",
@@ -126,14 +125,14 @@ describe("errors", () => {
 
     test("malformed json is a 400", async () => {
         const user = await stack.user();
-        const res = await call("POST", "/v1/wallets/connect", { token: user.token, raw: "{not json" });
+        const res = await call("POST", "/v1/account", { token: user.token, raw: "{not json" });
         // Auth runs after body parsing, so the parse error wins either way.
         expect(res.status).toBe(400);
         expect(res.json.error.code).toBe("bad_request");
     });
 
     test("a body over 16kb is a 413", async () => {
-        const res = await call("POST", "/v1/wallets/connect", { raw: JSON.stringify({ pad: "x".repeat(17_000) }) });
+        const res = await call("POST", "/v1/account", { raw: JSON.stringify({ pad: "x".repeat(17_000) }) });
         expect(res.status).toBe(413);
         expect(res.json.error.code).toBe("bad_request");
     });
@@ -141,13 +140,13 @@ describe("errors", () => {
 
 describe("authentication", () => {
     test("a missing authorization header is 401", async () => {
-        const res = await call("POST", "/v1/wallets/connect", { body: { address: "0x0" } });
+        const res = await call("POST", "/v1/account", {});
         expect(res.status).toBe(401);
         expect(res.json.error.code).toBe("unauthorized");
     });
 
     test("a garbage token is 401", async () => {
-        const res = await call("POST", "/v1/wallets/connect", { token: "garbage", body: { address: "0x0" } });
+        const res = await call("POST", "/v1/account", { token: "garbage" });
         expect(res.status).toBe(401);
         expect(res.json.error.code).toBe("unauthorized");
     });
@@ -170,49 +169,15 @@ describe("authentication", () => {
         expect((await connect({ ...user, token })).status).toBe(401);
     });
 
-    test("a deleted privy user is 401", async () => {
-        const user = await stack.user();
-        stack.privy.deleteUser(user.userId);
-        const res = await connect(user);
-        expect(res.status).toBe(401);
-        expect(res.json.error.code).toBe("unauthorized");
-    });
-
-    test("a failing privy api is 503", async () => {
-        const user = await stack.user();
-        stack.privy.failLookups(4, 500);
-        try {
-            const res = await connect(user);
-            expect(res.status).toBe(503);
-            expect(res.json.error.code).toBe("unavailable");
-        } finally {
-            stack.privy.failLookups(0, 500);
-        }
-    });
-
-    test("a wallet not linked to the user is 403", async () => {
-        const user = await stack.user();
-        const res = await connect(user, privateKeyToAddress(generatePrivateKey()));
-        expect(res.status).toBe(403);
-        expect(res.json.error.code).toBe("forbidden");
-    });
-
-    test("an invalid address is 400", async () => {
-        const user = await stack.user();
-        const res = await connect(user, "not-an-address");
-        expect(res.status).toBe(400);
-        expect(res.json.error.code).toBe("bad_request");
-    });
 });
 
-describe("connecting wallets", () => {
-    test("connect opens an account with its deposit address", async () => {
+describe("opening accounts", () => {
+    test("POST /v1/account opens an account with its deposit address", async () => {
         const user = await stack.user();
         const res = await connect(user);
         expect(res.status).toBe(200);
         expect(res.json).toEqual({
             account: {
-                wallet: getAddress(user.wallet),
                 depositAddress: getAddress(res.json.account.depositAddress),
                 balance: "0",
                 version: 0,
@@ -222,7 +187,7 @@ describe("connecting wallets", () => {
         });
     });
 
-    test("connecting twice returns the same deposit address", async () => {
+    test("opening twice returns the same deposit address", async () => {
         const user = await stack.user();
         const first = await connect(user);
         const second = await connect(user);
@@ -235,62 +200,71 @@ describe("connecting wallets", () => {
         expect(a.depositAddress).not.toBe(b.depositAddress);
     });
 
-    test("lowercase and checksummed addresses map to the same account", async () => {
-        const user = await stack.user();
-        const lower = await connect(user, user.wallet.toLowerCase());
-        const checksummed = await connect(user, getAddress(user.wallet));
-        expect(lower.json.account).toEqual(checksummed.json.account);
-        expect(lower.json.account.wallet).toBe(getAddress(user.wallet));
-    });
-
     test("the deposit address matches the keyring derivation", async () => {
         const user = await stack.user();
         const res = await connect(user);
         const { services } = stack.server;
-        const doc = await services.database.collections.accounts.findOne({
-            wallet: user.wallet.toLowerCase() as never,
-        });
+        const doc = await services.database.collections.accounts.findOne({ privyUserId: user.userId });
         expect(doc).not.toBeNull();
         const keyring = createKeyring(services.config.DEPOSIT_MNEMONIC);
         expect(res.json.account.depositAddress).toBe(getAddress(keyring.addressAt(doc!.depositIndex)));
         expect(doc!.depositIndex).toBeGreaterThanOrEqual(1);
     });
 
-    test("two linked wallets get two separate accounts", async () => {
+    test("a person with two linked wallets still has one account", async () => {
         const user = await stack.user();
-        const second = privateKeyToAddress(generatePrivateKey());
-        stack.privy.setUser(user.userId, [user.wallet, second]);
-        const token = await stack.privy.token(user.userId);
-        const a = await connect({ ...user, token }, user.wallet);
-        const b = await connect({ ...user, token }, second);
-        expect(a.status).toBe(200);
-        expect(b.status).toBe(200);
-        expect(b.json.account.wallet).toBe(getAddress(second));
-        expect(b.json.account.depositAddress).not.toBe(a.json.account.depositAddress);
+        stack.privy.setUser(user.userId, [user.wallet, privateKeyToAddress(generatePrivateKey())]);
+        const a = await connect(user);
+        const b = await connect({ ...user, token: await stack.privy.token(user.userId) });
+        expect(b.json.account.depositAddress).toBe(a.json.account.depositAddress);
+        const { accounts } = stack.server.services.database.collections;
+        expect(await accounts.countDocuments({ privyUserId: user.userId })).toBe(1);
     });
 });
 
 describe("accounts", () => {
-    test("an account can't be read before connecting", async () => {
+    test("an account can't be read before opening", async () => {
         const user = await stack.user();
-        const res = await call("GET", `/v1/accounts/${user.wallet}`, { token: user.token });
+        const res = await call("GET", "/v1/account", { token: user.token });
         expect(res.status).toBe(409);
-        expect(res.json.error.code).toBe("wallet_not_connected");
+        expect(res.json.error).toEqual({ code: "wallet_not_connected", message: "Open your account first." });
     });
 
-    test("an account is readable after connecting", async () => {
+    test("an account is readable after opening", async () => {
         const user = await stack.user();
         const opened = await connect(user);
-        const res = await call("GET", `/v1/accounts/${user.wallet.toLowerCase()}`, { token: user.token });
+        const res = await call("GET", "/v1/account", { token: user.token });
         expect(res.status).toBe(200);
         expect(res.json).toEqual(opened.json.account);
     });
 
-    test("another user's wallet is forbidden", async () => {
-        const mine = await stack.user();
+    test("deposits can't be listed or reported before opening", async () => {
+        const user = await stack.user();
+        const listed = await call("GET", "/v1/account/deposits", { token: user.token });
+        expect(listed.json.error.code).toBe("wallet_not_connected");
+        const reported = await call("POST", "/v1/account/deposits", {
+            token: user.token,
+            body: { txHash: `0x${"ab".repeat(32)}` },
+        });
+        expect(reported.json.error.code).toBe("wallet_not_connected");
+    });
+
+    test("each user reads their own account", async () => {
+        const mine = await connected();
         const theirs = await connected();
-        const res = await call("GET", `/v1/accounts/${theirs.user.wallet}`, { token: mine.token });
-        expect(res.status).toBe(403);
+        const res = await call("GET", "/v1/account", { token: theirs.user.token });
+        expect(res.json.depositAddress).toBe(theirs.depositAddress);
+        expect(res.json.depositAddress).not.toBe(mine.depositAddress);
+    });
+
+    test("the old wallet routes are gone", async () => {
+        const { user } = await connected();
+        for (const [method, path] of [
+            ["POST", "/v1/wallets/connect"],
+            ["GET", `/v1/accounts/${user.wallet}`],
+        ] as const) {
+            expect((await call(method, path, { token: user.token })).status).toBe(404);
+        }
     });
 });
 
@@ -300,7 +274,7 @@ describe("deposit history", () => {
         const hashes: string[] = [];
         for (const amount of ["1", "2", "3", "4", "5"]) {
             const hash = await stack.chain.send(user.wallet, depositAddress, amount);
-            const res = await call("POST", `/v1/accounts/${user.wallet}/deposits`, {
+            const res = await call("POST", "/v1/account/deposits", {
                 token: user.token,
                 body: { txHash: hash },
             });
@@ -313,7 +287,7 @@ describe("deposit history", () => {
         let pages = 0;
         do {
             const query = `limit=2${before ? `&before=${before}` : ""}`;
-            const res = await call("GET", `/v1/accounts/${user.wallet}/deposits?${query}`, { token: user.token });
+            const res = await call("GET", `/v1/account/deposits?${query}`, { token: user.token });
             expect(res.status).toBe(200);
             expect(res.json.items.length).toBeLessThanOrEqual(2);
             seen.push(...res.json.items.map((item: { txHash: string }) => item.txHash));
@@ -329,7 +303,7 @@ describe("deposit history", () => {
     test("an out of range limit is 400", async () => {
         const { user } = await connected();
         for (const limit of ["0", "101"]) {
-            const res = await call("GET", `/v1/accounts/${user.wallet}/deposits?limit=${limit}`, {
+            const res = await call("GET", `/v1/account/deposits?limit=${limit}`, {
                 token: user.token,
             });
             expect(res.status).toBe(400);
@@ -339,7 +313,7 @@ describe("deposit history", () => {
 
     test("a malformed cursor is 400", async () => {
         const { user } = await connected();
-        const res = await call("GET", `/v1/accounts/${user.wallet}/deposits?before=nope`, { token: user.token });
+        const res = await call("GET", "/v1/account/deposits?before=nope", { token: user.token });
         expect(res.status).toBe(400);
     });
 });
@@ -348,7 +322,7 @@ describe("reporting deposits", () => {
     test("a reported transfer is credited once", async () => {
         const { user, depositAddress } = await connected();
         const hash = await stack.chain.send(user.wallet, depositAddress, "12.5");
-        const path = `/v1/accounts/${user.wallet}/deposits`;
+        const path = "/v1/account/deposits";
         const first = await call("POST", path, { token: user.token, body: { txHash: hash } });
         expect(first.status).toBe(200);
         expect(first.json).toMatchObject({
@@ -367,7 +341,7 @@ describe("reporting deposits", () => {
     test("a transfer to somewhere else is not a deposit", async () => {
         const { user } = await connected();
         const hash = await stack.chain.send(user.wallet, privateKeyToAddress(generatePrivateKey()), "1");
-        const res = await call("POST", `/v1/accounts/${user.wallet}/deposits`, {
+        const res = await call("POST", "/v1/account/deposits", {
             token: user.token,
             body: { txHash: hash },
         });
@@ -377,7 +351,7 @@ describe("reporting deposits", () => {
 
     test("an unknown transaction is 404", async () => {
         const { user } = await connected();
-        const res = await call("POST", `/v1/accounts/${user.wallet}/deposits`, {
+        const res = await call("POST", "/v1/account/deposits", {
             token: user.token,
             body: { txHash: `0x${"ab".repeat(32)}` },
         });
@@ -387,7 +361,7 @@ describe("reporting deposits", () => {
 
     test("a malformed hash is 400", async () => {
         const { user } = await connected();
-        const res = await call("POST", `/v1/accounts/${user.wallet}/deposits`, {
+        const res = await call("POST", "/v1/account/deposits", {
             token: user.token,
             body: { txHash: "0x1234" },
         });
@@ -406,20 +380,10 @@ describe("rate limits", () => {
     test("connect is limited to 30 requests a minute", async () => {
         const user = await limited.user();
         for (let i = 0; i < 30; i++) {
-            const res = await call(
-                "POST",
-                "/v1/wallets/connect",
-                { token: user.token, body: { address: user.wallet } },
-                limited,
-            );
+            const res = await connect(user, limited);
             expect(res.status).toBe(200);
         }
-        const res = await call(
-            "POST",
-            "/v1/wallets/connect",
-            { token: user.token, body: { address: user.wallet } },
-            limited,
-        );
+        const res = await connect(user, limited);
         expect(res.status).toBe(429);
         expect(res.json.error.code).toBe("rate_limited");
         expect(res.headers.get("ratelimit-policy")).toBeTruthy();

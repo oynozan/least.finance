@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import cors from "cors";
-import express, { type ErrorRequestHandler, type Request, type RequestHandler, type Response } from "express";
+import express, { type ErrorRequestHandler, type RequestHandler, type Response } from "express";
 import { rateLimit } from "express-rate-limit";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
@@ -8,7 +8,7 @@ import type { Identity } from "../auth/identity.ts";
 import { AppError, toApiError } from "../errors.ts";
 import type { ApiError } from "../protocol.ts";
 import type { Services } from "../services.ts";
-import { connectWallet, depositPage, depositReport, parse, walletAddress } from "../validation.ts";
+import { depositPage, depositReport, parse } from "../validation.ts";
 
 const REQUEST_ID = /^[\w.:-]{1,64}$/;
 
@@ -70,7 +70,7 @@ export function createApp(services: Services): express.Express {
         res.status(ready ? 200 : 503).json({
             status: ready ? "ready" : "degraded",
             database,
-            // Reported, not a reason to take the server out of rotation: connected wallets don't need Privy.
+            // Reported, not a reason to take the server out of rotation: signed-in people don't need Privy.
             privy: services.identity.apiState(),
             depositScan: {
                 ...scan,
@@ -82,24 +82,23 @@ export function createApp(services: Services): express.Express {
     const v1 = express.Router();
     v1.use(authenticate(services));
 
-    v1.post("/wallets/connect", limit(30, 60_000), async (req, res) => {
-        const { address } = parse(connectWallet, req.body);
-        const account = await services.sessions.open(identityOf(res), address);
+    v1.post("/account", limit(30, 60_000), async (_req, res) => {
+        const account = await services.sessions.open(identityOf(res));
         res.json(await services.sessions.describe(account));
     });
 
-    v1.get("/accounts/:wallet", async (req, res) => {
-        const account = await accountFor(services, req, res);
+    v1.get("/account", async (_req, res) => {
+        const account = await services.sessions.existing(identityOf(res));
         res.json((await services.sessions.describe(account)).account);
     });
 
-    v1.get("/accounts/:wallet/deposits", async (req, res) => {
-        const account = await accountFor(services, req, res);
+    v1.get("/account/deposits", async (req, res) => {
+        const account = await services.sessions.existing(identityOf(res));
         res.json(await services.deposits.list(account, parse(depositPage, req.query)));
     });
 
-    v1.post("/accounts/:wallet/deposits", limit(30, 60_000), async (req, res) => {
-        const account = await accountFor(services, req, res);
+    v1.post("/account/deposits", limit(30, 60_000), async (req, res) => {
+        const account = await services.sessions.existing(identityOf(res));
         const { txHash } = parse(depositReport, req.body);
         res.json(await services.deposits.report(account, txHash));
     });
@@ -135,11 +134,6 @@ function authenticate(services: Services): RequestHandler {
 }
 
 const identityOf = (res: Response) => res.locals.identity as Identity;
-
-function accountFor(services: Services, req: Request, res: Response) {
-    const wallet = parse(walletAddress, req.params.wallet);
-    return services.sessions.existing(identityOf(res), wallet);
-}
 
 const errorBody = (error: ApiError) => ({ error });
 

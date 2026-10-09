@@ -1,13 +1,5 @@
-import { isAddress } from "viem";
 import { z } from "zod";
 import { AppError } from "./errors.ts";
-
-export const walletAddress = z
-    .string()
-    .trim()
-    .refine((value) => isAddress(value, { strict: false }), "a wallet address");
-
-export const connectWallet = z.object({ address: walletAddress });
 
 export const depositReport = z.object({
     txHash: z

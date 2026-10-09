@@ -26,16 +26,16 @@ async function api(user: User, path: string, body?: unknown) {
 /** A fresh user whose account is already open. */
 async function openUser() {
     const user = await stack.user();
-    const { status, body } = await api(user, "/v1/wallets/connect", { address: user.wallet });
+    const { status, body } = await api(user, "/v1/account", {});
     expect(status).toBe(200);
     const depositAddress = body.account.depositAddress as Address;
-    const account = await collections().accounts.findOne({ wallet: user.wallet.toLowerCase() });
+    const account = await collections().accounts.findOne({ privyUserId: user.userId });
     if (!account) throw new Error("account missing");
     return { ...user, depositAddress, accountId: account._id };
 }
 type Opened = Awaited<ReturnType<typeof openUser>>;
 
-const report = (user: Opened, txHash: Hash) => api(user, `/v1/accounts/${user.wallet}/deposits`, { txHash });
+const report = (user: Opened, txHash: Hash) => api(user, "/v1/account/deposits", { txHash });
 
 const depositsOf = (user: Opened) =>
     collections().deposits.find({ accountId: user.accountId }).sort({ _id: 1 }).toArray();
@@ -148,9 +148,9 @@ async function expectConsistent() {
         const entries = await ledger.find({ accountId: account._id }).sort({ _id: 1 }).toArray();
         const docs = await deposits.find({ accountId: account._id }).toArray();
         const total = entries.reduce((sum, entry) => sum + fromDecimal(entry.amount), 0n);
-        expect(total, `ledger sum of ${account.wallet}`).toBe(fromDecimal(account.balance));
-        expect(docs.length, `deposit count of ${account.wallet}`).toBe(entries.length);
-        expect(account.version, `version of ${account.wallet}`).toBe(entries.length);
+        expect(total, `ledger sum of ${account.privyUserId}`).toBe(fromDecimal(account.balance));
+        expect(docs.length, `deposit count of ${account.privyUserId}`).toBe(entries.length);
+        expect(account.version, `version of ${account.privyUserId}`).toBe(entries.length);
         expect(new Set(entries.map((entry) => entry.refId.toHexString()))).toEqual(
             new Set(docs.map((deposit) => deposit._id.toHexString())),
         );
@@ -208,7 +208,7 @@ test("a deposit scanned and then reported is credited once", async () => {
 test("ten concurrent reports of one transaction credit it once", async () => {
     const user = await openUser();
     const socket = await stack.socket(user);
-    await socket.timeout(5000).emitWithAck("wallet:connect", { address: user.wallet });
+    await socket.timeout(5000).emitWithAck("account:open", {});
     const hash = await send(user.wallet, user.depositAddress, "2.5");
 
     const results = await Promise.all([
@@ -289,7 +289,7 @@ test("several deposits sum exactly and the ledger keeps a running balance", asyn
 test("a transfer under the minimum is not credited by report or scan, and exactly the minimum is", async () => {
     const user = await openUser();
     const socket = await stack.socket(user);
-    await socket.timeout(5000).emitWithAck("wallet:connect", { address: user.wallet });
+    await socket.timeout(5000).emitWithAck("account:open", {});
 
     const small = await send(user.wallet, user.depositAddress, "0.009");
     const viaHttp = await report(user, small);

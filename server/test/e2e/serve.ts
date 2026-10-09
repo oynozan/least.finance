@@ -72,7 +72,7 @@ function objectIdAt(at: Date) {
 
 /** Writes deposit history straight to the database, as if it had been credited over time. */
 async function seed(address: Address, deposits: Seeded[]) {
-    const account = await services.accounts.open(address, userIdOf(address));
+    const account = await services.accounts.open(userIdOf(address));
     const { client, collections } = services.database;
     const now = Date.now();
     await client.withSession((session) =>
@@ -147,7 +147,7 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
         return { txHash: await chain.send(from, getAddress(String(to)), String(usdc)) };
     },
     "/account": async ({ address }) => {
-        const account = await services.accounts.find(String(address));
+        const account = await services.accounts.find(userIdOf(getAddress(String(address))));
         if (!account) return null;
         return {
             depositAddress: getAddress(account.depositAddress),

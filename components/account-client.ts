@@ -47,7 +47,7 @@ const RETRYABLE = new Set<ApiError["code"]>(["unavailable", "internal", "rate_li
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * The signed-in wallet's account on the server, kept live over a socket.
+ * The signed-in person's account on the server, kept live over a socket.
  * Deposits are optimistic: one counts the moment the wallet sends it, and
  * comes back out if the server can't confirm it.
  */
@@ -56,7 +56,7 @@ export class AccountClient {
     #snapshot: AccountSnapshot = { state: initialAccountState, notice: null };
     readonly #listeners = new Set<() => void>();
     #socket: AppSocket | null = null;
-    #wallet: string | null = null;
+    #userId: string | null = null;
     #retry: ReturnType<typeof setTimeout> | undefined;
     #noticeTimer: ReturnType<typeof setTimeout> | undefined;
     #attempt = 0;
@@ -76,12 +76,11 @@ export class AccountClient {
 
     getSnapshot = () => this.#snapshot;
 
-    /** Binds to `wallet`, using the Privy access token for every (re)connect. A no-op if already bound to it. */
-    connect(wallet: string, accessToken: () => Promise<string | null>) {
-        const key = wallet.toLowerCase();
-        if (this.#socket && this.#wallet === key) return;
+    /** Binds to the Privy user's account, using the access token for every (re)connect. A no-op if already bound to them. */
+    connect(userId: string, accessToken: () => Promise<string | null>) {
+        if (this.#socket && this.#userId === userId) return;
         this.disconnect();
-        this.#wallet = key;
+        this.#userId = userId;
         this.#dispatch({ type: "connecting" });
 
         const socket: AppSocket = io(this.#url, {
@@ -99,7 +98,7 @@ export class AccountClient {
 
         socket.on("connect", () => {
             this.#attempt = 0;
-            void this.#bind(socket, wallet);
+            void this.#bind(socket);
         });
         socket.on("deposit:credited", ({ deposit, account }) => {
             this.#dispatch({ type: "credited", deposit, account });
@@ -118,12 +117,12 @@ export class AccountClient {
         });
     }
 
-    /** Binds the socket to the wallet's account, asking again while the server can't answer. */
-    async #bind(socket: AppSocket, wallet: string) {
+    /** Binds the socket to the person's account, asking again while the server can't answer. */
+    async #bind(socket: AppSocket) {
         for (let attempt = 0; ; attempt++) {
             const result = await socket
                 .timeout(CONNECT_TIMEOUT_MS)
-                .emitWithAck("wallet:connect", { address: wallet })
+                .emitWithAck("account:open", {})
                 .catch(() => null);
             if (this.#socket !== socket || !socket.connected) return;
             if (result?.ok) {
@@ -149,7 +148,7 @@ export class AccountClient {
         this.#socket?.removeAllListeners();
         this.#socket?.disconnect();
         this.#socket = null;
-        this.#wallet = null;
+        this.#userId = null;
         this.#attempt = 0;
         this.#confirming.clear();
         if (this.#snapshot.state.status !== "idle" || this.#snapshot.notice) {

@@ -23,9 +23,9 @@ async function stack(env: Record<string, string> = {}) {
 }
 afterAll(() => Promise.all(stacks.map((s) => s.stop())));
 
-async function connect(socket: AppSocket, address: string) {
-    const result = await socket.timeout(5000).emitWithAck("wallet:connect", { address });
-    if (!result.ok) throw new Error(`wallet:connect failed: ${result.error.code}`);
+async function connect(socket: AppSocket) {
+    const result = await socket.timeout(5000).emitWithAck("account:open", {});
+    if (!result.ok) throw new Error(`account:open failed: ${result.error.code}`);
     return result.data;
 }
 
@@ -53,7 +53,7 @@ describe("the chain scan", () => {
         try {
             const user = await s.user();
             const socket = await s.socket(user);
-            const { account } = await connect(socket, user.wallet);
+            const { account } = await connect(socket);
             const hash = await s.chain.send(user.wallet, account.depositAddress, "3");
             const { blockNumber } = await s.chain.client.getTransactionReceipt({ hash });
             await vi.waitFor(
@@ -64,7 +64,7 @@ describe("the chain scan", () => {
                 },
                 { timeout: 10_000, interval: 100 },
             );
-            expect((await second.services.accounts.find(user.wallet))?.version).toBe(1);
+            expect((await second.services.accounts.find(user.userId))?.version).toBe(1);
         } finally {
             await second.close();
         }
@@ -75,12 +75,12 @@ describe("the chain scan", () => {
         const lagging = await stack({ DEPOSIT_SCAN_LAG_BLOCKS: "50" });
         const user = await lagging.user();
         const socket = await lagging.socket(user);
-        const { account } = await connect(socket, user.wallet);
+        const { account } = await connect(socket);
         const credited = new Promise<{ deposit: DepositView }>((resolve) => socket.once("deposit:credited", resolve));
 
         await lagging.chain.send(user.wallet, account.depositAddress, "4");
         await new Promise((resolve) => setTimeout(resolve, 800));
-        const before = await lagging.server.services.accounts.find(user.wallet);
+        const before = await lagging.server.services.accounts.find(user.userId);
         expect(before?.version, "not credited while the block is within the lag").toBe(0);
 
         await lagging.chain.client.mine({ blocks: 50 });
@@ -92,8 +92,8 @@ describe("reported deposits", () => {
     test("an account checks at most three transactions at once", async () => {
         const s = await stack({ DEPOSIT_RECEIPT_TIMEOUT_MS: "2000" });
         const user = await s.user();
-        await post(s, user, "/v1/wallets/connect", { address: user.wallet });
-        const path = `/v1/accounts/${user.wallet}/deposits`;
+        await post(s, user, "/v1/account", {});
+        const path = "/v1/account/deposits";
 
         const reports = await Promise.all(
             Array.from({ length: 4 }, () => post(s, user, path, { txHash: randomHash() })),
@@ -112,12 +112,12 @@ describe("access tokens", () => {
     test("are checked against Privy's key set when no verification key is set", async () => {
         const s = await stack({ PRIVY_VERIFICATION_KEY: "" });
         const user = await s.user();
-        const { status, body } = await post(s, user, "/v1/wallets/connect", { address: user.wallet });
+        const { status, body } = await post(s, user, "/v1/account", {});
         expect(status).toBe(200);
         expect(body.account.balance).toBe("0");
 
         const forged = await s.privy.token(user.userId, { appId: "someone-else" });
-        const refused = await post(s, { ...user, token: forged }, "/v1/wallets/connect", { address: user.wallet });
+        const refused = await post(s, { ...user, token: forged }, "/v1/account", {});
         expect(refused.status).toBe(401);
     });
 
@@ -127,10 +127,10 @@ describe("access tokens", () => {
         const cut = await startServer(config, pino({ level: "silent" }));
         try {
             const user = await s.user();
-            const response = await fetch(`${cut.url}/v1/wallets/connect`, {
+            const response = await fetch(`${cut.url}/v1/account`, {
                 method: "POST",
                 headers: { authorization: `Bearer ${user.token}`, "content-type": "application/json" },
-                body: JSON.stringify({ address: user.wallet }),
+                body: JSON.stringify({}),
             });
             expect(response.status).toBe(503);
             expect(((await response.json()) as any).error.code).toBe("unavailable");
@@ -158,88 +158,59 @@ describe("access tokens", () => {
 });
 
 describe("a wallet that moves to another Privy user", () => {
-    test("is no longer the old user's: no pushes, no requests", async () => {
+    test("an account stays with its person when a wallet is relinked to someone else", async () => {
         const s = await stack();
         const alice = await s.user();
         const aliceSocket = await s.socket(alice);
-        const { account } = await connect(aliceSocket, alice.wallet);
+        const { account } = await connect(aliceSocket);
+        const hash = await s.chain.send(alice.wallet, account.depositAddress, "6");
+        await aliceSocket.timeout(10_000).emitWithAck("deposit:submit", { txHash: hash });
 
-        // The wallet is unlinked from Alice and linked to Bob, who connects it.
+        // The wallet is unlinked from Alice and linked to Bob, who opens his account.
         const bobId = `did:privy:${randomUUID().replaceAll("-", "")}`;
         s.privy.setUser(alice.userId, [privateKeyToAddress(generatePrivateKey())]);
         s.privy.setUser(bobId, [alice.wallet]);
         const bob: User = { userId: bobId, wallet: alice.wallet as Address, token: await s.privy.token(bobId) };
         const bobSocket = await s.socket(bob);
-        await connect(bobSocket, bob.wallet);
+        const bobSession = await connect(bobSocket);
 
-        const alicePushes: unknown[] = [];
-        aliceSocket.on("deposit:credited", (payload) => alicePushes.push(payload));
-        const bobPush = new Promise<{ deposit: DepositView; account: AccountView }>((resolve) =>
-            bobSocket.once("deposit:credited", resolve),
-        );
-        await s.chain.send(alice.wallet, account.depositAddress, "6");
-        expect((await bobPush).account.balance).toBe("6");
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        expect(alicePushes).toHaveLength(0);
-
-        const list = await aliceSocket.timeout(5000).emitWithAck("deposits:list", {});
-        expect(list).toMatchObject({ ok: false, error: { code: "wallet_not_connected" } });
+        expect(bobSession.account.depositAddress).not.toBe(account.depositAddress);
+        expect(bobSession.account.balance).toBe("0");
+        const mine = await aliceSocket.timeout(5000).emitWithAck("account:open", {});
+        expect(mine).toMatchObject({
+            ok: true,
+            data: { account: { depositAddress: account.depositAddress, balance: "6" } },
+        });
     }, 30_000);
 });
 
 describe("when Privy can't answer", () => {
-    async function connectOver(s: Stack, user: User) {
-        return post(s, user, "/v1/wallets/connect", { address: user.wallet });
-    }
-
-    test("with a wrong app secret, wallets connected before carry on and new ones wait", async () => {
-        const s = await stack({ PRIVY_APP_SECRET: "not-the-secret" });
-        await vi.waitFor(() => expect(s.server.services.identity.apiState()).toBe("rejected"));
-
-        // Opened earlier, when Privy still vouched for the wallet.
-        const returning = await s.user();
-        await s.server.services.accounts.open(returning.wallet, returning.userId);
-        const back = await connectOver(s, returning);
-        expect(back.status).toBe(200);
-        expect(back.body.account.wallet.toLowerCase()).toBe(returning.wallet.toLowerCase());
-
-        const newcomer = await s.user();
-        const refused = await connectOver(s, newcomer);
-        expect(refused.status).toBe(503);
-        expect(refused.body.error.code).toBe("unavailable");
-
-        const ready = await fetch(`${s.url}/ready`).then((r) => r.json() as Promise<any>);
-        expect(ready.privy).toBe("rejected");
-    });
-
-    test("while Privy is down, a returning wallet's socket still connects and deposits", async () => {
+    test("binding needs no answer from Privy's API", async () => {
         const s = await stack();
         const user = await s.user();
-        await s.server.services.accounts.open(user.wallet, user.userId);
-        s.privy.failLookups(100, 503);
+        const lookups = s.privy.userLookups;
+        s.privy.failLookups(10, 500);
         try {
             const socket = await s.socket(user);
-            const { account } = await connect(socket, user.wallet);
+            const { account } = await connect(socket);
             const hash = await s.chain.send(user.wallet, account.depositAddress, "2");
             const receipt = await socket.timeout(10_000).emitWithAck("deposit:submit", { txHash: hash });
             expect(receipt).toMatchObject({ ok: true, data: { account: { balance: "2" } } });
+            expect(s.privy.userLookups).toBe(lookups);
         } finally {
-            s.privy.failLookups(0, 503);
+            s.privy.failLookups(0, 500);
         }
     }, 30_000);
 
-    test("someone else's wallet isn't let through on another user's earlier verification", async () => {
-        const s = await stack();
-        const owner = await s.user();
-        await s.server.services.accounts.open(owner.wallet, owner.userId);
-        const intruder = await s.user();
-        s.privy.failLookups(100, 503);
-        try {
-            const result = await post(s, intruder, "/v1/wallets/connect", { address: owner.wallet });
-            expect(result.status).toBe(503);
-        } finally {
-            s.privy.failLookups(0, 503);
-        }
+    test("binding needs no answer from Privy's API when it rejects the server's credentials", async () => {
+        const s = await stack({ PRIVY_APP_SECRET: "not-the-secret" });
+        await vi.waitFor(() => expect(s.server.services.identity.apiState()).toBe("rejected"));
+
+        const opened = await post(s, await s.user(), "/v1/account", {});
+        expect(opened.status).toBe(200);
+
+        const ready = await fetch(`${s.url}/ready`).then((r) => r.json() as Promise<any>);
+        expect(ready.privy).toBe("rejected");
     });
 
     test("ready reports Privy's state and stays ready", async () => {
