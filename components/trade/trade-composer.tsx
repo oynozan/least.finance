@@ -129,7 +129,7 @@ export function TradeComposer({ view, dispatch }: TradeComposerProps) {
                         parts={view.parts}
                         renderVerb={renderVerb}
                         renderSlot={renderSlot}
-                        className="w-[min(18em,100%)] text-center text-[clamp(28px,1rem+2.6vw,47px)] leading-[1.36] font-medium tracking-[-0.02em] text-balance [word-spacing:-0.07em] pointer-coarse:leading-[1.5]"
+                        className="w-[min(18em,100%)] text-center text-[clamp(28px,min(max(min(1rem+2.6vw,47px),2.75vw),9vh),120px)] leading-[1.36] font-medium tracking-[-0.02em] text-balance [word-spacing:-0.07em] pointer-coarse:leading-[1.5]"
                     />
 
                     <p id={issueId} className="sr-only">

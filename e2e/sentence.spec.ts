@@ -450,3 +450,46 @@ test("phones wrap the sentence without overflowing", async ({ page, isMobile }) 
     await expect(trade(page).getByText("BTC $150K?")).toBeVisible();
     await shoot(page, "4-predict");
 });
+
+test("the sentence grows on big screens, and still fits above the dock", async ({ page, isMobile }) => {
+    test.skip(isMobile, "desktop sizes");
+    const size = () =>
+        trade(page).evaluate((root) => parseFloat(getComputedStyle(root.querySelector("[data-part]")!.parentElement!).fontSize));
+    const sizes: Record<string, number> = {};
+    for (const [width, height] of [
+        [1280, 800],
+        [1440, 900],
+        [1920, 1080],
+        [2560, 1440],
+        [3440, 1440],
+        [2560, 700],
+    ] as const) {
+        await page.setViewportSize({ width, height });
+        sizes[`${width}x${height}`] = await size();
+    }
+    // Laptops keep the size they had; only wider screens go past it.
+    expect(sizes["1280x800"]).toBe(47);
+    expect(sizes["1440x900"]).toBe(47);
+    expect(sizes["1920x1080"]).toBeGreaterThan(50);
+    expect(sizes["2560x1440"]).toBeGreaterThan(68);
+    expect(sizes["3440x1440"]).toBeGreaterThan(sizes["2560x1440"]);
+    // A short window holds it back, so it doesn't run off the screen.
+    expect(sizes["2560x700"]).toBeLessThan(sizes["2560x1440"]);
+
+    // The longest sentence stays clear of the dock.
+    for (const [width, height] of [
+        [2560, 1440],
+        [3440, 1440],
+        [2560, 700],
+    ] as const) {
+        await page.setViewportSize({ width, height });
+        if (width === 2560 && height === 1440) await pick(page, "Swap", /^Predict/);
+        await page.waitForTimeout(500);
+        const sentence = (await trade(page).boundingBox())!;
+        const dock = (await page.getByRole("button", { name: "Connect wallet" }).boundingBox())!;
+        expect(sentence.y).toBeGreaterThanOrEqual(0);
+        expect(sentence.y + sentence.height).toBeLessThan(dock.y);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
+        await shoot(page, `big-${width}x${height}`);
+    }
+});
