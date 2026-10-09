@@ -23,6 +23,9 @@ async function connect(page: Page) {
     await walletButton(page).click();
     await page.locator("#privy-modal-content").getByRole("button", { name: "MetaMask" }).click();
     await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    // Privy hands focus back to the wallet button a moment after its modal closes; until it has,
+    // focusing anything else can be undone under a test's feet.
+    await expect(walletButton(page)).toBeFocused();
     await expect(sidebar(page).getByRole("button", { name: /^Balance/ })).not.toHaveAccessibleName(/loading/, {
         timeout: 10_000,
     });
@@ -108,6 +111,7 @@ test("the balance is charted by day, and every operation is listed", async ({ pa
     // A bar a day, and arrowing through them rolls the figures to that day.
     await expect(chart(page)).toHaveAttribute("aria-valuemax", "30");
     await chart(page).focus();
+    await expect(chart(page)).toBeFocused();
     await page.keyboard.press("ArrowLeft");
     await expect(balance(page).getByRole("heading")).toHaveText(/^Balance on \w{3} \d{1,2}$/);
     await expect(chart(page)).toHaveAttribute("aria-valuenow", "29");
