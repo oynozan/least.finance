@@ -26,8 +26,12 @@ const roomOf = (accountId: ObjectId) => `account:${accountId.toHexString()}`;
 /** The socket API: the same operations as HTTP, plus deposits pushed as they're credited. */
 export function attachSockets(httpServer: HttpServer, services: Services): IoServer {
     const { config, logger, bus } = services;
+    const origins = new Set(config.CORS_ORIGINS);
     const io: IoServer = new Server(httpServer, {
         cors: { origin: config.CORS_ORIGINS, methods: ["GET", "POST"] },
+        // CORS doesn't cover WebSocket upgrades, so other sites' pages are turned away here. Clients
+        // outside a browser send no Origin, and still need a valid token.
+        allowRequest: (req, done) => done(null, !req.headers.origin || origins.has(req.headers.origin)),
         serveClient: false,
         maxHttpBufferSize: 16 * 1024,
         connectTimeout: 10_000,
