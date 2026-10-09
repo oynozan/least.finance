@@ -186,3 +186,69 @@ describe("a wallet that moves to another Privy user", () => {
         expect(list).toMatchObject({ ok: false, error: { code: "wallet_not_connected" } });
     }, 30_000);
 });
+
+describe("when Privy can't answer", () => {
+    async function connectOver(s: Stack, user: User) {
+        return post(s, user, "/v1/wallets/connect", { address: user.wallet });
+    }
+
+    test("with a wrong app secret, wallets connected before carry on and new ones wait", async () => {
+        const s = await stack({ PRIVY_APP_SECRET: "not-the-secret" });
+        await vi.waitFor(() => expect(s.server.services.identity.apiState()).toBe("rejected"));
+
+        // Opened earlier, when Privy still vouched for the wallet.
+        const returning = await s.user();
+        await s.server.services.accounts.open(returning.wallet, returning.userId);
+        const back = await connectOver(s, returning);
+        expect(back.status).toBe(200);
+        expect(back.body.account.wallet.toLowerCase()).toBe(returning.wallet.toLowerCase());
+
+        const newcomer = await s.user();
+        const refused = await connectOver(s, newcomer);
+        expect(refused.status).toBe(503);
+        expect(refused.body.error.code).toBe("unavailable");
+
+        const ready = await fetch(`${s.url}/ready`).then((r) => r.json() as Promise<any>);
+        expect(ready.privy).toBe("rejected");
+    });
+
+    test("while Privy is down, a returning wallet's socket still connects and deposits", async () => {
+        const s = await stack();
+        const user = await s.user();
+        await s.server.services.accounts.open(user.wallet, user.userId);
+        s.privy.failLookups(100, 503);
+        try {
+            const socket = await s.socket(user);
+            const { account } = await connect(socket, user.wallet);
+            const hash = await s.chain.send(user.wallet, account.depositAddress, "2");
+            const receipt = await socket.timeout(10_000).emitWithAck("deposit:submit", { txHash: hash });
+            expect(receipt).toMatchObject({ ok: true, data: { account: { balance: "2" } } });
+        } finally {
+            s.privy.failLookups(0, 503);
+        }
+    }, 30_000);
+
+    test("someone else's wallet isn't let through on another user's earlier verification", async () => {
+        const s = await stack();
+        const owner = await s.user();
+        await s.server.services.accounts.open(owner.wallet, owner.userId);
+        const intruder = await s.user();
+        s.privy.failLookups(100, 503);
+        try {
+            const result = await post(s, intruder, "/v1/wallets/connect", { address: owner.wallet });
+            expect(result.status).toBe(503);
+        } finally {
+            s.privy.failLookups(0, 503);
+        }
+    });
+
+    test("ready reports Privy's state and stays ready", async () => {
+        const s = await stack();
+        await vi.waitFor(() => expect(s.server.services.identity.apiState()).toBe("ok"));
+        await vi.waitFor(async () => {
+            const response = await fetch(`${s.url}/ready`);
+            expect(response.status).toBe(200);
+            expect(((await response.json()) as any).privy).toBe("ok");
+        });
+    });
+});

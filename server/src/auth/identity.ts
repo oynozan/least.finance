@@ -12,6 +12,12 @@ export type Identity = {
     expiresAt: number;
 };
 
+/**
+ * Whether Privy's API answered the server's last request: "rejected" means
+ * it refused the app ID and secret, which only a configuration fix cures.
+ */
+export type PrivyApiState = "unchecked" | "ok" | "rejected" | "unreachable";
+
 export interface IdentityProvider {
     /** Checks a Privy access token locally (no request to Privy once the key is known). */
     verify(token: string): Promise<Identity>;
@@ -21,6 +27,10 @@ export interface IdentityProvider {
      * the app never asks for a signature of its own.
      */
     authorizeWallet(identity: Identity, address: string): Promise<Address>;
+    /** Asks Privy's API once whether it accepts the server's credentials. Never throws. */
+    checkApi(): Promise<PrivyApiState>;
+    /** The outcome of the last request to Privy's API. */
+    apiState(): PrivyApiState;
 }
 
 type Options = {
@@ -40,6 +50,11 @@ const CACHE_LIMIT = 10_000;
 type Wallets = { addresses: Set<string>; fetchedAt: number };
 
 const PRIVY_API = "https://api.privy.io";
+/** No user has this ID: Privy answers 404 when it accepts the credentials, 401 when it doesn't. */
+const PROBE_USER = "did:privy:credentialcheck0000000000";
+
+const REJECTED_MESSAGE =
+    "Privy rejected PRIVY_APP_ID / PRIVY_APP_SECRET. Wallets can't be checked until they're fixed (Privy dashboard → your app → Settings → Basics).";
 
 /**
  * What a token itself got wrong. Anything else, such as Privy's key set
@@ -63,6 +78,7 @@ export class PrivyIdentity implements IdentityProvider {
     readonly #logger: Logger;
     readonly #wallets = new Map<string, Wallets>();
     readonly #fetching = new Map<string, Promise<Wallets>>();
+    #api: PrivyApiState = "unchecked";
 
     /** Fails here, at startup, if the configured verification key isn't a valid ES256 public key. */
     static async create({ appId, appSecret, verificationKey, apiUrl, logger }: Options) {
@@ -141,15 +157,42 @@ export class PrivyIdentity implements IdentityProvider {
         return fetching;
     }
 
+    apiState() {
+        return this.#api;
+    }
+
+    async checkApi(): Promise<PrivyApiState> {
+        try {
+            await this.#privy.users()._get(PROBE_USER, { maxRetries: 0 });
+            this.#api = "ok";
+        } catch (error) {
+            this.#api = this.#classify(error);
+            if (this.#api === "rejected") this.#logger.error(REJECTED_MESSAGE);
+            else if (this.#api === "unreachable") this.#logger.warn({ err: error }, "Privy's API isn't answering");
+        }
+        return this.#api;
+    }
+
+    /** A 404 still means Privy accepted the credentials; 401 and 403 mean it didn't. */
+    #classify(error: unknown): PrivyApiState {
+        if (!(error instanceof APIError) || error.status === undefined) return "unreachable";
+        if (error.status === 401 || error.status === 403) return "rejected";
+        if (error.status === 404) return "ok";
+        return "unreachable";
+    }
+
     async #fetchWallets(userId: string): Promise<Wallets> {
         let user;
         try {
             user = await this.#privy.users()._get(userId);
+            this.#api = "ok";
         } catch (error) {
-            if (error instanceof APIError && error.status === 404) {
+            this.#api = this.#classify(error);
+            if (this.#api === "ok") {
                 throw new AppError("unauthorized", "Your account no longer exists. Sign in again.", { cause: error });
             }
-            this.#logger.error({ err: error, userId }, "Couldn't load a Privy user");
+            if (this.#api === "rejected") this.#logger.error(REJECTED_MESSAGE);
+            else this.#logger.error({ err: error, userId }, "Couldn't load a Privy user");
             throw new AppError("unavailable", "Couldn't check your wallet right now. Try again shortly.", {
                 cause: error,
             });

@@ -65,6 +65,7 @@ The types for both live in [src/protocol.ts](src/protocol.ts), which the web app
 - CORS and socket upgrades only from `CORS_ORIGINS`.
 - Rate limits per IP: 300 requests a minute overall, 30 a minute to connect wallets or report deposits, and 120 socket handshakes a minute (`SOCKET_HANDSHAKES_PER_MINUTE`, since users behind one NAT share an IP). Per user: 40 socket events every 10 seconds, 20 reported deposits a minute. An account runs at most 3 deposit checks at once, since each one watches the chain until its transaction lands.
 - Access tokens are verified with the dashboard's verification key when `PRIVY_VERIFICATION_KEY` is set, otherwise with Privy's cached key set. Privy being unreachable is a 503, not a sign-out.
+- When Privy's API can't answer (it's down, or rejects `PRIVY_APP_SECRET`), wallets a user has connected before keep working on that earlier verification; only a wallet new to the user waits for Privy. The server checks its Privy credentials at startup, logs a rejected secret as an error, and `/ready` reports Privy's state (`privy`) without failing over it.
 - JSON bodies and socket messages are capped at 16 KB, and inputs are validated with zod.
 - Behind a proxy, set `TRUST_PROXY` to its hop count so the rate limits see real client IPs.
 - Tokens and cookies are redacted from the logs, and unexpected errors reach clients as a generic `internal`.

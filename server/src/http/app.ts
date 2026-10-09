@@ -70,6 +70,8 @@ export function createApp(services: Services): express.Express {
         res.status(ready ? 200 : 503).json({
             status: ready ? "ready" : "degraded",
             database,
+            // Reported, not a reason to take the server out of rotation: connected wallets don't need Privy.
+            privy: services.identity.apiState(),
             depositScan: {
                 ...scan,
                 lagBlocks: scan.head !== null && scan.scannedThrough !== null ? scan.head - scan.scannedThrough : null,

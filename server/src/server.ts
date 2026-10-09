@@ -71,6 +71,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             receiptTimeoutMs: config.DEPOSIT_RECEIPT_TIMEOUT_MS,
         });
         const sessions = new Sessions({
+            logger,
             identity,
             accounts,
             deposits,
@@ -95,6 +96,8 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         const io = attachSockets(httpServer, services);
         await listen(httpServer, config.PORT, config.HOST);
         watcher.start();
+        // A bad secret is logged loudly, but the server keeps serving: wallets already connected carry on.
+        void identity.checkApi();
 
         const { address, port } = httpServer.address() as AddressInfo;
         const host = address.includes(":") ? `[${address}]` : address;
