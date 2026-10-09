@@ -152,6 +152,31 @@ test("a person's two accounts merge into the older, through the ledger", async (
     expect(session.deposits.items).toHaveLength(2);
 });
 
+test("accounts without a Privy user aren't merged together", async () => {
+    const did = newDid();
+    let orphans!: Seed[];
+    const running = await boot(async (db) => {
+        await seedAccount(db, did, "3");
+        await seedAccount(db, did, "2");
+        orphans = [await seedAccount(db, newDid(), "4"), await seedAccount(db, newDid(), "1")];
+        await mongo
+            .db(db)
+            .collection("accounts")
+            .updateMany({ _id: { $in: orphans.map((orphan) => orphan.id) } }, { $unset: { privyUserId: "" } });
+    });
+    const { accounts } = collections(running);
+
+    expect(await accounts.find({ privyUserId: did }).toArray()).toHaveLength(1);
+    for (const orphan of orphans) {
+        const kept = await accounts.findOne({ _id: orphan.id });
+        expect(kept).toMatchObject({ depositAddress: orphan.address });
+        expect(kept).not.toHaveProperty("formerDepositAddresses");
+        expect(fromDecimal(kept!.balance)).toBe(wei(orphan.usdc));
+    }
+    expect(await accounts.countDocuments()).toBe(3);
+    expect(running.server.services.database.migration.merged).toBe(1);
+});
+
 test("USDC sent to a merged account's old address credits the survivor", async () => {
     const did = newDid();
     let b!: Seed;

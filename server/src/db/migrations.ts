@@ -21,6 +21,7 @@ export async function mergeAccountsByPerson(client: MongoClient, collections: Co
     let merged = 0;
     const groups = await accounts
         .aggregate<{ _id: string }>([
+            { $match: { privyUserId: { $type: "string", $ne: "" } } },
             { $group: { _id: "$privyUserId", count: { $sum: 1 } } },
             { $match: { count: { $gt: 1 } } },
         ])

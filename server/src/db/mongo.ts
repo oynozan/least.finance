@@ -112,7 +112,12 @@ async function ensureIndexes({ accounts, deposits, ledger }: Collections) {
         accounts.createIndexes([
             { key: { depositAddress: 1 }, name: "deposit_address_unique", unique: true },
             { key: { depositIndex: 1 }, name: "deposit_index_unique", unique: true },
-            { key: { privyUserId: 1 }, name: "privy_user_unique", unique: true },
+            {
+                key: { privyUserId: 1 },
+                name: "privy_user_unique",
+                unique: true,
+                partialFilterExpression: { privyUserId: { $type: "string" } },
+            },
             {
                 key: { formerDepositAddresses: 1 },
                 name: "former_deposit_addresses_unique",
