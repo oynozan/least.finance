@@ -9,17 +9,7 @@ export type Position = {
     pnl: number;
 };
 
-export type Deposit = {
-    id: string;
-    symbol: CoinSymbol;
-    /** USD value at the time of deposit. */
-    amount: number;
-    at: Date;
-};
-
-const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000);
-
-// Mock content until positions and deposits come from the backend.
+// Mock content until trading is live.
 /** Oldest first; the list renders it bottom-up, so the newest sits on top. */
 export const MOCK_POSITIONS: Position[] = [
     { id: "p-btc", symbol: "BTC", size: 4_200, pnl: 312.4 },
@@ -38,38 +28,6 @@ export const MOCK_POSITIONS: Position[] = [
     { id: "p-atom", symbol: "ATOM", size: 410, pnl: -5.6 },
     { id: "p-near", symbol: "NEAR", size: 690, pnl: 27.3 },
 ];
-
-/** Symbol, USD amount, days ago. Newest first. */
-const depositLog: [CoinSymbol, number, number][] = [
-    ["USDC", 2_500, 2],
-    ["ETH", 1_840.25, 9],
-    ["USDC", 5_000, 23],
-    ["USDC", 3_000, 41],
-    ["USDC", 1_200, 48],
-    ["BTC", 4_120.8, 55],
-    ["USDC", 750, 63],
-    ["SOL", 610.4, 71],
-    ["USDC", 2_000, 84],
-    ["ETH", 980.15, 97],
-    ["USDC", 1_500, 112],
-    ["USDC", 300, 126],
-    ["BTC", 2_264.9, 141],
-    ["USDC", 5_000, 158],
-    ["ETH", 1_420.6, 173],
-    ["USDC", 850, 190],
-    ["SOL", 455.3, 208],
-    ["USDC", 2_500, 229],
-    ["USDC", 1_000, 251],
-    ["ETH", 3_105.75, 276],
-];
-
-/** Newest first. */
-export const MOCK_DEPOSITS: Deposit[] = depositLog.map(([symbol, amount, days], i) => ({
-    id: `d-${depositLog.length - i}`,
-    symbol,
-    amount,
-    at: daysAgo(days),
-}));
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const usdWhole = new Intl.NumberFormat("en-US", {

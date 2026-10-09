@@ -1,7 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
-import { MOCK_DEPOSITS, MOCK_POSITIONS } from "../components/wallet-data";
+import { MOCK_POSITIONS } from "../components/wallet-data";
+import { HISTORY } from "./fixtures";
 import {
-    ADDRESS,
+    addressOf,
     ARC_PRIMARY_RPC,
     ARC_RPC,
     installWallet,
@@ -15,11 +16,11 @@ import {
     walletRequests,
 } from "./privy-mock";
 
-const DEPOSITS = MOCK_DEPOSITS.length;
+const DEPOSITS = HISTORY.length;
 const POSITIONS = MOCK_POSITIONS.length;
 
 const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
-const dock = (page: Page) => page.getByRole("button", { name: `Wallet ${ADDRESS}` });
+const dock = (page: Page) => page.getByRole("button", { name: `Wallet ${addressOf(page)}` });
 const dockDot = (page: Page) => dock(page).locator('[aria-hidden="true"]');
 const modal = (page: Page) => page.locator("#privy-modal-content");
 const depositButton = (page: Page) => sidebar(page).getByRole("button", { name: "Deposit", exact: true });
@@ -198,12 +199,12 @@ test("the dock's dot turns red while the wallet is off Arc", async ({ page }) =>
     await connect(page);
     await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
 
-    await expect(dock(page)).toHaveAccessibleName(`Wallet ${ADDRESS}, on another network`);
+    await expect(dock(page)).toHaveAccessibleName(`Wallet ${addressOf(page)}, on another network`);
     await expect(dockDot(page)).toHaveCSS("background-color", LOSS);
 
     await switchButton(page).click();
     await expect(depositButton(page)).toBeVisible();
-    await expect(dock(page)).toHaveAccessibleName(`Wallet ${ADDRESS}`);
+    await expect(dock(page)).toHaveAccessibleName(`Wallet ${addressOf(page)}`);
     await expect(dockDot(page)).toHaveCSS("background-color", GAIN);
 });
 
@@ -458,7 +459,7 @@ test("a long deposit history stays inside the sidebar and scrolls", async ({ pag
 
     const oldest = history.getByRole("listitem").last();
     await expect(oldest).toContainText(
-        `+$${MOCK_DEPOSITS.at(-1)!.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
+        `+$${Number(HISTORY.at(-1)!.amount).toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
     );
     await expect(oldest).not.toBeInViewport();
 

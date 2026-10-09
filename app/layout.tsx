@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import { AccountProvider } from "@/components/account-provider";
 import { SidebarShell } from "@/components/sidebar";
 import { ReviewPanel } from "@/components/trade/review-panel";
 import { TradeProvider } from "@/components/trade/trade-provider";
@@ -23,11 +24,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <html lang="en" className={inter.variable}>
             <body>
                 <WalletProvider>
-                    <TradeProvider>
-                        <SidebarShell panel={<WalletSidebar />} review={<ReviewPanel />}>
-                            {children}
-                        </SidebarShell>
-                    </TradeProvider>
+                    <AccountProvider>
+                        <TradeProvider>
+                            <SidebarShell panel={<WalletSidebar />} review={<ReviewPanel />}>
+                                {children}
+                            </SidebarShell>
+                        </TradeProvider>
+                    </AccountProvider>
                 </WalletProvider>
             </body>
         </html>

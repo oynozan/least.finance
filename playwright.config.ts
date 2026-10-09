@@ -1,7 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 import { MOCK_APP_ID } from "./e2e/privy-mock";
 
-const PORT = 3100;
+// Overridable so a run can stay clear of another one on the same machine.
+const PORT = Number(process.env.E2E_PORT ?? 3100);
+const API_PORT = Number(process.env.E2E_API_PORT ?? 4100);
+const CONTROL_PORT = Number(process.env.E2E_CONTROL_PORT ?? 4101);
 
 // Logic tests exercise lib/ directly: no browser, no server.
 const LOGIC = /\.logic\.spec\.ts$/;
@@ -33,13 +36,28 @@ export default defineConfig({
     ],
     webServer: logicOnly
         ? undefined
-        : {
-              command: `npm run build && npm run start -- --port ${PORT}`,
-              url: `http://localhost:${PORT}`,
-              reuseExistingServer: !process.env.CI,
-              timeout: 180_000,
-              // Privy's backend is mocked in the tests (e2e/privy-mock.ts), so the
-              // build uses a placeholder app ID rather than a real one.
-              env: { NEXT_PUBLIC_PRIVY_APP_ID: MOCK_APP_ID },
-          },
+        : [
+              {
+                  // The real deposit server, on a local chain and a fake Privy (server/test/e2e/serve.ts).
+                  command: "node server/test/e2e/serve.ts",
+                  url: `http://127.0.0.1:${CONTROL_PORT}/health`,
+                  reuseExistingServer: !process.env.CI,
+                  timeout: 120_000,
+                  env: {
+                      E2E_API_PORT: String(API_PORT),
+                      E2E_CONTROL_PORT: String(CONTROL_PORT),
+                      E2E_WEB_ORIGINS: `http://localhost:${PORT}`,
+                      E2E_PRIVY_APP_ID: MOCK_APP_ID,
+                  },
+              },
+              {
+                  command: `npm run build && npm run start -- --port ${PORT}`,
+                  url: `http://localhost:${PORT}`,
+                  reuseExistingServer: !process.env.CI,
+                  timeout: 180_000,
+                  // Privy's backend is mocked in the tests (e2e/privy-mock.ts), so the
+                  // build uses a placeholder app ID rather than a real one.
+                  env: { NEXT_PUBLIC_PRIVY_APP_ID: MOCK_APP_ID, NEXT_PUBLIC_API_URL: `http://localhost:${API_PORT}` },
+              },
+          ],
 });

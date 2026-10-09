@@ -16,6 +16,11 @@ const eslintConfig = defineConfig([
         "playwright-report/**",
         "test-results/**",
     ]),
+    {
+        // Server tests read loosely typed JSON responses all over.
+        files: ["server/test/**/*.ts"],
+        rules: { "@typescript-eslint/no-explicit-any": "off" },
+    },
 ]);
 
 export default eslintConfig;

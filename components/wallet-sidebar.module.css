@@ -140,15 +140,153 @@
     cursor: default;
 }
 
-.switchStatus {
-    max-width: 300px;
+.deposit[aria-disabled="true"] {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* What's happening with a deposit, or why the account or network isn't ready. */
+.status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 320px;
     font-size: 13px;
     line-height: 1.45;
     color: var(--muted);
+    font-variant-numeric: tabular-nums;
 }
 
-.switchStatus:not(:empty) {
+.status:not(:empty) {
     margin-top: 12px;
+}
+
+.status[data-tone="gain"] {
+    color: var(--gain);
+}
+
+.status[data-tone="loss"] {
+    color: var(--loss);
+}
+
+/* The amount entry takes the deposit button's place, at its height. */
+.depositPanel {
+    position: relative;
+    z-index: 2;
+    align-self: stretch;
+    margin-top: 20px;
+    transform-origin: 0 50%;
+}
+
+.depositForm {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.amountField {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 44px;
+    padding: 0 6px 0 16px;
+    border-radius: 999px;
+    background: var(--pill);
+    box-shadow: inset 0 0 0 1px transparent;
+    cursor: text;
+    transition:
+        background-color 160ms ease,
+        box-shadow 160ms ease;
+}
+
+.amountField:focus-within {
+    background: var(--pill-hover);
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16);
+}
+
+.amountField[data-invalid="true"] {
+    box-shadow: inset 0 0 0 1px rgb(255 107 91 / 0.55);
+}
+
+.amountPrefix {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--muted);
+}
+
+.amountInput {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    outline: none;
+    color: var(--foreground);
+    caret-color: var(--foreground);
+    font: inherit;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums;
+}
+
+.amountInput::placeholder {
+    color: var(--muted);
+}
+
+.amountInput::selection {
+    background: rgb(245 245 243 / 0.22);
+}
+
+.maxButton {
+    flex-shrink: 0;
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.07);
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    outline: none;
+    transition:
+        background-color 160ms ease,
+        color 160ms ease;
+}
+
+.maxButton:focus-visible {
+    color: var(--foreground);
+    box-shadow: 0 0 0 2px rgb(255 255 255 / 0.3);
+}
+
+@media (hover: hover) {
+    .maxButton:hover {
+        background: rgb(255 255 255 / 0.12);
+        color: var(--foreground);
+    }
+}
+
+/* Sits in the form's row, so it drops the button's own top margin. */
+.confirmDeposit {
+    flex-shrink: 0;
+    margin-top: 0;
+    padding: 0 20px;
+}
+
+.depositHint {
+    margin-top: 10px;
+    padding-left: 16px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.depositHint[data-tone="error"] {
+    color: var(--loss);
 }
 
 /* Its top edge sits at the deposit button's bottom, so rows emerge from
@@ -207,6 +345,41 @@
 .depositWhen {
     font-size: 13px;
     color: var(--muted);
+}
+
+.depositPending {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+/* Breathes while the server confirms a deposit. */
+.pendingDot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pending-breathe 1.2s ease-in-out infinite;
+}
+
+@keyframes pending-breathe {
+    0%,
+    100% {
+        opacity: 0.35;
+        scale: 0.8;
+    }
+    50% {
+        opacity: 1;
+        scale: 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .pendingDot {
+        animation: none;
+        opacity: 0.7;
+    }
 }
 
 /* Holds the scroller and its edge overlays; it recedes as one piece. */

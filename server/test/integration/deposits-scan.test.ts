@@ -94,7 +94,6 @@ test("every deposit is credited when the chain caps the results of a log query",
         emulator: { maxResults: 2 },
     });
     try {
-        const { collections } = capped.server.services.database;
         const user = await capped.user();
         const opened = await fetch(`${capped.url}/v1/wallets/connect`, {
             method: "POST",

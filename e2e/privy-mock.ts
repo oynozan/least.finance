@@ -1,12 +1,29 @@
 import type { Page, Route } from "@playwright/test";
+import { chainRpc, randomAddress, signUp } from "./backend";
 
 /**
  * Stands in for Privy's backend (auth.privy.io), which tests can't reach:
  * the app config the modal is built from, and a SIWE login that succeeds
- * for the injected wallet installed by `installWallet`.
+ * for the injected wallet installed by `installWallet`. The access token it
+ * hands out is a real one from the test backend, so the app's server
+ * accepts it.
  */
-// Lowercase: a mixed-case address must carry a valid EIP-55 checksum.
-export const ADDRESS = "0x7a3f9e2bc41d8e5a06f1c2d9b84e3a7c5d12ef90";
+
+const wallets = new WeakMap<Page, string>();
+
+/**
+ * The wallet a page signs in with: a fresh one per test, so tests running
+ * side by side on one backend each have an account of their own. Lowercase,
+ * as a mixed-case address must carry a valid EIP-55 checksum.
+ */
+export function addressOf(page: Page) {
+    let address = wallets.get(page);
+    if (!address) {
+        address = randomAddress();
+        wallets.set(page, address);
+    }
+    return address;
+}
 
 /** Privy only checks the length (25 characters). */
 export const MOCK_APP_ID = "cmtestapp0000000000000000";
@@ -63,13 +80,13 @@ const appConfig = {
 
 const now = () => Math.floor(Date.now() / 1000);
 
-const user = () => ({
-    id: "did:privy:cmtestuser0000000000000",
+const user = (id: string, address: string) => ({
+    id,
     created_at: now() - 86_400,
     linked_accounts: [
         {
             type: "wallet",
-            address: ADDRESS,
+            address,
             chain_type: "ethereum",
             chain_id: "eip155:1",
             wallet_client: "unknown",
@@ -85,19 +102,10 @@ const user = () => ({
     is_guest: false,
 });
 
-// An unsigned JWT is enough: the SDK only decodes it to read the expiry.
-const b64 = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
-const token = () =>
-    `${b64({ alg: "ES256", typ: "JWT" })}.${b64({
-        sid: "session",
-        sub: "did:privy:cmtestuser0000000000000",
-        iss: "privy.io",
-        aud: MOCK_APP_ID,
-        iat: now(),
-        exp: now() + 3600,
-    })}.signature`;
-
+/** Signs the page's wallet up with the test backend and answers Privy's requests as that user. */
 export async function mockPrivy(page: Page) {
+    const address = addressOf(page);
+    const { userId, token } = await signUp(address);
     await page.route(/https:\/\/auth\.privy\.io\/.*/, async (route: Route) => {
         const url = new URL(route.request().url());
         const path = url.pathname;
@@ -122,21 +130,21 @@ export async function mockPrivy(page: Page) {
         if (path.endsWith("/siwe/init"))
             return json({
                 nonce: "mocknonce123",
-                address: ADDRESS,
+                address,
                 expires_at: new Date(Date.now() + 600_000).toISOString(),
             });
         if (path.endsWith("/siwe/authenticate"))
             return json({
-                user: user(),
-                token: token(),
-                privy_access_token: token(),
+                user: user(userId, address),
+                token,
+                privy_access_token: token,
                 refresh_token: "refresh",
                 identity_token: null,
                 session_update_action: "set",
                 is_new_user: false,
             });
         if (path.endsWith("/sessions")) return json({ error: "No session" }, 401);
-        if (path.endsWith("/users/me")) return json({ user: user() });
+        if (path.endsWith("/users/me")) return json({ user: user(userId, address) });
         // Analytics and anything else: accept and ignore.
         return json({});
     });
@@ -158,9 +166,9 @@ export const ARC_PRIMARY_RPC = /^https:\/\/rpc\.mainnet\.arc\.io\//;
 
 const USDC = "0x3600000000000000000000000000000000000000";
 
-/** Stands in for Arc's RPC, where only USDC's `balanceOf(ADDRESS)` reads as `usdc`. */
+/** Stands in for Arc's RPC, where only USDC's `balanceOf` the page's wallet reads as `usdc`. */
 export async function mockArcRpc(page: Page, usdc = 12_480.52) {
-    const balanceOf = `0x70a08231${ADDRESS.slice(2).padStart(64, "0")}`;
+    const balanceOf = `0x70a08231${addressOf(page).slice(2).padStart(64, "0")}`;
     const word = (value: bigint) => `0x${value.toString(16).padStart(64, "0")}`;
     const answer = ({ id, method, params }: { id: number; method: string; params?: unknown[] }) => {
         const call = params?.[0] as { to?: string; data?: string } | undefined;
@@ -200,7 +208,10 @@ type WalletWindow = {
     walletRequests: WalletRequest[];
     rejectChainSwitches?: number;
     refusesNewNetworks?: boolean;
+    /** What the wallet does with the next transaction it's asked to send. */
+    nextSend?: "reject" | "drop";
     useAccount: (account: string) => void;
+    sendToChain: (method: string, params: unknown[]) => Promise<{ result?: unknown; error?: { message: string } }>;
 };
 
 /** Every request the dapp has sent the wallet, oldest first. */
@@ -232,12 +243,29 @@ export const refuseNewNetworks = (page: Page) =>
         (window as unknown as WalletWindow).refusesNewNetworks = true;
     });
 
+/** The user declines the next transaction in their wallet. */
+export const rejectNextSend = (page: Page) =>
+    page.evaluate(() => {
+        (window as unknown as WalletWindow).nextSend = "reject";
+    });
+
+/** The wallet hands back a hash for the next transaction, but it never reaches the chain (as when the fee is too low). */
+export const dropNextSend = (page: Page) =>
+    page.evaluate(() => {
+        (window as unknown as WalletWindow).nextSend = "drop";
+    });
+
 /** The user picks another account in their wallet. */
 export const switchWalletAccount = (page: Page, account: string) =>
     page.evaluate((account) => (window as unknown as WalletWindow).useAccount(account), account);
 
-/** Installs a MetaMask-like EIP-1193 wallet that signs anything and starts on Ethereum, unaware of Arc. */
+/**
+ * Installs a MetaMask-like EIP-1193 wallet that signs anything and starts on
+ * Ethereum, unaware of Arc. Transactions it sends land on the test backend's
+ * chain, where the page's wallet is funded.
+ */
 export async function installWallet(page: Page) {
+    await page.exposeFunction("sendToChain", (method: string, params: unknown[]) => chainRpc(method, params));
     await page.addInitScript((address) => {
         let connected = false;
         let account = address;
@@ -300,6 +328,21 @@ export async function installWallet(page: Page) {
                         if (state.refusesNewNetworks) throw new Error("This wallet doesn't support custom networks.");
                         if (target) knownChains.add(target);
                         return null;
+                    case "eth_sendTransaction": {
+                        const behavior = state.nextSend;
+                        state.nextSend = undefined;
+                        if (behavior === "reject") throw fail(4001, "User rejected the request.");
+                        // Only Arc is on the test chain; anything else would have gone to another network.
+                        if (chainId !== "0x13b2") throw fail(-32603, `The wallet is on chain ${chainId}, not Arc.`);
+                        if (behavior === "drop") {
+                            const bytes = crypto.getRandomValues(new Uint8Array(32));
+                            return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+                        }
+                        const tx = { ...(params?.[0] as object), from: account };
+                        const { result, error } = await state.sendToChain(method, [tx]);
+                        if (error) throw fail(-32603, error.message);
+                        return result;
+                    }
                     default:
                         return null;
                 }
@@ -324,5 +367,5 @@ export async function installWallet(page: Page) {
             );
         window.addEventListener("eip6963:requestProvider", announce);
         announce();
-    }, ADDRESS);
+    }, addressOf(page));
 }

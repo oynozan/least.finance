@@ -3,8 +3,9 @@
 import { createContext, use, type ReactNode } from "react";
 import { useLogin, usePrivy } from "@privy-io/react-auth";
 import type { SentenceAction, SentenceView } from "@/lib/sentence";
-import { MOCK_HOLDINGS } from "@/lib/trade/catalog";
+import { MOCK_HOLDINGS, QUOTE } from "@/lib/trade/catalog";
 import type { TransactionIntent } from "@/lib/trade/intent";
+import { useAccount } from "@/components/account-provider";
 import { walletEnabled } from "@/components/wallet-provider";
 import { useTradeSentence } from "./use-trade-sentence";
 
@@ -45,6 +46,7 @@ export function TradeProvider({ children }: { children: ReactNode }) {
 function PrivyTradeProvider({ children }: { children: ReactNode }) {
     const { ready, authenticated } = usePrivy();
     const { login } = useLogin();
+    const { balance } = useAccount();
     // The same element type in every branch, so the sentence survives connecting.
     if (!ready) {
         return (
@@ -63,9 +65,11 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             </Provide>
         );
     }
-    // Mock coin balances until holdings come from the chain.
+    // USDC is what the account has deposited; other coins stay mock until trading is live.
+    // Until the account loads, nothing is capped rather than everything.
+    const holdings = balance == null ? null : { ...MOCK_HOLDINGS, [QUOTE]: balance };
     return (
-        <Provide wallet={{ status: "connected" }} holdings={MOCK_HOLDINGS}>
+        <Provide wallet={{ status: "connected" }} holdings={holdings}>
             {children}
         </Provide>
     );

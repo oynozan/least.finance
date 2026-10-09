@@ -21,7 +21,10 @@ export const TOKENS: Token[] = [
     { symbol: "ARB", name: "Arbitrum", priceUSD: 0.74 },
 ];
 
-/** What the mock connected wallet holds, in coin units. */
+/**
+ * What the mock connected wallet holds, in coin units. With a real wallet
+ * connected, its USDC is replaced by the account's deposited balance.
+ */
 export const MOCK_HOLDINGS: Record<string, number> = {
     ETH: 1.25,
     SOL: 42,

@@ -13,14 +13,18 @@ import {
     type Transition,
     type Variants,
 } from "motion/react";
+import { toUsdc, type HistoryRow } from "@/lib/account/state";
+import type { DepositNotice, DepositResult } from "./account-client";
+import { useAccount } from "./account-provider";
 import { useArcNetwork, useUsdcBalance } from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
+import { DepositForm } from "./deposit-form";
 import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { canHover } from "./pointer";
 import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
 import { useSidebar } from "./sidebar";
-import { MOCK_DEPOSITS, MOCK_POSITIONS, formatUsd, formatWhen, shortenAddress, type Deposit } from "./wallet-data";
+import { MOCK_POSITIONS, formatUsd, formatWhen, shortenAddress } from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
 import styles from "./wallet-sidebar.module.css";
 
@@ -99,11 +103,12 @@ function SignedInWallet() {
         if (ready && !authenticated) setOpen(false);
     }, [ready, authenticated, setOpen]);
 
-    const balance = useUsdcBalance(address, open);
+    const account = useAccount();
+    // The wallet's own USDC, which a deposit draws on.
+    const walletBalance = useUsdcBalance(address, open);
     const { offArc, switching, cantSwitch, switchToArc } = useArcNetwork(address);
 
-    // Mock state until positions and deposits come from the backend.
-    const [deposits, setDeposits] = useState(MOCK_DEPOSITS);
+    // Mock positions until trading is live.
     const [positions, setPositions] = useState(MOCK_POSITIONS);
 
     // Remount the animated parts on every open so they replay their entrance.
@@ -115,11 +120,6 @@ function SignedInWallet() {
     }
 
     if (!ready || !authenticated) return null;
-
-    const deposit = () => {
-        const entry: Deposit = { id: `d-${Date.now()}`, symbol: "USDC", amount: 500, at: new Date() };
-        setDeposits((list) => [entry, ...list]);
-    };
 
     const closePosition = (id: string) => {
         setPositions((list) => list.filter((p) => p.id !== id));
@@ -144,9 +144,14 @@ function SignedInWallet() {
 
             <WalletSection
                 key={`wallet-${openings}`}
-                balance={balance}
-                deposits={deposits}
-                onDeposit={deposit}
+                balance={account.balance}
+                walletBalance={walletBalance}
+                history={account.history}
+                minDeposit={account.state.status === "ready" ? Number(account.state.rules.minDeposit) : null}
+                accountProblem={account.state.status === "failed" ? account.state.error.message : null}
+                notice={account.notice}
+                onDeposit={account.deposit}
+                onStartDeposit={account.dismissNotice}
                 offArc={offArc}
                 switching={switching}
                 cantSwitch={cantSwitch}
@@ -193,10 +198,18 @@ function SignedInWallet() {
 }
 
 type WalletSectionProps = {
-    /** USDC on Arc, undefined while loading and null when it couldn't be read. */
+    /** The account's USDC, deposits on their way included; undefined while loading and null when it couldn't be read. */
     balance: number | null | undefined;
-    deposits: Deposit[];
-    onDeposit: () => void;
+    /** The wallet's own USDC on Arc, likewise. */
+    walletBalance: number | null | undefined;
+    history: HistoryRow[];
+    /** Null until the account has loaded, and deposits can't start before then. */
+    minDeposit: number | null;
+    /** Why the account couldn't be loaded. */
+    accountProblem: string | null;
+    notice: DepositNotice | null;
+    onDeposit: (amount: string) => Promise<DepositResult>;
+    onStartDeposit: () => void;
     /** The wallet is on another network, so the deposit button switches it to Arc instead. */
     offArc: boolean;
     switching: boolean;
@@ -207,8 +220,13 @@ type WalletSectionProps = {
 /** Balance and the deposit button; hovering it deals out past deposits. */
 function WalletSection({
     balance,
-    deposits,
+    walletBalance,
+    history,
+    minDeposit,
+    accountProblem,
+    notice,
     onDeposit,
+    onStartDeposit,
     offArc,
     switching,
     cantSwitch,
@@ -217,7 +235,11 @@ function WalletSection({
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
     const [pinned, setPinned] = useState(false);
-    const showHistory = hovered || focused || pinned;
+    const [entering, setEntering] = useState(false);
+    const depositing = entering && !offArc && minDeposit !== null;
+    // The history would cover the positions while an amount is typed in.
+    const showHistory = (hovered || focused || pinned) && !depositing;
+    const status = offArc ? (cantSwitch ? SWITCH_FAILED : null) : notice ? null : accountProblem;
 
     return (
         <section
@@ -247,7 +269,14 @@ function WalletSection({
                 )}
             </button>
 
-            {offArc ? (
+            {depositing ? (
+                <DepositForm
+                    walletBalance={walletBalance}
+                    minDeposit={minDeposit}
+                    onSubmit={onDeposit}
+                    onClose={() => setEntering(false)}
+                />
+            ) : offArc ? (
                 <motion.button
                     type="button"
                     className={`${styles.deposit} ${styles.switchNetwork}`}
@@ -264,27 +293,30 @@ function WalletSection({
                 <motion.button
                     type="button"
                     className={styles.deposit}
-                    whileHover={{ scale: 1.04 }}
-                    whileTap={{ scale: 0.94 }}
+                    aria-disabled={minDeposit === null || undefined}
+                    title={minDeposit === null ? "Loading your account…" : undefined}
+                    whileHover={minDeposit === null ? undefined : { scale: 1.04 }}
+                    whileTap={minDeposit === null ? undefined : { scale: 0.94 }}
                     transition={spring}
-                    onClick={onDeposit}
+                    onClick={() => {
+                        if (minDeposit === null) return;
+                        onStartDeposit();
+                        setEntering(true);
+                    }}
                 >
                     <PlusIcon className={styles.depositIcon} />
                     Deposit
                 </motion.button>
             )}
 
-            {/* Mounted while off Arc, so screen readers announce the message when it appears. */}
-            {offArc && (
-                <p role="status" className={styles.switchStatus}>
-                    {cantSwitch &&
-                        "This wallet couldn't switch to Arc. Add Arc (chain ID 5042) in its network settings, or connect another wallet."}
-                </p>
-            )}
+            {/* Always mounted, so screen readers announce what appears in it. */}
+            <p role="status" className={styles.status} data-tone={statusTone(offArc ? null : notice, status)}>
+                {status ?? (!offArc && notice && <NoticeText notice={notice} />)}
+            </p>
 
             {/* Floats over the positions instead of pushing them down. */}
             <AnimatePresence>
-                {showHistory && deposits.length > 0 && (
+                {showHistory && history.length > 0 && (
                     <motion.div
                         key="history"
                         className={styles.historyFrame}
@@ -294,18 +326,26 @@ function WalletSection({
                     >
                         <ol ref={historyRef} className={styles.history} aria-label="Deposits">
                             <AnimatePresence>
-                                {deposits.map((deposit, i) => (
+                                {history.map((row, i) => (
                                     <motion.li
-                                        key={deposit.id}
+                                        key={row.key}
                                         layout
                                         custom={i}
                                         variants={depositRow}
                                         className={styles.depositRow}
-                                        style={{ zIndex: deposits.length - i }}
+                                        data-pending={row.pending || undefined}
+                                        style={{ zIndex: history.length - i }}
                                     >
-                                        <CoinIcon symbol={deposit.symbol} className={styles.depositCoin} />
-                                        <span className={styles.depositAmount}>+{formatUsd(deposit.amount)}</span>
-                                        <span className={styles.depositWhen}>{formatWhen(deposit.at)}</span>
+                                        <CoinIcon symbol="USDC" className={styles.depositCoin} />
+                                        <span className={styles.depositAmount}>+{formatUsd(toUsdc(row.amount))}</span>
+                                        {row.pending ? (
+                                            <span className={`${styles.depositWhen} ${styles.depositPending}`}>
+                                                <span className={styles.pendingDot} aria-hidden="true" />
+                                                Pending
+                                            </span>
+                                        ) : (
+                                            <span className={styles.depositWhen}>{formatWhen(row.at)}</span>
+                                        )}
                                     </motion.li>
                                 ))}
                             </AnimatePresence>
@@ -316,6 +356,32 @@ function WalletSection({
             </AnimatePresence>
         </section>
     );
+}
+
+const SWITCH_FAILED =
+    "This wallet couldn't switch to Arc. Add Arc (chain ID 5042) in its network settings, or connect another wallet.";
+
+function statusTone(notice: DepositNotice | null, problem: string | null) {
+    if (problem) return undefined;
+    if (notice?.kind === "credited") return "gain";
+    if (notice?.kind === "reverted") return "loss";
+    return undefined;
+}
+
+function NoticeText({ notice }: { notice: DepositNotice }) {
+    switch (notice.kind) {
+        case "confirming":
+            return (
+                <>
+                    <span className={styles.pendingDot} aria-hidden="true" />
+                    Depositing {formatUsd(toUsdc(notice.amount))}…
+                </>
+            );
+        case "credited":
+            return <>Deposited {formatUsd(toUsdc(notice.amount))}</>;
+        case "reverted":
+            return <>{notice.message}</>;
+    }
 }
 
 function balanceLabel(balance: number | null | undefined) {

@@ -18,7 +18,12 @@ export type ChainHelpers = ReturnType<typeof chainHelpers>;
 
 /** Talks to the emulated Arc chain the way a user's wallet would. */
 export function chainHelpers(url: string) {
-    const client = createTestClient({ mode: "anvil", chain: arcChain([url]), transport: http(url) })
+    const client = createTestClient({
+        mode: "anvil",
+        chain: arcChain([url]),
+        transport: http(url),
+        pollingInterval: 50,
+    })
         .extend(publicActions)
         .extend(walletActions);
 
