@@ -1,0 +1,11 @@
+{
+    "status": "success",
+    "inTxHashes": ["0x1ed5321a4bf2773eb98073fddac9fd7d6844650f513b0d9c792be07204ba0369"],
+    "txHashes": ["0x141d481af6a0ce5dd5bbd76741798803b40a693fa9b2c2a5118007f78e45de48"],
+    "updatedAt": 1791564355804,
+    "originChainId": 1,
+    "destinationChainId": 5042,
+    "quoteCreatedAt": 1791564292341,
+    "failReason": "N/A",
+    "refundFailReason": "N/A"
+}

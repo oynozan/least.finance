@@ -1,0 +1,24 @@
+{
+    "sweepTxnRef": null,
+    "actionsTargetRecipient": null,
+    "actionsTargetToken": null,
+    "actionsTargetAmount": null,
+    "actionsTargetTxnRef": null,
+    "actionsTargetBlockTimestamp": null,
+    "status": "filled",
+    "originChainId": 1,
+    "depositId": "4750818",
+    "depositTxHash": "0x20e25fd9ac63939066c4c5ddd52c13b8682bf2d39653f761af428c1f68c9b851",
+    "depositTxnRef": "0x20e25fd9ac63939066c4c5ddd52c13b8682bf2d39653f761af428c1f68c9b851",
+    "fillTx": "0x1560cd6eb1f42fefe131fedd51c8a0fcc1efa1b7c2f7e489ad1d517d526590f9",
+    "fillTxnRef": "0x1560cd6eb1f42fefe131fedd51c8a0fcc1efa1b7c2f7e489ad1d517d526590f9",
+    "destinationChainId": 5042,
+    "depositRefundTxHash": null,
+    "depositRefundTxnRef": null,
+    "actionsSucceeded": null,
+    "actionsTargetChainId": null,
+    "pagination": {
+        "currentIndex": 0,
+        "maxIndex": 0
+    }
+}
