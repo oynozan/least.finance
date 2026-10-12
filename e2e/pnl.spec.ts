@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seedDeposits } from "./backend";
+import { trendingView } from "./polymarket";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 
 const dock = (page: Page) => page.getByRole("navigation", { name: "Pages" });
@@ -151,6 +152,47 @@ test("a trade confirmed in Review is listed as not sent", async ({ page }) => {
     const first = rows(page).first();
     await expect(first).toContainText("Swap ETH to SOL");
     await expect(first).toContainText("Not sent");
+});
+
+test("real predictions replace the mock ones, and a sale shows what it realized", async ({ page, isMobile }) => {
+    const binary = (await trendingView()).markets.filter((m) => m.outcomes.length === 2);
+    const { title } = binary[8]!;
+    const outcome = binary[8]!.outcomes[0]!;
+    await seedDeposits(addressOf(page), [{ amount: "500", daysAgo: 0 }]);
+    await page.goto("/");
+    await connect(page);
+
+    const picker = page.locator("[data-floating-dialog]:not([data-closing])");
+    const trade = page.getByRole("region", { name: "Trade" });
+    await trade.getByRole("button", { name: "Swap", exact: true }).click();
+    await picker.getByRole("option", { name: /^Predict/ }).click();
+    await trade.locator('[data-slot="marketId"] button').click();
+    await picker.getByRole("option", { name: title, exact: true }).click();
+    await trade.locator('[data-slot="outcomeId"] button').click();
+    await picker.getByRole("option", { name: new RegExp(`^${outcome.label}`) }).click();
+    await dock(page).getByRole("button", { name: "Review" }).click();
+    const review = page.getByRole("complementary", { name: "Review" });
+    await review.getByRole("button", { name: "Confirm prediction" }).click();
+    await review.getByRole("button", { name: "Done" }).click();
+    await walletButton(page).click();
+    const position = sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem");
+    const mine = position.filter({ hasText: title });
+    await expect(mine).toContainText(/\d[\d.]* shares/);
+    if (isMobile) await mine.tap();
+    else await mine.hover();
+    await mine.getByRole("button", { name: `Close ${outcome.label} on ${title}` }).click();
+    await expect(mine).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await tile(page, "PnL").click();
+    const opened = rows(page).filter({ hasText: `${outcome.label} on ${title}` });
+    await expect(opened).toHaveCount(2);
+    const sold = rows(page).filter({ hasText: `Sold ${outcome.label} on ${title}` });
+    await expect(sold).toHaveCount(1);
+    await expect(sold).toContainText(/[+−]\$\d|—/);
+    // The mock predictions are gone; the other mock trades stay.
+    await expect(rows(page).filter({ hasText: "Will BTC reach $150K?" })).toHaveCount(0);
+    await expect(rows(page).filter({ hasText: "Swap ETH to SOL" }).first()).toBeVisible();
 });
 
 test("phones fit the PnL page without scrolling sideways", async ({ page, isMobile }) => {

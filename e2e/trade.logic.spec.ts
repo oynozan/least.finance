@@ -16,7 +16,15 @@ import type { MarketView, QuoteView } from "@/server/src/protocol";
 import type { TradeCtx, TradeTerms } from "@/lib/trade/context";
 import { quoteRows } from "@/lib/trade/prediction-quote";
 import { TRADE } from "@/lib/trade/registry";
-import { balanceHistory, confirmedActivity, daysSince, depositActivity, mockTrades } from "@/lib/trade/activity";
+import {
+    balanceHistory,
+    confirmedActivity,
+    daysSince,
+    depositActivity,
+    mockTrades,
+    predictionActivity,
+} from "@/lib/trade/activity";
+import type { PositionView } from "@/server/src/protocol";
 
 const connected: TradeCtx = { catalog: CATALOG, holdings: MOCK_HOLDINGS };
 const disconnected: TradeCtx = { catalog: CATALOG, holdings: null };
@@ -373,6 +381,66 @@ test.describe("balance history", () => {
         expect(feeOnly.length).toBeGreaterThan(0);
         for (const d of feeOnly) expect(d.pnl).toBeLessThan(0);
         expect(daysSince(trades, now)).toBe(30);
+    });
+
+    const position = (over: Partial<PositionView>): PositionView => ({
+        id: "p1",
+        eventId: "e1",
+        marketId: "m1",
+        tokenId: "t1",
+        question: "Will it rain?",
+        outcome: "Yes",
+        shares: "20",
+        costUSD: "10",
+        state: "open",
+        proceedsUSD: null,
+        payoutUSD: null,
+        openedAt: at(3).toISOString(),
+        settledAt: null,
+        updatedAt: at(3).toISOString(),
+        ...over,
+    });
+
+    test("a won position adds its realized gain to the day it settled, and the bar is a gain", () => {
+        const rows = predictionActivity(position({ state: "won", payoutUSD: "20", settledAt: at(1).toISOString() }));
+        expect(rows.map((r) => r.id)).toEqual(["prediction:p1:open", "prediction:p1:settle"]);
+        expect(rows[0]).toMatchObject({ kind: "predict", title: "Yes on Will it rain?", amountUSD: 10, change: 0 });
+        expect(rows[1]).toMatchObject({
+            kind: "close",
+            title: "Won Yes on Will it rain?",
+            change: 10,
+            symbols: ["USDC"],
+        });
+        const days = balanceHistory([depositActivity({ key: "d", amountUSD: 100, at: at(5) }), ...rows], 7, now);
+        const day = days.at(-2)!;
+        expect(day.realized).toBe(10);
+        expect(day.pnl).toBe(10);
+        expect(days.at(-3)!.realized).toBe(0);
+        expect(days.at(-1)!.balance).toBe(110);
+    });
+
+    test("a lost position is a realized loss", () => {
+        const rows = predictionActivity(position({ state: "lost", settledAt: at(1).toISOString() }));
+        expect(rows[1]).toMatchObject({ kind: "close", title: "Lost Yes on Will it rain?", change: -10 });
+        expect(balanceHistory(rows, 7, now).at(-2)!.realized).toBe(-10);
+    });
+
+    test("a sold position realizes proceeds less cost", () => {
+        const rows = predictionActivity(
+            position({ state: "closed", proceedsUSD: "12.5", settledAt: at(1).toISOString() }),
+        );
+        expect(rows[1]).toMatchObject({ kind: "close", title: "Sold Yes on Will it rain?", change: 2.5 });
+    });
+
+    test("a buy changes nothing until it settles", () => {
+        for (const state of ["open", "closing"] as const) {
+            const rows = predictionActivity(position({ state }));
+            expect(rows).toHaveLength(1);
+            expect(rows[0]).toMatchObject({ id: "prediction:p1:open", change: 0 });
+        }
+        const days = balanceHistory(predictionActivity(position({})), 7, now);
+        expect(days.every((d) => d.realized === 0 && d.balance === 0)).toBe(true);
+        expect(predictionActivity(position({}), true)[0]!.pending).toBe(true);
     });
 
     test("a trade confirmed in Review is listed but moves nothing", () => {

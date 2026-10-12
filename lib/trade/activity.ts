@@ -1,6 +1,7 @@
 import { CATALOG, PREDICTION_MARKETS, QUOTE } from "./catalog";
 import { formatCents, formatUnits, formatUsdShort } from "./format";
 import type { TransactionIntent } from "./intent";
+import type { PositionView } from "@/server/src/protocol";
 
 export type ActivityKind = "deposit" | "swap" | "buy" | "sell" | "long" | "short" | "close" | "predict";
 
@@ -113,6 +114,67 @@ export function depositActivity(deposit: { key: string; amountUSD: number; at: D
         amountUSD: deposit.amountUSD,
         change: deposit.amountUSD,
         pending: deposit.pending,
+    };
+}
+
+/**
+ * The rows for a real prediction: its opening, which moves nothing, then what settling did.
+ * `optimistic` marks a buy the server hasn't filled yet.
+ */
+export function predictionActivity(position: PositionView, optimistic = false): Activity[] {
+    const cost = Number(position.costUSD);
+    const name = `${position.outcome} on ${position.question}`;
+    const base = { symbols: [QUOTE], amountUSD: cost };
+    const rows: Activity[] = [
+        {
+            ...base,
+            id: `prediction:${position.id}:open`,
+            at: new Date(position.openedAt),
+            kind: "predict",
+            title: name,
+            detail: formatUnits(Number(position.shares), "shares"),
+            change: 0,
+            pending: optimistic || undefined,
+        },
+    ];
+    const settled = {
+        closed: { prefix: "Sold", gross: Number(position.proceedsUSD ?? 0) },
+        won: { prefix: "Won", gross: Number(position.payoutUSD ?? 0) },
+        lost: { prefix: "Lost", gross: 0 },
+    }[position.state as "closed" | "won" | "lost"];
+    if (!optimistic && settled) {
+        rows.push({
+            ...base,
+            id: `prediction:${position.id}:settle`,
+            at: new Date(position.settledAt ?? position.updatedAt),
+            kind: "close",
+            title: `${settled.prefix} ${name}`,
+            detail: position.state === "lost" ? "" : `${formatUsdShort(settled.gross)} back`,
+            change: settled.gross - cost,
+        });
+    }
+    return rows;
+}
+
+/** A buy the server hasn't filled yet. */
+export function pendingBuyActivity(buy: {
+    id: string;
+    question: string;
+    outcome: string;
+    amountUSD: number;
+    shares: string;
+    at: Date;
+}): Activity {
+    return {
+        id: `prediction:${buy.id}:open`,
+        at: buy.at,
+        kind: "predict",
+        title: `${buy.outcome} on ${buy.question}`,
+        detail: buy.shares ? formatUnits(Number(buy.shares), "shares") : "",
+        symbols: [QUOTE],
+        amountUSD: buy.amountUSD,
+        change: 0,
+        pending: true,
     };
 }
 
