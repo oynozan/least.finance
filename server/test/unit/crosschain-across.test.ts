@@ -83,6 +83,23 @@ test("a token is asked for by its contract, and the integrator ID and base URL a
     expect(anonymous.calls[0]!.url.searchParams.has("integratorId")).toBe(false);
 });
 
+test("the API key goes in a Bearer header on quotes and statuses, and is left out without one", async () => {
+    const hash = `0x${"cd".repeat(32)}` as const;
+    const keyed = serving(fixture("quote-eth"));
+    const across = createAcross({ apiKey: "across-key", fetch: keyed.fetch });
+    await across.quote(ETH_REQUEST, signal());
+    await across.status({ ref: "r" }, hash, ETH).catch(() => undefined);
+    expect(keyed.calls.map(({ init }) => new Headers(init.headers).get("authorization"))).toEqual([
+        "Bearer across-key",
+        "Bearer across-key",
+    ]);
+    expect(keyed.calls[0]!.url.searchParams.has("apiKey")).toBe(false);
+
+    const anonymous = serving(fixture("quote-eth"));
+    await createAcross({ fetch: anonymous.fetch }).quote(ETH_REQUEST, signal());
+    expect(new Headers(anonymous.calls[0]!.init.headers).has("authorization")).toBe(false);
+});
+
 test("the quote is in Arc wei, with transactions in signing order", async () => {
     const { fetch } = serving(fixture("quote-bnb-usdt"));
 

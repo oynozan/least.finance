@@ -38,9 +38,11 @@ const STAGES = new Map<string, BridgeStage>([
 const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export function createAcross(
-    options: { integratorId?: string; fetch?: typeof fetch; baseUrl?: string } = {},
+    options: { apiKey?: string; integratorId?: string; fetch?: typeof fetch; baseUrl?: string } = {},
 ): BridgeProvider {
-    const { integratorId, fetch: call = fetch, baseUrl = "https://app.across.to" } = options;
+    const { apiKey, integratorId, fetch: call = fetch, baseUrl = "https://app.across.to" } = options;
+    // Across wants its key as a Bearer token on every call; without one it may rate-limit or refuse
+    const headers: Record<string, string> = apiKey ? { authorization: `Bearer ${apiKey}` } : {};
 
     return {
         name: "across",
@@ -61,7 +63,7 @@ export function createAcross(
                 refundAddress: refundTo,
             });
             if (integratorId) query.set("integratorId", integratorId);
-            const response = await call(`${baseUrl}/api/swap/approval?${query}`, { signal });
+            const response = await call(`${baseUrl}/api/swap/approval?${query}`, { headers, signal });
             if (!response.ok) throw new Error(`Across answered ${response.status} to a quote`);
             const quote = quoteResponse.parse(await response.json());
             const { inputToken, outputToken, swapTx } = quote;
@@ -101,6 +103,7 @@ export function createAcross(
             if (!sourceTxHash) return { stage: "waiting" };
             const query = new URLSearchParams({ originChainId: String(coin.chainId), depositTxHash: sourceTxHash });
             const response = await call(`${baseUrl}/api/deposit/status?${query}`, {
+                headers,
                 signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
             });
             // Its indexer takes a few seconds to see a new deposit

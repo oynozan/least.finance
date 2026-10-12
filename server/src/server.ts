@@ -91,7 +91,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         });
         const bridges = overrides.bridges ?? [
             createRelay({ apiKey: config.RELAY_API_KEY }),
-            createAcross({ integratorId: config.ACROSS_INTEGRATOR_ID }),
+            createAcross({ apiKey: config.ACROSS_API_KEY, integratorId: config.ACROSS_INTEGRATOR_ID }),
         ];
         const orders = new DepositOrders({ collections, bus, providers: bridges });
         const sessions = new Sessions({

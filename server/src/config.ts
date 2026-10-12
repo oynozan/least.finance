@@ -77,6 +77,7 @@ const schema = z.object({
     /** RPCs for reading Solana wallets' balances, tried in order. */
     SOLANA_RPC_URLS: list(["https://api.mainnet-beta.solana.com"]),
     RELAY_API_KEY: optionalKey,
+    ACROSS_API_KEY: optionalKey,
     ACROSS_INTEGRATOR_ID: optionalKey,
     /** How often a bridge order's status is checked. */
     ORDER_POLL_MS: z.coerce.number().int().min(100).default(1_500),

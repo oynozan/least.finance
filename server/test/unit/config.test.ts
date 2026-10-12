@@ -101,9 +101,11 @@ describe("loadConfig", () => {
     it("leaves the bridge provider keys unset until given", () => {
         const config = load();
         expect(config.RELAY_API_KEY).toBeUndefined();
+        expect(config.ACROSS_API_KEY).toBeUndefined();
         expect(config.ACROSS_INTEGRATOR_ID).toBeUndefined();
-        const set = load({ RELAY_API_KEY: "relay-key", ACROSS_INTEGRATOR_ID: "0xabcd" });
+        const set = load({ RELAY_API_KEY: "relay-key", ACROSS_API_KEY: "across-key", ACROSS_INTEGRATOR_ID: "0xabcd" });
         expect(set.RELAY_API_KEY).toBe("relay-key");
+        expect(set.ACROSS_API_KEY).toBe("across-key");
         expect(set.ACROSS_INTEGRATOR_ID).toBe("0xabcd");
     });
 
