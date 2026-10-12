@@ -196,6 +196,13 @@ test.describe("live prediction markets", () => {
         holdings: MOCK_HOLDINGS,
     });
 
+    test("a question without outcomes doesn't break the list", () => {
+        const empty: MarketView = { ...fed, id: "902", outcomes: [] };
+        known.set("902", toPredictionMarket(empty, now));
+        const ctx = live([rain, empty]);
+        expect(() => run("predict", [], ctx).view.text).not.toThrow();
+    });
+
     test("a multi-outcome event reads Predict [top option] on [title]", () => {
         expect(run("predict", [], live([fed, rain])).view.text).toBe(
             "I want to Predict No change on Fed Decision in October? with 10 USD.",

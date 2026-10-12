@@ -14,7 +14,8 @@ const pct = (fraction: number) => Math.round(fraction * 100);
 const isYesNo = (outcome: Outcome) => /^(yes|no)$/i.test(outcome.label);
 
 /** The outcome the market rates most likely. */
-const top = (market: PredictionMarket) => market.outcomes.reduce((a, b) => (b.chance > a.chance ? b : a));
+const top = (market: PredictionMarket) =>
+    market.outcomes.reduce<Outcome | undefined>((a, b) => (a && a.chance >= b.chance ? a : b), undefined);
 
 /** "I want to [Predict] [YES] on [Will BTC reach $150K?] with [10 USD]." */
 export const prediction = operation({
@@ -71,7 +72,7 @@ export const prediction = operation({
                         value: m.id,
                         label: m.question,
                         short: m.short,
-                        detail: `${pct(lead.chance)}% ${lead.label} · ends ${m.closes}`,
+                        detail: lead ? `${pct(lead.chance)}% ${lead.label} · ends ${m.closes}` : `Ends ${m.closes}`,
                         icon: m.image ? { set: "image", id: m.image } : { set: "coin", id: m.symbol },
                     };
                 });

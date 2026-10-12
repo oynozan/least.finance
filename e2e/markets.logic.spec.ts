@@ -77,6 +77,91 @@ test.describe("live markets", () => {
         }
     });
 
+    test("a cache with a malformed market keeps only the good ones", () => {
+        const store = new Map<string, string>();
+        (globalThis as { localStorage?: unknown }).localStorage = {
+            getItem: (key: string) => store.get(key) ?? null,
+            setItem: (key: string, value: string) => void store.set(key, value),
+        };
+        try {
+            const good = view("Good", "2030-01-01T00:00:00Z");
+            store.set(
+                "markets:trending",
+                JSON.stringify({ markets: [{ id: "1" }, good], maxOrderUSD: null, readAt: "2026-10-12T00:00:00Z" }),
+            );
+            expect(loadCachedTrending()?.markets).toEqual([good]);
+        } finally {
+            delete (globalThis as { localStorage?: unknown }).localStorage;
+        }
+    });
+
+    test.describe("malformed answers", () => {
+        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+        const good = view("Good", "2030-01-01T00:00:00Z");
+        const bad = { id: "9", title: "Bad" } as unknown as MarketView;
+        const answer =
+            (body: unknown, status = 200): typeof fetch =>
+            async () =>
+                new Response(JSON.stringify(body), { status });
+        const doc = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
+
+        test("a trending response drops only the malformed market", async () => {
+            (globalThis as { document?: unknown }).document = doc;
+            try {
+                const store = createMarketsStore({
+                    apiUrl: "http://api",
+                    fetch: answer({ markets: [bad, good], maxOrderUSD: null, readAt: "2026-10-12T00:00:00Z" }),
+                });
+                store.start();
+                await wait(50);
+                store.stop();
+                expect(store.getSnapshot().trending).toEqual([good]);
+                expect([...store.getSnapshot().known.keys()]).toEqual(["77"]);
+            } finally {
+                delete (globalThis as { document?: unknown }).document;
+            }
+        });
+
+        test("a search response drops only the malformed market", async () => {
+            const store = createMarketsStore({
+                apiUrl: "http://api",
+                fetch: answer({ query: "fed", markets: [bad, good] }),
+            });
+            store.search("fed");
+            await wait(350);
+            expect(store.getSnapshot().results).toEqual([good]);
+        });
+
+        test("a malformed event answer counts like a 404", async () => {
+            (globalThis as { document?: unknown }).document = doc;
+            try {
+                const store = createMarketsStore({
+                    apiUrl: "http://api",
+                    fetch: async (input) =>
+                        String(input).includes("/markets/trending")
+                            ? new Response(
+                                  JSON.stringify({
+                                      markets: [good],
+                                      maxOrderUSD: null,
+                                      readAt: "2026-10-12T00:00:00Z",
+                                  }),
+                              )
+                            : new Response(JSON.stringify({ id: "77", title: "x" })),
+                });
+                store.start();
+                await wait(50);
+                expect(store.getSnapshot().trending).toHaveLength(1);
+                store.watch("77");
+                await wait(10_100);
+                store.stop();
+                expect(store.getSnapshot().trending).toEqual([]);
+                expect(store.getSnapshot().known.has("77")).toBe(false);
+            } finally {
+                delete (globalThis as { document?: unknown }).document;
+            }
+        });
+    });
+
     test.describe("search", () => {
         const market = (id: string, title: string): MarketView => ({ ...view(title, "2030-01-01T00:00:00Z"), id });
         const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

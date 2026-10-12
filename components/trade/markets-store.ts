@@ -1,4 +1,4 @@
-import { loadCachedTrending, saveCachedTrending } from "@/lib/trade/markets";
+import { isMarketView, loadCachedTrending, saveCachedTrending, validMarkets } from "@/lib/trade/markets";
 import type { MarketView, TrendingView } from "@/server/src/protocol";
 
 export type MarketsSnapshot = {
@@ -55,7 +55,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         if (stopped || !result || query !== snapshot.query) return;
         const body = result.body as { markets?: unknown } | null;
         if (!body || !Array.isArray(body.markets)) return;
-        const markets = body.markets as MarketView[];
+        const markets = validMarkets(body.markets);
         set({ results: markets, answered: query, known: remember(markets) });
     }
 
@@ -73,7 +73,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
     async function refreshTrending() {
         const result = await getJson("/markets/trending");
         if (!running || !result || !isTrending(result.body)) return;
-        const view = result.body;
+        const view = { ...result.body, markets: validMarkets(result.body.markets) };
         // An empty answer from a server still warming up shouldn't wipe the cached list.
         if (view.markets.length === 0 && view.readAt === null) return;
         set({ trending: view.markets, readAt: view.readAt, known: remember(view.markets) });
@@ -97,7 +97,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         if (!id || !running || !visible()) return;
         const result = await getJson(`/markets/${encodeURIComponent(id)}`);
         if (!running || !result || id !== watched) return;
-        if (result.status === 404) {
+        if (result.status === 404 || (result.body && !isMarketView(result.body))) {
             const known = new Map(snapshot.known);
             known.delete(id);
             set({
@@ -105,8 +105,8 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
                 trending: snapshot.trending.filter((m) => m.id !== id),
                 results: snapshot.results && snapshot.results.filter((m) => m.id !== id),
             });
-        } else if (result.body) {
-            const view = result.body as MarketView;
+        } else if (isMarketView(result.body)) {
+            const view = result.body;
             set({
                 known: remember([view]),
                 trending: snapshot.trending.map((m) => (m.id === view.id ? view : m)),

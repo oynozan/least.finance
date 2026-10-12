@@ -28,6 +28,26 @@ function closing(endDate: string, now: Date) {
     });
 }
 
+const isNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+
+/** Whether a value has the shape of a MarketView, since a cache or a skewed server can hand back anything. */
+export function isMarketView(value: unknown): value is MarketView {
+    const view = value as MarketView | null;
+    if (!view || typeof view.id !== "string" || typeof view.title !== "string") return false;
+    if (!Array.isArray(view.outcomes) || view.outcomes.length === 0) return false;
+    return view.outcomes.every(
+        (o) =>
+            !!o &&
+            typeof o.tokenId === "string" &&
+            typeof o.label === "string" &&
+            isNumber(o.buyPrice) &&
+            isNumber(o.chance) &&
+            isNumber(o.minUSD),
+    );
+}
+
+export const validMarkets = (value: unknown): MarketView[] => (Array.isArray(value) ? value.filter(isMarketView) : []);
+
 export function toPredictionMarket(view: MarketView, now: Date): PredictionMarket {
     return {
         id: view.id,
@@ -54,7 +74,8 @@ export function loadCachedTrending(): TrendingView | null {
         const raw = localStorage.getItem(CACHE_KEY);
         if (!raw) return null;
         const view = JSON.parse(raw) as TrendingView;
-        return Array.isArray(view?.markets) && typeof view.readAt === "string" ? view : null;
+        if (!Array.isArray(view?.markets) || typeof view.readAt !== "string") return null;
+        return { ...view, markets: validMarkets(view.markets) };
     } catch {
         return null;
     }
