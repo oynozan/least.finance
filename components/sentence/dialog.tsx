@@ -73,22 +73,39 @@ function place(anchor: HTMLElement, width: number, height = TYPICAL_HEIGHT): Pla
     return { left, width: w, bottom: vh - rect.top + GAP, maxHeight: above };
 }
 
+const samePlacement = (a: Placement | null, b: Placement) =>
+    !!a &&
+    a.left === b.left &&
+    a.width === b.width &&
+    a.maxHeight === b.maxHeight &&
+    a.top === b.top &&
+    a.bottom === b.bottom;
+
 function Panel({ onClose, id, labelledBy, onKeyDown, width = 440, anchor, className = "", children }: DialogProps) {
     const isPresent = useIsPresent();
     const reduce = useReducedMotion();
     const panel = useRef<HTMLDivElement>(null);
     // Placed as it mounts (the panel only renders in the browser), then once
-    // more with its measured height before the first paint, and on resize.
+    // more with its measured height before the first paint, and again when the
+    // window or the panel changes size (a picker's next step has another height).
     const [placement, setPlacement] = useState<Placement | null>(() =>
         anchor?.current ? place(anchor.current, width) : null,
     );
     useLayoutEffect(() => {
         const element = anchor?.current;
         if (!element) return;
-        const update = () => setPlacement(place(element, width, panel.current?.scrollHeight));
+        const update = () => {
+            const next = place(element, width, panel.current?.scrollHeight);
+            setPlacement((current) => (samePlacement(current, next) ? current : next));
+        };
         update();
         window.addEventListener("resize", update);
-        return () => window.removeEventListener("resize", update);
+        const observer = new ResizeObserver(update);
+        if (panel.current) observer.observe(panel.current);
+        return () => {
+            window.removeEventListener("resize", update);
+            observer.disconnect();
+        };
     }, [anchor, width]);
     const up = placement?.bottom !== undefined;
 

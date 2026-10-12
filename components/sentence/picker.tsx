@@ -1,9 +1,18 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import {
+    useEffect,
+    useId,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+    type KeyboardEvent,
+    type RefObject,
+} from "react";
 import { motion, useIsPresent, type Transition, type Variants } from "motion/react";
 import type { Choice } from "@/lib/sentence";
-import { CheckIcon } from "@/components/icons";
+import { CheckIcon, ChevronIcon } from "@/components/icons";
 import { FloatingDialog } from "./dialog";
 import { SentenceIcon } from "./icons";
 import { panelSpring, wobble } from "./motion";
@@ -36,6 +45,19 @@ type PickerProps = {
     wide?: boolean;
     /** Said under the title when there are no choices. */
     empty?: string;
+    /** A second step for a picked row, its follow-up choices (a coin's networks) replacing the list; for pickers with no search or custom input. */
+    then?: {
+        /** Shown above the second step's list; without it the label is used. */
+        title?: string;
+        /** The second step's name for screen readers when it has no title. */
+        label: string;
+        /** The follow-up choices as they would be were the host set to this value. */
+        choicesFor: (host: string) => readonly Choice[];
+        selected?: string;
+        /** A row with follow-ups was picked: the host commits it at once, then the second step shows. */
+        onPick: (host: string) => void;
+        onSelect: (value: string) => void;
+    };
     /** The pill it drops down from. */
     anchor?: RefObject<HTMLElement | null>;
     onSelect: (value: string) => void;
@@ -92,14 +114,26 @@ function Options({
     search,
     wide,
     empty,
+    then,
     onSelect,
 }: PickerProps & { titleId: string }) {
     const isPresent = useIsPresent();
     const base = useId();
-    const listed = choices.findIndex((c) => c.value === selected);
-    const [wanted, setActive] = useState(() => Math.max(listed, 0));
+    // The row picked on the first step while its follow-ups are on show
+    const [host, setHost] = useState<string | null>(null);
+    const followUps = then?.choicesFor;
+    const second = useMemo(() => (host !== null && followUps ? followUps(host) : null), [host, followUps]);
+    const step = second ? 1 : 0;
+    const shown = second ?? choices;
+    const shownSelected = second ? then?.selected : selected;
+    const listed = shown.findIndex((c) => c.value === shownSelected);
+    const selectedAt = choices.findIndex((c) => c.value === selected);
+    // Null follows the selected row; the arrow keys and the pointer set a row of their own.
+    const [wanted, setActive] = useState<number | null>(() => Math.max(selectedAt, 0));
     // A new search can shorten the list under the active row.
-    const active = Math.max(0, Math.min(wanted, choices.length - 1));
+    const active = Math.max(0, Math.min(wanted ?? listed, shown.length - 1));
+    const root = useRef<HTMLDivElement>(null);
+    const backButton = useRef<HTMLButtonElement>(null);
     const field = useRef<HTMLInputElement>(null);
     // Whether the search field is where focus belongs; arrow keys hand it to the list and back.
     const inField = useRef(true);
@@ -121,6 +155,8 @@ function Options({
             left.current = false;
             setQuery("");
             onQuery.current?.("");
+            setHost(null);
+            setActive(null);
         }
     }, [isPresent]);
     useEffect(
@@ -133,9 +169,14 @@ function Options({
     const input = useRef<HTMLInputElement>(null);
     const typed = useRef({ text: "", at: 0 });
     // A current value that isn't listed was typed: start in the input with it.
-    const [text, setText] = useState(() => (custom && selected && listed < 0 ? selected : ""));
+    const [text, setText] = useState(() => (custom && selected && selectedAt < 0 ? selected : ""));
     const parsed = custom && text ? custom.parse(text) : null;
-    const startInInput = !!custom && listed < 0 && !!selected;
+    const startInInput = !!custom && selectedAt < 0 && !!selected;
+
+    // Each step starts at the top of the panel, where its title and Back are.
+    useLayoutEffect(() => {
+        root.current?.closest("[data-floating-dialog]")?.scrollTo({ top: 0 });
+    }, [step]);
 
     useEffect(() => {
         if (!isPresent) return;
@@ -153,17 +194,37 @@ function Options({
         }
         rows.current[active]?.focus({ preventScroll: true });
         rows.current[active]?.scrollIntoView({ block: "nearest" });
-    }, [active, isPresent, startInInput, hasSearch]);
+    }, [active, isPresent, startInInput, hasSearch, second]);
 
     // One highlight for the whole list, sliding to the active row's layout box
-    // (offsetTop ignores the rows' entrance transforms).
-    const [box, setBox] = useState<{ top: number; height: number } | null>(null);
+    // (offsetTop ignores the rows' entrance transforms). Each step has a list of its own.
+    const [box, setBox] = useState<{ step: number; top: number; height: number } | null>(null);
     useLayoutEffect(() => {
         const row = rows.current[active];
-        if (row) setBox({ top: row.offsetTop, height: row.offsetHeight });
-    }, [active, choices, search?.empty, loading]);
+        if (row) setBox({ step, top: row.offsetTop, height: row.offsetHeight });
+    }, [active, shown, step, search?.empty, loading]);
+
+    // A row with follow-ups commits at once and goes on to them; any other row is the answer.
+    const choose = (value: string) => {
+        if (then && then.choicesFor(value).length > 1) {
+            then.onPick(value);
+            setHost(value);
+            setActive(null);
+        } else onSelect(value);
+    };
+    const goBack = () => {
+        setHost(null);
+        setActive(null);
+    };
 
     const onKeyDown = (event: KeyboardEvent) => {
+        if (event.target === backButton.current) {
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                rows.current[active]?.focus({ preventScroll: true });
+            }
+            return;
+        }
         if (event.target === field.current) {
             if (event.key === "ArrowDown" && choices.length > 0 && !loading) {
                 event.preventDefault();
@@ -182,13 +243,18 @@ function Options({
             }
             return;
         }
+        if (event.key === "ArrowUp" && active === 0 && second) {
+            event.preventDefault();
+            backButton.current?.focus();
+            return;
+        }
         if (event.key === "ArrowUp" && active === 0 && (search || custom)) {
             event.preventDefault();
             inField.current = !!search;
             (search ? field : input).current?.focus();
             return;
         }
-        const last = choices.length - 1;
+        const last = shown.length - 1;
         const moves: Record<string, () => number> = {
             ArrowDown: () => (active === last ? 0 : active + 1),
             ArrowUp: () => (active === 0 ? last : active - 1),
@@ -207,29 +273,51 @@ function Options({
                 text: (now - typed.current.at < 600 ? typed.current.text : "") + event.key.toLowerCase(),
                 at: now,
             };
-            const match = choices.findIndex((c) => c.label.toLowerCase().startsWith(typed.current.text));
+            const match = shown.findIndex((c) => c.label.toLowerCase().startsWith(typed.current.text));
             if (match >= 0) setActive(match);
         }
     };
 
     // Rows keep their order; a header starts each new group.
     const groups: { name?: string; items: { choice: Choice; index: number }[] }[] = [];
-    choices.forEach((choice, index) => {
+    shown.forEach((choice, index) => {
         const group = groups.at(-1);
         if (group && group.name === choice.group) group.items.push({ choice, index });
         else groups.push({ name: choice.group, items: [{ choice, index }] });
     });
 
     return (
-        <div onKeyDown={onKeyDown} className="text-[clamp(24px,0.9rem+1.2vw,30px)]">
-            <p
-                id={titleId}
-                className={
-                    title ? "px-[18px] pt-2.5 pb-2 text-base font-medium tracking-[-0.01em] text-muted" : "sr-only"
-                }
-            >
-                {title ?? label}
-            </p>
+        <div
+            ref={root}
+            onKeyDown={onKeyDown}
+            // The network badges on the rows are ringed in the panel's colour.
+            className="text-[clamp(24px,0.9rem+1.2vw,30px)] [--badge-ring:var(--panel)]"
+        >
+            <div className={second ? "flex items-center gap-2 pt-1 pb-1.5" : undefined}>
+                {second && (
+                    <button
+                        ref={backButton}
+                        type="button"
+                        className="flex h-9 shrink-0 cursor-pointer items-center gap-1 rounded-full bg-pill pr-3.5 pl-2.5 text-base font-medium tracking-[-0.01em] text-muted outline-2 -outline-offset-2 outline-transparent transition-colors hover:bg-pill-hover hover:text-foreground focus-visible:bg-pill-hover focus-visible:text-foreground focus-visible:outline-solid"
+                        onClick={goBack}
+                    >
+                        <ChevronIcon className="size-3.5 rotate-90" />
+                        Back
+                    </button>
+                )}
+                <p
+                    id={titleId}
+                    className={
+                        second
+                            ? "text-base font-medium tracking-[-0.01em] text-muted"
+                            : title
+                              ? "px-[18px] pt-2.5 pb-2 text-base font-medium tracking-[-0.01em] text-muted"
+                              : "sr-only"
+                    }
+                >
+                    {second ? (then?.title ?? then?.label) : (title ?? label)}
+                </p>
+            </div>
             {empty && !loading && choices.length === 0 && (
                 <p className="px-[18px] pb-3 text-base tracking-[-0.01em] text-muted">{empty}</p>
             )}
@@ -299,6 +387,7 @@ function Options({
                 <Skeleton wide={wide} />
             ) : (
                 <motion.div
+                    key={step}
                     role="listbox"
                     aria-labelledby={titleId}
                     className="relative isolate flex flex-col gap-0.5"
@@ -309,7 +398,7 @@ function Options({
                     {/* The bottom layer of the list: a negative z-index inside the
             isolated listbox paints below everything else in it, group
             headers and labels included, wherever the highlight slides. */}
-                    {box && (
+                    {box?.step === step && (
                         <motion.span
                             aria-hidden="true"
                             data-highlight=""
@@ -340,6 +429,8 @@ function Options({
                                     const isActive = index === active;
                                     const id = `${base}-${index}`;
                                     const note = choice.disabled ?? choice.detail;
+                                    // A held amount reads as the deposit list's does: the amount over its value.
+                                    const sub = choice.disabled ? undefined : choice.subdetail;
                                     return (
                                         <motion.button
                                             key={choice.value}
@@ -348,12 +439,16 @@ function Options({
                                             }}
                                             type="button"
                                             role="option"
-                                            aria-selected={choice.value === selected}
+                                            aria-selected={choice.value === shownSelected}
                                             // Still focusable and in arrow order; the reason is read out.
                                             aria-disabled={choice.disabled ? true : undefined}
                                             aria-labelledby={`${id}-label`}
                                             aria-describedby={
-                                                [choice.description && `${id}-description`, note && `${id}-note`]
+                                                [
+                                                    choice.description && `${id}-description`,
+                                                    note && `${id}-note`,
+                                                    sub && `${id}-sub`,
+                                                ]
                                                     .filter(Boolean)
                                                     .join(" ") || undefined
                                             }
@@ -370,7 +465,9 @@ function Options({
                                                 if (event.movementX || event.movementY) setActive(index);
                                             }}
                                             onClick={() => {
-                                                if (!choice.disabled) onSelect(choice.value);
+                                                if (choice.disabled) return;
+                                                if (second) then?.onSelect(choice.value);
+                                                else choose(choice.value);
                                             }}
                                         >
                                             {choice.icon && (
@@ -408,16 +505,35 @@ function Options({
                                                         {note}
                                                     </span>
                                                 )}
+                                                {wide && sub && (
+                                                    <span
+                                                        id={`${id}-sub`}
+                                                        className="text-[15px] leading-snug font-normal text-muted"
+                                                    >
+                                                        {sub}
+                                                    </span>
+                                                )}
                                             </span>
                                             {!wide && note && (
                                                 <span
-                                                    id={`${id}-note`}
-                                                    className="relative z-10 max-w-[45%] shrink-0 text-right text-[15px] leading-snug font-normal text-muted"
+                                                    className={`relative z-10 flex max-w-[45%] shrink-0 flex-col items-end text-right leading-snug font-normal ${
+                                                        sub ? "tabular-nums" : ""
+                                                    }`}
                                                 >
-                                                    {note}
+                                                    <span
+                                                        id={`${id}-note`}
+                                                        className={`text-[15px] ${sub ? "font-medium text-foreground" : "text-muted"}`}
+                                                    >
+                                                        {note}
+                                                    </span>
+                                                    {sub && (
+                                                        <span id={`${id}-sub`} className="text-[13px] text-muted">
+                                                            {sub}
+                                                        </span>
+                                                    )}
                                                 </span>
                                             )}
-                                            {choice.value === selected && (
+                                            {choice.value === shownSelected && (
                                                 <motion.span
                                                     className="relative z-10 flex size-[0.9em] shrink-0"
                                                     initial={{ scale: 0, rotate: -45 }}

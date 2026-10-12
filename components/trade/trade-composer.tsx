@@ -16,8 +16,13 @@ type TradeComposerProps = {
     search?: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
 };
 
-const shownValue = (slot: SlotView) =>
-    slot.kind === "choice" ? (slot.selected?.label ?? "nothing") : `${slot.value || "0"}${slot.suffix ?? ""}`;
+const shownValue = (slot: SlotView) => {
+    if (slot.kind !== "choice") return `${slot.value || "0"}${slot.suffix ?? ""}`;
+    const network = slot.then?.selected;
+    return slot.selected && network
+        ? `${slot.selected.label} on ${network.label}`
+        : (slot.selected?.label ?? "nothing");
+};
 
 /** One polite status region; clearing it first makes a repeated message speak again. */
 function useAnnouncer() {
@@ -43,8 +48,9 @@ export function TradeComposer({ view, dispatch, search }: TradeComposerProps) {
     const edited = useRef<string | null>(null);
     const { message, announce } = useAnnouncer();
 
-    const set = (slot: string, value: string) => {
-        edited.current = slot;
+    // A companion slot (a coin's network) is edited as part of its host's pill, so it names the host.
+    const set = (slot: string, value: string, host = slot) => {
+        edited.current = host;
         dispatch({ type: "slot", slot, value });
     };
 
@@ -85,6 +91,7 @@ export function TradeComposer({ view, dispatch, search }: TradeComposerProps) {
 
     const renderSlot = (id: string) => {
         const slot = view.slots[id];
+        const companion = slot.kind === "choice" ? slot.then : undefined;
         return (
             <span data-slot={id} className="contents">
                 {slot.kind === "choice" ? (
@@ -92,6 +99,7 @@ export function TradeComposer({ view, dispatch, search }: TradeComposerProps) {
                         view={slot}
                         loading={slot.search ? search?.loading : undefined}
                         onChange={(value) => set(id, value)}
+                        onThen={companion && ((value) => set(companion.id, value, id))}
                         onSearch={search?.onQuery}
                         searchEmpty={search?.empty}
                     />

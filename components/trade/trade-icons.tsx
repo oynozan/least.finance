@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import type { IconRef } from "@/lib/sentence";
 import { CoinIcon } from "@/components/coin-icons";
+import { NetworkLogo } from "@/components/network-icons";
+import { logoNetwork, type NetworkId } from "@/lib/trade/networks";
 import { MarketImage } from "./market-image";
 
 // Flat marks with a white sticker ring, matching the original pill icons.
@@ -37,11 +39,34 @@ function Glyph({ fill, children }: { fill: string; children: ReactNode }) {
     );
 }
 
+/** The network a badge names: a network itself, or a coin that carries one */
+const networkOf = (badge: IconRef) => (badge.set === "network" ? badge : badge.badge);
+
+const logoOf = (id: string) => logoNetwork(id as NetworkId);
+
 /** How the trade domain draws each icon set the operations name. */
 export function renderTradeIcon(icon: IconRef): ReactNode {
     switch (icon.set) {
-        case "coin":
-            return <CoinIcon symbol={icon.id} className={`size-[1.15em] ${RING}`} />;
+        case "coin": {
+            const coin = <CoinIcon symbol={icon.id} className={`size-[1.15em] ${RING}`} />;
+            const badge = icon.badge && networkOf(icon.badge);
+            if (!badge) return coin;
+            return (
+                <span className="relative flex shrink-0">
+                    {coin}
+                    {/* A sticker at the coin's corner, ringed in the surface the icon sits on. */}
+                    <span
+                        aria-hidden="true"
+                        data-badge=""
+                        className="absolute -right-[0.06em] -bottom-[0.06em] flex size-[0.5em] rounded-full shadow-[0_0_0_0.06em_var(--badge-ring,var(--pill))] transition-shadow duration-150"
+                    >
+                        <NetworkLogo network={logoOf(badge.id)} className="size-full" />
+                    </span>
+                </span>
+            );
+        }
+        case "network":
+            return <NetworkLogo network={logoOf(icon.id)} className="size-[1.15em]" />;
         case "verb": {
             const verb = VERBS[icon.id];
             return verb ? <Glyph fill={verb.fill}>{verb.glyph}</Glyph> : null;

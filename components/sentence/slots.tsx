@@ -40,13 +40,17 @@ function Chevron({ open }: { open: boolean }) {
 type ChoiceSlotProps = {
     view: Pick<
         ChoiceSlotView,
-        "prompt" | "hint" | "value" | "selected" | "choices" | "issue" | "custom" | "wide" | "empty" | "search"
+        "prompt" | "hint" | "value" | "selected" | "choices" | "then" | "issue" | "custom" | "wide" | "empty" | "search"
     >;
     /** The choices are still on their way; the picker shows skeleton rows. */
     loading?: boolean;
     /** The pill's accessible name when nothing is selected. */
     placeholder?: string;
     onChange: (value: string) => void;
+    /** Takes the companion's value (a coin's network); its second step shows only with this. */
+    onThen?: (value: string) => void;
+    /** Called as the picker opens, to refresh what its rows show. */
+    onOpen?: () => void;
     /** Takes the picker's search text; the slot's search field shows only with this. */
     onSearch?: (query: string) => void;
     /** Said above the list when the search found nothing. */
@@ -59,6 +63,8 @@ export function ChoiceSlot({
     placeholder = "pick one",
     loading,
     onChange,
+    onThen,
+    onOpen,
     onSearch,
     searchEmpty,
 }: ChoiceSlotProps) {
@@ -75,12 +81,15 @@ export function ChoiceSlot({
     }, [open]);
 
     const selected = view.selected && !view.selected.disabled ? view.selected : undefined;
+    const companion = view.then;
+    // A change of the companion alone swaps the pill's content too.
+    const contentKey = `${selected?.value ?? "none"}${companion ? `@${companion.value}` : ""}`;
 
     return (
         <>
             <PillButton
                 ref={button}
-                contentKey={selected?.value ?? "none"}
+                contentKey={contentKey}
                 icon={selected?.icon && <SentenceIcon icon={selected.icon} />}
                 trailing={<Chevron open={open} />}
                 tone={
@@ -95,12 +104,15 @@ export function ChoiceSlot({
                 aria-haspopup="dialog"
                 aria-expanded={open}
                 aria-controls={open ? pickerId : undefined}
-                onClick={() => setOpen(true)}
+                onClick={() => {
+                    setOpen(true);
+                    onOpen?.();
+                }}
             >
                 {selected ? <Label label={selected.label} short={selected.short} /> : placeholder}
             </PillButton>
             <span id={hintId} className="sr-only">
-                {view.hint}
+                {companion?.selected ? `${view.hint}, on ${companion.selected.label}` : view.hint}
             </span>
             <Picker
                 id={pickerId}
@@ -115,6 +127,20 @@ export function ChoiceSlot({
                 empty={view.empty}
                 search={view.search && onSearch && { ...view.search, onQuery: onSearch, empty: searchEmpty }}
                 anchor={button}
+                then={
+                    companion &&
+                    onThen && {
+                        title: companion.prompt,
+                        label: companion.hint,
+                        choicesFor: companion.choicesFor,
+                        selected: companion.selected?.value,
+                        onPick: onChange,
+                        onSelect: (value) => {
+                            onThen(value);
+                            setOpen(false);
+                        },
+                    }
+                }
                 onSelect={(value) => {
                     onChange(value);
                     setOpen(false);

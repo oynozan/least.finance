@@ -45,7 +45,7 @@ export function PillBody({
             transition={{ layout: layoutTransition }}
             // A numeric radius is what Motion's scale correction rewrites per frame.
             style={{ borderRadius: 999 }}
-            className={`flex max-w-full bg-pill transition-colors duration-150 [overflow-x:clip] [overflow-y:visible] ${className}`}
+            className={`flex max-w-full bg-pill transition-colors duration-150 [--badge-ring:var(--pill)] [overflow-x:clip] [overflow-y:visible] ${className}`}
         >
             <motion.span
                 layout="position"
@@ -163,7 +163,7 @@ export function PillButton({ ref, onClick, tone = "default", ...props }: PillBut
                 pose={pose}
                 trailing={trailing}
                 layoutTransition={layoutTransition}
-                className="group-hover:bg-pill-hover group-focus-visible:bg-pill-hover group-aria-expanded:bg-pill-hover"
+                className="group-hover:bg-pill-hover group-hover:[--badge-ring:var(--pill-hover)] group-focus-visible:bg-pill-hover group-focus-visible:[--badge-ring:var(--pill-hover)] group-aria-expanded:bg-pill-hover group-aria-expanded:[--badge-ring:var(--pill-hover)]"
             >
                 {children}
             </PillBody>

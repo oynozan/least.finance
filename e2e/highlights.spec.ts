@@ -80,6 +80,29 @@ test("a picker's highlight stays under its rows and group headers", async ({ pag
     }
 });
 
+test("the network step's highlight stays under its rows and their amounts", async ({ page }) => {
+    await page.goto("/");
+    await connect(page);
+    await page.keyboard.press("Escape");
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+    const trade = page.getByRole("region", { name: "Trade" });
+    // The coin paid with: its wallet amount shows in two lines, and empty networks say why.
+    await trade.getByRole("button", { name: "ETH", exact: true }).click();
+    await picker(page).getByRole("option", { name: "ETH", exact: true }).click();
+    const list = picker(page).getByRole("listbox", { name: "On which network?" });
+    await expect(list.getByRole("option", { name: "Ethereum", exact: true })).toBeVisible();
+    await expect(list.locator("[data-highlight]")).toHaveCount(1);
+    expect(await textUnderHighlight(list)).toEqual([]);
+    // Back and forth replays the list, still with one highlight.
+    await picker(page).getByRole("button", { name: "Back" }).click();
+    await expect(
+        picker(page).getByRole("listbox", { name: "Swap from which coin?" }).locator("[data-highlight]"),
+    ).toHaveCount(1);
+    await picker(page).getByRole("option", { name: "SOL", exact: true }).click();
+    await expect(list.locator("[data-highlight]")).toHaveCount(1);
+    expect(await textUnderHighlight(list)).toEqual([]);
+});
+
 test("the coin list's highlight stays under its rows and group labels", async ({ page }) => {
     await page.goto("/");
     await connect(page);

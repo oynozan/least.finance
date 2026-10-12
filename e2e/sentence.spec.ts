@@ -49,6 +49,8 @@ async function pick(page: Page, from: string | RegExp, option: string | RegExp) 
     await pill(page, from).click();
     await expect(picker(page)).toBeVisible();
     await picker(page).getByRole("option", { name: option }).click();
+    // A coin on several networks moves on to its network step; closing it keeps the default.
+    if (await picker(page).getByRole("button", { name: "Back" }).isVisible()) await page.keyboard.press("Escape");
     await expect(picker(page)).toBeHidden();
 }
 
@@ -254,12 +256,31 @@ test("the amount field grows with every digit and never scrolls", async ({ page 
     expect(await field()).toEqual({ spare: expect.closeTo(2, 1), scrolled: 0, hidden: 0 });
 });
 
-test("a coin is never swapped into itself", async ({ page }) => {
-    await pill(page, "SOL").click();
-    const eth = picker(page).getByRole("option", { name: "ETH" });
-    await expect(eth).toHaveAccessibleDescription(/Switch sides/);
-    await eth.click();
+test("the same pair is never swapped into itself: it flips, and the same coin bridges", async ({ page }) => {
+    const paying = trade(page).locator('[data-part="swap:fromToken"]').getByRole("button");
+    const receiving = trade(page).locator('[data-part="term:token"]').getByRole("button");
+    // Paying with the coin that is received flips the two sides.
+    await paying.click();
+    await picker(page).getByRole("option", { name: "SOL", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(picker(page)).toBeHidden();
     expect(await text(page)).toBe("I want to Swap my SOL to ETH for 10 USD.");
+    await expect(paying).toHaveAccessibleDescription(/on Solana/);
+    await expect(receiving).toHaveAccessibleDescription(/on Ethereum/);
+    // The side that moved by itself is announced with its network.
+    await expect(trade(page).getByRole("status")).toHaveText("Coin you receive is now ETH on Ethereum.");
+
+    // Receiving the coin that is paid goes to another network of it instead, a bridge.
+    await receiving.click();
+    await picker(page).getByRole("option", { name: "SOL", exact: true }).click();
+    await expect(picker(page).getByRole("option", { name: "Solana" })).toHaveAccessibleDescription(
+        /Same as the other side/,
+    );
+    await page.keyboard.press("Escape");
+    await expect(picker(page)).toBeHidden();
+    expect(await text(page)).toBe("I want to Swap my SOL to SOL for 10 USD.");
+    await expect(paying).toHaveAccessibleDescription(/on Solana/);
+    await expect(receiving).toHaveAccessibleDescription(/on Ethereum/);
 });
 
 test("leverage follows the market's cap, and any allowed value can be typed", async ({ page }) => {
@@ -393,7 +414,7 @@ test("Review opens the details in the sidebar, then confirms", async ({ page, is
 
     await setAmount(page, "5000");
     await expect(review(page)).toHaveAttribute("aria-disabled", "true");
-    await expect(review(page)).toHaveAccessibleDescription("That's more than your $4,013.00 of ETH.");
+    await expect(review(page)).toHaveAccessibleDescription("That's more than your $4,013.00 of ETH on Ethereum.");
     await setAmount(page, "100");
 
     await review(page).click();
@@ -402,7 +423,18 @@ test("Review opens the details in the sidebar, then confirms", async ({ page, is
     await sidebar(page).getByRole("button", { name: "Confirm swap" }).click();
     await expect(sidebar(page)).toContainText("Trading isn't live yet, so nothing was sent.");
     await expect(sidebar(page).locator("pre")).toHaveText(
-        JSON.stringify({ type: "swap", fromToken: "ETH", toToken: "SOL", amountUSD: "100" }, null, 2),
+        JSON.stringify(
+            {
+                type: "swap",
+                fromToken: "ETH",
+                fromNetwork: "ethereum",
+                toToken: "SOL",
+                toNetwork: "solana",
+                amountUSD: "100",
+            },
+            null,
+            2,
+        ),
     );
     await shoot(page, "7-not-sent");
     // The review stays in place, unfaded, while the sidebar slides away.
@@ -450,7 +482,7 @@ for (const [seeded, blocked] of [
         await setAmount(page, "3000");
         if (blocked) {
             await expect(review(page)).toHaveAttribute("aria-disabled", "true");
-            await expect(review(page)).toHaveAccessibleDescription("You have $2,400.00 USDC to spend.");
+            await expect(review(page)).toHaveAccessibleDescription("You have $2,400.00 USDC on Arc to spend.");
         } else {
             await expect(review(page)).not.toHaveAttribute("aria-disabled");
         }
@@ -476,6 +508,10 @@ test("the sentence is keyboard operable", async ({ page, isMobile }) => {
     await page.keyboard.type("li");
     await expect(picker(page).getByRole("option", { name: "LINK" })).toBeFocused();
     await page.keyboard.press("Enter");
+    // LINK is on several networks: its default one is focused, and Enter keeps it.
+    await expect(picker(page).getByRole("option", { name: "Ethereum" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(picker(page)).toBeHidden();
     expect(await text(page)).toBe("I want to Buy 10 USD of LINK.");
     // Escape in a picker closes only the picker.
     await page.keyboard.press("Enter");
@@ -612,7 +648,7 @@ test("with a wallet, the slider tops out at what it can spend", async ({ page })
     await expect(review(page)).not.toHaveAttribute("aria-disabled");
     // Typing past it turns the amount red and says why, in the dropdown only.
     await amountField(page).fill("5000");
-    await expect(picker(page)).toContainText("That's more than your $4,013.00 of ETH.");
+    await expect(picker(page)).toContainText("That's more than your $4,013.00 of ETH on Ethereum.");
     await expect(amountField(page)).toHaveCSS("color", "rgb(255, 107, 91)");
 });
 
