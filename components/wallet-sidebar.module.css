@@ -317,6 +317,9 @@
 
 .coinsFrame {
     outline: none;
+    background: var(--background);
+    border-radius: 20px;
+    padding-bottom: 10px;
 }
 
 .coinsHead {
@@ -371,10 +374,13 @@
 
 .coinRow[aria-disabled="true"] {
     cursor: default;
+}
+
+.coinRow[aria-disabled="true"] > * {
     opacity: 0.55;
 }
 
-.coinRow[data-dim] {
+.coinRow[data-dim] > * {
     opacity: 0.35;
 }
 
