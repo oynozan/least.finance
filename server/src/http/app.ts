@@ -116,6 +116,11 @@ export function createApp(services: Services): express.Express {
         res.json(market);
     });
 
+    // Public: the swap coins and their prices are the same for everyone.
+    app.get("/swaps/catalog", noStore, limit(120, 60_000), (_req, res) => {
+        res.json(services.swapCatalog.view());
+    });
+
     const v1 = express.Router();
     v1.use(authenticate(services));
 

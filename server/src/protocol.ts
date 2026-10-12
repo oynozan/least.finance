@@ -321,3 +321,18 @@ export type PredictionUpdate = {
 /** A network swaps run on. */
 export type SwapNetworkId =
     "ethereum" | "arbitrum" | "base" | "optimism" | "polygon" | "bnb" | "avalanche" | "arc" | "solana";
+
+/** A swap coin as the picker shows it; `priceUSD` is null until LI.FI has priced it. */
+export type SwapCoinView = {
+    symbol: string;
+    name: string;
+    priceUSD: number | null;
+    home: SwapNetworkId;
+    networks: { network: SwapNetworkId; label?: string; wrapped?: boolean }[];
+};
+
+export type SwapCatalogView = {
+    coins: SwapCoinView[];
+    /** When the prices were read; null before the first read. */
+    readAt: string | null;
+};

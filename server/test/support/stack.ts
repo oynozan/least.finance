@@ -16,12 +16,28 @@ import { startServer, type RunningServer } from "../../src/server.ts";
 import { startArcEmulator, type ArcEmulator, type EmulatorOptions } from "./arc-emulator.ts";
 import { fakePoolTrader, type FakeTrader } from "./fake-trader.ts";
 import { FakeBridge } from "./fake-bridge.ts";
+import { startFakeLifi, type FakeLifi } from "./fake-lifi.ts";
 import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
 import { startFakeSolanaRpc, type FakeSolanaRpc } from "./fake-solana-rpc.ts";
 import { sourceChain } from "./source-chains.ts";
 
 export const WEB_ORIGIN = "http://localhost:3000";
+
+/** The swap coins' prices the fake LI.FI serves; they equal the web app's built-in ones. */
+export const SWAP_PRICES = {
+    ETH: 3210.4,
+    SOL: 147.2,
+    BTC: 97_300,
+    USDC: 1,
+    USDT: 1,
+    BNB: 600,
+    LINK: 18.45,
+    DOGE: 0.182,
+    AVAX: 32.1,
+    ARB: 0.74,
+    OP: 1.8,
+};
 
 export type ChainHelpers = ReturnType<typeof chainHelpers>;
 
@@ -76,6 +92,8 @@ export type Stack = {
     bridge: FakeBridge;
     /** The pool's trader over the fake Polymarket's books; used only while a test turns PREDICTIONS_TRADING on. */
     trader: FakeTrader;
+    /** The LI.FI stand-in the server reads swap coin prices from. */
+    lifi: FakeLifi;
     chain: ChainHelpers;
     /** A signed-in Privy user with one funded wallet. */
     user(options?: { usdc?: string }): Promise<User>;
@@ -125,6 +143,7 @@ export async function startStack({
     }
     const solanaRpc = await startFakeSolanaRpc();
     const polymarket = await startFakePolymarket();
+    const lifi = await startFakeLifi({ prices: SWAP_PRICES });
     const privy = await startFakePrivy();
     const emulator = await startArcEmulator(anvilUrl, emulatorOptions);
     const config = loadConfig({
@@ -147,6 +166,7 @@ export async function startStack({
         DEPOSIT_RECEIPT_TIMEOUT_MS: "3000",
         POLYMARKET_GAMMA_URL: polymarket.url,
         POLYMARKET_CLOB_URL: polymarket.url,
+        LIFI_URL: lifi.url,
         ...env,
     });
     const bridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
@@ -162,6 +182,7 @@ export async function startStack({
     });
     // The first list is in before the first request, not a sync interval later.
     await server.services.markets.tick();
+    await server.services.swapCatalog.tick();
     await server.services.predictions.refreshFloat();
     const chain = chainHelpers(anvilUrl);
     const sockets: AppSocket[] = [];
@@ -175,6 +196,7 @@ export async function startStack({
         polymarket,
         bridge,
         trader,
+        lifi,
         chain,
         async user({ usdc = "1000" } = {}) {
             const wallet = privateKeyToAddress(generatePrivateKey());
@@ -206,6 +228,7 @@ export async function startStack({
             await emulator.stop();
             await solanaRpc.stop();
             await polymarket.stop();
+            await lifi.stop();
             await privy.stop();
         },
     };

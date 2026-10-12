@@ -157,6 +157,44 @@ describe("loadConfig", () => {
         expect(() => load({ ORDER_POLL_MS: "50" })).toThrow(/ORDER_POLL_MS/);
     });
 
+    it("defaults the LI.FI settings and the swap catalog sync", () => {
+        const config = load();
+        expect(config.LIFI_URL).toBe("https://li.quest");
+        expect(config.LIFI_API_KEY).toBeUndefined();
+        expect(config.LIFI_INTEGRATOR).toBe("least-finance");
+        expect(config.LIFI_FEE).toBe(0);
+        expect(config.SWAPS_CATALOG_SYNC_MS).toBe(300_000);
+    });
+
+    it("reads the LI.FI settings, treating a blank key as unset", () => {
+        const config = load({
+            LIFI_URL: "https://lifi.example",
+            LIFI_API_KEY: "key",
+            LIFI_INTEGRATOR: "my_app.1",
+            LIFI_FEE: "0.005",
+            SWAPS_CATALOG_SYNC_MS: "10000",
+        });
+        expect(config.LIFI_URL).toBe("https://lifi.example");
+        expect(config.LIFI_API_KEY).toBe("key");
+        expect(config.LIFI_INTEGRATOR).toBe("my_app.1");
+        expect(config.LIFI_FEE).toBe(0.005);
+        expect(config.SWAPS_CATALOG_SYNC_MS).toBe(10_000);
+        expect(load({ LIFI_API_KEY: "  " }).LIFI_API_KEY).toBeUndefined();
+    });
+
+    it.each(["least finance", "", "a".repeat(24)])("rejects a LI.FI integrator of '%s'", (value) => {
+        expect(() => load({ LIFI_INTEGRATOR: value })).toThrow(/LIFI_INTEGRATOR/);
+    });
+
+    it.each(["0.2", "0.1", "-0.01", "abc"])("rejects a LI.FI fee of '%s'", (value) => {
+        expect(() => load({ LIFI_FEE: value })).toThrow(/LIFI_FEE/);
+    });
+
+    it("rejects a LI.FI URL that isn't one, and a catalog sync under 10 seconds", () => {
+        expect(() => load({ LIFI_URL: "li.quest" })).toThrow(/LIFI_URL/);
+        expect(() => load({ SWAPS_CATALOG_SYNC_MS: "9999" })).toThrow(/SWAPS_CATALOG_SYNC_MS/);
+    });
+
     it("rejects an out-of-range port", () => {
         expect(() => load({ PORT: "70000" })).toThrow(/PORT/);
     });

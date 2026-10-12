@@ -90,6 +90,18 @@ const fields = z.object({
     /** How often the top Polymarket events are re-read. */
     MARKETS_SYNC_MS: z.coerce.number().int().min(1_000).default(60_000),
 
+    LIFI_URL: z.url().default("https://li.quest"),
+    LIFI_API_KEY: optionalKey,
+    /** Names the app to LI.FI; it allows letters, digits, dots, dashes and underscores, up to 23. */
+    LIFI_INTEGRATOR: z
+        .string()
+        .regex(/^[A-Za-z0-9._-]{1,23}$/)
+        .default("least-finance"),
+    /** The share of each swap kept as our fee, from 0 up to but not including 0.1 (10%). */
+    LIFI_FEE: z.coerce.number().min(0).lt(0.1).default(0),
+    /** How often the swap coins' prices are re-read from LI.FI. */
+    SWAPS_CATALOG_SYNC_MS: z.coerce.number().int().min(10_000).default(300_000),
+
     /** Real orders go to Polymarket only while this is on. */
     PREDICTIONS_TRADING: z.enum(["on", "off"]).default("off"),
     /** Owner key of the pool's Polymarket deposit wallet. */

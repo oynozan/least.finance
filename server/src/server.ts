@@ -35,6 +35,8 @@ import { createPolymarketData } from "./markets/polymarket-data.ts";
 import { createApp } from "./http/app.ts";
 import type { Services } from "./services.ts";
 import { Sessions } from "./sessions.ts";
+import { SwapCatalog } from "./swaps/catalog.ts";
+import { createLifi } from "./swaps/lifi.ts";
 import { attachSockets } from "./socket/sockets.ts";
 
 const TRADER_RETRY_MS = 60_000;
@@ -168,6 +170,11 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             // Read lazily: the service below needs the markets, so it's built after them
             maxOrderUSD: (): number | null => service.maxOrderUSD(),
         });
+        const swapCatalog = new SwapCatalog({
+            lifi: createLifi({ url: config.LIFI_URL, apiKey: config.LIFI_API_KEY }),
+            logger: logger.child({ component: "swaps" }),
+            syncMs: config.SWAPS_CATALOG_SYNC_MS,
+        });
         const service = new PredictionService({
             collections,
             ledger,
@@ -237,6 +244,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             orders,
             markets,
             predictions: service,
+            swapCatalog,
         };
 
         const httpServer = createServer(createApp(services));
@@ -246,6 +254,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         watcher.start();
         tracker.start();
         markets.start();
+        swapCatalog.start();
         predictionTracker.start();
         predictionResolver.start();
         predictionRedeemer.start();
@@ -272,6 +281,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await predictionRedeemer.stop();
                 await predictionResolver.stop();
                 await predictionTracker.stop();
+                await swapCatalog.stop();
                 await markets.stop();
                 await tracker.stop();
                 await watcher.stop();

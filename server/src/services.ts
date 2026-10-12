@@ -11,6 +11,7 @@ import type { Bus } from "./events.ts";
 import type { MarketService } from "./markets/markets.ts";
 import type { PredictionService } from "./predictions/predictions.ts";
 import type { Sessions } from "./sessions.ts";
+import type { SwapCatalog } from "./swaps/catalog.ts";
 
 /** Everything the HTTP and socket layers call into. */
 export type Services = {
@@ -27,4 +28,5 @@ export type Services = {
     orders: DepositOrders;
     markets: MarketService;
     predictions: PredictionService;
+    swapCatalog: SwapCatalog;
 };
