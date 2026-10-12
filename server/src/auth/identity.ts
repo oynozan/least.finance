@@ -22,11 +22,13 @@ export interface IdentityProvider {
     /** Checks a Privy access token locally (no request to Privy once the key is known). */
     verify(token: string): Promise<Identity>;
     /**
-     * Confirms the user controls `address`: Privy only links a wallet after it
-     * signs in with Ethereum (SIWE), so a linked wallet is a proven one, and
+     * Confirms the user controls `address` (EVM or Solana): Privy only links a
+     * wallet after it signs in with it, so a linked wallet is a proven one, and
      * the app never asks for a signature of its own.
      */
-    authorizeWallet(identity: Identity, address: string): Promise<Address>;
+    authorizeWallet(identity: Identity, address: string): Promise<string>;
+    /** Every wallet linked to the user; `fresh` skips the cache. */
+    linkedWallets(identity: Identity, options?: { fresh?: boolean }): Promise<{ evm: Address[]; solana: string[] }>;
     /** Asks Privy's API once whether it accepts the server's credentials. Never throws. */
     checkApi(): Promise<PrivyApiState>;
     /** The outcome of the last request to Privy's API. */
@@ -47,7 +49,10 @@ const WALLETS_TTL_MS = 60_000;
 const RECHECK_AFTER_MS = 5_000;
 const CACHE_LIMIT = 10_000;
 
-type Wallets = { addresses: Set<string>; fetchedAt: number };
+/** EVM addresses are lowercased; Solana addresses are exactly as Privy has them. */
+type Wallets = { evm: Set<string>; solana: Set<string>; fetchedAt: number };
+
+const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 const PRIVY_API = "https://api.privy.io";
 /** No user has this ID: Privy answers 404 when it accepts the credentials, 401 when it doesn't. */
@@ -132,18 +137,23 @@ export class PrivyIdentity implements IdentityProvider {
         }
     }
 
-    async authorizeWallet(identity: Identity, address: string): Promise<Address> {
-        if (!isAddress(address, { strict: false })) throw new AppError("bad_request", "That isn't a wallet address.");
-        const wanted = address.toLowerCase();
+    async authorizeWallet(identity: Identity, address: string): Promise<string> {
+        const isEvm = isAddress(address, { strict: false });
+        if (!isEvm && !BASE58_ADDRESS.test(address)) throw new AppError("bad_request", "That isn't a wallet address.");
+        const has = (wallets: Wallets) =>
+            isEvm ? wallets.evm.has(address.toLowerCase()) : wallets.solana.has(address);
 
         let wallets = await this.#walletsOf(identity.userId, false);
-        if (!wallets.addresses.has(wanted) && Date.now() - wallets.fetchedAt > RECHECK_AFTER_MS) {
+        if (!has(wallets) && Date.now() - wallets.fetchedAt > RECHECK_AFTER_MS) {
             wallets = await this.#walletsOf(identity.userId, true);
         }
-        if (!wallets.addresses.has(wanted)) {
-            throw new AppError("forbidden", "That wallet isn't linked to your account.");
-        }
-        return getAddress(wanted);
+        if (!has(wallets)) throw new AppError("forbidden", "That wallet isn't linked to your account.");
+        return isEvm ? getAddress(address) : address;
+    }
+
+    async linkedWallets(identity: Identity, options: { fresh?: boolean } = {}) {
+        const wallets = await this.#walletsOf(identity.userId, options.fresh ?? false);
+        return { evm: [...wallets.evm].map((address) => getAddress(address)), solana: [...wallets.solana] };
     }
 
     async #walletsOf(userId: string, fresh: boolean): Promise<Wallets> {
@@ -198,14 +208,15 @@ export class PrivyIdentity implements IdentityProvider {
             });
         }
 
-        const addresses = new Set<string>();
+        const evm = new Set<string>();
+        const solana = new Set<string>();
         for (const account of user.linked_accounts) {
-            // Ethereum wallets only, external or embedded; smart wallets have their own type.
-            if (account.type === "wallet" && account.chain_type === "ethereum") {
-                addresses.add(account.address.toLowerCase());
-            }
+            // External or embedded wallets; smart wallets have their own type.
+            if (account.type !== "wallet") continue;
+            if (account.chain_type === "ethereum") evm.add(account.address.toLowerCase());
+            else if (account.chain_type === "solana") solana.add(account.address);
         }
-        const wallets = { addresses, fetchedAt: Date.now() };
+        const wallets = { evm, solana, fetchedAt: Date.now() };
         if (this.#wallets.size >= CACHE_LIMIT) this.#wallets.delete(this.#wallets.keys().next().value!);
         this.#wallets.set(userId, wallets);
         return wallets;
