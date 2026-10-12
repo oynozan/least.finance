@@ -1,6 +1,14 @@
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
-import { nextOrder, releaseOrder, seedDeposits, setPoolBalance } from "./backend";
-import { trendingView } from "./polymarket";
+import {
+    nextOrder,
+    releaseOrder,
+    resolveMarket,
+    resolveNow,
+    seedDeposits,
+    setPoolBalance,
+    shrinkPosition,
+} from "./backend";
+import { marketIdOf, trendingView } from "./polymarket";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 
 const trade = (page: Page) => page.getByRole("region", { name: "Trade" });
@@ -17,7 +25,8 @@ const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: 
 const status = (page: Page) => sidebar(page).getByRole("status");
 const positions = (page: Page) => sidebar(page).getByRole("list", { name: "Open positions" });
 
-const exact = (title: string) => new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const exact = (title: string) => new RegExp(`^${escaped(title)}$`);
 
 async function pick(page: Page, from: string | RegExp, option: string | RegExp) {
     await pill(page, from).click();
@@ -54,7 +63,7 @@ async function predict(page: Page, { market, outcome }: Picked) {
     await expect(picker(page)).toBeHidden();
     await outcomePill(page).click();
     await picker(page)
-        .getByRole("option", { name: new RegExp(`^${outcome.label}`) })
+        .getByRole("option", { name: new RegExp(`^${escaped(outcome.label)}`) })
         .click();
     await expect(picker(page)).toBeHidden();
     await expect(questionPill(page)).toHaveAccessibleName(market.title);
@@ -111,12 +120,12 @@ test("a prediction lowers the balance and adds a position at once, while the fak
     await expect(row(page, picked)).toContainText(picked.outcome.label);
     await expect(status(page)).toHaveText("");
 
-    // Selling opens in a later phase: the button stays in the tab order, with its reason.
+    // Nothing to sell until the buy fills: the button stays in the tab order, with its reason.
     const close = row(page, picked).getByRole("button", {
         name: `Close ${picked.outcome.label} on ${picked.market.title}`,
     });
     await expect(close).toHaveAttribute("aria-disabled", "true");
-    await expect(close).toHaveAccessibleDescription("Selling opens soon.");
+    await expect(close).toHaveAccessibleDescription("Selling opens when the buy is filled.");
     await close.focus();
     await expect(close).toBeFocused();
 
@@ -232,6 +241,117 @@ test("the amount can't exceed the pool's limit", async ({ page }) => {
         // The pool is shared with every other test.
         await setPoolBalance(1_000_000);
     }
+});
+
+const closeButton = (page: Page, picked: Picked) =>
+    row(page, picked).getByRole("button", { name: `Close ${picked.outcome.label} on ${picked.market.title}` });
+
+/** Buys with the fake filling it at once, and leaves the wallet open on the filled row. */
+async function buyAndFill(page: Page, picked: Picked) {
+    await page.goto("/");
+    await connect(page);
+    await predict(page, picked);
+    await confirm(page);
+    await expect(row(page, picked)).toContainText(/\d[\d.]* shares/);
+    await expect(pending(page, picked)).toHaveCount(0);
+}
+
+/** Slides the row's close button out: a hover, or a tap on touch. */
+async function reveal(page: Page, picked: Picked, isMobile: boolean) {
+    if (isMobile) await row(page, picked).tap();
+    else await row(page, picked).hover();
+}
+
+const balanceOf = async (page: Page) => {
+    const name = (await balanceButton(page).getAttribute("aria-label")) ?? (await balanceButton(page).innerText());
+    return Number(/\$([\d,]+\.\d\d)/.exec(name)![1]!.replace(/,/g, ""));
+};
+
+test("closing a position credits the balance at once and the row goes", async ({ page, isMobile }) => {
+    const picked = await pickMarket(6);
+    await buyAndFill(page, picked);
+    const before = await balanceOf(page);
+
+    await nextOrder(picked.outcome.tokenId, "hold");
+    await reveal(page, picked, isMobile);
+    await closeButton(page, picked).click();
+    await expect(row(page, picked)).toHaveCount(0);
+    await expect.poll(() => balanceOf(page)).toBeGreaterThan(before);
+
+    await releaseOrder(picked.outcome.tokenId, "fill");
+    await expect(row(page, picked)).toHaveCount(0);
+    await expect.poll(() => balanceOf(page)).toBeGreaterThan(before);
+});
+
+test("a rejected close puts the position back with the message", async ({ page, isMobile }) => {
+    const picked = await pickMarket(7);
+    await buyAndFill(page, picked);
+    const before = await balanceOf(page);
+
+    await nextOrder(picked.outcome.tokenId, "reject:price_moved");
+    await reveal(page, picked, isMobile);
+    await closeButton(page, picked).click();
+    await expect(status(page)).toHaveText("Couldn't sell right now. Your position is back.");
+    await expect(row(page, picked)).toHaveCount(1);
+    await expect(row(page, picked)).toContainText(/shares/);
+    expect(await balanceOf(page)).toBe(before);
+});
+
+test("a tiny position's Close is disabled with the reason", async ({ page }) => {
+    const picked = await pickMarket(8);
+    await buyAndFill(page, picked);
+    await shrinkPosition(addressOf(page), picked.outcome.tokenId, "0.5");
+    await page.reload();
+    await walletButton(page).click();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
+
+    await expect(row(page, picked)).toContainText("0.5 shares");
+    const close = closeButton(page, picked);
+    await expect(close).toHaveAttribute("aria-disabled", "true");
+    await expect(close).toHaveAccessibleDescription("Too small to sell. It pays out when the market resolves.");
+    await close.focus();
+    await expect(close).toBeFocused();
+    await close.press("Enter");
+    await expect(row(page, picked)).toHaveCount(1);
+});
+
+// Resolving closes the market for everyone, so each project resolves a question of its own.
+test("a resolved win shows Won and raises the balance", async ({ page, isMobile }) => {
+    const picked = await pickMarket(isMobile ? 13 : 12);
+    await buyAndFill(page, picked);
+    const before = await balanceOf(page);
+
+    await resolveMarket(marketIdOf(picked.outcome.tokenId), ["1", "0"]);
+    await resolveNow();
+    await expect(row(page, picked)).toContainText(/Won \$\d/);
+    await expect(closeButton(page, picked)).toHaveCount(0);
+    await expect.poll(() => balanceOf(page)).toBeGreaterThan(before);
+});
+
+test("a resolved loss shows Lost", async ({ page, isMobile }) => {
+    const picked = await pickMarket(isMobile ? 15 : 14);
+    await buyAndFill(page, picked);
+    const before = await balanceOf(page);
+
+    await resolveMarket(marketIdOf(picked.outcome.tokenId), ["0", "1"]);
+    await resolveNow();
+    await expect(row(page, picked)).toContainText("Lost");
+    await expect(closeButton(page, picked)).toHaveCount(0);
+    expect(await balanceOf(page)).toBe(before);
+});
+
+test("a buy restored by a reload shows no amount in place of shares", async ({ page }) => {
+    const picked = await pickMarket(11);
+    await nextOrder(picked.outcome.tokenId, "hold");
+    await page.goto("/");
+    await connect(page);
+    await predict(page, picked);
+    await confirm(page);
+    await page.reload();
+    await walletButton(page).click();
+    await expect(row(page, picked)).toContainText("Pending");
+    await expect(row(page, picked)).not.toContainText(/\$\d/);
+    await releaseOrder(picked.outcome.tokenId, "fill");
 });
 
 test("other verbs stay simulated", async ({ page }) => {

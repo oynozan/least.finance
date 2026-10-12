@@ -58,6 +58,8 @@ export async function predictionHarness(o: { trading?: "on" | "off"; now?: () =>
                 tokenId: TOKEN,
                 label: "YES",
                 buyPrice: 0.5,
+                sellPrice: 0.49,
+                minShares: 5,
                 chance: 0.49,
                 tone: "gain",
                 minUSD: 1,

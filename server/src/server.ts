@@ -48,6 +48,8 @@ export type RunningServer = {
     /** Where it's listening, e.g. http://127.0.0.1:4000. */
     url: string;
     services: Services;
+    /** Runs one resolver pass at once; for tests. */
+    resolveNow(): Promise<void>;
     close(): Promise<void>;
 };
 
@@ -262,6 +264,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         return {
             url: `http://${host === "0.0.0.0" || host === "[::]" ? "127.0.0.1" : host}:${port}`,
             services,
+            resolveNow: () => predictionResolver.tick(),
             async close() {
                 closed = true;
                 if (connecting) clearTimeout(connecting);

@@ -218,6 +218,10 @@ export type MarketOutcomeView = {
     label: string;
     /** What one share costs to buy, from the best ask, 0 to 1. */
     buyPrice: number;
+    /** What one share sells for, from the best bid, 0 to 1. */
+    sellPrice: number;
+    /** The smallest sale the book takes, in shares. */
+    minShares: number;
     /** The midpoint, 0 to 1. */
     chance: number;
     tone: "gain" | "loss" | "neutral";

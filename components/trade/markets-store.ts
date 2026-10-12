@@ -20,6 +20,7 @@ const TRENDING_MS = 60_000;
 /** Until the server has a list, ask again soon. */
 const WARMING_MS = 2_000;
 const WATCH_MS = 10_000;
+const HELD_MAX = 20;
 const SEARCH_MIN = 2;
 const SEARCH_DEBOUNCE_MS = 250;
 
@@ -48,6 +49,8 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
     let watched: string | null = null;
     let trendingTimer: ReturnType<typeof setTimeout> | undefined;
     let watchTimer: ReturnType<typeof setInterval> | undefined;
+    let held: string[] = [];
+    let heldTimer: ReturnType<typeof setInterval> | undefined;
     let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
     const set = (next: Partial<MarketsSnapshot>) => {
@@ -132,6 +135,27 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         }
     }
 
+    async function refreshHeld() {
+        if (!running || !visible()) return;
+        const ids = held;
+        const answers = await Promise.all(ids.map((id) => getJson(`/markets/${encodeURIComponent(id)}`)));
+        if (!running) return;
+        const views = answers.flatMap((answer) => (answer && isMarketView(answer.body) ? [answer.body] : []));
+        if (views.length === 0) return;
+        const fresh = new Map(views.map((v) => [v.id, v]));
+        set({
+            known: remember(views),
+            trending: snapshot.trending.map((m) => fresh.get(m.id) ?? m),
+            results: snapshot.results && snapshot.results.map((m) => fresh.get(m.id) ?? m),
+        });
+    }
+
+    function syncHeld() {
+        clearInterval(heldTimer);
+        heldTimer = undefined;
+        if (running && held.length > 0) heldTimer = setInterval(refreshHeld, TRENDING_MS);
+    }
+
     function syncWatch() {
         clearInterval(watchTimer);
         watchTimer = undefined;
@@ -142,6 +166,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         if (!visible() || !running) return;
         void refreshTrending();
         void refreshWatched();
+        void refreshHeld();
     };
 
     return {
@@ -156,15 +181,13 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
             stopped = false;
             const cached = loadCachedTrending();
             if (cached && snapshot.trending.length === 0) {
-                set({
-                    trending: cached.markets,
-                    readAt: cached.readAt,
-                    maxOrderUSD: limitOf(cached.maxOrderUSD),
-                    known: remember(cached.markets),
-                });
+                // The limit is only as old as the answer that gave it, so a cache never turns live trading on
+                set({ trending: cached.markets, readAt: cached.readAt, known: remember(cached.markets) });
             }
             void refreshTrending().then(scheduleTrending);
             syncWatch();
+            syncHeld();
+            if (held.length > 0) void refreshHeld();
             document.addEventListener("visibilitychange", onVisible);
         },
         stop() {
@@ -173,6 +196,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
             stopped = true;
             clearTimeout(trendingTimer);
             clearInterval(watchTimer);
+            clearInterval(heldTimer);
             clearTimeout(searchTimer);
             document.removeEventListener("visibilitychange", onVisible);
         },
@@ -188,6 +212,14 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
             // The earlier results stay on screen until this query's answer replaces them.
             set({ query: trimmed });
             searchTimer = setTimeout(() => void runSearch(trimmed), SEARCH_DEBOUNCE_MS);
+        },
+        /** Keeps these questions' prices fresh, so open positions show a live value; only the first 20 are read. */
+        hold(eventIds: string[]) {
+            const next = [...new Set(eventIds)].slice(0, HELD_MAX);
+            if (next.length === held.length && next.every((id, i) => id === held[i])) return;
+            held = next;
+            syncHeld();
+            if (running && held.length > 0) void refreshHeld();
         },
         watch(eventId: string | null) {
             if (eventId === watched) return;

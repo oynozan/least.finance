@@ -32,8 +32,8 @@ function outcomes(market: GammaMarket, imageOf: (market: GammaMarket) => string 
     const bid = market.bestBid!;
     const ask = market.bestAsk!;
     const sides = [
-        { buy: ask, chance: (bid + ask) / 2 },
-        { buy: 1 - bid, chance: 1 - (bid + ask) / 2 },
+        { buy: ask, sell: bid, chance: (bid + ask) / 2 },
+        { buy: 1 - bid, sell: 1 - ask, chance: 1 - (bid + ask) / 2 },
     ];
     const views: MarketOutcomeView[] = [];
     sides.forEach((side, index) => {
@@ -44,6 +44,8 @@ function outcomes(market: GammaMarket, imageOf: (market: GammaMarket) => string 
             tokenId: market.clobTokenIds[index]!,
             label: text,
             buyPrice,
+            sellPrice: round4(side.sell),
+            minShares: market.orderMinSize,
             chance: round4(side.chance),
             tone: text === "YES" ? "gain" : text === "NO" ? "loss" : "neutral",
             minUSD: Math.max(MIN_ORDER_USD, Math.ceil(market.orderMinSize * buyPrice * 100 - 1e-9) / 100),

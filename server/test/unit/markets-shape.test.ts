@@ -87,6 +87,13 @@ test("prices: YES buys at the ask, NO at 1 − bid, chance is the midpoint", () 
     expect([no.buyPrice, no.chance]).toEqual([0.17, 0.165]);
 });
 
+test("sell prices: YES sells at the bid, NO at 1 − ask, and the book's minimum size rides along", () => {
+    const view = edited({ orderMinSize: 5, bestBid: 0.83, bestAsk: 0.84 })!;
+    const [yes, no] = view.outcomes as [(typeof view.outcomes)[number], (typeof view.outcomes)[number]];
+    expect([yes.sellPrice, yes.minShares]).toEqual([0.83, 5]);
+    expect([no.sellPrice, no.minShares]).toEqual([0.16, 5]);
+});
+
 test("a market with a spread over 10¢, or closing within the hour, isn't offered", () => {
     expect(edited({ bestBid: 0.5, bestAsk: 0.65 })).toBeNull();
     expect(edited({ bestBid: 0.3, bestAsk: 0.4 })).not.toBeNull();

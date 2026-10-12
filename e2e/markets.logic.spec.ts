@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { createMarketsStore } from "@/components/trade/markets-store";
-import { loadCachedTrending, toPredictionMarket } from "@/lib/trade/markets";
+import { isMarketView, loadCachedTrending, toPredictionMarket } from "@/lib/trade/markets";
 import type { MarketView } from "@/server/src/protocol";
 
 const view = (title: string, endDate: string): MarketView => ({
@@ -10,7 +10,17 @@ const view = (title: string, endDate: string): MarketView => ({
     endDate,
     volume24hUSD: 1000,
     outcomes: [
-        { tokenId: "t-yes", label: "YES", buyPrice: 0.42, chance: 0.41, tone: "gain", minUSD: 1.5, image: null },
+        {
+            tokenId: "t-yes",
+            label: "YES",
+            buyPrice: 0.42,
+            chance: 0.41,
+            tone: "gain",
+            minUSD: 1.5,
+            image: null,
+            sellPrice: 0.41,
+            minShares: 5,
+        },
         {
             tokenId: "t-no",
             label: "NO",
@@ -18,6 +28,8 @@ const view = (title: string, endDate: string): MarketView => ({
             chance: 0.59,
             tone: "loss",
             minUSD: 1,
+            sellPrice: 0.58,
+            minShares: 5,
             image: "https://x/n.png",
         },
     ],
@@ -95,6 +107,50 @@ test.describe("live markets", () => {
         }
     });
 
+    test("held questions are read now and then kept fresh, at most 20, and a view without sell prices is still valid", async () => {
+        (globalThis as { document?: unknown }).document = {
+            visibilityState: "visible",
+            addEventListener() {},
+            removeEventListener() {},
+        };
+        const asked: string[] = [];
+        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+        try {
+            const store = createMarketsStore({
+                apiUrl: "http://api",
+                fetch: async (input) => {
+                    const url = String(input);
+                    asked.push(url);
+                    if (url.includes("/markets/trending"))
+                        return new Response(JSON.stringify({ markets: [], maxOrderUSD: null, readAt: null }));
+                    const id = url.split("/markets/")[1]!;
+                    return new Response(JSON.stringify({ ...view("Held", "2030-01-01T00:00:00Z"), id }));
+                },
+            });
+            store.start();
+            store.hold(Array.from({ length: 25 }, (_, i) => String(i + 100)));
+            await wait(100);
+            const held = asked.filter((u) => /\/markets\/\d+$/.test(u));
+            expect(held).toHaveLength(20);
+            expect([...store.getSnapshot().known.keys()]).toHaveLength(20);
+            store.stop();
+
+            const old = { ...view("Old", "2030-01-01T00:00:00Z") };
+            old.outcomes = old.outcomes.map(({ tokenId, label, buyPrice, chance, tone, minUSD, image }) => ({
+                tokenId,
+                label,
+                buyPrice,
+                chance,
+                tone,
+                minUSD,
+                image,
+            })) as MarketView["outcomes"];
+            expect(isMarketView(old)).toBe(true);
+        } finally {
+            delete (globalThis as { document?: unknown }).document;
+        }
+    });
+
     test("maxOrderUSD survives the trending cache", async () => {
         const kept = new Map<string, string>();
         (globalThis as { localStorage?: unknown }).localStorage = {
@@ -131,7 +187,9 @@ test.describe("live markets", () => {
             });
             second.start();
             second.stop();
-            expect(second.getSnapshot().maxOrderUSD).toBe(20);
+            // A stale cache never switches the review to live trading
+            expect(second.getSnapshot().maxOrderUSD).toBeNull();
+            expect(second.getSnapshot().trending).toHaveLength(1);
             // A bad value is no limit at all.
             const third = createMarketsStore({
                 apiUrl: "http://api",

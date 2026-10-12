@@ -1,5 +1,5 @@
 import { PREDICTION_MARKETS } from "@/lib/trade/catalog";
-import type { OptimisticTrade, PositionsView } from "@/lib/account/state";
+import type { OptimisticTrade, PositionView, PositionsView } from "@/lib/account/state";
 import { toUsdc } from "@/lib/account/state";
 import type { CoinSymbol } from "./coin-icons";
 
@@ -15,16 +15,22 @@ type PositionBase = {
 
 export type PerpPosition = PositionBase & { kind: "perp"; side: "long" | "short"; leverage: number };
 export type PredictionPosition = PositionBase & { kind: "prediction"; question: string; outcome: "YES" | "NO" };
-/** A prediction the server holds, or one on its way: any outcome label, and not yet sellable. */
+/** A prediction the server holds, or one on its way: any outcome label, with a live value once its market has a price. */
 export type LivePredictionPosition = PositionBase & {
     kind: "prediction-live";
+    eventId: string;
+    tokenId: string;
     question: string;
     outcome: string;
+    /** Empty while a buy is waiting for its fill. */
     shares: string;
+    /** A buy still waiting; sells and settled rows have none. */
     pending: boolean;
-    closable: false;
-    /** Why it can't be closed. */
-    reason: string;
+    status: "pending" | "open" | "won" | "lost";
+    /** USD paid out, for a settled row. */
+    payout: number | null;
+    /** What a sale would close; null while only a buy is waiting. */
+    position: PositionView | null;
 };
 /** Swaps settle at once, so only leverage and predictions stay open. */
 export type Position = PerpPosition | PredictionPosition | LivePredictionPosition;
@@ -40,6 +46,24 @@ export const positionDetail = (p: Position) =>
             ? `${p.outcome} · ${p.shares} shares`
             : p.outcome
         : `${p.kind === "perp" ? `${p.leverage}x` : p.outcome} · ${formatSize(p.size)}`;
+
+/** The shares a sale takes: floored to 0.01, as the exchange quantizes, without going through a float. */
+export function sellableShares(shares: string): number {
+    const [whole = "0", fraction = ""] = shares.split(".");
+    return Number(`${whole}.${fraction.slice(0, 2).padEnd(2, "0")}`);
+}
+
+/** What an open prediction is worth at the sell price and what it has made, or null without a price. */
+export function liveValue(p: LivePredictionPosition, sellPrice: number | null) {
+    if (sellPrice === null || !p.shares) return null;
+    const value = Number(p.shares) * sellPrice;
+    return { value, pnl: value - p.size };
+}
+
+export const TOO_SMALL = "Too small to sell. It pays out when the market resolves.";
+export const BUY_PENDING = "Selling opens when the buy is filled.";
+
+const SETTLED_SHOWN_MS = 7 * 86_400_000;
 
 /** The whole position in words, for its close button. */
 export const positionName = (p: Position) =>
@@ -78,15 +102,15 @@ export const MOCK_POSITIONS: Position[] = [
     { id: "p-sol-s", kind: "perp", symbol: "SOL", side: "short", leverage: 2, size: 540, pnl: -9.6 },
 ];
 
-export const SELL_REASON = "Selling opens soon.";
-
 /**
  * The rows for the person's real predictions, oldest first like the mock list: each
- * open position, plus the buys the server hasn't filled yet. Rows for one token become one.
+ * open position, plus the buys the server hasn't filled yet, plus positions that resolved in the last week.
+ * Rows for one token become one, and a position being sold is out of the list.
  */
 export function livePredictionRows(
     { positions, orders }: PositionsView,
     optimistic: readonly OptimisticTrade[],
+    now = Date.now(),
 ): LivePredictionPosition[] {
     type Row = LivePredictionPosition & { at: number };
     const rows = new Map<string, Row>();
@@ -100,19 +124,52 @@ export function livePredictionRows(
         const shares = Number(held.shares) + Number(row.shares);
         rows.set(token, {
             ...held,
-            shares: String(Number(shares.toFixed(6))),
+            // Two buys still waiting have no shares to add up
+            shares: held.shares || row.shares ? String(Number(shares.toFixed(6))) : "",
             size: held.size + row.size,
             pending: held.pending && row.pending,
+            status: held.pending && row.pending ? "pending" : "open",
+            position: held.position ?? row.position,
+            id: held.position ? held.id : row.position ? row.id : held.id,
             at: Math.min(held.at, row.at),
         });
     };
     const placed = new Set(orders.map((o) => o.requestId));
-    const base = { kind: "prediction-live", symbol: "USDC", pnl: 0, closable: false, reason: SELL_REASON } as const;
+    const selling = new Set(optimistic.flatMap((t) => (t.side === "sell" ? [t.positionId] : [])));
+    const base = { kind: "prediction-live", symbol: "USDC", pnl: 0, payout: null } as const;
     for (const p of positions) {
-        if (p.state !== "open") continue;
+        if (
+            (p.state === "won" || p.state === "lost") &&
+            p.settledAt &&
+            now - Date.parse(p.settledAt) < SETTLED_SHOWN_MS
+        ) {
+            const payout = Number(p.payoutUSD ?? 0);
+            rows.set(p.id, {
+                ...base,
+                id: p.id,
+                eventId: p.eventId,
+                tokenId: p.tokenId,
+                question: p.question,
+                outcome: p.outcome,
+                shares: p.shares,
+                size: Number(p.costUSD),
+                pnl: payout - Number(p.costUSD),
+                pending: false,
+                status: p.state,
+                payout,
+                position: p,
+                at: Date.parse(p.openedAt),
+            });
+            continue;
+        }
+        if (p.state !== "open" || selling.has(p.id)) continue;
         add(p.tokenId, {
             ...base,
             id: p.id,
+            eventId: p.eventId,
+            tokenId: p.tokenId,
+            status: "open",
+            position: p,
             question: p.question,
             outcome: p.outcome,
             shares: p.shares,
@@ -126,6 +183,10 @@ export function livePredictionRows(
         add(o.tokenId, {
             ...base,
             id: o.requestId,
+            eventId: o.eventId,
+            tokenId: o.tokenId,
+            status: "pending",
+            position: null,
             question: o.question,
             outcome: o.outcome,
             shares: o.shares ?? "",
@@ -135,10 +196,14 @@ export function livePredictionRows(
         });
     }
     for (const t of optimistic) {
-        if (placed.has(t.requestId)) continue;
+        if (t.side !== "buy" || placed.has(t.requestId)) continue;
         add(t.tokenId, {
             ...base,
             id: t.requestId,
+            eventId: t.eventId,
+            tokenId: t.tokenId,
+            status: "pending",
+            position: null,
             question: t.question,
             outcome: t.outcome,
             shares: t.shares,

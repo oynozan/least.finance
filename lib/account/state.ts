@@ -9,6 +9,7 @@ import type {
     DepositRules,
     DepositView,
     Hex,
+    PositionSettled,
     PositionView,
     PositionsView,
     PredictionFailure,
@@ -30,6 +31,7 @@ export type {
     DepositRules,
     DepositView,
     Hex,
+    PositionSettled,
     PositionView,
     PositionsView,
     PredictionFailure,
@@ -54,7 +56,7 @@ export type PendingDeposit = {
 };
 
 /** A prediction buy the server has accepted but not yet shown back, counted against the balance meanwhile. */
-export type OptimisticTrade = {
+export type OptimisticBuy = {
     requestId: string;
     side: "buy";
     eventId: string;
@@ -69,6 +71,19 @@ export type OptimisticTrade = {
     /** The socket connection it was sent on; a later snapshot without it means it never arrived. */
     connection: number;
 };
+
+/** A sale sent but not yet filled: its estimated proceeds count toward the balance and its position is out of the list. */
+export type OptimisticSell = {
+    requestId: string;
+    side: "sell";
+    positionId: string;
+    /** Wei, the estimate from the quoted sell price. */
+    proceedsWei: bigint;
+    at: number;
+    connection: number;
+};
+
+export type OptimisticTrade = OptimisticBuy | OptimisticSell;
 
 export type AccountState =
     | { status: "idle" }
@@ -112,7 +127,9 @@ export type AccountAction =
     | { type: "predict-failed"; requestId: string }
     | { type: "placed"; order: PredictionOrderView; account: AccountView }
     | { type: "prediction"; update: PredictionUpdate }
-    | { type: "positions"; positions: PositionsView; connection: number };
+    | { type: "positions"; positions: PositionsView; connection: number }
+    /** A position was paid or lost when its market resolved. */
+    | { type: "position-settled"; position: PositionView; account: AccountView };
 
 export const initialAccountState: AccountState = { status: "idle" };
 
@@ -186,7 +203,8 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
             if (state.status !== "ready") return state;
             // The ack already has the amount taken, so the optimistic entry gives way to the account
             const next = withAccount(state, action.account);
-            const trade = state.optimistic.find((t) => t.requestId === action.order.requestId);
+            const found = state.optimistic.find((t) => t.requestId === action.order.requestId);
+            const trade = found?.side === "buy" ? found : undefined;
             // Still the estimate until the fill says how many shares
             const order =
                 trade && action.order.shares === null ? { ...action.order, shares: trade.shares } : action.order;
@@ -209,7 +227,7 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                     : {
                           orders: upsert(next.predictions.orders, update.order),
                           positions: update.position
-                              ? upsert(next.predictions.positions, update.position)
+                              ? keepNewerPosition(next.predictions.positions, update.position)
                               : next.predictions.positions,
                       },
                 optimistic: next.optimistic.filter((t) => t.requestId !== update.requestId),
@@ -221,9 +239,22 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
             return {
                 ...state,
                 predictions: mergeSnapshot(state.predictions, action.positions),
-                optimistic: state.optimistic.filter(
-                    (t) => !known.has(t.requestId) && t.connection >= action.connection,
-                ),
+                optimistic: state.optimistic.filter((t) => {
+                    if (t.connection < action.connection) return false;
+                    // A sale the server is working on still owes its proceeds until it settles
+                    return t.side === "sell" || !known.has(t.requestId);
+                }),
+            };
+        }
+        case "position-settled": {
+            if (state.status !== "ready") return state;
+            const next = withAccount(state, action.account);
+            return {
+                ...next,
+                predictions: {
+                    ...next.predictions,
+                    positions: keepNewerPosition(next.predictions.positions, action.position),
+                },
             };
         }
     }
@@ -238,6 +269,12 @@ const upsert = <T extends { id: string }>(items: T[], item: T): T[] => [item, ..
 const keepNewer = (orders: PredictionOrderView[], order: PredictionOrderView): PredictionOrderView[] => {
     const held = orders.find((o) => o.id === order.id);
     return held && held.updatedAt > order.updatedAt ? orders : upsert(orders, order);
+};
+
+/** Adds the position, unless the one held is newer. */
+const keepNewerPosition = (positions: PositionView[], position: PositionView): PositionView[] => {
+    const held = positions.find((p) => p.id === position.id);
+    return held && held.updatedAt > position.updatedAt ? positions : upsert(positions, position);
 };
 
 /** The snapshot, except where a push already showed something newer: an older read can't undo a settled order. */
@@ -305,10 +342,15 @@ function settle(state: Ready): Ready {
 export function optimisticBalance(state: AccountState): bigint | null {
     if (state.status !== "ready") return null;
     const placed = new Set(state.predictions.orders.map((o) => o.requestId));
-    // An order the server has is already debited in `account.balance`.
-    const inFlight = state.optimistic.filter((t) => !placed.has(t.requestId));
+    const settled = new Set(
+        state.predictions.orders.filter((o) => o.state === "filled" || o.state === "failed").map((o) => o.requestId),
+    );
+    // A buy the server has is already debited in `account.balance`; a sale is credited only when it fills.
     const afterDeposits = state.pending.reduce((sum, p) => sum + p.amount, state.balance);
-    return inFlight.reduce((sum, t) => sum - t.amountWei, afterDeposits);
+    return state.optimistic.reduce((sum, t) => {
+        if (t.side === "sell") return settled.has(t.requestId) ? sum : sum + t.proceedsWei;
+        return placed.has(t.requestId) ? sum : sum - t.amountWei;
+    }, afterDeposits);
 }
 
 export type HistoryRow = {

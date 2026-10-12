@@ -266,6 +266,22 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
         polymarket.resolve(String(marketId), prices as string[]);
         return {};
     },
+    /** Runs one pass of the resolver now, instead of waiting for its timer. */
+    "/predictions/resolve-now": async () => {
+        await server.resolveNow();
+        return {};
+    },
+    /** Cuts a person's open position on a token down to `shares`, so it is too small to sell. */
+    "/positions/shrink": async ({ address, tokenId, shares }) => {
+        const account = await services.accounts.find(userIdOf(normalize(address)));
+        if (!account) throw new Error("No account");
+        const moved = await services.database.collections.positions.updateMany(
+            { accountId: account._id, tokenId: String(tokenId), state: "open" },
+            { $set: { shares: toDecimal(parseUnits(String(shares), 6)), updatedAt: new Date() } },
+        );
+        if (moved.modifiedCount === 0) throw new Error("No open position");
+        return {};
+    },
     "/account": async ({ address }) => {
         const account = await services.accounts.find(userIdOf(normalize(address)));
         if (!account) return null;

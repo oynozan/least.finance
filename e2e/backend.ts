@@ -71,3 +71,10 @@ export const setPoolBalance = (usd: number) => call<object>("/polymarket/balance
 /** Resolves the newest delayed order on a token: "fill" or "cancel". */
 export const settleDelayed = (tokenId: string, outcome: "fill" | "cancel") =>
     call<object>("/polymarket/settle-delayed", { tokenId, outcome }).then(() => undefined);
+
+/** Runs one pass of the server's resolver now, so a resolved market pays out without waiting. */
+export const resolveNow = () => call<object>("/predictions/resolve-now", {}).then(() => undefined);
+
+/** Cuts the person's open position on a token down to `shares`, which leaves it too small to sell. */
+export const shrinkPosition = (address: string, tokenId: string, shares: string) =>
+    call<object>("/positions/shrink", { address, tokenId, shares }).then(() => undefined);

@@ -16,7 +16,7 @@ import {
 import { sameWallet as sameAddress } from "@/lib/account/balances";
 import { toUsdc, type HistoryRow } from "@/lib/account/state";
 import type { ApiError, DepositQuoteView } from "@/lib/account/state";
-import type { CoinBalance, DepositOrderView } from "@/server/src/protocol";
+import type { CoinBalance, DepositOrderView, MarketView } from "@/server/src/protocol";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
 import {
@@ -39,7 +39,15 @@ import { canHover } from "./pointer";
 import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
 import { useSidebar } from "./sidebar";
-import { MOCK_POSITIONS, formatUsd, formatWhen, livePredictionRows, shortenAddress } from "./wallet-data";
+import { useTrade } from "./trade/trade-provider";
+import {
+    MOCK_POSITIONS,
+    formatUsd,
+    formatWhen,
+    livePredictionRows,
+    shortenAddress,
+    type LivePredictionPosition,
+} from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
 import styles from "./wallet-sidebar.module.css";
 
@@ -105,6 +113,14 @@ function historyRef(list: HTMLOListElement | null) {
     };
 }
 
+/** The sell price and smallest sale of a prediction's outcome, from the questions seen; null where not known. */
+function marketOf(position: LivePredictionPosition, known: ReadonlyMap<string, MarketView>) {
+    const outcome = known.get(position.eventId)?.outcomes.find((o) => o.tokenId === position.tokenId);
+    // A view cached before sell prices lacks them
+    const number = (value: unknown) => (typeof value === "number" ? value : null);
+    return { sellPrice: number(outcome?.sellPrice), minShares: number(outcome?.minShares) };
+}
+
 /** The sidebar's content. Renders nothing until a wallet is signed in. */
 export function WalletSidebar() {
     if (!walletEnabled) return null;
@@ -134,7 +150,17 @@ function SignedInWallet() {
     // Predictions are the account's own; perps stay mock until trading is live.
     const [perps, setPerps] = useState(() => MOCK_POSITIONS.filter((p) => p.kind === "perp"));
     const { predictions, optimisticTrades } = account;
-    const real = useMemo(() => livePredictionRows(predictions, optimisticTrades), [predictions, optimisticTrades]);
+    const { known } = useTrade();
+    // Moves on whenever the sidebar opens; a clock read while rendering can't be prerendered.
+    const [clock, setClock] = useState(0);
+    useEffect(() => {
+        const timer = setTimeout(() => setClock(Date.now()));
+        return () => clearTimeout(timer);
+    }, [open]);
+    const real = useMemo(
+        () => livePredictionRows(predictions, optimisticTrades, clock),
+        [predictions, optimisticTrades, clock],
+    );
     const positions = useMemo(() => [...perps, ...real], [perps, real]);
 
     // Remount the animated parts on every open so they replay their entrance.
@@ -213,6 +239,8 @@ function SignedInWallet() {
                                     position={position}
                                     entranceDelay={entranceDelay(i, positions.length)}
                                     onClose={closePosition}
+                                    market={position.kind === "prediction-live" ? marketOf(position, known) : undefined}
+                                    onSell={account.closePosition}
                                 />
                             ))}
                         </AnimatePresence>

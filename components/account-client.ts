@@ -9,9 +9,11 @@ import {
     type ApiError,
     type DepositQuoteView,
     type Hex,
+    type PositionView,
     type PredictionFailure,
     type QuoteView,
 } from "@/lib/account/state";
+import { sellableShares } from "@/components/wallet-data";
 import { dropAfterSend, loadCachedBalances, needsRefresh, saveCachedBalances } from "@/lib/account/balances";
 import type { BalancesView, ClientToServerEvents, ServerToClientEvents } from "@/server/src/protocol";
 
@@ -54,6 +56,9 @@ const FAILURE_COPY: Record<PredictionFailure, string> = {
     rejected: "Your prediction didn't go through. Nothing was spent.",
 };
 const OFFLINE_COPY = "You're offline. Nothing was spent.";
+const SELL_FAILED_COPY = "Couldn't sell right now. Your position is back.";
+/** The price sent when none is known; the exchange takes the best bid anyway, within a cent of it. */
+const UNQUOTED_SELL_PRICE = 0.01;
 
 /** EIP-1193's code for a request the user turned down in their wallet. */
 const USER_REJECTED = 4001;
@@ -150,7 +155,11 @@ export class AccountClient {
         socket.on("prediction:update", (update) => {
             this.#dispatch({ type: "prediction", update });
             const { order } = update;
-            if (order.state === "failed") this.#tradeNotice(FAILURE_COPY[order.reason ?? "rejected"]);
+            if (order.state !== "failed") return;
+            this.#tradeNotice(order.side === "sell" ? SELL_FAILED_COPY : FAILURE_COPY[order.reason ?? "rejected"]);
+        });
+        socket.on("position:settled", ({ position, account }) => {
+            this.#dispatch({ type: "position-settled", position, account });
         });
         socket.on("positions", (positions) => {
             this.#dispatch({ type: "positions", positions, connection: this.#connection });
@@ -337,6 +346,45 @@ export class AccountClient {
                 this.#tradeNotice(result.error.message);
             });
         return { requestId, sent: true };
+    }
+
+    /**
+     * Sells a whole position and counts the proceeds at once, hiding the position. The server's push
+     * decides the outcome; only a refusal rolls it back here, and a missing answer leaves it accepted.
+     */
+    closePosition(position: PositionView, sellPrice: number | null): void {
+        const requestId = crypto.randomUUID();
+        const socket = this.#socket;
+        this.#tradeNotice(null);
+        if (this.#snapshot.state.status !== "ready" || !socket?.connected) {
+            this.#tradeNotice(OFFLINE_COPY);
+            return;
+        }
+        const estimate = sellPrice === null ? 0 : sellableShares(position.shares) * sellPrice;
+        this.#dispatch({
+            type: "predict",
+            trade: {
+                requestId,
+                side: "sell",
+                positionId: position.id,
+                proceedsWei: toWei(estimate.toFixed(6)),
+                at: Date.now(),
+                connection: this.#connection,
+            },
+        });
+        void socket
+            .timeout(REPORT_TIMEOUT_MS)
+            .emitWithAck("prediction:close", {
+                requestId,
+                positionId: position.id,
+                quotedPrice: sellPrice ?? UNQUOTED_SELL_PRICE,
+            })
+            .catch(() => null)
+            .then((result) => {
+                if (this.#socket !== socket || !result || result.ok) return;
+                this.#dispatch({ type: "predict-failed", requestId });
+                this.#tradeNotice(result.error.message);
+            });
     }
 
     dismissTradeNotice() {

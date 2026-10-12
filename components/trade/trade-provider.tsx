@@ -2,6 +2,7 @@
 
 import { createContext, use, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useLogin, usePrivy } from "@privy-io/react-auth";
+import type { MarketView } from "@/server/src/protocol";
 import type { SentenceAction, SentenceView } from "@/lib/sentence";
 import { API_URL } from "@/lib/api";
 import { CATALOG, MOCK_HOLDINGS, QUOTE, type Catalog } from "@/lib/trade/catalog";
@@ -24,7 +25,11 @@ type TradeState = {
     catalog: Catalog;
     /** A number only while signed in with the server's trading on: predictions are placed for real. */
     maxOrderUSD: number | null;
+    /** Every question seen, with the sell prices that value open positions. */
+    known: ReadonlyMap<string, MarketView>;
 };
+
+const NO_KNOWN: ReadonlyMap<string, MarketView> = new Map();
 
 const TradeContext = createContext<TradeState | null>(null);
 
@@ -55,11 +60,28 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
     const { ready, authenticated } = usePrivy();
     const { login } = useLogin();
     const { balance } = useAccount();
-    const { catalog, store, search, maxOrderUSD } = useLiveCatalog();
+    const { catalog, store, search, maxOrderUSD, known } = useLiveCatalog();
+    const { predictions } = useAccount();
+    // The questions of open positions are read on a timer, whether or not they are trending.
+    const heldKey = predictions.positions
+        .filter((p) => p.state === "open")
+        .map((p) => p.eventId)
+        .join(",");
+    useEffect(() => {
+        store.hold(heldKey ? heldKey.split(",") : []);
+        return () => store.hold([]);
+    }, [store, heldKey]);
     // The same element type in every branch, so the sentence survives connecting.
     if (!ready) {
         return (
-            <Provide wallet={{ status: "loading" }} holdings={null} catalog={catalog} store={store} search={search}>
+            <Provide
+                wallet={{ status: "loading" }}
+                holdings={null}
+                catalog={catalog}
+                store={store}
+                search={search}
+                known={known}
+            >
                 {children}
             </Provide>
         );
@@ -72,6 +94,7 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
                 catalog={catalog}
                 store={store}
                 search={search}
+                known={known}
             >
                 {children}
             </Provide>
@@ -88,6 +111,7 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             store={store}
             search={search}
             maxOrderUSD={maxOrderUSD}
+            known={known}
         >
             {children}
         </Provide>
@@ -102,6 +126,7 @@ function useLiveCatalog(): {
     store: MarketsStore;
     search: MarketSearch;
     maxOrderUSD: number | null;
+    known: ReadonlyMap<string, MarketView>;
 } {
     const [store] = useState(() => createMarketsStore({ apiUrl: API_URL }));
     useEffect(() => {
@@ -127,7 +152,7 @@ function useLiveCatalog(): {
     }, [trending, results, known]);
     const empty = results?.length === 0 && answered === query ? `No markets match \u201c${query}\u201d.` : undefined;
     const search = useMemo<MarketSearch>(() => ({ onQuery: store.search, empty }), [store, empty]);
-    return { catalog, store, search, maxOrderUSD };
+    return { catalog, store, search, maxOrderUSD, known };
 }
 
 function Provide({
@@ -137,6 +162,7 @@ function Provide({
     store,
     search,
     maxOrderUSD = null,
+    known = NO_KNOWN,
     children,
 }: {
     wallet: WalletStatus;
@@ -145,6 +171,7 @@ function Provide({
     store?: MarketsStore;
     search?: MarketSearch;
     maxOrderUSD?: number | null;
+    known?: ReadonlyMap<string, MarketView>;
     children: ReactNode;
 }) {
     const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD);
@@ -154,5 +181,7 @@ function Provide({
         store?.watch(marketId);
         return () => store?.watch(null);
     }, [store, marketId]);
-    return <TradeContext value={{ view, dispatch, wallet, search, catalog, maxOrderUSD }}>{children}</TradeContext>;
+    return (
+        <TradeContext value={{ view, dispatch, wallet, search, catalog, maxOrderUSD, known }}>{children}</TradeContext>
+    );
 }

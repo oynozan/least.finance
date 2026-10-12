@@ -42,7 +42,10 @@ export function isMarketView(value: unknown): value is MarketView {
             typeof o.label === "string" &&
             isNumber(o.buyPrice) &&
             isNumber(o.chance) &&
-            isNumber(o.minUSD),
+            isNumber(o.minUSD) &&
+            // A cached view from before sell prices has neither
+            (o.sellPrice === undefined || isNumber(o.sellPrice)) &&
+            (o.minShares === undefined || isNumber(o.minShares)),
     );
 }
 

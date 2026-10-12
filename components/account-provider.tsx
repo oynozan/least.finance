@@ -22,7 +22,14 @@ import {
 } from "@/lib/account/state";
 import { API_URL } from "@/lib/api";
 import { ensureNetwork } from "@/lib/wallet/network";
-import type { CoinBalance, DepositOrderView, DepositQuoteView, PositionsView, QuoteView } from "@/server/src/protocol";
+import type {
+    CoinBalance,
+    DepositOrderView,
+    DepositQuoteView,
+    PositionView,
+    PositionsView,
+    QuoteView,
+} from "@/server/src/protocol";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
 import { linkedWallets } from "./arc-wallet";
@@ -56,6 +63,8 @@ export type Account = {
     quotePrediction: (input: { eventId: string; tokenId: string; amountUSD: string }) => Promise<QuoteView | ApiError>;
     /** Places a prediction buy, counted at once; the outcome arrives as a push. */
     placePrediction: (input: PlaceInput) => { requestId: string; sent: boolean };
+    /** Sells a whole position, counted at once; the outcome arrives as a push. */
+    closePosition: (position: PositionView, sellPrice: number | null) => void;
     dismissTradeNotice: () => void;
 };
 
@@ -162,6 +171,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             dismissNotice={() => client.dismissNotice()}
             quotePrediction={(input) => client.quotePrediction(input)}
             placePrediction={(input) => client.placePrediction(input)}
+            closePosition={(position, sellPrice) => client.closePosition(position, sellPrice)}
             dismissTradeNotice={() => client.dismissTradeNotice()}
         >
             {children}
@@ -178,6 +188,7 @@ function Provide({
     refreshBalances = () => undefined,
     quotePrediction = async () => UNAVAILABLE,
     placePrediction = () => ({ requestId: "", sent: false }),
+    closePosition = () => undefined,
     dismissTradeNotice = () => undefined,
     children,
 }: {
@@ -189,6 +200,7 @@ function Provide({
     refreshBalances?: () => void;
     quotePrediction?: Account["quotePrediction"];
     placePrediction?: Account["placePrediction"];
+    closePosition?: Account["closePosition"];
     dismissTradeNotice?: () => void;
     children: ReactNode;
 }) {
@@ -212,6 +224,7 @@ function Provide({
         tradeNotice: snapshot.tradeNotice,
         quotePrediction,
         placePrediction,
+        closePosition,
         dismissTradeNotice,
     };
     return <AccountContext value={value}>{children}</AccountContext>;

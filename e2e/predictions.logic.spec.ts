@@ -12,6 +12,7 @@ import {
     type PredictionOrderView,
     type WalletSession,
 } from "@/lib/account/state";
+import { livePredictionRows, positionDetail } from "@/components/wallet-data";
 
 const DEPOSIT_ADDRESS = "0x00000000000000000000000000000000000000b2" as Hex;
 const RULES = { chainId: 5042, minDeposit: "0.01" };
@@ -277,5 +278,124 @@ test.describe("optimistic predictions", () => {
         const r = ready(state);
         expect(r.predictions.orders).toEqual([filled]);
         expect(r.predictions.positions.map((p) => p.id)).toEqual(["pos1"]);
+    });
+});
+
+const sell = (requestId: string, usdc: string, connection = 1): AccountAction => ({
+    type: "predict",
+    trade: { requestId, side: "sell", positionId: "pos1", proceedsWei: toWei(usdc), at: 1000, connection },
+});
+
+const withPosition = (balance = "90") =>
+    run([{ type: "positions", connection: 1, positions: { positions: [position()], orders: [] } }], open(balance, 2));
+
+test.describe("optimistic sells", () => {
+    test("a pending sell raises the balance and hides the position; a failure restores both", () => {
+        const state = run([sell(REQ_B, "12")], withPosition("90"));
+        expect(usdc(state)).toBe(toWei("102"));
+        expect(livePredictionRows(ready(state).predictions, ready(state).optimistic)).toEqual([]);
+
+        const failed = run([{ type: "predict-failed", requestId: REQ_B }], state);
+        expect(usdc(failed)).toBe(toWei("90"));
+        expect(livePredictionRows(ready(failed).predictions, ready(failed).optimistic)).toHaveLength(1);
+
+        // The server's failed update puts the position back and takes the entry away
+        const refused = run(
+            [
+                {
+                    type: "prediction",
+                    update: {
+                        requestId: REQ_B,
+                        order: order(REQ_B, { side: "sell", state: "failed", reason: "price_moved" }),
+                        position: position({ updatedAt: at(3) }),
+                        account: account("90", 3),
+                    },
+                },
+            ],
+            state,
+        );
+        expect(usdc(refused)).toBe(toWei("90"));
+        expect(ready(refused).optimistic).toEqual([]);
+    });
+
+    test("a sell the server is still working on keeps counting until it fills", () => {
+        const working = order(REQ_B, { side: "sell", state: "placing", positionId: "pos1" });
+        const state = run(
+            [sell(REQ_B, "12"), { type: "positions", connection: 1, positions: { positions: [], orders: [working] } }],
+            withPosition("90"),
+        );
+        expect(usdc(state)).toBe(toWei("102"));
+        const filled = run(
+            [
+                {
+                    type: "prediction",
+                    update: {
+                        requestId: REQ_B,
+                        order: order(REQ_B, { side: "sell", state: "filled", updatedAt: at(4) }),
+                        position: position({ state: "closed", proceedsUSD: "12", updatedAt: at(4) }),
+                        account: account("102", 3),
+                    },
+                },
+            ],
+            state,
+        );
+        expect(usdc(filled)).toBe(toWei("102"));
+    });
+
+    test("position:settled applies the payout balance once", () => {
+        const won = position({ state: "won", payoutUSD: "20", settledAt: at(9), updatedAt: at(9) });
+        const settled: AccountAction = { type: "position-settled", position: won, account: account("110", 3) };
+        const once = run([settled], withPosition("90"));
+        const twice = run([settled], once);
+        expect(usdc(once)).toBe(toWei("110"));
+        expect(usdc(twice)).toBe(toWei("110"));
+        expect(ready(twice).predictions.positions).toEqual([won]);
+    });
+});
+
+test.describe("live prediction rows", () => {
+    const view = (positions: PositionView[]) => livePredictionRows({ positions, orders: [] }, []);
+
+    test("a buy restored by a reload shows no shares rather than the amount", () => {
+        const placing = order(REQ_A, { state: "placing", positionId: null, shares: null });
+        const [row] = livePredictionRows({ positions: [], orders: [placing] }, []);
+        expect(row!.shares).toBe("");
+        expect(positionDetail(row!)).toBe("Yes");
+    });
+
+    test("two buys still waiting for their fills show no shares rather than 0", () => {
+        const a = order(REQ_A, { state: "placing", positionId: null, shares: null });
+        const b = order(REQ_B, { id: "order-b", state: "posted", positionId: null, shares: null });
+        const rows = livePredictionRows({ positions: [], orders: [a, b] }, []);
+        expect(rows).toHaveLength(1);
+        expect([rows[0]!.shares, rows[0]!.size]).toEqual(["", 20]);
+    });
+
+    test("won and lost positions of the last 7 days are settled rows; older and sold ones are gone", () => {
+        const now = Date.parse(at(0)) + 3 * 86_400_000;
+        const rows = livePredictionRows(
+            {
+                positions: [
+                    position({ id: "w", state: "won", payoutUSD: "20", settledAt: at(0) }),
+                    position({ id: "l", tokenId: "t2", state: "lost", settledAt: at(0) }),
+                    position({
+                        id: "old",
+                        tokenId: "t3",
+                        state: "won",
+                        payoutUSD: "5",
+                        settledAt: "2026-09-01T00:00:00.000Z",
+                    }),
+                    position({ id: "c", tokenId: "t4", state: "closed", settledAt: at(0) }),
+                ],
+                orders: [],
+            },
+            [],
+            now,
+        );
+        expect(rows.map((r) => [r.id, r.status, r.payout])).toEqual([
+            ["w", "won", 20],
+            ["l", "lost", 0],
+        ]);
+        expect(view([position()])[0]!.status).toBe("open");
     });
 });

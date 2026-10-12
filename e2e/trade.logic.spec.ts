@@ -162,6 +162,8 @@ test.describe("live prediction markets", () => {
         tokenId,
         label,
         buyPrice,
+        sellPrice: buyPrice - 0.01,
+        minShares: 5,
         chance,
         tone: "neutral" as const,
         minUSD,

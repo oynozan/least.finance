@@ -9,6 +9,8 @@ const fixtures = JSON.parse(
     readFileSync(join(process.cwd(), "server/test/fixtures/polymarket/events.json"), "utf8"),
 ) as {
     samples: Record<string, string>;
+    top: { markets: { id: string; clobTokenIds: string }[] }[];
+    extra: { markets: { id: string; clobTokenIds: string }[] }[];
 };
 
 /** Event IDs of the fixture's notable events. */
@@ -25,3 +27,13 @@ export const sampleView = (id: string) => get<MarketView>(`/markets/${id}`);
 
 /** The trending list, in the order the picker shows it. */
 export const trendingView = () => get<TrendingView>("/markets/trending");
+
+/** The Polymarket market a token belongs to, which is what resolving takes. */
+export function marketIdOf(tokenId: string): string {
+    for (const event of [...fixtures.top, ...fixtures.extra]) {
+        for (const market of event.markets) {
+            if ((JSON.parse(market.clobTokenIds) as string[]).includes(tokenId)) return market.id;
+        }
+    }
+    throw new Error(`No market for token ${tokenId}`);
+}
