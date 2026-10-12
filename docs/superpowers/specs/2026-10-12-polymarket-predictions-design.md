@@ -11,18 +11,18 @@ The Predict sentence trades real Polymarket markets with the person's Arc balanc
 
 ## Decisions
 
-|                      |                                                                                                                                        |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Markets              | Every active Polymarket market. The picker opens on trending (24-hour volume), and search finds the rest.                             |
-| Thin markets         | Hidden, because orders are real                                                                                                        |
-| Multi-outcome events | The event is the question and its options are the outcomes. Picking an option buys YES on it.                                         |
-| Custody              | One pooled Polymarket account run by our server. Our ledger records whose shares are whose.                                           |
-| Money path           | A pUSD float on Polygon, topped up by hand. Predictions, closes and payouts move people's Arc balances through the ledger instantly.  |
-| Positions            | Close sells early at the market price. Winners are paid automatically at resolution.                                                  |
-| Location             | No check, for a private demo only. See "Not included".                                                                                 |
-| Builder fee          | None. People pay only Polymarket's own fee, shown in the review.                                                                       |
-| Order type           | Fill-or-kill market orders with a price limit. An order fills completely or not at all.                                               |
-| Trades are optimistic | Confirming accepts the trade in the app at once. Only if the server fails it does the app take it back, with a message.             |
+|                       |                                                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Markets               | Every active Polymarket market. The picker opens on trending (24-hour volume), and search finds the rest.                            |
+| Thin markets          | Hidden, because orders are real                                                                                                      |
+| Multi-outcome events  | The event is the question and its options are the outcomes. Picking an option buys YES on it.                                        |
+| Custody               | One pooled Polymarket account run by our server. Our ledger records whose shares are whose.                                          |
+| Money path            | A pUSD float on Polygon, topped up by hand. Predictions, closes and payouts move people's Arc balances through the ledger instantly. |
+| Positions             | Close sells early at the market price. Winners are paid automatically at resolution.                                                 |
+| Location              | No check, for a private demo only. See "Not included".                                                                               |
+| Builder fee           | None. People pay only Polymarket's own fee, shown in the review.                                                                     |
+| Order type            | Fill-or-kill market orders with a price limit. An order fills completely or not at all.                                              |
+| Trades are optimistic | Confirming accepts the trade in the app at once. Only if the server fails it does the app take it back, with a message.              |
 
 ## 1. Live markets
 
@@ -35,7 +35,7 @@ The Predict sentence trades real Polymarket markets with the person's Arc balanc
     - `GET /markets/search?q=`
     - `GET /markets/:eventId`
 
-  They sit outside `/v1`, so they take no token, and they're rate-limited per IP. `GET /markets/trending` returns `{ markets, maxOrderUSD }`. `maxOrderUSD` is the pool's current per-order limit (section 2), and `null` while trading is off.
+    They sit outside `/v1`, so they take no token, and they're rate-limited per IP. `GET /markets/trending` returns `{ markets, maxOrderUSD }`. `maxOrderUSD` is the pool's current per-order limit (section 2), and `null` while trading is off.
 
 **Shaping an event into a question.** A market is offered when it is active, not closed, accepting orders, has an order book, closes more than an hour from now, and its spread is at most 10¢. An outcome is offered when its buy price is between 1¢ and 99¢. Then, taking the first rule that fits:
 
@@ -98,12 +98,12 @@ An event with no offered outcome is left out.
 - The debit is guarded by `balance >= amount` in the same `findOneAndUpdate`, so a balance never goes negative.
 - New entry kinds:
 
-  | Kind                | Direction | `refId`        |
-  | ------------------- | --------- | -------------- |
-  | `prediction_buy`    | −         | the order      |
-  | `prediction_refund` | +         | the order      |
-  | `prediction_sell`   | +         | the order      |
-  | `prediction_payout` | +         | the position   |
+    | Kind                | Direction | `refId`      |
+    | ------------------- | --------- | ------------ |
+    | `prediction_buy`    | −         | the order    |
+    | `prediction_refund` | +         | the order    |
+    | `prediction_sell`   | +         | the order    |
+    | `prediction_payout` | +         | the position |
 
 - The existing unique index on `(kind, refId)` keeps each one to exactly once.
 
@@ -222,16 +222,16 @@ The review asks for one when it opens, again when the amount changes, and every 
 
 Every failure after an optimistic accept takes the trade back in the app (as in section 2), then shows one message in the sidebar's status line.
 
-| What happens                       | The message                                                          | Money on the server      |
-| ---------------------------------- | -------------------------------------------------------------------- | ------------------------ |
-| The price moved past the limit     | "The price moved, so your prediction didn't go through. Nothing was spent." | Refunded at once  |
-| The market closed meanwhile        | "This market just closed. Nothing was spent."                        | Refunded at once         |
-| The float is short                 | "Predictions are limited to $X right now. Nothing was spent."        | Nothing moved            |
-| Polymarket doesn't answer at all   | "Polymarket isn't answering. Nothing was spent."                     | Refunded (never posted)  |
-| Not connected at confirm           | "You're offline. Nothing was spent."                                 | Nothing moved            |
-| An answer is late or unclear       | Nothing: the trade stays accepted until the tracker settles it       | Held until settled       |
-| A close fails                      | "Couldn't sell right now. Your position is back."                    | Nothing moved            |
-| Gamma sync fails                   | Nothing. The last good list stays, and a warning is logged.          | n/a                      |
+| What happens                     | The message                                                                 | Money on the server     |
+| -------------------------------- | --------------------------------------------------------------------------- | ----------------------- |
+| The price moved past the limit   | "The price moved, so your prediction didn't go through. Nothing was spent." | Refunded at once        |
+| The market closed meanwhile      | "This market just closed. Nothing was spent."                               | Refunded at once        |
+| The float is short               | "Predictions are limited to $X right now. Nothing was spent."               | Nothing moved           |
+| Polymarket doesn't answer at all | "Polymarket isn't answering. Nothing was spent."                            | Refunded (never posted) |
+| Not connected at confirm         | "You're offline. Nothing was spent."                                        | Nothing moved           |
+| An answer is late or unclear     | Nothing: the trade stays accepted until the tracker settles it              | Held until settled      |
+| A close fails                    | "Couldn't sell right now. Your position is back."                           | Nothing moved           |
+| Gamma sync fails                 | Nothing. The last good list stays, and a warning is logged.                 | n/a                     |
 
 ## Testing
 

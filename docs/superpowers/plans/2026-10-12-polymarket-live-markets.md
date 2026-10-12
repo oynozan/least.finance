@@ -5,6 +5,7 @@
 **Goal:** The Predict sentence's question picker offers real Polymarket markets: trending at once (from a cached copy), the rest through search, with live odds. Review stays simulated.
 
 **Architecture:**
+
 - **Server.**
     - A `MarketService` syncs the top events from Polymarket's Gamma API every minute.
     - It shapes each event into a question with outcomes, using four rules, and serves three public HTTP routes.
@@ -37,19 +38,19 @@
     - In Gamma, `outcomes`, `outcomePrices` and `clobTokenIds` are JSON-encoded strings. A market's `bestBid` and `bestAsk` are for its first outcome's token.
 - **Numbers from the spec:**
 
-  | What                         | Value                                                                  |
-  | ---------------------------- | ---------------------------------------------------------------------- |
-  | Sync                         | every 60 000 ms, top 100 events, trending = first 50 that shape        |
-  | Spread                       | at most 0.10                                                           |
-  | Offered outcome's buy price  | from 0.01 to 0.99                                                      |
-  | Market close                 | more than 1 hour from now                                              |
-  | Search                       | 2+ characters, 250 ms debounce, 20 results, 60 s cache per query       |
-  | Price cache per event        | 5 s                                                                    |
-  | Requested events re-read     | if requested in the last 10 minutes                                    |
-  | Client refresh               | trending every 60 s, the watched question every 10 s, only while the page is visible; every 2 s until the server has a list |
-  | Short title                  | 24 characters                                                          |
-  | `minUSD`                     | `max(1, ceil(orderMinSize × buyPrice × 100) / 100)`                    |
-  | Route rate limits per IP     | trending 120/min, search 60/min, event 120/min                         |
+    | What                        | Value                                                                                                                       |
+    | --------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+    | Sync                        | every 60 000 ms, top 100 events, trending = first 50 that shape                                                             |
+    | Spread                      | at most 0.10                                                                                                                |
+    | Offered outcome's buy price | from 0.01 to 0.99                                                                                                           |
+    | Market close                | more than 1 hour from now                                                                                                   |
+    | Search                      | 2+ characters, 250 ms debounce, 20 results, 60 s cache per query                                                            |
+    | Price cache per event       | 5 s                                                                                                                         |
+    | Requested events re-read    | if requested in the last 10 minutes                                                                                         |
+    | Client refresh              | trending every 60 s, the watched question every 10 s, only while the page is visible; every 2 s until the server has a list |
+    | Short title                 | 24 characters                                                                                                               |
+    | `minUSD`                    | `max(1, ceil(orderMinSize × buyPrice × 100) / 100)`                                                                         |
+    | Route rate limits per IP    | trending 120/min, search 60/min, event 120/min                                                                              |
 
 - **Copy, verbatim:**
     - The search field's placeholder and label: "Search markets".
@@ -72,6 +73,7 @@
 ### Task 1: Shape Polymarket events into questions
 
 **Files:**
+
 - Create:
     - `server/src/markets/gamma.ts`: zod schemas for the Gamma fields we read
     - `server/src/markets/shape.ts`
@@ -81,19 +83,29 @@
 - Test: `server/test/unit/markets-shape.test.ts`
 
 **Interfaces:**
+
 - Produces, in `server/src/protocol.ts` (type-only, shared with the client):
-  ```ts
-  export type MarketOutcomeView = {
-      tokenId: string; label: string; buyPrice: number; chance: number;
-      tone: "gain" | "loss" | "neutral"; minUSD: number; image: string | null;
-  };
-  export type MarketView = {
-      id: string; title: string; image: string | null; endDate: string;
-      volume24hUSD: number; outcomes: MarketOutcomeView[];
-  };
-  export type TrendingView = { markets: MarketView[]; maxOrderUSD: number | null; readAt: string | null };
-  export type MarketSearchView = { query: string; markets: MarketView[] };
-  ```
+    ```ts
+    export type MarketOutcomeView = {
+        tokenId: string;
+        label: string;
+        buyPrice: number;
+        chance: number;
+        tone: "gain" | "loss" | "neutral";
+        minUSD: number;
+        image: string | null;
+    };
+    export type MarketView = {
+        id: string;
+        title: string;
+        image: string | null;
+        endDate: string;
+        volume24hUSD: number;
+        outcomes: MarketOutcomeView[];
+    };
+    export type TrendingView = { markets: MarketView[]; maxOrderUSD: number | null; readAt: string | null };
+    export type MarketSearchView = { query: string; markets: MarketView[] };
+    ```
 - Produces, in `server/src/markets/gamma.ts`:
     - `gammaEvent`, a zod schema that keeps every event-level field `shapeEvent` reads, and parses `markets` leniently. A market that fails its schema becomes `null` and is skipped, never failing the event.
     - `type GammaEvent` and `type GammaMarket`, with `outcomes: string[]`, `outcomePrices: number[]` and `clobTokenIds: string[]` already decoded from their JSON strings.
@@ -109,24 +121,24 @@
     - It searches "aliens", "kraken", "fed" and "senate", and keeps the first shaped event that isn't in the top 100 as `extra`.
     - It picks one sample event per rule, plus a skipped one.
     - It writes `events.json`.
-  Run it: `cd server && node scripts/record-polymarket-fixtures.ts`. Expected: it prints one event ID per sample, and the file is under 1 MB.
+      Run it: `cd server && node scripts/record-polymarket-fixtures.ts`. Expected: it prints one event ID per sample, and the file is under 1 MB.
 - [ ] **Step 2: Write the failing tests** in `markets-shape.test.ts`, with `now = new Date(fixtures.recordedAt)`:
-  ```ts
-  test("a single YES/NO market keeps YES and NO, YES in the gain tone", () => {
-      const view = shapeEvent(event(samples.yesNo), now)!;
-      expect(view.outcomes.map((o) => [o.label, o.tone])).toEqual([["YES", "gain"], ["NO", "loss"]]);
-  });
-  test("a single named market keeps its own labels, neutral", ...);           // samples.named; tones are both "neutral"
-  test("several YES/NO markets become one outcome each, by chance", ...);     // samples.multi: labels are the groupItemTitles, sorted by chance descending, each tokenId is that market's first token
-  test("a sports event keeps only its moneyline market", ...);                 // samples.sports: exactly 2 outcomes, both from the moneyline market's tokens
-  test("an event no rule fits is left out", ...);                              // samples.skipped → null
-  test("prices: YES buys at the ask, NO at 1 − bid, chance is the midpoint", ...);  // bid 0.83, ask 0.84 → YES 0.84 / 0.835; NO 0.17 / 0.165 (to 4 decimals)
-  test("a market with a spread over 10¢, or closing within the hour, isn't offered", ...);
-  test("an outcome priced under 1¢ or over 99¢ isn't offered", ...);
-  test("minUSD is the minimum size times the price, rounded up to the cent, at least $1", ...);  // orderMinSize 5 × 0.84 → 4.2; 5 × 0.1 → 1
-  test("a market with malformed clobTokenIds or no bestBid is skipped, the event still shapes", ...);
-  ```
-  Build the edge cases by copying a sample event and editing one field.
+    ```ts
+    test("a single YES/NO market keeps YES and NO, YES in the gain tone", () => {
+        const view = shapeEvent(event(samples.yesNo), now)!;
+        expect(view.outcomes.map((o) => [o.label, o.tone])).toEqual([["YES", "gain"], ["NO", "loss"]]);
+    });
+    test("a single named market keeps its own labels, neutral", ...);           // samples.named; tones are both "neutral"
+    test("several YES/NO markets become one outcome each, by chance", ...);     // samples.multi: labels are the groupItemTitles, sorted by chance descending, each tokenId is that market's first token
+    test("a sports event keeps only its moneyline market", ...);                 // samples.sports: exactly 2 outcomes, both from the moneyline market's tokens
+    test("an event no rule fits is left out", ...);                              // samples.skipped → null
+    test("prices: YES buys at the ask, NO at 1 − bid, chance is the midpoint", ...);  // bid 0.83, ask 0.84 → YES 0.84 / 0.835; NO 0.17 / 0.165 (to 4 decimals)
+    test("a market with a spread over 10¢, or closing within the hour, isn't offered", ...);
+    test("an outcome priced under 1¢ or over 99¢ isn't offered", ...);
+    test("minUSD is the minimum size times the price, rounded up to the cent, at least $1", ...);  // orderMinSize 5 × 0.84 → 4.2; 5 × 0.1 → 1
+    test("a market with malformed clobTokenIds or no bestBid is skipped, the event still shapes", ...);
+    ```
+    Build the edge cases by copying a sample event and editing one field.
 - [ ] **Step 3: Run the tests and confirm they fail.** Run: `cd server && npx vitest run test/unit/markets-shape.test.ts`. Expected: FAIL, "Cannot find module '../../src/markets/shape.ts'".
 - [ ] **Step 4: Implement `shapeEvent`.** Follow the spec's "Shaping an event into a question" rules 1–4, in order:
     - Labels: "Yes" becomes "YES" and "No" becomes "NO"; other labels stay as they are.
@@ -140,6 +152,7 @@
 ### Task 2: The market service, against a fake Polymarket
 
 **Files:**
+
 - Create:
     - `server/src/markets/polymarket-data.ts`
     - `server/src/markets/markets.ts`
@@ -147,41 +160,52 @@
 - Test: `server/test/integration/markets.test.ts`
 
 **Interfaces:**
+
 - Consumes `shapeEvent` and `gammaEvent` (Task 1).
 - Produces, in `polymarket-data.ts`:
-  ```ts
-  export type Book = { bestBid: number | null; bestAsk: number | null; minOrderSize: number | null };
-  export interface PolymarketData {
-      topEvents(): Promise<GammaEvent[]>;
-      search(query: string): Promise<GammaEvent[]>;
-      event(id: string): Promise<GammaEvent | null>;   // null on 404
-      books(tokenIds: string[]): Promise<Map<string, Book>>;
-  }
-  export function createPolymarketData(options: { gammaUrl: string; clobUrl: string; fetch?: typeof fetch }): PolymarketData;
-  ```
-  Requests time out after 5 s (`AbortSignal.timeout`). Any status other than 200 or 404 throws `Error("Polymarket answered <status> to <path>")`. This follows the shape of `crosschain/providers/relay.ts`.
+    ```ts
+    export type Book = { bestBid: number | null; bestAsk: number | null; minOrderSize: number | null };
+    export interface PolymarketData {
+        topEvents(): Promise<GammaEvent[]>;
+        search(query: string): Promise<GammaEvent[]>;
+        event(id: string): Promise<GammaEvent | null>; // null on 404
+        books(tokenIds: string[]): Promise<Map<string, Book>>;
+    }
+    export function createPolymarketData(options: {
+        gammaUrl: string;
+        clobUrl: string;
+        fetch?: typeof fetch;
+    }): PolymarketData;
+    ```
+    Requests time out after 5 s (`AbortSignal.timeout`). Any status other than 200 or 404 throws `Error("Polymarket answered <status> to <path>")`. This follows the shape of `crosschain/providers/relay.ts`.
 - Produces, in `markets.ts`, a class with this shape:
-  ```ts
-  export class MarketService {
-      constructor(deps: { data: PolymarketData; logger: Logger; syncMs: number; now?: () => number });
-      start(): void; stop(): Promise<void>; tick(): Promise<void>;
-      trending(): TrendingView;                        // maxOrderUSD is null in this phase
-      search(query: string): Promise<MarketSearchView>;
-      event(id: string): Promise<MarketView | null>;
-  }
-  ```
-  `start`, `stop` and the loop follow `crosschain/tracker.ts`.
+    ```ts
+    export class MarketService {
+        constructor(deps: { data: PolymarketData; logger: Logger; syncMs: number; now?: () => number });
+        start(): void;
+        stop(): Promise<void>;
+        tick(): Promise<void>;
+        trending(): TrendingView; // maxOrderUSD is null in this phase
+        search(query: string): Promise<MarketSearchView>;
+        event(id: string): Promise<MarketView | null>;
+    }
+    ```
+    `start`, `stop` and the loop follow `crosschain/tracker.ts`.
 - Produces, in `fake-polymarket.ts`: `startFakePolymarket(options?: { now?: () => number }): Promise<FakePolymarket>`, where:
-  ```ts
-  type FakePolymarket = {
-      url: string; fixtures: Fixtures; requests: string[];
-      setBook(tokenId: string, book: { bid: number | null; ask: number | null }): void;
-      hide(eventId: string): void;    // gone from top, search and /events/:id (404)
-      failNext(path: "/events" | "/public-search" | "/books"): void;  // answers 500 once
-      stop(): Promise<void>;
-  };
-  ```
-  It serves the four endpoints from the fixtures. Search is a case-insensitive title match over `top` and `extra`. Books come from each market's `bestBid`, `bestAsk` and `orderMinSize`, unless `setBook` overrode them. It shifts every `endDate` (event and market) by `now − recordedAt`, so the fixtures never go stale.
+
+    ```ts
+    type FakePolymarket = {
+        url: string;
+        fixtures: Fixtures;
+        requests: string[];
+        setBook(tokenId: string, book: { bid: number | null; ask: number | null }): void;
+        hide(eventId: string): void; // gone from top, search and /events/:id (404)
+        failNext(path: "/events" | "/public-search" | "/books"): void; // answers 500 once
+        stop(): Promise<void>;
+    };
+    ```
+
+    It serves the four endpoints from the fixtures. Search is a case-insensitive title match over `top` and `extra`. Books come from each market's `bestBid`, `bestAsk` and `orderMinSize`, unless `setBook` overrode them. It shifts every `endDate` (event and market) by `now − recordedAt`, so the fixtures never go stale.
 
 - [ ] **Step 1: Write the failing tests** in `markets.test.ts`, with a `MarketService` over `createPolymarketData` pointed at the fake:
     - `"trending is the first 50 events that shape, in volume order"`: after `tick()`, `trending().markets` has at most 50 entries, starts with the first shaped event of `top`, and `readAt` is set.
@@ -201,6 +225,7 @@
 ### Task 3: Public market routes, wired into the server
 
 **Files:**
+
 - Modify:
     - `server/src/config.ts`: `POLYMARKET_GAMMA_URL`, `POLYMARKET_CLOB_URL` and `MARKETS_SYNC_MS`, with the defaults from Global Constraints and `MARKETS_SYNC_MS` defaulting to `60000`
     - `server/.env.example`
@@ -210,6 +235,7 @@
 - Test: `server/test/integration/markets-routes.test.ts`, and `server/test/unit/config.test.ts` for the defaults
 
 **Interfaces:**
+
 - Consumes `MarketService` (Task 2).
 - Produces the routes:
     - `GET /markets/trending` → `TrendingView`
@@ -232,6 +258,7 @@
 ### Task 4: Live markets in the sentence
 
 **Files:**
+
 - Create:
     - `lib/api.ts`: `export const API_URL`, moved from `components/account-provider.tsx`, which imports it
     - `lib/trade/markets.ts`
@@ -257,6 +284,7 @@
     - `e2e/markets.spec.ts`
 
 **Interfaces:**
+
 - Consumes `MarketView`, `TrendingView` and `MarketSearchView` from `@/server/src/protocol`, and the routes (Task 3).
 - Produces, in `lib/trade/markets.ts`:
     - `toPredictionMarket(view: MarketView, now: Date): PredictionMarket`:
@@ -267,14 +295,24 @@
         - Each outcome is `{ id: tokenId, label, price: buyPrice, chance, tone, minUSD, image: image ?? undefined }`.
     - `loadCachedTrending(): TrendingView | null` and `saveCachedTrending(view)`, under the key `markets:trending`. They're wrapped in try/catch, and the load checks the shape (`markets` an array, `readAt` a string).
 - Produces, in `components/trade/markets-store.ts`:
-  ```ts
-  export type MarketsSnapshot = { trending: MarketView[]; readAt: string | null; query: string; results: MarketView[] | null; known: ReadonlyMap<string, MarketView> };
-  export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fetch; now?: () => number }): {
-      subscribe(listener: () => void): () => void; getSnapshot(): MarketsSnapshot;
-      start(): void; stop(): void; search(query: string): void; watch(eventId: string | null): void;
-  };
-  ```
-  Task 5 implements `search`. In this task it only sets `query`.
+    ```ts
+    export type MarketsSnapshot = {
+        trending: MarketView[];
+        readAt: string | null;
+        query: string;
+        results: MarketView[] | null;
+        known: ReadonlyMap<string, MarketView>;
+    };
+    export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fetch; now?: () => number }): {
+        subscribe(listener: () => void): () => void;
+        getSnapshot(): MarketsSnapshot;
+        start(): void;
+        stop(): void;
+        search(query: string): void;
+        watch(eventId: string | null): void;
+    };
+    ```
+    Task 5 implements `search`. In this task it only sets `query`.
     - `start()` shows the cached trending list at once, fetches the fresh one, and then refreshes it on the intervals in Global Constraints.
     - `watch(id)` refreshes that question every 10 s. A 404 drops it from `known` and from `trending`.
     - Every view the store receives also goes into `known`.
@@ -294,7 +332,7 @@
     - `markets`: `(results ?? trending)` mapped through `toPredictionMarket`
     - `findMarket`: looks in `known`
     - the mock `tokens` and `perps`
-  While the verb is Predict, it calls `watch(marketId)`, else `watch(null)`.
+      While the verb is Predict, it calls `watch(marketId)`, else `watch(null)`.
 - Accepted gap until phase 3: a simulated confirm on a live market shows "on a market" in the PnL list, because `lib/trade/activity.ts` looks questions up in the mock list.
 - `market-image.tsx`: `MarketImage({ src, label })` renders `next/image` at the icon size (`size-[1.15em]`, rounded, with the same ring as the coin icons). If it fails to load, it falls back to a neutral circle with the label's first letter.
 
@@ -330,6 +368,7 @@
 ### Task 5: Search in the picker
 
 **Files:**
+
 - Modify:
     - `lib/sentence/types.ts`: `ChoiceSpec.search?: { placeholder: string }`
     - `lib/sentence/resolve.ts`: `ChoiceSlotView.search?: { placeholder: string }`
@@ -342,6 +381,7 @@
     - `e2e/markets.spec.ts`
 
 **Interfaces:**
+
 - Consumes `createMarketsStore` (Task 4).
 - Produces:
     - `ChoiceSlot` gains `onSearch?: (query: string) => void`, and `Picker` gains `search?: { placeholder: string; onQuery: (query: string) => void; empty?: string }`.
