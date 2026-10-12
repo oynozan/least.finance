@@ -181,3 +181,29 @@ export type ServerToClientEvents = {
 
 /** What the socket handshake carries in `auth`. */
 export type HandshakeAuth = { token: string };
+
+export type MarketOutcomeView = {
+    /** The CLOB token ID that buying this outcome buys. */
+    tokenId: string;
+    label: string;
+    /** What one share costs to buy, from the best ask, 0 to 1. */
+    buyPrice: number;
+    /** The midpoint, 0 to 1. */
+    chance: number;
+    tone: "gain" | "loss" | "neutral";
+    minUSD: number;
+    image: string | null;
+};
+
+export type MarketView = {
+    /** Polymarket's event ID. */
+    id: string;
+    title: string;
+    image: string | null;
+    endDate: string;
+    volume24hUSD: number;
+    outcomes: MarketOutcomeView[];
+};
+
+export type TrendingView = { markets: MarketView[]; maxOrderUSD: number | null; readAt: string | null };
+export type MarketSearchView = { query: string; markets: MarketView[] };
