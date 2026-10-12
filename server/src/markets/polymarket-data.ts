@@ -1,3 +1,4 @@
+import type { Logger } from "pino";
 import { z } from "zod";
 import { gammaEvent, type GammaEvent } from "./gamma.ts";
 
@@ -25,14 +26,17 @@ const bookResponse = z.array(
 const searchResponse = z.object({ events: z.array(z.unknown()).nullish() });
 
 // One odd event shouldn't cost the rest of the list
-const parseEvents = (items: unknown[]): GammaEvent[] =>
-    items.flatMap((item) => {
+function parseEvents(items: unknown[], logger?: Logger): GammaEvent[] {
+    const events = items.flatMap((item) => {
         const parsed = gammaEvent.safeParse(item);
         return parsed.success ? [parsed.data] : [];
     });
+    if (events.length < items.length) logger?.warn({ dropped: items.length - events.length }, "Dropped events that failed the schema");
+    return events;
+}
 
-export function createPolymarketData(options: { gammaUrl: string; clobUrl: string; fetch?: typeof fetch }): PolymarketData {
-    const { gammaUrl, clobUrl, fetch: call = fetch } = options;
+export function createPolymarketData(options: { gammaUrl: string; clobUrl: string; fetch?: typeof fetch; logger?: Logger }): PolymarketData {
+    const { gammaUrl, clobUrl, fetch: call = fetch, logger } = options;
 
     async function send(base: string, path: string, init: RequestInit = {}, allowMissing = false): Promise<unknown> {
         const response = await call(`${base}${path}`, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
@@ -47,13 +51,13 @@ export function createPolymarketData(options: { gammaUrl: string; clobUrl: strin
                 gammaUrl,
                 "/events?active=true&closed=false&order=volume24hr&ascending=false&limit=100",
             );
-            return parseEvents(z.array(z.unknown()).parse(body));
+            return parseEvents(z.array(z.unknown()).parse(body), logger);
         },
 
         async search(query) {
             const params = new URLSearchParams({ q: query, events_status: "active", limit_per_type: "20" });
             const body = searchResponse.parse(await send(gammaUrl, `/public-search?${params}`));
-            return parseEvents(body.events ?? []);
+            return parseEvents(body.events ?? [], logger);
         },
 
         async event(id) {

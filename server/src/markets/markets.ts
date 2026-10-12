@@ -12,6 +12,8 @@ const SEARCH_TTL_MS = 60_000;
 const EVENT_TTL_MS = 60_000;
 const BOOKS_TTL_MS = 5_000;
 const REQUESTED_TTL_MS = 600_000;
+/** Re-reads per sync, most recently requested first. */
+const MAX_REREADS = 50;
 
 type Deps = {
     data: PolymarketData;
@@ -57,37 +59,40 @@ export class MarketService {
 
     async #run(signal: AbortSignal) {
         while (!signal.aborted) {
-            await this.tick();
+            await this.tick(signal);
             await sleep(this.#deps.syncMs, undefined, { signal }).catch(() => undefined);
         }
     }
 
     /** One sync: the top events, then each recently requested event by ID; a failure leaves what was kept. */
-    async tick(): Promise<void> {
+    async tick(signal?: AbortSignal): Promise<void> {
+        if (signal?.aborted) return;
         const now = this.#now();
+        const date = new Date(now);
         try {
             const top = await this.#deps.data.topEvents();
-            const date = new Date(now);
             const markets: MarketView[] = [];
             for (const event of top) {
                 this.#events.set(event.id, { value: event, at: now });
                 const view = shapeEvent(event, date);
                 if (view && markets.length < TRENDING_COUNT) markets.push(view);
             }
-            this.#trending = { value: markets, at: now };
+            // An empty answer is more likely a changed schema than a quiet market
+            if (markets.length === 0) this.#deps.logger.warn({ read: top.length }, "Polymarket's top events shaped to nothing");
+            else this.#trending = { value: markets, at: now };
         } catch (error) {
             this.#deps.logger.warn({ err: error }, "Couldn't read Polymarket's top events");
         }
 
-        for (const [id, requestedAt] of this.#requested) {
-            if (now - requestedAt > REQUESTED_TTL_MS) {
-                this.#requested.delete(id);
-                continue;
-            }
+        for (const [id, requestedAt] of this.#requested) if (now - requestedAt > REQUESTED_TTL_MS) this.#requested.delete(id);
+        const recent = [...this.#requested].sort((a, b) => b[1] - a[1]).slice(0, MAX_REREADS);
+        for (const [id] of recent) {
+            if (signal?.aborted) return;
             try {
                 const event = await this.#deps.data.event(id);
                 if (event) this.#events.set(id, { value: event, at: now });
                 else this.#events.delete(id);
+                if (!event || !shapeEvent(event, date)) this.#requested.delete(id);
             } catch (error) {
                 this.#deps.logger.warn({ err: error, event: id }, "Couldn't re-read a requested event");
             }
@@ -123,7 +128,6 @@ export class MarketService {
 
     /** One event with its prices from the order books; null when it's gone or nothing in it can be bought. */
     event(id: string): Promise<MarketView | null> {
-        this.#requested.set(id, this.#now());
         const pending = this.#reading.get(id) ?? this.#read(id).finally(() => this.#reading.delete(id));
         this.#reading.set(id, pending);
         return pending;
@@ -137,6 +141,7 @@ export class MarketService {
             if (!event) {
                 this.#events.delete(id);
                 this.#books.delete(id);
+                this.#requested.delete(id);
                 return null;
             }
             cached = { value: event, at: now };
@@ -158,7 +163,11 @@ export class MarketService {
                 };
             }),
         };
-        return shapeEvent(patched, new Date(now));
+        const view = shapeEvent(patched, new Date(now));
+        // Only an event that can be shown is kept fresh, so unknown IDs cost nothing
+        if (view) this.#requested.set(id, now);
+        else this.#requested.delete(id);
+        return view;
     }
 
     // Falls back to the event's own prices when the books can't be read

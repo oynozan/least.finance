@@ -2,7 +2,7 @@ import { pino } from "pino";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { gammaEvent } from "../../src/markets/gamma.ts";
 import { MarketService } from "../../src/markets/markets.ts";
-import { createPolymarketData } from "../../src/markets/polymarket-data.ts";
+import { createPolymarketData, type PolymarketData } from "../../src/markets/polymarket-data.ts";
 import { shapeEvent } from "../../src/markets/shape.ts";
 import { startFakePolymarket, type FakePolymarket } from "../support/fake-polymarket.ts";
 
@@ -22,7 +22,7 @@ beforeEach(async () => {
     const logger = pino({ level: "silent" });
     warn = vi.spyOn(logger, "warn") as unknown as ReturnType<typeof vi.fn>;
     service = new MarketService({
-        data: createPolymarketData({ gammaUrl: fake.url, clobUrl: fake.url }),
+        data: createPolymarketData({ gammaUrl: fake.url, clobUrl: fake.url, logger }),
         logger,
         syncMs: 60_000,
         now: () => clock,
@@ -116,4 +116,133 @@ test("concurrent event() calls share one books request", async () => {
     expect(views[0]).not.toBeNull();
     expect(views[1]).toEqual(views[0]);
     expect(count("POST /books")).toBe(1);
+});
+
+const TOP_REQUEST = "GET /events?active=true&closed=false&order=volume24hr&ascending=false&limit=100";
+
+test("the sync and search send Polymarket's exact parameters", async () => {
+    await service.tick();
+    expect(fake.requests).toContain(TOP_REQUEST);
+    await service.search(" Fed ");
+    const search = fake.requests.find((r) => r.includes("/public-search"))!;
+    const params = new URL(search.split(" ")[1]!, "http://x").searchParams;
+    expect(Object.fromEntries(params)).toEqual({ q: "fed", events_status: "active", limit_per_type: "20" });
+});
+
+test("an unknown event is never re-read by the sync", async () => {
+    expect(await service.event("999999")).toBeNull();
+    await service.tick();
+    expect(count("GET /events/999999")).toBe(1);
+});
+
+test("an event that starts 404ing stops being re-read", async () => {
+    const id = fake.fixtures.samples.extra;
+    expect(await service.event(id)).not.toBeNull();
+    fake.hide(id);
+    await service.tick();
+    await service.tick();
+    expect(count(`GET /events/${id}`)).toBe(2);
+});
+
+test("the sync re-reads at most the 50 most recently requested events", async () => {
+    const real = createPolymarketData({ gammaUrl: fake.url, clobUrl: fake.url });
+    const reads: string[] = [];
+    // Every ID answers with the YES/NO sample, so each one shapes
+    const data: PolymarketData = {
+        ...real,
+        event: async (id) => {
+            reads.push(id);
+            return real.event(fake.fixtures.samples.yesNo);
+        },
+    };
+    const many = new MarketService({ data, logger: pino({ level: "silent" }), syncMs: 60_000, now: () => clock });
+    for (let i = 0; i < 60; i++) {
+        clock += 1;
+        await many.event(`e${i}`);
+    }
+    reads.length = 0;
+    await many.tick();
+    expect(reads).toHaveLength(50);
+    expect(reads).not.toContain("e0");
+    expect(reads[0]).toBe("e59");
+});
+
+test("event() falls back to the event's own prices when the books fail", async () => {
+    const id = fake.fixtures.samples.yesNo;
+    fake.failNext("/books");
+    const view = await service.event(id);
+    // The fake rewrites end dates in full ISO form, so only the prices are compared
+    expect(view!.outcomes).toEqual(shapedTop().find((m) => m.id === id)!.outcomes);
+    expect(warn).toHaveBeenCalled();
+});
+
+test("event() throws when the event read itself fails", async () => {
+    fake.failNext("/events/:id");
+    await expect(service.event(fake.fixtures.samples.yesNo)).rejects.toThrow(/500/);
+});
+
+test("a failed search throws and isn't cached", async () => {
+    fake.failNext("/public-search");
+    await expect(service.search("fed")).rejects.toThrow(/500/);
+    expect((await service.search("fed")).markets.length).toBeGreaterThan(0);
+    expect(count("GET /public-search")).toBe(2);
+});
+
+test("stop() ends the loop", async () => {
+    service.start();
+    await vi.waitFor(() => expect(service.trending().readAt).not.toBeNull());
+    await service.stop();
+    const seen = fake.requests.length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fake.requests.length).toBe(seen);
+});
+
+test("stop() doesn't wait for the remaining re-reads", async () => {
+    const real = createPolymarketData({ gammaUrl: fake.url, clobUrl: fake.url });
+    let reads = 0;
+    let gate: Promise<void> = Promise.resolve();
+    let release = () => {};
+    const slow = new MarketService({
+        data: {
+            ...real,
+            event: async (id) => {
+                reads++;
+                await gate;
+                return real.event(id);
+            },
+        },
+        logger: pino({ level: "silent" }),
+        syncMs: 60_000,
+        now: () => clock,
+    });
+    const { yesNo, named, extra } = fake.fixtures.samples;
+    for (const id of [yesNo, named, extra]) await slow.event(id);
+    gate = new Promise<void>((resolve) => (release = resolve));
+    reads = 0;
+    slow.start();
+    await vi.waitFor(() => expect(reads).toBe(1));
+    const stopped = slow.stop();
+    release();
+    await stopped;
+    expect(reads).toBe(1);
+});
+
+test("a sync that shapes nothing keeps the last list and warns", async () => {
+    await service.tick();
+    const before = service.trending();
+    fake.malformed();
+    warn.mockClear();
+    await service.tick();
+    expect(service.trending()).toEqual(before);
+    expect(warn).toHaveBeenCalledTimes(2);
+});
+
+test("events that fail the schema are counted in a warning", async () => {
+    fake.malformed();
+    warn.mockClear();
+    const logger = pino({ level: "silent" });
+    const spy = vi.spyOn(logger, "warn");
+    const data = createPolymarketData({ gammaUrl: fake.url, clobUrl: fake.url, logger });
+    expect(await data.topEvents()).toEqual([]);
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ dropped: 2 }), expect.any(String));
 });

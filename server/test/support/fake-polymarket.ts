@@ -20,7 +20,9 @@ export type FakePolymarket = {
     /** Gone from the top list, from search and from /events/:id (404). */
     hide(eventId: string): void;
     /** Answers the next request to this path with a 500. */
-    failNext(path: "/events" | "/public-search" | "/books"): void;
+    failNext(path: "/events" | "/events/:id" | "/public-search" | "/books"): void;
+    /** Makes the top list answer events that fail any schema. */
+    malformed(): void;
     stop(): Promise<void>;
 };
 
@@ -38,6 +40,7 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
     const hidden = new Set<string>();
     const overrides = new Map<string, { bid: number | null; ask: number | null }>();
     const failing = new Set<string>();
+    let broken = false;
 
     // Every token and the first-outcome book its market recorded
     const tokens = new Map<string, { market: Raw; first: boolean }>();
@@ -82,11 +85,13 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
         const url = new URL(req.url ?? "/", "http://localhost");
         fake.requests.push(`${req.method} ${req.url}`);
 
-        if (failing.delete(url.pathname)) return send(500, { error: "Unavailable" });
-
-        if (req.method === "GET" && url.pathname === "/events") return send(200, visible(fixtures.top));
-
         const one = /^\/events\/([^/]+)$/.exec(url.pathname);
+        if (failing.delete(one ? "/events/:id" : url.pathname)) return send(500, { error: "Unavailable" });
+
+        if (req.method === "GET" && url.pathname === "/events") {
+            return send(200, broken ? [{ unexpected: true }, { id: 7 }] : visible(fixtures.top));
+        }
+
         if (req.method === "GET" && one) {
             const id = decodeURIComponent(one[1]!);
             const event = visible([...fixtures.top, ...fixtures.extra]).find((e) => e.id === id);
@@ -124,6 +129,9 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
         setBook: (tokenId, book) => overrides.set(tokenId, book),
         hide: (eventId) => hidden.add(eventId),
         failNext: (path) => failing.add(path),
+        malformed: () => {
+            broken = true;
+        },
         stop: () =>
             new Promise((resolve) => {
                 server.closeAllConnections();
