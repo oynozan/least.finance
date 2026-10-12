@@ -267,7 +267,6 @@ function AmountPanel({
                         </span>
                         {view.suffix && <span className="whitespace-pre text-muted">{view.suffix}</span>}
                     </span>
-                    <span className="shrink-0 text-[15px] font-normal tracking-normal text-muted">type or drag</span>
                 </label>
             </form>
             {range && (
