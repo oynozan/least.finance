@@ -7,7 +7,7 @@ export const REFRESH_INTERVAL_MS = 30_000;
 const cacheKey = (userId: string) => `balances:${userId}`;
 
 /** An Ethereum address matches whatever its casing; a Solana one (base58 has no "0x" prefix) is case-sensitive. */
-const sameWallet = (a: string, b: string) =>
+export const sameWallet = (a: string, b: string) =>
     a === b || (/^0x/i.test(a) && /^0x/i.test(b) && a.toLowerCase() === b.toLowerCase());
 
 /** The last snapshot kept for this person, or null when there is none or storage is unavailable. */

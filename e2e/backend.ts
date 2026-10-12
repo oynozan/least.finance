@@ -24,9 +24,9 @@ export const randomAddress = () => privateKeyToAddress(generatePrivateKey()).toL
 /** A fresh Solana wallet address (base58, case-sensitive) for a test that signs in with Solana. */
 export const randomSolanaAddress = () => getAddressDecoder().decode(crypto.getRandomValues(new Uint8Array(32)));
 
-/** A Privy user owning `address`, its real access token, and (for an Ethereum wallet) USDC in it to deposit. */
-export const signUp = (address: string, usdc = "20000") =>
-    call<{ userId: string; token: string }>("/users", { address, usdc });
+/** A Privy user owning `address` (and the wallets in `also`), its real access token, and (for an Ethereum wallet) USDC in it to deposit. */
+export const signUp = (address: string, usdc = "20000", also: string[] = []) =>
+    call<{ userId: string; token: string }>("/users", { address, usdc, also });
 
 export type SeededDeposit = { amount: string; daysAgo: number };
 

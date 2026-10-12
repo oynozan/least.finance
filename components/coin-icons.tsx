@@ -96,6 +96,32 @@ function UsdCoin(props: IconProps) {
     );
 }
 
+function Bnb(props: IconProps) {
+    return (
+        <Coin fill="#f0b90b" {...props}>
+            <g fill="#fff">
+                <path d="m16 13.2 2.8 2.8-2.8 2.8-2.8-2.8z" />
+                <path d="m16 7.5 4.4 4.4-1.6 1.6L16 10.7l-2.8 2.8-1.6-1.6zM16 24.5l-4.4-4.4 1.6-1.6 2.8 2.8 2.8-2.8 1.6 1.6z" />
+                <path
+                    d="m8.9 12.6 1.6 1.6L8.9 15.8 7.3 14.2zM23.1 12.6l1.6 1.6-1.6 1.6-1.6-1.6z"
+                    transform="translate(0 1.8)"
+                />
+            </g>
+        </Coin>
+    );
+}
+
+function Tether(props: IconProps) {
+    return (
+        <Coin fill="#26a17b" {...props}>
+            <g {...glyph} strokeWidth={2.4}>
+                <path d="M9.5 10h13M16 10v13" />
+                <path d="M11 16.2c1.2.7 3 1.1 5 1.1s3.8-.4 5-1.1" strokeWidth={1.8} />
+            </g>
+        </Coin>
+    );
+}
+
 const ICONS: Partial<Record<CoinSymbol, (props: IconProps) => JSX.Element>> = {
     BTC: Bitcoin,
     ETH: Ether,
@@ -103,6 +129,8 @@ const ICONS: Partial<Record<CoinSymbol, (props: IconProps) => JSX.Element>> = {
     DOGE: Doge,
     LINK: Chainlink,
     USDC: UsdCoin,
+    BNB: Bnb,
+    USDT: Tether,
 };
 
 /** The ticker's first two letters on a hue seeded by the ticker. */

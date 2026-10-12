@@ -75,6 +75,9 @@ async function showHistory(page: Page, isMobile: boolean) {
 
 async function openForm(page: Page) {
     await depositButton(page).click();
+    await sidebar(page)
+        .getByRole("button", { name: /^USDC on Arc/ })
+        .click();
     await expect(amountField(page)).toBeFocused();
 }
 
@@ -283,7 +286,9 @@ test("declining the network switch keeps the form and sends nothing", async ({ p
     const before = (await walletRequests(page)).length;
     await submit(page, "5");
     await expect
-        .poll(async () => (await walletRequests(page)).slice(before).some((r) => r.method === "wallet_switchEthereumChain"))
+        .poll(async () =>
+            (await walletRequests(page)).slice(before).some((r) => r.method === "wallet_switchEthereumChain"),
+        )
         .toBe(true);
     await expect(confirming(page)).toBeHidden();
 

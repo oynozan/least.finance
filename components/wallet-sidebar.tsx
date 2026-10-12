@@ -13,12 +13,23 @@ import {
     type Transition,
     type Variants,
 } from "motion/react";
+import { sameWallet as sameAddress } from "@/lib/account/balances";
 import { toUsdc, type HistoryRow } from "@/lib/account/state";
+import type { CoinBalance } from "@/server/src/protocol";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
-import { depositWalletAddress, linkedWallets, useActiveWallet, useLinkOtherWallet, useUsdcBalance, useWalletNetwork } from "./arc-wallet";
+import {
+    depositWalletAddress,
+    linkedWallets,
+    useActiveWallet,
+    useLinkOtherWallet,
+    useUsdcBalance,
+    useWalletNetwork,
+    type Wallet,
+} from "./arc-wallet";
 import { CoinIcon } from "./coin-icons";
 import { DepositButton } from "./deposit-button";
+import { DepositCoins } from "./deposit-coins";
 import { DepositForm } from "./deposit-form";
 import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { NetworkLogo } from "./network-icons";
@@ -165,8 +176,17 @@ function SignedInWallet() {
                 notice={account.notice}
                 onDeposit={account.deposit}
                 onStartDeposit={account.dismissNotice}
-                needsEvm={!hasEvm}
-                onConnectEvm={() => linkOther("evm")}
+                balances={account.balances}
+                wallets={linked}
+                onOpenCoins={account.refreshBalances}
+                onPick={(row) => {
+                    const wallet = linked.find((w) => sameAddress(w.address, row.wallet));
+                    if (wallet) active.setActive(wallet);
+                }}
+                onConnect={(kind) => {
+                    linkOther(kind);
+                    account.refreshBalances();
+                }}
             />
 
             <div className={styles.positionsFrame}>
@@ -221,9 +241,14 @@ type WalletSectionProps = {
     notice: DepositNotice | null;
     onDeposit: (amount: string) => Promise<DepositResult>;
     onStartDeposit: () => void;
-    /** They have no EVM wallet, which a deposit needs. */
-    needsEvm: boolean;
-    onConnectEvm: () => void;
+    /** Every coin in every linked wallet; null before any read. */
+    balances: CoinBalance[] | null;
+    wallets: Wallet[];
+    /** Deposit was clicked: read the balances again, silently. */
+    onOpenCoins: () => void;
+    /** A coin row was picked: its wallet becomes the one to deposit from. */
+    onPick: (row: CoinBalance) => void;
+    onConnect: (kind: Wallet["kind"]) => void;
 };
 
 /** Balance and the deposit button; hovering it deals out past deposits. */
@@ -236,23 +261,28 @@ function WalletSection({
     notice,
     onDeposit,
     onStartDeposit,
-    needsEvm,
-    onConnectEvm,
+    balances,
+    wallets,
+    onOpenCoins,
+    onPick,
+    onConnect,
 }: WalletSectionProps) {
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
     const [pinned, setPinned] = useState(false);
-    const [entering, setEntering] = useState(false);
-    const depositing = entering && minDeposit !== null;
-    // The history would cover the positions while an amount is typed in.
-    const showHistory = (hovered || focused || pinned) && !depositing;
+    // Deposit opens the coin list; picking a coin opens the amount field.
+    const [stage, setStage] = useState<"closed" | "coins" | "amount">("closed");
+    const depositing = stage === "amount" && minDeposit !== null;
+    const choosing = stage === "coins" && minDeposit !== null;
+    // The history would cover the positions while a coin or an amount is chosen.
+    const showHistory = (hovered || focused || pinned) && !depositing && !choosing;
     const status = notice ? null : accountProblem;
 
     return (
         <section
             className={styles.wallet}
             aria-label="Balance"
-            data-history={showHistory ? "open" : "closed"}
+            data-history={showHistory || choosing ? "open" : "closed"}
             onPointerEnter={(event) => canHover(event) && setHovered(true)}
             onPointerLeave={() => setHovered(false)}
             // Keyboard focus only: a tap also focuses, and would pin it open.
@@ -281,19 +311,18 @@ function WalletSection({
                     walletBalance={walletBalance}
                     minDeposit={minDeposit}
                     onSubmit={onDeposit}
-                    onClose={() => setEntering(false)}
+                    onClose={() => setStage("closed")}
                 />
             ) : (
                 // Not `disabled` while the account loads, which would drop keyboard focus.
                 <DepositButton
                     notice={notice}
                     disabled={minDeposit === null}
-                    needsEvm={needsEvm}
                     onClick={() => {
-                        if (needsEvm) return onConnectEvm();
                         if (minDeposit === null) return;
                         onStartDeposit();
-                        setEntering(true);
+                        onOpenCoins();
+                        setStage("coins");
                     }}
                 />
             )}
@@ -304,6 +333,21 @@ function WalletSection({
             </p>
 
             {/* Floats over the positions instead of pushing them down. */}
+            <AnimatePresence>
+                {choosing && (
+                    <DepositCoins
+                        key="coins"
+                        rows={balances}
+                        wallets={wallets}
+                        onPick={(row) => {
+                            onPick(row);
+                            setStage("amount");
+                        }}
+                        onConnect={onConnect}
+                        onClose={() => setStage("closed")}
+                    />
+                )}
+            </AnimatePresence>
             <AnimatePresence>
                 {showHistory && history.length > 0 && (
                     <motion.div

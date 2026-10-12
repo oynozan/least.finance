@@ -154,13 +154,13 @@ async function seed(address: string, deposits: Seeded[]) {
 
 const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>> = {
     /** Signs a wallet in: a Privy user that owns it, a real access token, and USDC to deposit. */
-    "/users": async ({ address, usdc = "20000" }) => {
+    "/users": async ({ address, usdc = "20000", also = [] }) => {
         const wallet = normalize(address);
         const userId = userIdOf(wallet);
         if (isSolanaAddress(wallet)) {
             privy.setUser(userId, [{ address: wallet, chain: "solana" }]);
         } else {
-            privy.setUser(userId, [wallet]);
+            privy.setUser(userId, [wallet, ...(also as string[]).map((other) => normalize(other) as Address)]);
             await chain.fund(wallet as Address, String(usdc));
         }
         return { userId, token: await privy.token(userId) };

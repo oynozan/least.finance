@@ -315,6 +315,116 @@
     scrollbar-width: none;
 }
 
+.coinsFrame {
+    outline: none;
+}
+
+.coinsHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 4px 0 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+}
+
+.coinsClose {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    color: var(--muted);
+    cursor: pointer;
+    outline: none;
+}
+
+.coinsClose svg {
+    width: 14px;
+    height: 14px;
+}
+
+.coinsClose:focus-visible {
+    box-shadow: 0 0 0 2px rgb(255 255 255 / 0.3);
+}
+
+.coinRow {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 52px;
+    padding: 6px 16px 6px 12px;
+    border-radius: 999px;
+    background: var(--pill-hover);
+    box-shadow: 0 4px 10px -6px rgb(0 0 0 / 0.2);
+    text-align: left;
+    cursor: pointer;
+    outline: none;
+}
+
+.coinRow:focus-visible {
+    box-shadow: 0 0 0 2px rgb(255 255 255 / 0.3);
+}
+
+.coinRow[aria-disabled="true"] {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.coinRow[data-dim] {
+    opacity: 0.35;
+}
+
+.coinMark {
+    position: relative;
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+}
+
+.coinIcon {
+    width: 30px;
+    height: 30px;
+}
+
+.coinBadge {
+    position: absolute;
+    right: -4px;
+    bottom: -3px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--background);
+}
+
+.coinName {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.coinAmount {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-size: 14px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.coinChain {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
 .depositRow {
     position: relative;
     flex-shrink: 0;

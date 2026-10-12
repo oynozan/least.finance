@@ -65,6 +65,9 @@ async function openWallet(page: Page, { history = false } = {}) {
 /** Opens the deposit form, which is where the wallet's own balance is shown. */
 async function openDepositForm(page: Page) {
     await depositButton(page).click();
+    await sidebar(page)
+        .getByRole("button", { name: /^USDC on Arc/ })
+        .click();
     await expect(amountField(page)).toBeFocused();
 }
 

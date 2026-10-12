@@ -37,8 +37,6 @@ type DepositButtonProps = {
     notice: DepositNotice | null;
     /** The account hasn't loaded. */
     disabled: boolean;
-    /** There is no EVM wallet to deposit from; clicking connects one. */
-    needsEvm?: boolean;
     onClick: () => void;
 };
 
@@ -48,7 +46,7 @@ type DepositButtonProps = {
  * and turns from gray to green; once it's credited it fills and holds green
  * with a check, then settles back.
  */
-export function DepositButton({ notice, disabled, needsEvm, onClick }: DepositButtonProps) {
+export function DepositButton({ notice, disabled, onClick }: DepositButtonProps) {
     const reduce = useReducedMotion();
     const [fill, animate] = useAnimate<HTMLSpanElement>();
     const [button, animateButton] = useAnimate<HTMLButtonElement>();
@@ -104,13 +102,7 @@ export function DepositButton({ notice, disabled, needsEvm, onClick }: DepositBu
             aria-disabled={disabled || undefined}
             aria-busy={busy || undefined}
             data-phase={phase}
-            title={
-                needsEvm
-                    ? "Deposits need an EVM wallet for now. Connect one."
-                    : disabled
-                      ? "Loading your account…"
-                      : undefined
-            }
+            title={disabled ? "Loading your account…" : undefined}
             // Gray while it works, so the fill reads against it; white again once it settles.
             animate={{
                 backgroundColor: phase === "idle" ? "rgb(245 245 243)" : "rgb(53 53 50)",

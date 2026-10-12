@@ -67,10 +67,19 @@ async function signInWithSolana(page: Page) {
     return { address, evm };
 }
 
-/** From Deposit, links the page's MetaMask. */
+/** From Deposit's list, links the page's MetaMask. */
 async function connectEvmFromDeposit(page: Page) {
     await sidebarOf(page).getByRole("button", { name: "Deposit", exact: true }).click();
+    await sidebarOf(page).getByRole("button", { name: "Connect an EVM wallet" }).click();
     await modalOf(page).getByRole("button", { name: "MetaMask" }).click();
+}
+
+/** Opens Deposit's list and picks USDC on Arc. */
+async function pickUsdcOnArc(page: Page) {
+    await sidebarOf(page).getByRole("button", { name: "Deposit", exact: true }).click();
+    await sidebarOf(page)
+        .getByRole("button", { name: /^USDC on Arc/ })
+        .click();
 }
 
 test("a Solana-first user connects an EVM wallet from Deposit, then deposits", async ({ page }) => {
@@ -81,7 +90,7 @@ test("a Solana-first user connects an EVM wallet from Deposit, then deposits", a
     await connectEvmFromDeposit(page);
 
     await expect(header.getByRole("img", { name: "Ethereum" })).toBeVisible({ timeout: 10_000 });
-    await sidebarOf(page).getByRole("button", { name: "Deposit", exact: true }).click();
+    await pickUsdcOnArc(page);
     await expect(sidebarOf(page).getByRole("textbox", { name: "Deposit amount" })).toBeFocused();
 });
 
@@ -144,21 +153,19 @@ test("a remembered wallet that is no longer linked falls back to the first linke
 test("dismissing the link modal changes nothing", async ({ page }) => {
     await signInWithSolana(page);
     const sidebar = sidebarOf(page);
-    const deposit = sidebar.getByRole("button", { name: "Deposit", exact: true });
-    const title = "Deposits need an EVM wallet for now. Connect one.";
-    await expect(deposit).toHaveAttribute("title", title);
-
-    await deposit.click();
+    await sidebar.getByRole("button", { name: "Deposit", exact: true }).click();
+    await sidebar.getByRole("button", { name: "Connect an EVM wallet" }).click();
     await expect(modalOf(page).getByRole("button", { name: "MetaMask" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(modalOf(page)).toHaveCount(0);
 
     await expect(sidebar.locator("header").first().getByRole("img", { name: "Solana" })).toBeVisible();
     await expect(sidebar.getByRole("status")).toHaveText("");
-    await expect(deposit).toHaveAttribute("title", title);
 });
 
-test("a both-wallets user active on Solana deposits from their EVM wallet, with its balance shown", async ({ page }) => {
+test("a both-wallets user active on Solana deposits from their EVM wallet, with its balance shown", async ({
+    page,
+}) => {
     test.setTimeout(60_000);
     const { address, evm } = await signInWithSolana(page);
     await connectEvmFromDeposit(page);
@@ -169,7 +176,7 @@ test("a both-wallets user active on Solana deposits from their EVM wallet, with 
     await expect(header.getByRole("img", { name: "Solana" })).toBeVisible({ timeout: 20_000 });
 
     const sidebar = sidebarOf(page);
-    await sidebar.getByRole("button", { name: "Deposit", exact: true }).click();
+    await pickUsdcOnArc(page);
     const amount = sidebar.getByRole("textbox", { name: "Deposit amount" });
     await expect(amount).toBeFocused();
     await expect(sidebar.locator("#deposit-wallet")).toHaveText("In your wallet: $100.00", { timeout: 20_000 });

@@ -128,12 +128,12 @@ const user = (id: string, linked: Linked[]) => ({
     is_guest: false,
 });
 
-/** Signs the page's wallet up with the test backend and answers Privy's requests as that user. */
-export async function mockPrivy(page: Page) {
+/** Signs the page's wallet up with the test backend and answers Privy's requests as that user, who already has `alsoLinked` linked. */
+export async function mockPrivy(page: Page, alsoLinked: string[] = []) {
     const address = addressOf(page);
-    const { userId, token } = await signUp(address);
+    const { userId, token } = await signUp(address, undefined, alsoLinked);
     // Wallets the person has linked since signing in, as /siwe/link and /siws/link add them.
-    const linked: Linked[] = [{ address, verifiedAt: now() - 3600 }];
+    const linked: Linked[] = [address, ...alsoLinked].map((wallet) => ({ address: wallet, verifiedAt: now() - 3600 }));
     // The address the latest SIWE or SIWS init was for: the wallet a link is about to verify.
     let initiated = address;
     await page.route(/https:\/\/auth\.privy\.io\/.*/, async (route: Route) => {
@@ -266,8 +266,19 @@ export const ARC_PRIMARY_RPC = /^https:\/\/rpc\.mainnet\.arc\.io\//;
 const USDC = "0x3600000000000000000000000000000000000000";
 
 /** Stands in for Arc's RPC, where only USDC's `balanceOf` the page's wallet reads as `usdc`. */
-export async function mockArcRpc(page: Page, usdc = 12_480.52, owner = addressOf(page)) {
-    const balanceOf = `0x70a08231${owner.slice(2).padStart(64, "0")}`;
+export async function mockArcRpc(
+    page: Page,
+    usdc = 12_480.52,
+    owner = addressOf(page),
+    others: Record<string, number> = {},
+) {
+    // Each owner's `balanceOf` call data, lowercase, to its USDC.
+    const balances = new Map(
+        Object.entries({ ...others, [owner]: usdc }).map(([who, amount]) => [
+            `0x70a08231${who.slice(2).padStart(64, "0")}`.toLowerCase(),
+            amount,
+        ]),
+    );
     const word = (value: bigint) => `0x${value.toString(16).padStart(64, "0")}`;
     const answer = ({ id, method, params }: { id: number; method: string; params?: unknown[] }) => {
         const call = params?.[0] as { to?: string; data?: string } | undefined;
@@ -276,8 +287,8 @@ export async function mockArcRpc(page: Page, usdc = 12_480.52, owner = addressOf
                 ? "0x13b2"
                 : method === "eth_call"
                   ? word(
-                        call?.to?.toLowerCase() === USDC && call.data?.toLowerCase() === balanceOf
-                            ? BigInt(Math.round(usdc * 1e6))
+                        call?.to?.toLowerCase() === USDC && balances.has(call.data?.toLowerCase() ?? "")
+                            ? BigInt(Math.round(balances.get(call.data!.toLowerCase())! * 1e6))
                             : BigInt(0),
                     )
                   : null;
