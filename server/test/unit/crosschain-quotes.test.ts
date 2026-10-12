@@ -28,7 +28,7 @@ const quote = (overrides: Partial<Quote> = {}): Quote => ({
     destinationToken: ARC_USDC_VIEW,
     recipient: request.recipient,
     refundTo: request.refundTo,
-    txs: [{ chainId: ETH.chainId, to: "0x00000000000000000000000000000000000b01d0", data: "0x", value: 10n ** 18n }],
+    txs: [{ chainId: ETH.chainId!, to: "0x00000000000000000000000000000000000b01d0", data: "0x", value: 10n ** 18n }],
     ...overrides,
 });
 

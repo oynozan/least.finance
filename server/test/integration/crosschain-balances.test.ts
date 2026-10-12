@@ -1,9 +1,9 @@
-import type { Address } from "viem";
+import { getAddress, type Address } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { beforeAll, expect, inject, test } from "vitest";
 import { createArcClient } from "../../src/chain/arc.ts";
 import { readBalances } from "../../src/crosschain/balances.ts";
-import { COINS, coinByKey } from "../../src/crosschain/catalog.ts";
+import { EVM_COINS, coinByKey } from "../../src/crosschain/catalog.ts";
 import { createSourceClients } from "../../src/crosschain/chains.ts";
 import { fixedPrices, type PriceFeed } from "../../src/crosschain/prices.ts";
 import { sourceChain } from "../support/source-chains.ts";
@@ -20,7 +20,7 @@ const prices = fixedPrices({ ETH: 3000, BNB: 600, USDC: 1, USDT: 1 });
 // The anvils are fresh, not forks: `balanceOf` on an address with no code makes viem throw, and readBalances
 // calls it on every catalog token. Other files install some of these tokens, so each run installs them all.
 beforeAll(async () => {
-    for (const { chain, token } of COINS) {
+    for (const { chain, token } of EVM_COINS) {
         if (token) await (chain === "bnb" ? bnb : ethereum).installToken(token);
     }
 });
@@ -39,34 +39,40 @@ test("a wallet's coins on every chain come back with their dollar value, the ric
 
     const rows = await readBalances({ sources, arc, prices }, owner);
 
-    expect(rows).toHaveLength(COINS.length);
+    expect(rows).toHaveLength(EVM_COINS.length);
     expect(rows.slice(0, 3)).toEqual([
         {
             coin: "ethereum:ETH",
+            chain: "ethereum",
             symbol: "ETH",
             chainName: "Ethereum",
             chainId: 1,
             decimals: 18,
+            wallet: getAddress(owner),
             amount: "0.5",
             spendable: "0.498",
             usd: 1500,
         },
         {
             coin: "bnb:USDT",
+            chain: "bnb",
             symbol: "USDT",
             chainName: "BNB Chain",
             chainId: 56,
             decimals: 18,
+            wallet: getAddress(owner),
             amount: "250",
             spendable: "250",
             usd: 250,
         },
         {
             coin: "arc:USDC",
+            chain: "arc",
             symbol: "USDC",
             chainName: "Arc",
             chainId: 5042,
             decimals: 18,
+            wallet: getAddress(owner),
             amount: "12.5",
             spendable: "12.49",
             usd: 12.5,
@@ -111,4 +117,18 @@ test("a coin with no price has no dollar value and sorts last, in catalog order"
         ["bnb:BNB", null],
     ]);
     expect(rows.find((row) => row.coin === "ethereum:ETH")?.amount).toBe("0.5");
+});
+
+test("a chain that fails to read comes back with null amounts and the rest still read", async () => {
+    const owner = await holder();
+    const broken = createSourceClients({ ethereum: [inject("ethereumUrl")], bnb: ["http://127.0.0.1:1"] });
+
+    const rows = await readBalances({ sources: broken, arc, prices }, owner);
+
+    expect(rows).toHaveLength(EVM_COINS.length);
+    for (const row of rows.filter((r) => r.chain === "bnb")) {
+        expect(row).toMatchObject({ amount: null, spendable: null, usd: null, wallet: getAddress(owner) });
+    }
+    expect(rows.find((r) => r.coin === "ethereum:ETH")?.amount).toBe("0.5");
+    expect(rows.find((r) => r.coin === "arc:USDC")?.amount).toBe("12.5");
 });

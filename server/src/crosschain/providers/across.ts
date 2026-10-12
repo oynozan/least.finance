@@ -45,7 +45,7 @@ export function createAcross(
     return {
         name: "across",
 
-        supports: (coin: Coin) => coin.chain !== "arc",
+        supports: (coin: Coin) => coin.chain === "ethereum" || coin.chain === "bnb",
 
         async quote(request: QuoteRequest, signal: AbortSignal): Promise<Quote> {
             const { coin, amount, sender, recipient, refundTo } = request;

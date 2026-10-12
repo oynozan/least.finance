@@ -143,13 +143,14 @@ test("a quote Relay can't give, or can't be signed as transactions, is an error"
     await expect(createRelay({ fetch: serving(signing).fetch }).quote(ETH_REQUEST, signal())).rejects.toThrow();
 });
 
-test("it supports every coin that isn't on Arc", () => {
+test("it supports the Ethereum and BNB Chain coins only", () => {
     const relay = createRelay({});
 
     expect(relay.name).toBe("relay");
     expect(relay.supports(coinByKey("ethereum:USDC"))).toBe(true);
     expect(relay.supports(coinByKey("bnb:BNB"))).toBe(true);
     expect(relay.supports(coinByKey("arc:USDC"))).toBe(false);
+    expect(relay.supports(coinByKey("solana:SOL"))).toBe(false);
 });
 
 test("each status maps to a stage", async () => {

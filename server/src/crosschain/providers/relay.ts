@@ -55,7 +55,7 @@ export function createRelay(options: { apiKey?: string; fetch?: typeof fetch; ba
     return {
         name: "relay",
 
-        supports: (coin: Coin) => coin.chain !== "arc",
+        supports: (coin: Coin) => coin.chain === "ethereum" || coin.chain === "bnb",
 
         async quote(request: QuoteRequest, signal: AbortSignal): Promise<Quote> {
             const { coin, amount, sender, recipient, refundTo } = request;

@@ -45,15 +45,19 @@ export type DepositRules = {
 export type CoinBalance = {
     /** The catalog key, like "ethereum:ETH". */
     coin: string;
-    symbol: string;
+    chain: "ethereum" | "bnb" | "arc" | "solana";
+    /** Null for Solana. */
+    chainId: number | null;
     chainName: string;
-    chainId: number;
+    symbol: string;
     decimals: number;
-    /** In the coin's own units, as a decimal. */
-    amount: string;
-    /** `amount` less what's kept back for gas, floored at 0. */
-    spendable: string;
-    /** Null when the coin's price is unknown. */
+    /** The address it was read for: EVM checksummed, Solana as given. */
+    wallet: string;
+    /** In the coin's own units, as a decimal; null when this read failed or never happened. */
+    amount: string | null;
+    /** `amount` less what's kept back for gas, floored at 0; null like `amount`. */
+    spendable: string | null;
+    /** Null when the price or the amount is unknown. */
     usd: number | null;
 };
 

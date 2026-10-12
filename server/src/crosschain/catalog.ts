@@ -2,17 +2,20 @@ import { formatUnits, parseUnits, type Address } from "viem";
 import { ARC_CHAIN_ID, NATIVE_DECIMALS } from "../chain/arc.ts";
 import { AppError } from "../errors.ts";
 
-export type ChainKey = "ethereum" | "bnb" | "arc";
+export type ChainKey = "ethereum" | "bnb" | "arc" | "solana";
 
 export type Coin = {
     /** `<chain>:<symbol>`, like "ethereum:ETH" or "bnb:USDT". */
     key: string;
     chain: ChainKey;
-    chainId: number;
+    /** Null for Solana, which has no EVM chain id. */
+    chainId: number | null;
     chainName: string;
     symbol: string;
     /** The ERC-20 contract, or null for the chain's native coin. */
     token: Address | null;
+    /** The Solana SPL mint, or null elsewhere and for SOL itself. */
+    mint: string | null;
     decimals: number;
     /** Units kept back for gas when sending the whole balance; 0n for tokens. */
     gasReserve: bigint;
@@ -22,7 +25,8 @@ const CHAINS = {
     ethereum: { chainId: 1, chainName: "Ethereum" },
     bnb: { chainId: 56, chainName: "BNB Chain" },
     arc: { chainId: ARC_CHAIN_ID, chainName: "Arc" },
-} as const satisfies Record<ChainKey, { chainId: number; chainName: string }>;
+    solana: { chainId: null, chainName: "Solana" },
+} as const satisfies Record<ChainKey, { chainId: number | null; chainName: string }>;
 
 const defineCoin = (
     chain: ChainKey,
@@ -30,12 +34,14 @@ const defineCoin = (
     token: Address | null,
     decimals: number,
     gasReserve = "0",
+    mint: string | null = null,
 ): Coin => ({
     key: `${chain}:${symbol}`,
     chain,
     ...CHAINS[chain],
     symbol,
     token,
+    mint,
     decimals,
     gasReserve: parseUnits(gasReserve, decimals),
 });
@@ -49,7 +55,12 @@ export const COINS: readonly Coin[] = [
     defineCoin("bnb", "USDC", "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", 18),
     defineCoin("bnb", "USDT", "0x55d398326f99059fF775485246999027B3197955", 18),
     defineCoin("arc", "USDC", null, NATIVE_DECIMALS, "0.01"),
+    defineCoin("solana", "SOL", null, 9, "0.01"),
+    defineCoin("solana", "USDC", null, 6, "0", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
 ];
+
+export const EVM_COINS: readonly Coin[] = COINS.filter((c) => c.chain !== "solana");
+export const SOLANA_COINS: readonly Coin[] = COINS.filter((c) => c.chain === "solana");
 
 const BY_KEY = new Map(COINS.map((c) => [c.key, c]));
 

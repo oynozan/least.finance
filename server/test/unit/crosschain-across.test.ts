@@ -148,13 +148,14 @@ test("a quote Across can't give is an error", async () => {
     ).rejects.toThrow(/400/);
 });
 
-test("it supports every coin that isn't on Arc", () => {
+test("it supports the Ethereum and BNB Chain coins only", () => {
     const across = createAcross({});
 
     expect(across.name).toBe("across");
     expect(across.supports(coinByKey("ethereum:USDT"))).toBe(true);
     expect(across.supports(coinByKey("bnb:USDC"))).toBe(true);
     expect(across.supports(coinByKey("arc:USDC"))).toBe(false);
+    expect(across.supports(coinByKey("solana:SOL"))).toBe(false);
 });
 
 test("each status maps to a stage", async () => {
