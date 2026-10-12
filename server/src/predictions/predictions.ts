@@ -197,8 +197,19 @@ export class PredictionService {
             updatedAt: now,
         };
         const held = await this.#record(order, async (session) => {
+            // A buy still in flight would land in the closing position after the sell sized itself without it
+            const buying = await predictionOrders.countDocuments(
+                {
+                    accountId: account._id,
+                    tokenId: position.tokenId,
+                    side: "buy",
+                    state: { $in: ["placing", "posted"] },
+                },
+                { session, limit: 1 },
+            );
+            if (buying > 0) throw busy();
             const moved = await positions.findOneAndUpdate(
-                { _id: position._id, accountId: account._id, state: "open" },
+                { _id: position._id, accountId: account._id, state: "open", shares: position.shares },
                 { $set: { state: "closing", updatedAt: now } },
                 { session },
             );
@@ -470,9 +481,26 @@ export class PredictionService {
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
-            const position = await positions.findOneAndUpdate(
+            const closing = await positions.findOne(
                 { _id: moved.positionId!, accountId: moved.accountId, state: "closing" },
-                { $set: { state: "closed", proceeds: toDecimal(proceeds), settledAt: now, updatedAt: now } },
+                { session },
+            );
+            if (!closing) throw new Error("The position wasn't closing");
+            // Shares a buy added while the sell was out stay open; only dust under a step is left with the pool
+            const left = fromDecimal(closing.shares) - makingE6;
+            const keep = left >= SHARE_STEP_E6;
+            const position = await positions.findOneAndUpdate(
+                { _id: closing._id, state: "closing" },
+                {
+                    $set: keep
+                        ? {
+                              state: "open",
+                              shares: toDecimal(left),
+                              cost: toDecimal((fromDecimal(closing.cost) * left) / fromDecimal(closing.shares)),
+                              updatedAt: now,
+                          }
+                        : { state: "closed", proceeds: toDecimal(proceeds), settledAt: now, updatedAt: now },
+                },
                 { session, returnDocument: "after" },
             );
             if (!position) throw new Error("The position wasn't closing");

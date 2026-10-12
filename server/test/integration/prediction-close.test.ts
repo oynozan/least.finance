@@ -234,6 +234,66 @@ test("a delayed sell the exchange cancels reopens the position", async () => {
     expect((await h.state(account._id)).balance).toBe(wei("90"));
 });
 
+test("a close is refused while a buy of the same token is in flight, and that buy then lands in the open position", async () => {
+    const { account, position } = await holder(h);
+    h.trader.onNext(TOKEN, "delay");
+    const buy = await h.service.place(account, {
+        requestId: randomUUID(),
+        eventId: EVENT,
+        tokenId: TOKEN,
+        amountUSD: "10",
+    });
+    await until(async () => (await orderOf(h, buy.requestId))?.state === "posted");
+    const bought = (await orderOf(h, buy.requestId))!;
+    await until(
+        async () => h.trader.posts.some((p) => p.orderHash === bought.orderHash) && !h.service.submitting(bought._id),
+    );
+
+    const error = await h.service.close(account, closeInput(position)).catch((e: unknown) => e);
+    expect(isAppError(error) && error.code).toBe("position_busy");
+    expect((await positionOf(h, position._id))!.state).toBe("open");
+
+    h.trader.settleDelayed(bought.orderHash!, "fill");
+    await tracker.tick();
+    const after = (await positionOf(h, position._id))!;
+    expect(after.state).toBe("open");
+    expect(fromDecimal(after.shares)).toBe(20_000_000n + fromDecimal((await orderOf(h, buy.requestId))!.filledShares!));
+});
+
+test("shares bought while a sell is posted stay open after the sell settles", async () => {
+    const { account, position } = await holder(h);
+    h.trader.onNext(TOKEN, "delay");
+    const view = await h.service.close(account, closeInput(position));
+    await until(async () => (await orderOf(h, view.requestId))?.state === "posted");
+    const sell = (await orderOf(h, view.requestId))!;
+    await until(
+        async () => h.trader.posts.some((p) => p.orderHash === sell.orderHash) && !h.service.submitting(sell._id),
+    );
+
+    const buy = await h.service.place(account, {
+        requestId: randomUUID(),
+        eventId: EVENT,
+        tokenId: TOKEN,
+        amountUSD: "10",
+    });
+    const bought = await settled(h, buy.requestId);
+    expect(bought.state).toBe("filled");
+    const extra = fromDecimal(bought.filledShares!);
+
+    h.trader.settleDelayed(sell.orderHash!, "fill");
+    await tracker.tick();
+
+    expect((await orderOf(h, view.requestId))!.state).toBe("filled");
+    const left = (await positionOf(h, position._id))!;
+    expect(left.state).toBe("open");
+    expect(fromDecimal(left.shares)).toBe(extra);
+    expect(fromDecimal(left.cost)).toBe(fromDecimal(bought.cost!));
+    expect(left.settledAt).toBeNull();
+    const s = await h.state(account._id);
+    expect(kinds(s.rows)).toEqual(["deposit", "prediction_buy", "prediction_sell"]);
+    expect(s.sum).toBe(s.balance);
+});
+
 test("the sell quote is net of the fee and over the sellable shares", async () => {
     const { account, position } = await holder(h, "90", 20_123_456n);
     const quote = await h.service.quoteSell(account, position._id.toHexString());
