@@ -73,6 +73,8 @@ export type ChoiceSpec<V, Ctx, T extends string, Term extends string> = SlotBase
     wide?: boolean;
     /** What the picker says when `choices` is empty. */
     empty?: string;
+    /** Adds a search field to the picker; the host answers the queries. */
+    search?: { placeholder: string };
     /** The slot whose value this one's choices come from; while that one is missing, this one stays quiet. */
     needs?: string;
 };

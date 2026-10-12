@@ -37,6 +37,7 @@ export type ChoiceSlotView = SlotViewBase & {
     };
     wide?: boolean;
     empty?: string;
+    search?: { placeholder: string };
 };
 
 export type NumberSlotView = SlotViewBase & {
@@ -176,6 +177,7 @@ export function resolve<I, T extends Str, C>(
                 choices,
                 wide: spec.wide,
                 empty: spec.empty,
+                search: spec.search,
                 custom: custom && {
                     placeholder: custom.placeholder(values, ctx),
                     suffix: custom.suffix,

@@ -20,6 +20,13 @@ type PickerProps = {
         suffix?: string;
         parse: (text: string) => string | null;
     };
+    /** Adds a search field above the list; the host answers `onQuery` by changing `choices`. */
+    search?: {
+        placeholder: string;
+        onQuery: (query: string) => void;
+        /** Said above the list when the search found nothing. */
+        empty?: string;
+    };
     /** Room for long labels: the panel widens and details go under the label. */
     wide?: boolean;
     /** Said under the title when there are no choices. */
@@ -66,11 +73,39 @@ export function Picker(props: PickerProps) {
     );
 }
 
-function Options({ title, titleId, choices, selected, custom, wide, empty, onSelect }: PickerProps & { titleId: string }) {
+function Options({ title, titleId, choices, selected, custom, search, wide, empty, onSelect }: PickerProps & { titleId: string }) {
     const isPresent = useIsPresent();
     const base = useId();
     const listed = choices.findIndex((c) => c.value === selected);
-    const [active, setActive] = useState(() => Math.max(listed, 0));
+    const [wanted, setActive] = useState(() => Math.max(listed, 0));
+    // A new search can shorten the list under the active row.
+    const active = Math.max(0, Math.min(wanted, choices.length - 1));
+    const field = useRef<HTMLInputElement>(null);
+    const fieldFocused = useRef(false);
+    const onQuery = useRef(search?.onQuery);
+    useEffect(() => {
+        onQuery.current = search?.onQuery;
+    });
+    const [query, setQuery] = useState("");
+    const left = useRef(false);
+    // Closing ends the search, so the next opening lists the trending questions.
+    // Reopening during the exit animation revives this panel, so it resets then.
+    useEffect(() => {
+        if (!isPresent) {
+            left.current = true;
+            fieldFocused.current = false;
+        } else if (left.current) {
+            left.current = false;
+            setQuery("");
+            onQuery.current?.("");
+        }
+    }, [isPresent]);
+    useEffect(
+        () => () => {
+            onQuery.current?.("");
+        },
+        [],
+    );
     const rows = useRef<(HTMLButtonElement | null)[]>([]);
     const input = useRef<HTMLInputElement>(null);
     const typed = useRef({ text: "", at: 0 });
@@ -81,6 +116,14 @@ function Options({ title, titleId, choices, selected, custom, wide, empty, onSel
 
     useEffect(() => {
         if (!isPresent) return;
+        if (search) {
+            // The field takes focus on opening and keeps it until an arrow key leaves it.
+            if (!fieldFocused.current || document.activeElement === field.current) {
+                fieldFocused.current = true;
+                field.current?.focus({ preventScroll: true });
+                return;
+            }
+        }
         if (
             startInInput &&
             document.activeElement !== input.current &&
@@ -91,7 +134,7 @@ function Options({ title, titleId, choices, selected, custom, wide, empty, onSel
         }
         rows.current[active]?.focus({ preventScroll: true });
         rows.current[active]?.scrollIntoView({ block: "nearest" });
-    }, [active, isPresent, startInInput]);
+    }, [active, isPresent, startInInput, search]);
 
     // One highlight for the whole list, sliding to the active row's layout box
     // (offsetTop ignores the rows' entrance transforms).
@@ -99,9 +142,16 @@ function Options({ title, titleId, choices, selected, custom, wide, empty, onSel
     useLayoutEffect(() => {
         const row = rows.current[active];
         if (row) setBox({ top: row.offsetTop, height: row.offsetHeight });
-    }, [active]);
+    }, [active, choices, search?.empty]);
 
     const onKeyDown = (event: KeyboardEvent) => {
+        if (event.target === field.current) {
+            if (event.key === "ArrowDown" && choices.length > 0) {
+                event.preventDefault();
+                rows.current[active]?.focus({ preventScroll: true });
+            }
+            return;
+        }
         if (event.target === input.current) {
             if (event.key === "Enter") {
                 event.preventDefault();
@@ -112,9 +162,9 @@ function Options({ title, titleId, choices, selected, custom, wide, empty, onSel
             }
             return;
         }
-        if (event.key === "ArrowUp" && active === 0 && custom) {
+        if (event.key === "ArrowUp" && active === 0 && (search || custom)) {
             event.preventDefault();
-            input.current?.focus();
+            (search ? field : input).current?.focus();
             return;
         }
         const last = choices.length - 1;
@@ -130,7 +180,7 @@ function Options({ title, titleId, choices, selected, custom, wide, empty, onSel
             return;
         }
         // Typeahead: letters jump to the first choice that starts with them.
-        if (event.key.length === 1 && /\S/.test(event.key) && !event.metaKey && !event.ctrlKey) {
+        if (!search && event.key.length === 1 && /\S/.test(event.key) && !event.metaKey && !event.ctrlKey) {
             const now = event.timeStamp;
             typed.current = {
                 text: (now - typed.current.at < 600 ? typed.current.text : "") + event.key.toLowerCase(),
@@ -156,6 +206,26 @@ function Options({ title, titleId, choices, selected, custom, wide, empty, onSel
             </p>
             {empty && choices.length === 0 && (
                 <p className="px-[18px] pb-3 text-base tracking-[-0.01em] text-muted">{empty}</p>
+            )}
+            {search && (
+                <input
+                    ref={field}
+                    type="search"
+                    enterKeyHint="search"
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-label={search.placeholder}
+                    placeholder={search.placeholder}
+                    value={query}
+                    onChange={(event) => {
+                        setQuery(event.target.value);
+                        search.onQuery(event.target.value);
+                    }}
+                    className="mb-1.5 h-11 w-full rounded-full border-0 bg-pill px-[18px] font-sans text-[20px] font-medium tracking-[-0.01em] text-foreground outline-none placeholder:font-normal placeholder:text-muted"
+                />
+            )}
+            {search?.empty && (
+                <p className="px-[18px] pb-2 text-base tracking-[-0.01em] text-muted">{search.empty}</p>
             )}
             {custom && (
                 <form

@@ -57,6 +57,7 @@ export const prediction = operation({
             wide: true,
             missing: { message: "Pick a question.", cta: "Pick a question" },
             empty: "No markets to show right now.",
+            search: { placeholder: "Search markets" },
             // A question picked earlier stays listed after it leaves the trending list.
             choices: (v: Values, ctx) => {
                 const picked = marketOf(ctx, v.marketId);

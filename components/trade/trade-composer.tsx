@@ -12,6 +12,8 @@ import { renderTradeIcon } from "./trade-icons";
 type TradeComposerProps = {
     view: SentenceView<TransactionIntent>;
     dispatch: (action: SentenceAction) => void;
+    /** Answers the question picker's search; absent in demo mode. */
+    search?: { onQuery: (query: string) => void; empty?: string };
 };
 
 const shownValue = (slot: SlotView) =>
@@ -34,7 +36,7 @@ function useAnnouncer() {
  * The trade sentence itself. Fully controlled: the view and dispatch come
  * from the shared trade state. The details live in the review sidebar.
  */
-export function TradeComposer({ view, dispatch }: TradeComposerProps) {
+export function TradeComposer({ view, dispatch, search }: TradeComposerProps) {
     const headingId = useId();
     const issueId = useId();
     const [typing, setTyping] = useState(false);
@@ -86,7 +88,12 @@ export function TradeComposer({ view, dispatch }: TradeComposerProps) {
         return (
             <span data-slot={id} className="contents">
                 {slot.kind === "choice" ? (
-                    <ChoiceSlot view={slot} onChange={(value) => set(id, value)} />
+                    <ChoiceSlot
+                        view={slot}
+                        onChange={(value) => set(id, value)}
+                        onSearch={search?.onQuery}
+                        searchEmpty={search?.empty}
+                    />
                 ) : (
                     <NumberSlot
                         view={slot}

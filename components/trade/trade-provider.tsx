@@ -19,6 +19,8 @@ type TradeState = {
     view: SentenceView<TransactionIntent>;
     dispatch: (action: SentenceAction) => void;
     wallet: WalletStatus;
+    /** The question picker's search; absent while the questions are mock ones. */
+    search?: { onQuery: (query: string) => void; empty?: string };
 };
 
 const TradeContext = createContext<TradeState | null>(null);
@@ -50,11 +52,11 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
     const { ready, authenticated } = usePrivy();
     const { login } = useLogin();
     const { balance } = useAccount();
-    const { catalog, store } = useLiveCatalog();
+    const { catalog, store, search } = useLiveCatalog();
     // The same element type in every branch, so the sentence survives connecting.
     if (!ready) {
         return (
-            <Provide wallet={{ status: "loading" }} holdings={null} catalog={catalog} store={store}>
+            <Provide wallet={{ status: "loading" }} holdings={null} catalog={catalog} store={store} search={search}>
                 {children}
             </Provide>
         );
@@ -66,6 +68,7 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
                 holdings={null}
                 catalog={catalog}
                 store={store}
+                search={search}
             >
                 {children}
             </Provide>
@@ -75,20 +78,22 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
     // Until the account loads, nothing is capped rather than everything.
     const holdings = balance == null ? null : { ...MOCK_HOLDINGS, [QUOTE]: balance };
     return (
-        <Provide wallet={{ status: "connected" }} holdings={holdings} catalog={catalog} store={store}>
+        <Provide wallet={{ status: "connected" }} holdings={holdings} catalog={catalog} store={store} search={search}>
             {children}
         </Provide>
     );
 }
 
 /** Polymarket's questions in place of the mock ones, whoever is (or isn't) signed in. */
-function useLiveCatalog(): { catalog: Catalog; store: MarketsStore } {
+type MarketSearch = NonNullable<TradeState["search"]>;
+
+function useLiveCatalog(): { catalog: Catalog; store: MarketsStore; search: MarketSearch } {
     const [store] = useState(() => createMarketsStore({ apiUrl: API_URL }));
     useEffect(() => {
         store.start();
         return () => store.stop();
     }, [store]);
-    const { trending, results, known } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+    const { trending, query, results, known } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
     const catalog = useMemo<Catalog>(() => {
         const view = (id: string) => {
             const found = known.get(id);
@@ -96,11 +101,14 @@ function useLiveCatalog(): { catalog: Catalog; store: MarketsStore } {
         };
         return {
             ...CATALOG,
-            markets: (results ?? trending).map((m) => toPredictionMarket(m, new Date())),
+            // A search with no matches lists the trending questions under its notice.
+            markets: (results?.length ? results : trending).map((m) => toPredictionMarket(m, new Date())),
             findMarket: view,
         };
     }, [trending, results, known]);
-    return { catalog, store };
+    const empty = results?.length === 0 ? `No markets match \u201c${query}\u201d.` : undefined;
+    const search = useMemo<MarketSearch>(() => ({ onQuery: store.search, empty }), [store, empty]);
+    return { catalog, store, search };
 }
 
 function Provide({
@@ -108,12 +116,14 @@ function Provide({
     holdings,
     catalog,
     store,
+    search,
     children,
 }: {
     wallet: WalletStatus;
     holdings: Record<string, number> | null;
     catalog: Catalog;
     store?: MarketsStore;
+    search?: MarketSearch;
     children: ReactNode;
 }) {
     const { view, dispatch } = useTradeSentence(holdings, catalog);
@@ -123,5 +133,5 @@ function Provide({
         store?.watch(marketId);
         return () => store?.watch(null);
     }, [store, marketId]);
-    return <TradeContext value={{ view, dispatch, wallet }}>{children}</TradeContext>;
+    return <TradeContext value={{ view, dispatch, wallet, search }}>{children}</TradeContext>;
 }

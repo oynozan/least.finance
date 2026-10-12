@@ -38,14 +38,18 @@ function Chevron({ open }: { open: boolean }) {
 }
 
 type ChoiceSlotProps = {
-    view: Pick<ChoiceSlotView, "prompt" | "hint" | "value" | "selected" | "choices" | "issue" | "custom" | "wide" | "empty">;
+    view: Pick<ChoiceSlotView, "prompt" | "hint" | "value" | "selected" | "choices" | "issue" | "custom" | "wide" | "empty" | "search">;
     /** The pill's accessible name when nothing is selected. */
     placeholder?: string;
     onChange: (value: string) => void;
+    /** Takes the picker's search text; the slot's search field shows only with this. */
+    onSearch?: (query: string) => void;
+    /** Said above the list when the search found nothing. */
+    searchEmpty?: string;
 };
 
 /** A pill that opens a picker; its label changes only once a choice is made. */
-export function ChoiceSlot({ view, placeholder = "pick one", onChange }: ChoiceSlotProps) {
+export function ChoiceSlot({ view, placeholder = "pick one", onChange, onSearch, searchEmpty }: ChoiceSlotProps) {
     const [open, setOpen] = useState(false);
     const button = useRef<HTMLButtonElement>(null);
     const pickerId = useId();
@@ -89,6 +93,7 @@ export function ChoiceSlot({ view, placeholder = "pick one", onChange }: ChoiceS
                 custom={view.custom}
                 wide={view.wide}
                 empty={view.empty}
+                search={view.search && onSearch && { ...view.search, onQuery: onSearch, empty: searchEmpty }}
                 anchor={button}
                 onSelect={(value) => {
                     onChange(value);

@@ -16,6 +16,8 @@ const TRENDING_MS = 60_000;
 /** Until the server has a list, ask again soon. */
 const WARMING_MS = 2_000;
 const WATCH_MS = 10_000;
+const SEARCH_MIN = 2;
+const SEARCH_DEBOUNCE_MS = 250;
 
 const EMPTY: MarketsSnapshot = { trending: [], readAt: null, query: "", results: null, known: new Map() };
 
@@ -30,6 +32,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
     let watched: string | null = null;
     let trendingTimer: ReturnType<typeof setTimeout> | undefined;
     let watchTimer: ReturnType<typeof setInterval> | undefined;
+    let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
     const set = (next: Partial<MarketsSnapshot>) => {
         snapshot = { ...snapshot, ...next };
@@ -41,6 +44,16 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         for (const view of views) known.set(view.id, view);
         return known;
     };
+
+    async function runSearch(query: string) {
+        const result = await getJson(`/markets/search?q=${encodeURIComponent(query)}`);
+        // The sent string is the token: an answer for an older query is dropped.
+        if (!result || query !== snapshot.query) return;
+        const body = result.body as { markets?: unknown } | null;
+        if (!body || !Array.isArray(body.markets)) return;
+        const markets = body.markets as MarketView[];
+        set({ results: markets, known: remember(markets) });
+    }
 
     const visible = () => typeof document === "undefined" || document.visibilityState !== "hidden";
 
@@ -132,10 +145,20 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
             running = false;
             clearTimeout(trendingTimer);
             clearInterval(watchTimer);
+            clearTimeout(searchTimer);
             document.removeEventListener("visibilitychange", onVisible);
         },
         search(query: string) {
-            if (query !== snapshot.query) set({ query });
+            const trimmed = query.trim();
+            if (trimmed === snapshot.query) return;
+            clearTimeout(searchTimer);
+            // The old answer is for another query, so the trending list shows meanwhile.
+            if (trimmed.length < SEARCH_MIN) {
+                set({ query: "", results: null });
+                return;
+            }
+            set({ query: trimmed, results: null });
+            searchTimer = setTimeout(() => void runSearch(trimmed), SEARCH_DEBOUNCE_MS);
         },
         watch(eventId: string | null) {
             if (eventId === watched) return;

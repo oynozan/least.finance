@@ -168,3 +168,51 @@ test("a question that stops being offered asks for a question again", async ({ p
         "Pick a question.",
     );
 });
+
+test("search finds a market that isn't trending", async ({ page }) => {
+    const extra = await sampleView(samples.extra);
+    const trending = await trendingView();
+    expect(trending.markets.some((m) => m.id === extra.id)).toBe(false);
+    await page.goto("/");
+    await pick(page, "Swap", /^Predict/);
+    await questionPill(page).click();
+    await expect(picker(page).getByRole("option", { name: exact(extra.title) })).toHaveCount(0);
+    await picker(page).getByRole("searchbox", { name: "Search markets" }).fill(extra.title.split(" ")[0]);
+    const option = picker(page).getByRole("option", { name: exact(extra.title) });
+    await expect(option).toBeVisible();
+    await option.click();
+    await expect(picker(page)).toBeHidden();
+    await expect(questionPill(page)).toHaveAccessibleName(extra.title);
+    // Closing cleared the query: the list is the trending one again.
+    await questionPill(page).click();
+    await expect(picker(page).getByRole("searchbox", { name: "Search markets" })).toHaveValue("");
+});
+
+test("a query with no matches says so, over the trending list", async ({ page }) => {
+    const [first] = (await trendingView()).markets;
+    await page.goto("/");
+    await pick(page, "Swap", /^Predict/);
+    await questionPill(page).click();
+    await picker(page).getByRole("searchbox", { name: "Search markets" }).fill("zzzz");
+    await expect(picker(page)).toContainText("No markets match \u201czzzz\u201d.");
+    await expect(picker(page).getByRole("option", { name: first.title })).toBeVisible();
+    await expect(picker(page)).not.toContainText(/loading|searching/i);
+});
+
+test("the search field is reachable by keyboard", async ({ page }) => {
+    const [first] = (await trendingView()).markets;
+    await page.goto("/");
+    await pick(page, "Swap", /^Predict/);
+    await questionPill(page).click();
+    const field = picker(page).getByRole("searchbox", { name: "Search markets" });
+    await expect(field).toBeFocused();
+    // Typeahead is off, so letters go to the field only.
+    await page.keyboard.type("zzzz");
+    await expect(field).toHaveValue("zzzz");
+    await page.keyboard.press("ArrowDown");
+    await expect(picker(page).getByRole("option").first()).toBeFocused();
+    await expect(picker(page).getByRole("option", { name: first.title })).toBeVisible();
+    await page.keyboard.press("ArrowUp");
+    await expect(field).toBeFocused();
+});
+
