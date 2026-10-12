@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { ObjectId } from "mongodb";
+import { ObjectId, type ClientSession } from "mongodb";
 import type { Logger } from "pino";
 import { parseUnits } from "viem";
 import type { Config } from "../config.ts";
@@ -16,9 +16,9 @@ import type { Ledger } from "../deposits/ledger.ts";
 import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { MarketService } from "../markets/markets.ts";
-import type { PositionsView, PredictionOrderView, QuoteView } from "../protocol.ts";
-import { costOfFill, limitBuyPrice, quoteBuy } from "./pricing.ts";
-import type { PoolTrader } from "./trader.ts";
+import type { PositionsView, PredictionOrderView, QuoteView, SellQuoteView } from "../protocol.ts";
+import { costOfFill, feeE6, limitBuyPrice, limitSellPrice, quoteBuy, quoteSell } from "./pricing.ts";
+import type { MarketMeta, PoolTrader, SignedRecord } from "./trader.ts";
 import { formatUsdShort, orderView, positionView } from "./views.ts";
 
 const SETTLED_KEEP_MS = 7 * 24 * 3_600_000;
@@ -26,10 +26,21 @@ const FLOAT_LOW = 0.25;
 const FLOAT_HIGH = 2;
 const GIVE_UP_TRIES = 3;
 const GIVE_UP_RETRY_MS = 200;
+/** The SDK signs share sizes to 2 decimals. */
+const SHARE_STEP_E6 = 10_000n;
 const AMOUNT = /^\d+(\.\d{1,6})?$/;
 
 export const NOTHING_SPENT = "Nothing was spent.";
 const PRICE_MOVED = "The price moved, so your prediction didn't go through.";
+const TOO_SMALL = "Too small to sell. It pays out when the market resolves.";
+
+export type CloseInput = { requestId: string; positionId: string; quotedPrice: number };
+
+const sellable = (position: PositionDoc): bigint => {
+    const shares = fromDecimal(position.shares);
+    return shares - (shares % SHARE_STEP_E6);
+};
+const minSharesE6 = (minOrderSize: number): bigint => BigInt(Math.round(minOrderSize * 1e6));
 
 type Deps = {
     collections: Collections;
@@ -126,6 +137,92 @@ export class PredictionService {
         };
     }
 
+    async quoteSell(account: AccountDoc, positionId: string): Promise<SellQuoteView> {
+        const trader = this.#trader();
+        const position = await this.#openPosition(account, positionId);
+        const sharesE6 = sellable(position);
+        if (sharesE6 <= 0n) throw new AppError("below_minimum", TOO_SMALL);
+        const [book, meta] = await Promise.all([trader.book(position.tokenId), trader.meta(position.tokenId)]);
+        const q = quoteSell(book, meta, sharesE6);
+        if (!q) throw new AppError("price_moved", PRICE_MOVED);
+        return {
+            positionId,
+            side: "sell",
+            shares: formatE6(sharesE6),
+            proceedsUSD: formatE6(q.proceedsE6),
+            avgPrice: q.avgPrice,
+            worstPrice: q.worstPrice,
+            feeUSD: formatE6(q.feeE6),
+            minShares: book.minOrderSize,
+        };
+    }
+
+    /** Sells a whole open position; the position is `closing` until the sell settles, so a second sell is refused. */
+    async close(account: AccountDoc, input: CloseInput): Promise<PredictionOrderView> {
+        const { predictionOrders, positions } = this.#deps.collections;
+        const known = await predictionOrders.findOne({ accountId: account._id, requestId: input.requestId });
+        if (known) return orderView(known);
+        const trader = this.#trader();
+        const position = await this.#openPosition(account, input.positionId);
+        const sharesE6 = sellable(position);
+        const book = await trader.book(position.tokenId);
+        if (sharesE6 <= 0n || sharesE6 < minSharesE6(book.minOrderSize)) throw new AppError("below_minimum", TOO_SMALL);
+
+        const now = new Date(this.#now());
+        const order: PredictionOrderDoc = {
+            _id: new ObjectId(),
+            accountId: account._id,
+            requestId: input.requestId,
+            side: "sell",
+            eventId: position.eventId,
+            marketId: position.marketId,
+            tokenId: position.tokenId,
+            conditionId: position.conditionId,
+            question: position.question,
+            outcome: position.outcome,
+            amount: toDecimal(0n),
+            shares: toDecimal(sharesE6),
+            quotedPrice: input.quotedPrice,
+            limitPrice: 0,
+            positionId: position._id,
+            orderHash: null,
+            clobOrderId: null,
+            signed: null,
+            state: "placing",
+            reason: null,
+            filledShares: null,
+            cost: null,
+            postedAt: null,
+            createdAt: now,
+            updatedAt: now,
+        };
+        const held = await this.#record(order, async (session) => {
+            const moved = await positions.findOneAndUpdate(
+                { _id: position._id, accountId: account._id, state: "open" },
+                { $set: { state: "closing", updatedAt: now } },
+                { session },
+            );
+            if (!moved) throw busy();
+        });
+        if (!held.fresh) return orderView(held.order);
+
+        void this.#submit(order).catch((error: unknown) =>
+            this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "Couldn't submit a sale"),
+        );
+        return orderView(order);
+    }
+
+    /** The person's position, once it is open to sell. */
+    async #openPosition(account: AccountDoc, positionId: string): Promise<PositionDoc> {
+        const position = ObjectId.isValid(positionId)
+            ? await this.#deps.collections.positions.findOne({ _id: new ObjectId(positionId), accountId: account._id })
+            : null;
+        if (!position) throw new AppError("not_found", "That position wasn't found.");
+        if (position.state === "closing") throw busy();
+        if (position.state !== "open") throw new AppError("not_found", "That position wasn't found.");
+        return position;
+    }
+
     async place(account: AccountDoc, input: PlaceInput): Promise<PredictionOrderView> {
         // A retry is the same order whatever the checks below would say now
         const known = await this.#deps.collections.predictionOrders.findOne({
@@ -167,7 +264,9 @@ export class PredictionService {
             createdAt: now,
             updatedAt: now,
         };
-        const held = await this.#hold(order, amount);
+        const held = await this.#record(order, (session) =>
+            this.#deps.ledger.debitInSession(session, order.accountId, amount, "prediction_buy", order._id),
+        );
         if (!held.fresh) return orderView(held.order);
 
         this.#heldE6 += weiToE6(amount);
@@ -177,8 +276,11 @@ export class PredictionService {
         return orderView(order);
     }
 
-    /** One transaction takes the money and records the order; a repeated request is the same order. */
-    async #hold(order: PredictionOrderDoc, amount: bigint): Promise<{ order: PredictionOrderDoc; fresh: boolean }> {
+    /** One transaction records the order and takes what it holds; a repeated request is the same order. */
+    async #record(
+        order: PredictionOrderDoc,
+        take: (session: ClientSession) => Promise<unknown>,
+    ): Promise<{ order: PredictionOrderDoc; fresh: boolean }> {
         const { predictionOrders } = this.#deps.collections;
         const key = { accountId: order.accountId, requestId: order.requestId };
         try {
@@ -186,7 +288,7 @@ export class PredictionService {
                 const known = await predictionOrders.findOne(key, { session });
                 if (known) return { order: known, fresh: false };
                 await predictionOrders.insertOne(order, { session });
-                await this.#deps.ledger.debitInSession(session, order.accountId, amount, "prediction_buy", order._id);
+                await take(session);
                 return { order, fresh: true };
             });
         } catch (error) {
@@ -225,21 +327,29 @@ export class PredictionService {
     async #send(order: PredictionOrderDoc): Promise<void> {
         const { predictionOrders } = this.#deps.collections;
         const trader = this.#deps.trader();
-        let signed;
-        let meta;
-        let limitPrice = 0;
+        let signed: SignedRecord;
+        let meta: MarketMeta;
+        let limitPrice: number;
         try {
             if (!trader) throw new Error("The trader isn't ready");
             const [book, m] = await Promise.all([trader.book(order.tokenId), trader.meta(order.tokenId)]);
             meta = m;
-            limitPrice = limitBuyPrice(order.quotedPrice, meta.tickSize);
-            const q = quoteBuy(book, meta, weiToE6(fromDecimal(order.amount)));
-            if (!q || q.worstPrice > limitPrice) return void (await this.fail(order, "price_moved", "placing"));
-            signed = await trader.signBuy({
-                tokenId: order.tokenId,
-                spendE6: weiToE6(fromDecimal(order.amount)),
-                maxPrice: limitPrice,
-            });
+            if (order.side === "sell") {
+                const sharesE6 = fromDecimal(order.shares!);
+                limitPrice = limitSellPrice(order.quotedPrice, meta.tickSize);
+                const q = quoteSell(book, meta, sharesE6);
+                if (!q || q.worstPrice < limitPrice) return void (await this.fail(order, "price_moved", "placing"));
+                signed = await trader.signSell({ tokenId: order.tokenId, sharesE6, minPrice: limitPrice });
+            } else {
+                limitPrice = limitBuyPrice(order.quotedPrice, meta.tickSize);
+                const q = quoteBuy(book, meta, weiToE6(fromDecimal(order.amount)));
+                if (!q || q.worstPrice > limitPrice) return void (await this.fail(order, "price_moved", "placing"));
+                signed = await trader.signBuy({
+                    tokenId: order.tokenId,
+                    spendE6: weiToE6(fromDecimal(order.amount)),
+                    maxPrice: limitPrice,
+                });
+            }
         } catch (error) {
             this.#deps.logger.warn({ err: error, order: order._id.toHexString() }, "Couldn't prepare a prediction");
             return void (await this.fail(order, "unavailable", "placing"));
@@ -279,39 +389,34 @@ export class PredictionService {
         const trader = this.#deps.trader();
         if (!trader) throw new Error("The trader isn't ready");
         const meta = await trader.meta(order.tokenId);
-        const held = fromDecimal(order.amount);
+        if (order.side === "sell") return this.#settleSell(order, makingE6, takingE6, meta);
         const spent = e6ToWei(costOfFill(makingE6, takingE6, meta));
-        const cost = spent > held ? held : spent;
         const { predictionOrders, positions, accounts } = this.#deps.collections;
 
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const now = new Date();
+            // The stored order decides who is credited, whatever copy the caller holds
             const moved = await predictionOrders.findOneAndUpdate(
                 { _id: order._id, state: "posted" },
-                {
-                    $set: {
-                        state: "filled",
-                        filledShares: toDecimal(takingE6),
-                        cost: toDecimal(cost),
-                        updatedAt: now,
-                    },
-                },
+                { $set: { state: "filled", filledShares: toDecimal(takingE6), updatedAt: now } },
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
+            const held = fromDecimal(moved.amount);
+            const cost = spent > held ? held : spent;
 
             const position = await positions.findOneAndUpdate(
-                { accountId: order.accountId, tokenId: order.tokenId, state: { $in: ["open", "closing"] } },
+                { accountId: moved.accountId, tokenId: order.tokenId, state: { $in: ["open", "closing"] } },
                 {
                     $inc: { shares: toDecimal(takingE6), cost: toDecimal(cost) },
                     $set: { updatedAt: now },
                     $setOnInsert: {
                         _id: new ObjectId(),
-                        eventId: order.eventId,
-                        marketId: order.marketId,
-                        conditionId: order.conditionId,
-                        question: order.question,
-                        outcome: order.outcome,
+                        eventId: moved.eventId,
+                        marketId: moved.marketId,
+                        conditionId: moved.conditionId,
+                        question: moved.question,
+                        outcome: moved.outcome,
                         state: "open",
                         proceeds: null,
                         payout: null,
@@ -324,7 +429,7 @@ export class PredictionService {
             if (!position) throw new Error("The position wasn't written");
             const linked = await predictionOrders.findOneAndUpdate(
                 { _id: order._id },
-                { $set: { positionId: position._id } },
+                { $set: { positionId: position._id, cost: toDecimal(cost) } },
                 { session, returnDocument: "after" },
             );
 
@@ -333,27 +438,68 @@ export class PredictionService {
                 refund > 0n
                     ? await this.#deps.ledger.creditInSession(
                           session,
-                          order.accountId,
+                          moved.accountId,
                           refund,
                           "prediction_refund",
                           order._id,
                       )
-                    : await accounts.findOne({ _id: order.accountId }, { session });
+                    : await accounts.findOne({ _id: moved.accountId }, { session });
             if (!account || !linked) throw new Error("The order or its account vanished");
-            return { order: linked, position, account };
+            return { order: linked, position, account, held, cost };
         });
         if (!done) return;
         this.#deps.logger.info(
-            { order: order._id.toHexString(), shares: formatE6(takingE6), cost: formatUsdc(cost) },
+            { order: order._id.toHexString(), shares: formatE6(takingE6), cost: formatUsdc(done.cost) },
             "Prediction filled",
         );
-        this.#afterSettle(held, done);
+        this.#afterSettle(done.held, done);
     }
 
-    /** Fails an order and gives back everything it held. A repeat, or an order that already moved on, does nothing. */
+    /** Books a sell fill: the proceeds, net of the fee, go to the balance and the position closes. A repeat does nothing. */
+    async #settleSell(order: PredictionOrderDoc, makingE6: bigint, takingE6: bigint, meta: MarketMeta): Promise<void> {
+        // Taking is the gross pUSD; the fee comes off it
+        const fee = makingE6 > 0n ? feeE6(makingE6, Number(takingE6) / Number(makingE6), meta) : 0n;
+        const proceeds = e6ToWei(takingE6 > fee ? takingE6 - fee : 0n);
+        const { predictionOrders, positions, accounts } = this.#deps.collections;
+
+        const done = await this.#deps.ledger.runInTransaction(async (session) => {
+            const now = new Date();
+            const moved = await predictionOrders.findOneAndUpdate(
+                { _id: order._id, state: "posted" },
+                { $set: { state: "filled", filledShares: toDecimal(makingE6), updatedAt: now } },
+                { session, returnDocument: "after" },
+            );
+            if (!moved) return null;
+            const position = await positions.findOneAndUpdate(
+                { _id: moved.positionId!, accountId: moved.accountId, state: "closing" },
+                { $set: { state: "closed", proceeds: toDecimal(proceeds), settledAt: now, updatedAt: now } },
+                { session, returnDocument: "after" },
+            );
+            if (!position) throw new Error("The position wasn't closing");
+            const account =
+                proceeds > 0n
+                    ? await this.#deps.ledger.creditInSession(
+                          session,
+                          moved.accountId,
+                          proceeds,
+                          "prediction_sell",
+                          moved._id,
+                      )
+                    : await accounts.findOne({ _id: moved.accountId }, { session });
+            if (!account) throw new Error("The account vanished");
+            return { order: moved, position, account };
+        });
+        if (!done) return;
+        this.#deps.logger.info(
+            { order: order._id.toHexString(), shares: formatE6(makingE6), proceeds: formatUsdc(proceeds) },
+            "Prediction sold",
+        );
+        this.#afterSettle(0n, done);
+    }
+
+    /** Fails an order and gives back everything it held; a failed sell reopens its position. A repeat, or an order that already moved on, does nothing. */
     async fail(order: PredictionOrderDoc, reason: PredictionFailure, from: "placing" | "posted"): Promise<void> {
-        const { predictionOrders } = this.#deps.collections;
-        const held = fromDecimal(order.amount);
+        const { predictionOrders, positions, accounts } = this.#deps.collections;
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const moved = await predictionOrders.findOneAndUpdate(
                 { _id: order._id, state: from },
@@ -361,18 +507,29 @@ export class PredictionService {
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
+            if (moved.side === "sell") {
+                const position = await positions.findOneAndUpdate(
+                    { _id: moved.positionId!, accountId: moved.accountId, state: "closing" },
+                    { $set: { state: "open", updatedAt: new Date() } },
+                    { session, returnDocument: "after" },
+                );
+                const account = await accounts.findOne({ _id: moved.accountId }, { session });
+                if (!account) throw new Error("The account vanished");
+                return { order: moved, position, account, held: 0n };
+            }
+            const held = fromDecimal(moved.amount);
             const account = await this.#deps.ledger.creditInSession(
                 session,
-                order.accountId,
+                moved.accountId,
                 held,
                 "prediction_refund",
-                order._id,
+                moved._id,
             );
-            return { order: moved, position: null, account };
+            return { order: moved, position: null, account, held };
         });
         if (!done) return;
         this.#deps.logger.info({ order: order._id.toHexString(), reason }, "Prediction failed and refunded");
-        this.#afterSettle(held, done);
+        this.#afterSettle(done.held, done);
     }
 
     #afterSettle(
@@ -439,3 +596,5 @@ export class PredictionService {
 }
 
 const marketClosed = () => new AppError("market_closed", `This market just closed. ${NOTHING_SPENT}`);
+
+const busy = () => new AppError("position_busy", "This position is already being sold.");

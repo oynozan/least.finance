@@ -186,3 +186,34 @@ test("a placing order nothing is submitting is refunded after a minute", async (
     expect(s.balance).toBe(wei("100"));
     expect(s.sum).toBe(s.balance);
 });
+
+test("a delayed order is open, not missing, until the exchange decides", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "delay");
+    const view = await h.service.place(account, input("10"));
+    const order = await posted(view.requestId);
+    await sent(order);
+
+    expect(await h.trader.lookup({ orderHash: order.orderHash! })).toEqual({ kind: "open" });
+    clock += 600_000;
+    await tracker.tick();
+    expect((await orderOf(view.requestId))!.state).toBe("posted");
+
+    h.trader.settleDelayed(order.orderHash!, "fill");
+    await tracker.tick();
+    expect((await orderOf(view.requestId))!.state).toBe("filled");
+});
+
+test("an unknown post that filled is settled by the tracker, not refunded", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "unknown-filled");
+    const view = await h.service.place(account, input("10"));
+    await sent(await posted(view.requestId));
+
+    clock += 121_000;
+    await tracker.tick();
+    expect((await orderOf(view.requestId))!.state).toBe("filled");
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("90"));
+    expect(s.sum).toBe(s.balance);
+});

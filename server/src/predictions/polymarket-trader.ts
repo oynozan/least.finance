@@ -264,7 +264,8 @@ export async function createPolymarketTrader(
             const status = order.status.toUpperCase();
             const matchedE6 = decimalToE6(order.sizeMatched);
             const originalE6 = decimalToE6(order.originalSize);
-            if (status === "MATCHED" || (matchedE6 > 0n && matchedE6 === originalE6)) {
+            // MATCHED can show before any size has matched
+            if (matchedE6 > 0n && (status === "MATCHED" || matchedE6 === originalE6)) {
                 // The order's own price is its limit, so the real cost comes from the trades when they add up
                 const dollars =
                     (await tradedDollars(order.associateTrades, matchedE6)) ?? matchedE6 * decimalToE6(order.price);

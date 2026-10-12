@@ -10,7 +10,7 @@ import type {
 } from "../../src/predictions/trader.ts";
 
 type Outcome = "fill" | "reject:price_moved" | "reject:market_closed" | "reject:rejected";
-export type Behavior = Outcome | "delay" | "unknown" | "hold";
+export type Behavior = Outcome | "delay" | "unknown" | "unknown-filled" | "hold";
 
 type Signed =
     | { side: "BUY"; tokenId: string; spendE6: string; maxPrice: number }
@@ -120,7 +120,13 @@ export class FakeTrader implements PoolTrader {
             return this.#decide(record, signed, outcome);
         }
         if (behavior === "unknown") return { kind: "unknown" };
+        if (behavior === "unknown-filled") {
+            // The exchange filled it but the answer never came back
+            this.#decide(record, signed, "fill");
+            return { kind: "unknown" };
+        }
         if (behavior === "delay") {
+            this.#lookups.set(record.orderHash, { kind: "open" });
             this.#plan(record, signed);
             return { kind: "delayed", orderId: record.orderHash };
         }
@@ -155,7 +161,8 @@ export class FakeTrader implements PoolTrader {
             const shares = BigInt(signed.sharesE6);
             const q = quoteSell(book, meta, shares);
             if (q && q.worstPrice >= signed.minPrice) {
-                fill = { makingE6: shares, takingE6: q.proceedsE6, balanceDelta: q.proceedsE6 };
+                // taking is gross pUSD, as the exchange reports it; the pool's balance rises by the net
+                fill = { makingE6: shares, takingE6: q.proceedsE6 + q.feeE6, balanceDelta: q.proceedsE6 };
             }
         }
         if (fill) this.#fills.set(record.orderHash, fill);

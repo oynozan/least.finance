@@ -50,6 +50,13 @@ export const predictionOrder = predictionQuote.extend({
     quotedPrice: z.number().gt(0).lt(1),
 });
 
+export const sellQuote = z.object({ positionId: z.string().regex(/^[0-9a-f]{24}$/i, "a position id") });
+
+export const predictionClose = sellQuote.extend({
+    requestId: z.string().regex(UUID, "a UUID"),
+    quotedPrice: z.number().gt(0).lt(1),
+});
+
 /** Parses client input, turning a mismatch into a 400 that names the field. */
 export function parse<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
     const result = schema.safeParse(input ?? {});

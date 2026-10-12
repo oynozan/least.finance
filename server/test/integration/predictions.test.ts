@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ObjectId } from "mongodb";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { fromDecimal } from "../../src/db/money.ts";
 import { isAppError } from "../../src/errors.ts";
@@ -302,4 +303,23 @@ test("a fee-bearing fill through the trader refunds only what it left unspent", 
     } finally {
         await own.database.close();
     }
+});
+
+test("settling and failing use the account of the stored order, not the one in hand", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "delay");
+    const filled = await h.service.place(account, input("10"));
+    await until(async () => (await orderOf(filled.requestId))?.state === "posted");
+    const stale = { ...(await orderOf(filled.requestId))!, accountId: new ObjectId() };
+    await h.service.settle(stale, 10_000_000n, 20_000_000n);
+    expect(await h.database.collections.positions.countDocuments({ accountId: stale.accountId })).toBe(0);
+    expect(await h.database.collections.positions.countDocuments({ accountId: account._id })).toBe(1);
+
+    h.trader.onNext(TOKEN, "delay");
+    const failed = await h.service.place(account, input("10"));
+    await until(async () => (await orderOf(failed.requestId))?.state === "posted");
+    await h.service.fail({ ...(await orderOf(failed.requestId))!, accountId: new ObjectId() }, "rejected", "posted");
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("90"));
+    expect(s.sum).toBe(s.balance);
 });

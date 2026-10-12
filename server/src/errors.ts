@@ -16,6 +16,7 @@ const STATUS: Record<ErrorCode, number> = {
     market_closed: 409,
     price_moved: 409,
     float_short: 409,
+    position_busy: 409,
     trading_off: 503,
     internal: 500,
 };

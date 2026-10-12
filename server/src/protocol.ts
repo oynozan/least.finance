@@ -143,6 +143,8 @@ export type ErrorCode =
     | "price_moved"
     /** The pool can't cover an order this size right now. */
     | "float_short"
+    /** The position is already being sold under another request. */
+    | "position_busy"
     | "trading_off"
     | "internal";
 
@@ -174,15 +176,20 @@ export type ClientToServerEvents = {
         payload: { orderId: string; txHashes: string[] },
         ack: (result: Ack<DepositOrderView>) => void,
     ) => void;
-    /** What a prediction buy would cost and return right now. */
+    /** What a prediction buy would cost and return right now, or with a `positionId` what selling the position would pay. */
     "prediction:quote": (
-        payload: { eventId: string; tokenId: string; amountUSD: string },
-        ack: (result: Ack<QuoteView>) => void,
+        payload: { eventId: string; tokenId: string; amountUSD: string } | { positionId: string },
+        ack: (result: Ack<QuoteView | SellQuoteView>) => void,
     ) => void;
     /** Places a buy; the outcome follows as a `prediction:update`. A repeated `requestId` is the same order. */
     "prediction:order": (
         payload: { requestId: string; eventId: string; tokenId: string; amountUSD: string; quotedPrice: number },
         ack: (result: Ack<PredictionPlaced>) => void,
+    ) => void;
+    /** Sells a whole position; the outcome follows as a `prediction:update`. A repeated `requestId` is the same order. */
+    "prediction:close": (
+        payload: { requestId: string; positionId: string; quotedPrice: number },
+        ack: (result: Ack<PredictionOrderView>) => void,
     ) => void;
 };
 
@@ -281,6 +288,19 @@ export type QuoteView = {
     feeUSD: UsdcAmount;
     payoutUSD: UsdcAmount;
     minUSD: number;
+};
+
+export type SellQuoteView = {
+    positionId: string;
+    side: "sell";
+    /** The shares that would sell, floored to 0.01. */
+    shares: string;
+    proceedsUSD: UsdcAmount;
+    avgPrice: number;
+    worstPrice: number;
+    feeUSD: UsdcAmount;
+    /** The smallest sale the book takes, in shares. */
+    minShares: number;
 };
 
 export type PredictionUpdate = {

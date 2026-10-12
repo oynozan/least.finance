@@ -118,3 +118,23 @@ test("a second credit of the same kind and refId is rejected by ref_unique", asy
     expect(state.balance).toBe(wei("3"));
     expect(state.sum).toBe(state.balance);
 });
+
+test("a debit or credit of zero or less throws and writes nothing", async () => {
+    const id = await seedAccount("3");
+    for (const amount of [0n, -1n]) {
+        await expect(
+            ledger.runInTransaction((session) =>
+                ledger.debitInSession(session, id, amount, "prediction_buy", new ObjectId()),
+            ),
+        ).rejects.toThrow();
+        await expect(
+            ledger.runInTransaction((session) =>
+                ledger.creditInSession(session, id, amount, "prediction_refund", new ObjectId()),
+            ),
+        ).rejects.toThrow();
+    }
+    const state = await ledgerState(id);
+    expect(state.balance).toBe(wei("3"));
+    expect(state.version).toBe(1);
+    expect(state.rows).toHaveLength(1);
+});

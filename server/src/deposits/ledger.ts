@@ -87,6 +87,7 @@ export class Ledger {
         kind: "prediction_buy",
         refId: ObjectId,
     ): Promise<AccountDoc> {
+        if (wei <= 0n) throw new Error(`A debit must be over zero, not ${wei}`);
         const now = new Date();
         const account = await this.#deps.collections.accounts.findOneAndUpdate(
             { _id: accountId, balance: { $gte: toDecimal(wei) } },
@@ -107,6 +108,7 @@ export class Ledger {
         kind: "prediction_refund" | "prediction_sell" | "prediction_payout",
         refId: ObjectId,
     ): Promise<AccountDoc> {
+        if (wei <= 0n) throw new Error(`A credit must be over zero, not ${wei}`);
         const now = new Date();
         const account = await this.#deps.collections.accounts.findOneAndUpdate(
             { _id: accountId },

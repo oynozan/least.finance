@@ -15,8 +15,10 @@ import {
     depositPage,
     depositReport,
     parse,
+    predictionClose,
     predictionOrder,
     predictionQuote,
+    sellQuote,
     sourceReport,
 } from "../validation.ts";
 
@@ -204,12 +206,15 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
         socket.on("prediction:quote", (payload, ack) =>
             reply(ack, async () => {
-                const input = parse(predictionQuote, payload);
+                const selling = typeof payload === "object" && payload !== null && "positionId" in payload;
+                const input = selling ? parse(sellQuote, payload) : parse(predictionQuote, payload);
                 await predictionQuotes.consume(socket.data.identity.userId).catch(() => {
                     throw new AppError("rate_limited", "Too many quotes. Try again shortly.");
                 });
-                await boundAccount(socket);
-                return services.predictions.quote(input);
+                const account = await boundAccount(socket);
+                return "positionId" in input
+                    ? services.predictions.quoteSell(account, input.positionId)
+                    : services.predictions.quote(input);
             }),
         );
 
@@ -224,6 +229,16 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 // Read after the hold, so it already has the amount taken
                 const held = await services.accounts.findById(account._id);
                 return { ...placed, account: accountView(held ?? account) };
+            }),
+        );
+
+        socket.on("prediction:close", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(predictionClose, payload);
+                await predictionOrders.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many predictions. Try again shortly.");
+                });
+                return services.predictions.close(await boundAccount(socket), input);
             }),
         );
     });

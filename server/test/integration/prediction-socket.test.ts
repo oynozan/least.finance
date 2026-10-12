@@ -159,6 +159,60 @@ describe("prediction events", () => {
         expect(quote).toMatchObject({ ok: true, data: { eventId, tokenId, side: "buy", amountUSD: "10" } });
     });
 
+    /** An open position of 20 shares in the person's account. */
+    async function holding(accountId: ObjectId, tokenId: string, eventId: string) {
+        const now = new Date();
+        const _id = new ObjectId();
+        await stack.server.services.database.collections.positions.insertOne({
+            _id,
+            accountId,
+            eventId,
+            marketId: "1",
+            tokenId,
+            conditionId: "0xcondition",
+            question: "Will it rain?",
+            outcome: "YES",
+            shares: toDecimal(20_123_456n),
+            cost: toDecimal(wei("10")),
+            state: "open",
+            proceeds: null,
+            payout: null,
+            openedAt: now,
+            settledAt: null,
+            updatedAt: now,
+        });
+        return _id.toHexString();
+    }
+
+    test("prediction:quote {positionId} answers a sell quote", async () => {
+        const { socket, accountId } = await person(stack);
+        const { eventId, tokenId } = await outcome(stack);
+        const positionId = await holding(accountId, tokenId, eventId);
+        const quote = await socket.timeout(5000).emitWithAck("prediction:quote", { positionId });
+        expect(quote).toMatchObject({
+            ok: true,
+            data: { positionId, side: "sell", shares: "20.12", minShares: expect.any(Number) },
+        });
+    });
+
+    test("prediction:close sells the position and pushes the closed update", async () => {
+        const { socket, updates, accountId } = await person(stack);
+        const { eventId, tokenId } = await outcome(stack);
+        const positionId = await holding(accountId, tokenId, eventId);
+        const bid = Number(stack.polymarket.book(tokenId)!.bids[0]!.price);
+        const closed = await socket
+            .timeout(5000)
+            .emitWithAck("prediction:close", { requestId: randomUUID(), positionId, quotedPrice: bid });
+        expect(closed).toMatchObject({ ok: true, data: { side: "sell", state: "placing", positionId } });
+        await expect.poll(() => updates.length).toBe(1);
+        expect(updates[0]!.order).toMatchObject({ side: "sell", state: "filled" });
+        expect(updates[0]!.position).toMatchObject({ id: positionId, state: "closed" });
+        const busy = await socket
+            .timeout(5000)
+            .emitWithAck("prediction:close", { requestId: randomUUID(), positionId, quotedPrice: bid });
+        expect(busy).toMatchObject({ ok: false, error: { code: "not_found" } });
+    });
+
     test("the 11th order in a minute is rate_limited", async () => {
         const { socket } = await person(stack, "100");
         const results: Ack<PredictionPlaced>[] = [];

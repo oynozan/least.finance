@@ -155,6 +155,11 @@ describe("the Polymarket trader", () => {
         expect(await ask()).toEqual({ kind: "filled", makingE6: 5_500_000n, takingE6: 10_000_000n });
         fake.setOrder(HASH, order("live", "0"));
         expect(await ask()).toEqual({ kind: "open" });
+        // MATCHED with nothing matched yet is not a fill of zero shares
+        fake.setOrder(HASH, order("MATCHED", "0"));
+        expect(await ask()).toEqual({ kind: "open" });
+        fake.setOrder(HASH, order("MATCHED", ""));
+        expect(await ask()).toEqual({ kind: "open" });
         fake.setOrder(HASH, order("CANCELED_MARKET_RESOLVED", "0"));
         expect(await ask()).toEqual({ kind: "cancelled" });
         fake.setOrder(HASH, order("INVALID", "0"));
