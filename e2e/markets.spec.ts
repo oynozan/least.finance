@@ -183,9 +183,6 @@ test("search finds a market that isn't trending", async ({ page }) => {
     await option.click();
     await expect(picker(page)).toBeHidden();
     await expect(questionPill(page)).toHaveAccessibleName(extra.title);
-    // Closing cleared the query: the list is the trending one again.
-    await questionPill(page).click();
-    await expect(picker(page).getByRole("searchbox", { name: "Search markets" })).toHaveValue("");
 });
 
 test("a query with no matches says so, over the trending list", async ({ page }) => {
@@ -214,5 +211,43 @@ test("the search field is reachable by keyboard", async ({ page }) => {
     await expect(picker(page).getByRole("option", { name: first.title })).toBeVisible();
     await page.keyboard.press("ArrowUp");
     await expect(field).toBeFocused();
+});
+
+test("closing the picker ends the search", async ({ page }) => {
+    const extra = await sampleView(samples.extra);
+    const [first] = (await trendingView()).markets;
+    await page.goto("/");
+    await pick(page, "Swap", /^Predict/);
+    await questionPill(page).click();
+    await picker(page).getByRole("searchbox", { name: "Search markets" }).fill(extra.title.split(" ")[0]);
+    await expect(picker(page).getByRole("option", { name: exact(extra.title) })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(picker(page)).toBeHidden();
+    await questionPill(page).click();
+    await expect(picker(page).getByRole("searchbox", { name: "Search markets" })).toHaveValue("");
+    await expect(picker(page).getByRole("option", { name: first.title })).toBeVisible();
+    await expect(picker(page).getByRole("option", { name: exact(extra.title) })).toHaveCount(0);
+});
+
+test("results arriving don't move focus", async ({ page }) => {
+    const extra = await sampleView(samples.extra);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/markets/search*", async (route) => {
+        await gate;
+        await route.continue();
+    });
+    await page.goto("/");
+    await pick(page, "Swap", /^Predict/);
+    await questionPill(page).click();
+    const field = picker(page).getByRole("searchbox", { name: "Search markets" });
+    await field.fill(extra.title.split(" ")[0]);
+    await expect(field).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(picker(page).getByRole("option").first()).toBeFocused();
+    await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+    release();
+    await expect(picker(page).getByRole("option", { name: exact(extra.title) })).toBeVisible();
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
 });
 

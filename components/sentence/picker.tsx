@@ -81,7 +81,9 @@ function Options({ title, titleId, choices, selected, custom, search, wide, empt
     // A new search can shorten the list under the active row.
     const active = Math.max(0, Math.min(wanted, choices.length - 1));
     const field = useRef<HTMLInputElement>(null);
-    const fieldFocused = useRef(false);
+    // Whether the search field is where focus belongs; arrow keys hand it to the list and back.
+    const inField = useRef(true);
+    const hasSearch = !!search;
     const onQuery = useRef(search?.onQuery);
     useEffect(() => {
         onQuery.current = search?.onQuery;
@@ -93,7 +95,8 @@ function Options({ title, titleId, choices, selected, custom, search, wide, empt
     useEffect(() => {
         if (!isPresent) {
             left.current = true;
-            fieldFocused.current = false;
+            inField.current = true;
+            onQuery.current?.("");
         } else if (left.current) {
             left.current = false;
             setQuery("");
@@ -116,13 +119,9 @@ function Options({ title, titleId, choices, selected, custom, search, wide, empt
 
     useEffect(() => {
         if (!isPresent) return;
-        if (search) {
-            // The field takes focus on opening and keeps it until an arrow key leaves it.
-            if (!fieldFocused.current || document.activeElement === field.current) {
-                fieldFocused.current = true;
-                field.current?.focus({ preventScroll: true });
-                return;
-            }
+        if (hasSearch && inField.current) {
+            field.current?.focus({ preventScroll: true });
+            return;
         }
         if (
             startInInput &&
@@ -134,7 +133,7 @@ function Options({ title, titleId, choices, selected, custom, search, wide, empt
         }
         rows.current[active]?.focus({ preventScroll: true });
         rows.current[active]?.scrollIntoView({ block: "nearest" });
-    }, [active, isPresent, startInInput, search]);
+    }, [active, isPresent, startInInput, hasSearch]);
 
     // One highlight for the whole list, sliding to the active row's layout box
     // (offsetTop ignores the rows' entrance transforms).
@@ -148,6 +147,7 @@ function Options({ title, titleId, choices, selected, custom, search, wide, empt
         if (event.target === field.current) {
             if (event.key === "ArrowDown" && choices.length > 0) {
                 event.preventDefault();
+                inField.current = false;
                 rows.current[active]?.focus({ preventScroll: true });
             }
             return;
@@ -164,6 +164,7 @@ function Options({ title, titleId, choices, selected, custom, search, wide, empt
         }
         if (event.key === "ArrowUp" && active === 0 && (search || custom)) {
             event.preventDefault();
+            inField.current = !!search;
             (search ? field : input).current?.focus();
             return;
         }

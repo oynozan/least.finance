@@ -93,7 +93,7 @@ function useLiveCatalog(): { catalog: Catalog; store: MarketsStore; search: Mark
         store.start();
         return () => store.stop();
     }, [store]);
-    const { trending, query, results, known } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+    const { trending, query, results, answered, known } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
     const catalog = useMemo<Catalog>(() => {
         const view = (id: string) => {
             const found = known.get(id);
@@ -106,7 +106,7 @@ function useLiveCatalog(): { catalog: Catalog; store: MarketsStore; search: Mark
             findMarket: view,
         };
     }, [trending, results, known]);
-    const empty = results?.length === 0 ? `No markets match \u201c${query}\u201d.` : undefined;
+    const empty = results?.length === 0 && answered === query ? `No markets match \u201c${query}\u201d.` : undefined;
     const search = useMemo<MarketSearch>(() => ({ onQuery: store.search, empty }), [store, empty]);
     return { catalog, store, search };
 }

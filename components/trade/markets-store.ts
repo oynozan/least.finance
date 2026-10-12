@@ -8,6 +8,8 @@ export type MarketsSnapshot = {
     query: string;
     /** Search results for `query`; null while it has none, so the trending list shows. */
     results: MarketView[] | null;
+    /** The query `results` answers; it trails `query` while a newer one is pending. */
+    answered: string | null;
     /** Every question seen, so one picked earlier still resolves after it leaves the list. */
     known: ReadonlyMap<string, MarketView>;
 };
@@ -19,7 +21,7 @@ const WATCH_MS = 10_000;
 const SEARCH_MIN = 2;
 const SEARCH_DEBOUNCE_MS = 250;
 
-const EMPTY: MarketsSnapshot = { trending: [], readAt: null, query: "", results: null, known: new Map() };
+const EMPTY: MarketsSnapshot = { trending: [], readAt: null, query: "", results: null, answered: null, known: new Map() };
 
 const isTrending = (value: unknown): value is TrendingView => !!value && Array.isArray((value as TrendingView).markets);
 
@@ -29,6 +31,8 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
     const listeners = new Set<() => void>();
     let snapshot = EMPTY;
     let running = false;
+    // Apart from `running` so a store that was never started still searches.
+    let stopped = false;
     let watched: string | null = null;
     let trendingTimer: ReturnType<typeof setTimeout> | undefined;
     let watchTimer: ReturnType<typeof setInterval> | undefined;
@@ -48,11 +52,11 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
     async function runSearch(query: string) {
         const result = await getJson(`/markets/search?q=${encodeURIComponent(query)}`);
         // The sent string is the token: an answer for an older query is dropped.
-        if (!result || query !== snapshot.query) return;
+        if (stopped || !result || query !== snapshot.query) return;
         const body = result.body as { markets?: unknown } | null;
         if (!body || !Array.isArray(body.markets)) return;
         const markets = body.markets as MarketView[];
-        set({ results: markets, known: remember(markets) });
+        set({ results: markets, answered: query, known: remember(markets) });
     }
 
     const visible = () => typeof document === "undefined" || document.visibilityState !== "hidden";
@@ -132,6 +136,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         start() {
             if (running) return;
             running = true;
+            stopped = false;
             const cached = loadCachedTrending();
             if (cached && snapshot.trending.length === 0) {
                 set({ trending: cached.markets, readAt: cached.readAt, known: remember(cached.markets) });
@@ -143,21 +148,23 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         stop() {
             if (!running) return;
             running = false;
+            stopped = true;
             clearTimeout(trendingTimer);
             clearInterval(watchTimer);
             clearTimeout(searchTimer);
             document.removeEventListener("visibilitychange", onVisible);
         },
         search(query: string) {
+            if (stopped) return;
             const trimmed = query.trim();
             if (trimmed === snapshot.query) return;
             clearTimeout(searchTimer);
-            // The old answer is for another query, so the trending list shows meanwhile.
             if (trimmed.length < SEARCH_MIN) {
-                set({ query: "", results: null });
+                set({ query: "", results: null, answered: null });
                 return;
             }
-            set({ query: trimmed, results: null });
+            // The earlier results stay on screen until this query's answer replaces them.
+            set({ query: trimmed });
             searchTimer = setTimeout(() => void runSearch(trimmed), SEARCH_DEBOUNCE_MS);
         },
         watch(eventId: string | null) {

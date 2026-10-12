@@ -143,5 +143,66 @@ test.describe("live markets", () => {
             await wait(300);
             expect(asked).toEqual(["fed r"]);
         });
+
+        test("a stopped store ignores late answers and new searches", async () => {
+            const { fake, pending, asked } = fakeSearch();
+            const doc = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
+            (globalThis as { document?: unknown }).document = doc;
+            try {
+                const store = createMarketsStore({ apiUrl: "http://api", fetch: fake });
+                store.start();
+                store.search("fed");
+                await wait(300);
+                expect(asked).toEqual(["fed"]);
+                const before = store.getSnapshot();
+                let calls = 0;
+                store.subscribe(() => calls++);
+                store.stop();
+                pending.get("fed")!([market("1", "Fed decision")]);
+                await wait(20);
+                store.search("fede");
+                await wait(300);
+                expect(store.getSnapshot()).toBe(before);
+                expect(calls).toBe(0);
+                expect(asked).toEqual(["fed"]);
+            } finally {
+                delete (globalThis as { document?: unknown }).document;
+            }
+        });
+
+        test("a pending search cancelled by stop never fetches", async () => {
+            const { fake, asked } = fakeSearch();
+            const doc = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
+            (globalThis as { document?: unknown }).document = doc;
+            try {
+                const store = createMarketsStore({ apiUrl: "http://api", fetch: fake });
+                store.start();
+                store.search("fed");
+                store.stop();
+                await wait(300);
+                expect(asked).toEqual([]);
+            } finally {
+                delete (globalThis as { document?: unknown }).document;
+            }
+        });
+
+        test("earlier results stay until the newer query is answered", async () => {
+            const { fake, pending } = fakeSearch();
+            const store = createMarketsStore({ apiUrl: "http://api", fetch: fake });
+            store.search("fed");
+            await wait(300);
+            pending.get("fed")!([market("1", "Fed decision")]);
+            await wait(20);
+            expect(store.getSnapshot()).toMatchObject({ query: "fed", answered: "fed" });
+            store.search("fede");
+            expect(store.getSnapshot().results?.map((m) => m.id)).toEqual(["1"]);
+            expect(store.getSnapshot()).toMatchObject({ query: "fede", answered: "fed" });
+            await wait(300);
+            expect(store.getSnapshot().results?.map((m) => m.id)).toEqual(["1"]);
+            pending.get("fede")!([market("2", "Federal")]);
+            await wait(20);
+            expect(store.getSnapshot().results?.map((m) => m.id)).toEqual(["2"]);
+            expect(store.getSnapshot().answered).toBe("fede");
+        });
     });
 });
