@@ -26,6 +26,8 @@ import { Bus } from "./events.ts";
 import { MarketService } from "./markets/markets.ts";
 import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
+import { PredictionReconciler } from "./predictions/reconciler.ts";
+import { PredictionRedeemer } from "./predictions/redeemer.ts";
 import { PredictionResolver } from "./predictions/resolver.ts";
 import { PredictionTracker } from "./predictions/tracker.ts";
 import { traderNeeded, withTimeouts, type PoolTrader } from "./predictions/trader.ts";
@@ -36,6 +38,9 @@ import { Sessions } from "./sessions.ts";
 import { attachSockets } from "./socket/sockets.ts";
 
 const TRADER_RETRY_MS = 60_000;
+const REDEEM_MS = 60_000;
+const RECONCILE_MS = 600_000;
+
 /** Short of the tracker giving up on a missing post, so a hung post is still followed up. */
 const TRADER_CALL_MS = 30_000;
 
@@ -185,6 +190,19 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             logger: predictionLogger,
             resolveMs: config.PREDICTIONS_RESOLVE_MS,
         });
+        const predictionRedeemer = new PredictionRedeemer({
+            collections,
+            service,
+            trader: () => trader,
+            logger: predictionLogger,
+            intervalMs: REDEEM_MS,
+        });
+        const predictionReconciler = new PredictionReconciler({
+            collections,
+            trader: () => trader,
+            logger: predictionLogger,
+            intervalMs: RECONCILE_MS,
+        });
         // Orders a restart left placing never reached Polymarket; refund them before anyone can order
         await service.recover();
         let connecting: NodeJS.Timeout | null = null;
@@ -228,9 +246,14 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         markets.start();
         predictionTracker.start();
         predictionResolver.start();
-        // Posted orders need the trader to settle even once trading is switched off
-        const posted = await collections.predictionOrders.countDocuments({ state: "posted" });
-        if (traderNeeded(config, posted) && !trader) connectTrader();
+        predictionRedeemer.start();
+        predictionReconciler.start();
+        // Posted orders and unconfirmed redemptions need the trader even once trading is switched off
+        const [posted, redeeming] = await Promise.all([
+            collections.predictionOrders.countDocuments({ state: "posted" }),
+            collections.predictionRedemptions.countDocuments({ state: { $ne: "confirmed" } }),
+        ]);
+        if (traderNeeded(config, posted + redeeming) && !trader) connectTrader();
         // A bad secret is logged loudly, but the server keeps serving: wallets already connected carry on.
         void identity.checkApi();
 
@@ -242,6 +265,8 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             async close() {
                 closed = true;
                 if (connecting) clearTimeout(connecting);
+                await predictionReconciler.stop();
+                await predictionRedeemer.stop();
                 await predictionResolver.stop();
                 await predictionTracker.stop();
                 await markets.stop();

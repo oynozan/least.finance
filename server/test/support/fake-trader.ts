@@ -16,7 +16,8 @@ type Signed =
     | { side: "BUY"; tokenId: string; spendE6: string; maxPrice: number }
     | { side: "SELL"; tokenId: string; sharesE6: string; minPrice: number };
 
-type Fill = { makingE6: bigint; takingE6: bigint; balanceDelta: bigint };
+type Fill = { makingE6: bigint; takingE6: bigint; balanceDelta: bigint; tokenId: string; sharesDelta: bigint };
+type Transaction = "pending" | "confirmed" | "failed";
 
 const REJECTS = {
     price_moved: "price moved",
@@ -26,6 +27,8 @@ const REJECTS = {
 
 export class FakeTrader implements PoolTrader {
     posts: SignedRecord[] = [];
+    /** The conditions redeemed, in order. */
+    redeems: string[] = [];
     #bookOf: (tokenId: string) => Book;
     #metaOf: (tokenId: string, book: Book) => MarketMeta;
     #balance: bigint;
@@ -35,6 +38,9 @@ export class FakeTrader implements PoolTrader {
     #failSign = new Set<string>();
     #fills = new Map<string, Fill>();
     #lookups = new Map<string, LookupResult>();
+    #transactions = new Map<string, Transaction>();
+    #failRedeem = false;
+    #holdings = new Map<string, bigint>();
 
     constructor(o: {
         bookOf: (tokenId: string) => Book;
@@ -74,10 +80,28 @@ export class FakeTrader implements PoolTrader {
         if (outcome === "fill") {
             if (!fill) throw new Error(`no fill to settle for ${orderHash}`);
             this.#balance += fill.balanceDelta;
+            this.#hold(fill);
             this.#lookups.set(orderHash, { kind: "filled", makingE6: fill.makingE6, takingE6: fill.takingE6 });
         } else {
             this.#lookups.set(orderHash, { kind: "cancelled" });
         }
+    }
+
+    failNextRedeem(): void {
+        this.#failRedeem = true;
+    }
+
+    confirm(transactionId: string): void {
+        this.#transactions.set(transactionId, "confirmed");
+    }
+
+    failTransaction(transactionId: string): void {
+        this.#transactions.set(transactionId, "failed");
+    }
+
+    /** Replaces what the pool holds, which otherwise follows its own fills. */
+    setHoldings(rows: { tokenId: string; sharesE6: bigint }[]): void {
+        this.#holdings = new Map(rows.map((row) => [row.tokenId, row.sharesE6]));
     }
 
     failSign(tokenId: string): void {
@@ -141,6 +165,31 @@ export class FakeTrader implements PoolTrader {
         return this.#balance;
     }
 
+    async redeem(conditionId: string): Promise<{ transactionId: string }> {
+        if (this.#failRedeem) {
+            this.#failRedeem = false;
+            throw new Error("the relayer is busy");
+        }
+        this.redeems.push(conditionId);
+        const transactionId = `tx-${this.redeems.length}-${conditionId}`;
+        this.#transactions.set(transactionId, "pending");
+        return { transactionId };
+    }
+
+    async transaction(transactionId: string): Promise<Transaction> {
+        return this.#transactions.get(transactionId) ?? "pending";
+    }
+
+    async holdings(): Promise<{ tokenId: string; sharesE6: bigint }[]> {
+        return [...this.#holdings]
+            .filter(([, sharesE6]) => sharesE6 > 0n)
+            .map(([tokenId, sharesE6]) => ({ tokenId, sharesE6 }));
+    }
+
+    #hold(fill: Fill): void {
+        this.#holdings.set(fill.tokenId, (this.#holdings.get(fill.tokenId) ?? 0n) + fill.sharesDelta);
+    }
+
     #sign(tokenId: string, signed: Signed): SignedRecord {
         if (this.#failSign.delete(tokenId)) throw new Error("signing failed");
         this.#counter += 1;
@@ -155,14 +204,26 @@ export class FakeTrader implements PoolTrader {
             const spend = BigInt(signed.spendE6);
             const q = quoteBuy(book, meta, spend);
             if (q && q.worstPrice <= signed.maxPrice) {
-                fill = { makingE6: q.costE6, takingE6: q.sharesE6, balanceDelta: -(q.costE6 + q.feeE6) };
+                fill = {
+                    makingE6: q.costE6,
+                    takingE6: q.sharesE6,
+                    balanceDelta: -(q.costE6 + q.feeE6),
+                    tokenId: signed.tokenId,
+                    sharesDelta: q.sharesE6,
+                };
             }
         } else {
             const shares = BigInt(signed.sharesE6);
             const q = quoteSell(book, meta, shares);
             if (q && q.worstPrice >= signed.minPrice) {
                 // taking is gross pUSD, as the exchange reports it; the pool's balance rises by the net
-                fill = { makingE6: shares, takingE6: q.proceedsE6 + q.feeE6, balanceDelta: q.proceedsE6 };
+                fill = {
+                    makingE6: shares,
+                    takingE6: q.proceedsE6 + q.feeE6,
+                    balanceDelta: q.proceedsE6,
+                    tokenId: signed.tokenId,
+                    sharesDelta: -shares,
+                };
             }
         }
         if (fill) this.#fills.set(record.orderHash, fill);
@@ -178,6 +239,7 @@ export class FakeTrader implements PoolTrader {
         const fill = this.#plan(record, signed);
         if (!fill) return { kind: "rejected", reason: "price_moved", message: REJECTS.price_moved };
         this.#balance += fill.balanceDelta;
+        this.#hold(fill);
         this.#lookups.set(record.orderHash, { kind: "filled", makingE6: fill.makingE6, takingE6: fill.takingE6 });
         return { kind: "filled", orderId: record.orderHash, makingE6: fill.makingE6, takingE6: fill.takingE6 };
     }

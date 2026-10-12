@@ -29,9 +29,16 @@ export interface PoolTrader {
     post(record: SignedRecord): Promise<PostResult>;
     lookup(o: { orderHash: string; clobOrderId: string | null; tokenId: string }): Promise<LookupResult>;
     balanceE6(): Promise<bigint>;
+    /** Submits the relayer transaction that redeems the pool's tokens of a resolved condition, without waiting for it. */
+    redeem(conditionId: string): Promise<{ transactionId: string }>;
+    transaction(transactionId: string): Promise<TransactionState>;
+    /** What the pool holds on Polymarket, per token; the Data API leaves out anything under 0.1 share. */
+    holdings(): Promise<Array<{ tokenId: string; sharesE6: bigint }>>;
 }
 
-/** Whether the pool's Polymarket connection is needed: trading is on, or posted orders still wait to be settled. */
+export type TransactionState = "pending" | "confirmed" | "failed";
+
+/** Whether the pool's Polymarket connection is needed: trading is on, or posted orders or redemptions still wait to be settled. */
 export const traderNeeded = (config: { PREDICTIONS_TRADING: "on" | "off" }, posted: number): boolean =>
     config.PREDICTIONS_TRADING === "on" || posted > 0;
 
@@ -59,5 +66,8 @@ export function withTimeouts(trader: PoolTrader, ms: number): PoolTrader {
             }),
         lookup: (o) => bounded(trader.lookup(o), ms, "lookup"),
         balanceE6: () => bounded(trader.balanceE6(), ms, "balanceE6"),
+        redeem: (conditionId) => bounded(trader.redeem(conditionId), ms, "redeem"),
+        transaction: (transactionId) => bounded(trader.transaction(transactionId), ms, "transaction"),
+        holdings: () => bounded(trader.holdings(), ms, "holdings"),
     };
 }

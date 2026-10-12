@@ -5,6 +5,7 @@ import {
     forkEnvironmentConfig,
     OrderSide,
     OrderType,
+    PositionStatus,
     RequestRejectedError,
     type OrderResponse,
     type SignedOrder,
@@ -13,6 +14,7 @@ import {
 import {
     fetchBalanceAllowance,
     fetchMarketInfo,
+    fetchTransaction,
     listAccountTrades,
     resolveConditionByToken,
 } from "@polymarket/client/actions";
@@ -282,6 +284,32 @@ export async function createPolymarketTrader(
         async balanceE6() {
             const { balance } = await fetchBalanceAllowance(client, { assetType: AssetType.COLLATERAL });
             return BigInt(balance);
+        },
+
+        async redeem(conditionId) {
+            // wait() would hold the call for minutes; the redeemer polls the transaction instead
+            const handle = await client.redeemPositions({ conditionId: conditionId });
+            if (!handle.transactionId) throw new Error("the relayer returned no transaction id");
+            return { transactionId: handle.transactionId };
+        },
+
+        async transaction(transactionId) {
+            const found = await fetchTransaction(client, { transactionId: transactionId });
+            if (found.state === "STATE_CONFIRMED") return "confirmed";
+            if (found.state === "STATE_FAILED" || found.state === "STATE_INVALID") return "failed";
+            return "pending";
+        },
+
+        async holdings() {
+            const held = new Map<string, bigint>();
+            for (const status of [PositionStatus.Open, PositionStatus.Redeemable]) {
+                for await (const page of client.listPositions({ status, pageSize: 500 })) {
+                    for (const row of page.items) {
+                        held.set(row.tokenId, (held.get(row.tokenId) ?? 0n) + decimalToE6(row.currentSize));
+                    }
+                }
+            }
+            return [...held].map(([tokenId, sharesE6]) => ({ tokenId, sharesE6 }));
         },
     };
 }

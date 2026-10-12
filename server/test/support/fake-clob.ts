@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -13,6 +14,10 @@ export type FakeBook = {
     negRisk?: boolean;
     conditionId?: string;
 };
+
+export type FakePosition = { tokenId: string; size: string; status: "OPEN" | "REDEEMABLE" | "CLOSED" };
+export type RelayerState =
+    "STATE_NEW" | "STATE_EXECUTED" | "STATE_MINED" | "STATE_CONFIRMED" | "STATE_INVALID" | "STATE_FAILED";
 
 export type NextPost = { json: Json } | { status: number; body: Json } | "hold";
 
@@ -31,6 +36,12 @@ export type FakeClob = {
     setTrade(id: string, trade: Json): void;
     /** Answers the next POST /order; "hold" never answers. */
     nextPost(response: NextPost): void;
+    /** Every relayer transaction submitted, in order. */
+    submitted: { id: string; body: Json }[];
+    setTransactionState(id: string, state: RelayerState): void;
+    /** The rows GET /v2/positions serves, filtered by its status parameter. */
+    setPositions(rows: FakePosition[]): void;
+    setPositionsPageSize(size: number): void;
     /** Drops every open connection, as a network failure mid-request. */
     dropConnections(): void;
     /** Resolves when the next POST /order arrives. */
@@ -39,6 +50,33 @@ export type FakeClob = {
 };
 
 const CONDITION = `0x${"c".repeat(64)}`;
+
+const WALLET = `0x${"1".repeat(40)}`;
+
+const positionRow = (row: FakePosition) => ({
+    proxy_wallet: WALLET,
+    token_id: row.tokenId,
+    condition_id: CONDITION,
+    current_size: row.size,
+    avg_price: "0.5",
+    entry_cost_usdc: "1",
+    entry_fees_usdc: "0",
+    total_cost_usdc: "1",
+    current_price: "0.5",
+    current_value: "1",
+    total_size: row.size,
+    realized_pnl: "0",
+    unrealized_pnl: "0",
+    total_pnl: "0",
+    percent_pnl: "0",
+    percent_realized_pnl: "0",
+    status: row.status,
+    redeemable: row.status === "REDEEMABLE",
+    mergeable: false,
+    negative_risk: false,
+    archived: false,
+    verified: false,
+});
 
 const readBody = async (request: IncomingMessage): Promise<string> => {
     const chunks: Buffer[] = [];
@@ -53,6 +91,10 @@ export async function startFakeClob(): Promise<FakeClob> {
     const trades = new Map<string, Json>();
     const requests: string[] = [];
     const posted: Json[] = [];
+    const submitted: { id: string; body: Json }[] = [];
+    const states = new Map<string, RelayerState>();
+    let positions: FakePosition[] = [];
+    let positionsPage = 100;
     let balance = 0n;
     let next: NextPost | undefined;
     let arrived: (() => void) | undefined;
@@ -77,6 +119,60 @@ export async function startFakeClob(): Promise<FakeClob> {
         }
         if (path === "/auth/api-keys") {
             return send(response, 200, { apiKeys: ["11111111-2222-4333-8444-555555555555"] });
+        }
+        if (path === "/v1/account/transactions/params") {
+            return send(response, 200, { address: url.searchParams.get("address"), nonce: "0" });
+        }
+        if (path === "/submit" && request.method === "POST") {
+            const id = randomUUID();
+            submitted.push({ id, body: JSON.parse(body) as Json });
+            states.set(id, "STATE_NEW");
+            return send(response, 200, { transactionID: id, state: "STATE_NEW", transactionHash: null });
+        }
+        if (path.startsWith("/v1/account/transactions/")) {
+            const id = decodeURIComponent(path.slice("/v1/account/transactions/".length));
+            const state = states.get(id);
+            if (!state) return send(response, 404, { error: "transaction not found" });
+            return send(response, 200, {
+                transaction_id: id,
+                state,
+                transaction_hash: state === "STATE_CONFIRMED" ? `0x${"e".repeat(64)}` : "",
+                error_msg: state === "STATE_FAILED" ? "execution reverted" : null,
+            });
+        }
+        if (path === "/markets/keyset") {
+            // The redeem path only needs the market's condition, protocol and tokens
+            const conditionId = url.searchParams.get("condition_ids") ?? CONDITION;
+            return send(response, 200, {
+                markets: [
+                    {
+                        id: "1",
+                        version: "v1",
+                        conditionId,
+                        closed: true,
+                        negRisk: false,
+                        outcomes: JSON.stringify(["Yes", "No"]),
+                        outcomePrices: JSON.stringify(["1", "0"]),
+                        clobTokenIds: JSON.stringify(["1", "2"]),
+                    },
+                ],
+            });
+        }
+        if (path === "/v2/positions") {
+            const status = url.searchParams.get("status") ?? "OPEN";
+            const rows = positions.filter((row) => row.status === status);
+            const offset = Number(url.searchParams.get("cursor") ?? "0");
+            const page = rows.slice(offset, offset + positionsPage);
+            const more = offset + positionsPage < rows.length;
+            return send(response, 200, {
+                data: page.map((row) => positionRow(row)),
+                pagination: {
+                    limit: positionsPage,
+                    offset,
+                    has_more: more,
+                    next_cursor: more ? String(offset + positionsPage) : null,
+                },
+            });
         }
         if (path === "/deployed") return send(response, 200, { deployed: true });
 
@@ -158,6 +254,10 @@ export async function startFakeClob(): Promise<FakeClob> {
         url: `http://127.0.0.1:${port}`,
         requests,
         posted,
+        submitted,
+        setTransactionState: (id, state) => void states.set(id, state),
+        setPositions: (rows) => void (positions = rows),
+        setPositionsPageSize: (size) => void (positionsPage = size),
         setBook: (tokenId, book) => void books.set(tokenId, book),
         setBalance: (e6) => void (balance = e6),
         setOrder: (id, order) => void orders.set(id, order),

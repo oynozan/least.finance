@@ -11,6 +11,9 @@ const stuck = {
     post: () => hung,
     lookup: () => hung,
     balanceE6: () => hung,
+    redeem: () => hung,
+    transaction: () => hung,
+    holdings: () => hung,
 } as PoolTrader;
 
 test("a hung read rejects once the time is up", async () => {

@@ -286,4 +286,47 @@ describe("the Polymarket trader", () => {
             feeExponent: 1,
         });
     });
+
+    it("redeem returns the relayer transaction id and transaction maps its states", async () => {
+        const conditionId = `0x${"d".repeat(64)}`;
+        const { transactionId } = await trader.redeem(conditionId);
+        expect(transactionId).toBe(fake.submitted.at(-1)!.id);
+        expect(fake.requests).toContain("POST /submit");
+
+        for (const [state, expected] of [
+            ["STATE_NEW", "pending"],
+            ["STATE_EXECUTED", "pending"],
+            ["STATE_MINED", "pending"],
+            ["STATE_CONFIRMED", "confirmed"],
+            ["STATE_FAILED", "failed"],
+            ["STATE_INVALID", "failed"],
+        ] as const) {
+            fake.setTransactionState(transactionId, state);
+            expect(await trader.transaction(transactionId)).toBe(expected);
+        }
+    });
+
+    it("holdings reads /v2/positions across pages", async () => {
+        fake.setPositionsPageSize(1);
+        const pages = () => fake.requests.filter((r) => r === "GET /v2/positions").length;
+        const before = pages();
+        fake.setPositions([
+            { tokenId: TOKEN, size: "12.5", status: "OPEN" },
+            { tokenId: OTHER, size: "3.000001", status: "OPEN" },
+            { tokenId: "tok-won", size: "20", status: "REDEEMABLE" },
+            { tokenId: "tok-lost", size: "0.25", status: "REDEEMABLE" },
+            { tokenId: "tok-gone", size: "9", status: "CLOSED" },
+        ]);
+        const holdings = await trader.holdings();
+        expect(holdings).toEqual(
+            expect.arrayContaining([
+                { tokenId: TOKEN, sharesE6: 12_500_000n },
+                { tokenId: OTHER, sharesE6: 3_000_001n },
+                { tokenId: "tok-won", sharesE6: 20_000_000n },
+                { tokenId: "tok-lost", sharesE6: 250_000n },
+            ]),
+        );
+        expect(holdings).toHaveLength(4);
+        expect(pages() - before).toBe(4);
+    });
 });
