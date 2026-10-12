@@ -1,9 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MotionConfig, motion, type Variants } from "motion/react";
 import { confirmedTrades } from "@/lib/trade/activity";
 import { submitIntent } from "@/lib/trade/execute";
+import { quoteRows } from "@/lib/trade/prediction-quote";
+import type { QuoteView } from "@/server/src/protocol";
+import { useAccount } from "@/components/account-provider";
 import { CloseIcon } from "@/components/icons";
 import { spring } from "@/components/sentence/motion";
 import { useSidebar } from "@/components/sidebar";
@@ -19,6 +22,9 @@ const CONNECT: Record<string, string> = {
     short: "Connect to go short",
     predict: "Connect to predict",
 };
+
+const QUOTE_DEBOUNCE_MS = 300;
+const QUOTE_REFRESH_MS = 10_000;
 
 const sections: Variants = {
     hidden: {},
@@ -69,18 +75,80 @@ export function ReviewPanel() {
 }
 
 function ReviewBody({ onDone }: { onDone: () => void }) {
-    const { view, wallet } = useTrade();
+    const { view, wallet, catalog, maxOrderUSD } = useTrade();
+    const account = useAccount();
     const [sent, setSent] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
+    const [placed, setPlaced] = useState(false);
+    const [quoted, setQuoted] = useState<QuoteView | null>(null);
     const intentKey = JSON.stringify(view.intent);
     // A change to the sentence after confirming starts the review over.
     const done = sent !== null && sent === intentKey;
     const notice = view.blocking ?? view.issues.find((issue) => issue.severity === "warning");
 
+    // A prediction is placed for real once signed in with the server's trading on.
+    const intent = view.intent;
+    const prediction = intent?.type === "prediction" ? intent : null;
+    const live = !!prediction && wallet.status === "connected" && maxOrderUSD !== null;
+    const market =
+        prediction &&
+        (catalog.markets.find((m) => m.id === prediction.marketId) ?? catalog.findMarket(prediction.marketId));
+    const outcome = market?.outcomes.find((o) => o.id === prediction?.outcomeId);
+    const eventId = prediction && live && !view.blocking ? prediction.marketId : null;
+    const tokenId = prediction?.outcomeId;
+    const amountUSD = prediction?.amountUSD;
+    // The provider hands over a new function each render; the effect must not restart on it.
+    const ask = useRef(account.quotePrediction);
+    useEffect(() => {
+        ask.current = account.quotePrediction;
+    });
+    const asked = useRef(false);
+    useEffect(() => {
+        if (!eventId || !tokenId || !amountUSD) return;
+        let current = true;
+        const refresh = () =>
+            void ask.current({ eventId, tokenId, amountUSD }).then((result) => {
+                if (current) setQuoted("shares" in result ? result : null);
+            });
+        // The first quote comes as the panel opens; a later amount waits for typing to settle.
+        const first = setTimeout(refresh, asked.current ? QUOTE_DEBOUNCE_MS : 0);
+        asked.current = true;
+        const timer = setInterval(refresh, QUOTE_REFRESH_MS);
+        return () => {
+            current = false;
+            clearTimeout(first);
+            clearInterval(timer);
+        };
+    }, [eventId, tokenId, amountUSD]);
+    // Only a quote for the amount on screen; a stale one would show the wrong cost.
+    const quote =
+        quoted && quoted.tokenId === tokenId && Number(quoted.amountUSD) === Number(amountUSD) ? quoted : null;
+    const other = market?.outcomes.length === 2 ? market.outcomes.find((o) => o.id !== outcome?.id) : undefined;
+    const preview =
+        live && quote && outcome
+            ? { ...view.preview, rows: quoteRows(quote, outcome.label, other?.label, outcome.chance) }
+            : view.preview;
+
     const confirm = async () => {
         if (done) return onDone();
         if (wallet.status === "disconnected") return wallet.connect();
         if (!view.intent || view.blocking) return;
+        if (live && prediction && market && outcome) {
+            // Counted at once; a refusal lands in the sidebar's status line.
+            const estimate = (Number(prediction.amountUSD) / outcome.price).toFixed(6).replace(/\.?0+$/, "");
+            account.placePrediction({
+                eventId: prediction.marketId,
+                tokenId: prediction.outcomeId,
+                amountUSD: prediction.amountUSD,
+                quotedPrice: quote?.worstPrice ?? outcome.price,
+                question: market.question,
+                outcome: outcome.label,
+                shares: quote?.shares ?? estimate,
+            });
+            setPlaced(true);
+            setSent(intentKey);
+            return;
+        }
         setSending(true);
         await submitIntent(view.intent);
         // Listed on the PnL page, marked as not sent.
@@ -120,16 +188,22 @@ function ReviewBody({ onDone }: { onDone: () => void }) {
                     role="status"
                     className="flex flex-col gap-3"
                 >
-                    <p className="text-[17px] leading-snug">
-                        Trading isn&apos;t live yet, so nothing was sent. This is the request it would make:
-                    </p>
-                    <pre className="overflow-x-auto rounded-2xl bg-pill px-4 py-3 text-[13px] leading-relaxed text-muted">
-                        {JSON.stringify(view.intent, null, 2)}
-                    </pre>
+                    {placed ? (
+                        <p className="text-[17px] leading-snug">Prediction placed.</p>
+                    ) : (
+                        <>
+                            <p className="text-[17px] leading-snug">
+                                Trading isn&apos;t live yet, so nothing was sent. This is the request it would make:
+                            </p>
+                            <pre className="overflow-x-auto rounded-2xl bg-pill px-4 py-3 text-[13px] leading-relaxed text-muted">
+                                {JSON.stringify(view.intent, null, 2)}
+                            </pre>
+                        </>
+                    )}
                 </motion.div>
             ) : (
                 <motion.div variants={rise}>
-                    <TransactionPreview preview={view.preview} />
+                    <TransactionPreview preview={preview} />
                 </motion.div>
             )}
 

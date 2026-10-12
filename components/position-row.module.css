@@ -108,3 +108,15 @@
     color: var(--background);
     outline: 2px solid transparent;
 }
+
+/* Not sellable yet: still reachable, but dimmed and without the hover fill. */
+.close[aria-disabled="true"] {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.close[aria-disabled="true"]:hover,
+.close[aria-disabled="true"]:focus-visible {
+    background: color-mix(in srgb, var(--trend) 16%, transparent);
+    color: var(--trend);
+}

@@ -6,6 +6,8 @@ export type TradeCtx = {
     catalog: Catalog;
     /** Coin units the connected wallet holds; null while no wallet is connected. */
     holdings: Readonly<Record<string, number>> | null;
+    /** The most one prediction may spend; a number only while signed in with trading live. */
+    maxOrderUSD?: number | null;
 };
 
 /**

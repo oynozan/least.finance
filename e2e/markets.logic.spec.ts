@@ -95,6 +95,58 @@ test.describe("live markets", () => {
         }
     });
 
+    test("maxOrderUSD survives the trending cache", async () => {
+        const kept = new Map<string, string>();
+        (globalThis as { localStorage?: unknown }).localStorage = {
+            getItem: (key: string) => kept.get(key) ?? null,
+            setItem: (key: string, value: string) => void kept.set(key, value),
+        };
+        (globalThis as { document?: unknown }).document = {
+            visibilityState: "visible",
+            addEventListener() {},
+            removeEventListener() {},
+        };
+        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+        const body = {
+            markets: [view("Good", "2030-01-01T00:00:00Z")],
+            maxOrderUSD: 20,
+            readAt: "2026-10-12T00:00:00Z",
+        };
+        try {
+            const first = createMarketsStore({
+                apiUrl: "http://api",
+                fetch: async () => new Response(JSON.stringify(body)),
+            });
+            expect(first.getSnapshot().maxOrderUSD).toBeNull();
+            first.start();
+            await wait(50);
+            first.stop();
+            expect(first.getSnapshot().maxOrderUSD).toBe(20);
+            // A new page load: the cache answers before the network does.
+            const second = createMarketsStore({
+                apiUrl: "http://api",
+                fetch: async () => {
+                    throw new Error("offline");
+                },
+            });
+            second.start();
+            second.stop();
+            expect(second.getSnapshot().maxOrderUSD).toBe(20);
+            // A bad value is no limit at all.
+            const third = createMarketsStore({
+                apiUrl: "http://api",
+                fetch: async () => new Response(JSON.stringify({ ...body, maxOrderUSD: "20" })),
+            });
+            third.start();
+            await wait(50);
+            third.stop();
+            expect(third.getSnapshot().maxOrderUSD).toBeNull();
+        } finally {
+            delete (globalThis as { localStorage?: unknown }).localStorage;
+            delete (globalThis as { document?: unknown }).document;
+        }
+    });
+
     test.describe("malformed answers", () => {
         const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
         const good = view("Good", "2030-01-01T00:00:00Z");

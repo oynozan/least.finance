@@ -1,4 +1,6 @@
 import { PREDICTION_MARKETS } from "@/lib/trade/catalog";
+import type { OptimisticTrade, PositionsView } from "@/lib/account/state";
+import { toUsdc } from "@/lib/account/state";
 import type { CoinSymbol } from "./coin-icons";
 
 type PositionBase = {
@@ -13,16 +15,31 @@ type PositionBase = {
 
 export type PerpPosition = PositionBase & { kind: "perp"; side: "long" | "short"; leverage: number };
 export type PredictionPosition = PositionBase & { kind: "prediction"; question: string; outcome: "YES" | "NO" };
+/** A prediction the server holds, or one on its way: any outcome label, and not yet sellable. */
+export type LivePredictionPosition = PositionBase & {
+    kind: "prediction-live";
+    question: string;
+    outcome: string;
+    shares: string;
+    pending: boolean;
+    closable: false;
+    /** Why it can't be closed. */
+    reason: string;
+};
 /** Swaps settle at once, so only leverage and predictions stay open. */
-export type Position = PerpPosition | PredictionPosition;
+export type Position = PerpPosition | PredictionPosition | LivePredictionPosition;
 
 /** "Long BTC", or the question a prediction bets on. */
 export const positionTitle = (p: Position) =>
     p.kind === "perp" ? `${p.side === "long" ? "Long" : "Short"} ${p.symbol}` : p.question;
 
-/** "10x · $4,200", or "YES · $250". */
+/** "10x · $4,200", "YES · $250", or "YES · 26.3 shares" for a live prediction. */
 export const positionDetail = (p: Position) =>
-    `${p.kind === "perp" ? `${p.leverage}x` : p.outcome} · ${formatSize(p.size)}`;
+    p.kind === "prediction-live"
+        ? p.shares
+            ? `${p.outcome} · ${p.shares} shares`
+            : p.outcome
+        : `${p.kind === "perp" ? `${p.leverage}x` : p.outcome} · ${formatSize(p.size)}`;
 
 /** The whole position in words, for its close button. */
 export const positionName = (p: Position) =>
@@ -55,7 +72,89 @@ export const MOCK_POSITIONS: Position[] = [
     { id: "p-op", kind: "perp", symbol: "OP", side: "long", leverage: 5, size: 720, pnl: 15.6 },
     prediction("p-doge-1", "doge-1-2026", "NO", 300, 4.2),
     { id: "p-xrp", kind: "perp", symbol: "XRP", side: "short", leverage: 3, size: 1_600, pnl: -140.3 },
+    { id: "p-bnb", kind: "perp", symbol: "BNB", side: "long", leverage: 4, size: 780, pnl: 27.45 },
+    { id: "p-btc-s", kind: "perp", symbol: "BTC", side: "short", leverage: 2, size: 1_900, pnl: -58.8 },
+    { id: "p-eth-l", kind: "perp", symbol: "ETH", side: "long", leverage: 3, size: 1_350, pnl: 71.1 },
+    { id: "p-sol-s", kind: "perp", symbol: "SOL", side: "short", leverage: 2, size: 540, pnl: -9.6 },
 ];
+
+export const SELL_REASON = "Selling opens soon.";
+
+/**
+ * The rows for the person's real predictions, oldest first like the mock list: each
+ * open position, plus the buys the server hasn't filled yet. Rows for one token become one.
+ */
+export function livePredictionRows(
+    { positions, orders }: PositionsView,
+    optimistic: readonly OptimisticTrade[],
+): LivePredictionPosition[] {
+    type Row = LivePredictionPosition & { at: number };
+    const rows = new Map<string, Row>();
+    const add = (token: string, row: Row) => {
+        const held = rows.get(token);
+        if (!held) {
+            rows.set(token, row);
+            return;
+        }
+        // The shares and stake add up; the row stays pending only while nothing is open.
+        const shares = Number(held.shares) + Number(row.shares);
+        rows.set(token, {
+            ...held,
+            shares: String(Number(shares.toFixed(6))),
+            size: held.size + row.size,
+            pending: held.pending && row.pending,
+            at: Math.min(held.at, row.at),
+        });
+    };
+    const placed = new Set(orders.map((o) => o.requestId));
+    const base = { kind: "prediction-live", symbol: "USDC", pnl: 0, closable: false, reason: SELL_REASON } as const;
+    for (const p of positions) {
+        if (p.state !== "open") continue;
+        add(p.tokenId, {
+            ...base,
+            id: p.id,
+            question: p.question,
+            outcome: p.outcome,
+            shares: p.shares,
+            size: Number(p.costUSD),
+            pending: false,
+            at: Date.parse(p.openedAt),
+        });
+    }
+    for (const o of orders) {
+        if (o.side !== "buy" || (o.state !== "placing" && o.state !== "posted")) continue;
+        add(o.tokenId, {
+            ...base,
+            id: o.requestId,
+            question: o.question,
+            outcome: o.outcome,
+            shares: o.shares ?? "",
+            size: Number(o.amountUSD ?? 0),
+            pending: true,
+            at: Date.parse(o.createdAt),
+        });
+    }
+    for (const t of optimistic) {
+        if (placed.has(t.requestId)) continue;
+        add(t.tokenId, {
+            ...base,
+            id: t.requestId,
+            question: t.question,
+            outcome: t.outcome,
+            shares: t.shares,
+            size: toUsdc(t.amountWei),
+            pending: true,
+            at: t.at,
+        });
+    }
+    return [...rows.values()]
+        .sort((a, b) => a.at - b.at)
+        .map((row) => {
+            const live: LivePredictionPosition & { at?: number } = { ...row };
+            delete live.at;
+            return live;
+        });
+}
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const usdWhole = new Intl.NumberFormat("en-US", {

@@ -1,7 +1,7 @@
-import { VERB, canonicalDecimal, type Choice } from "@/lib/sentence";
+import { VERB, canonicalDecimal, type Bound, type Choice } from "@/lib/sentence";
 import type { Outcome, PredictionMarket } from "../catalog";
 import { operation, type TradeCtx } from "../context";
-import { formatCents, formatUnits, formatUsd } from "../format";
+import { formatCents, formatUnits, formatUsd, formatUsdShort } from "../format";
 import type { TransactionIntent } from "../intent";
 import { minimum, spendCap, usdAmount } from "./shared";
 
@@ -12,6 +12,22 @@ const marketOf = (ctx: TradeCtx, id: string) =>
 const outcomeOf = (ctx: TradeCtx, v: Values) => marketOf(ctx, v.marketId)?.outcomes.find((o) => o.id === v.outcomeId);
 const pct = (fraction: number) => Math.round(fraction * 100);
 const isYesNo = (outcome: Outcome) => /^(yes|no)$/i.test(outcome.label);
+
+/** What the pool can cover per order; only set while predictions are live. */
+function predictionCap(ctx: TradeCtx): Bound | undefined {
+    if (typeof ctx.maxOrderUSD !== "number") return undefined;
+    return {
+        value: ctx.maxOrderUSD,
+        message: `Predictions are limited to ${formatUsdShort(ctx.maxOrderUSD)} right now.`,
+        cta: "Over the limit",
+    };
+}
+
+/** The tighter of the balance and the pool's limit. */
+function orderCap(ctx: TradeCtx): Bound | undefined {
+    const caps = [spendCap(ctx), predictionCap(ctx)].filter((cap) => cap !== undefined);
+    return caps.reduce<Bound | undefined>((a, b) => (a && a.value <= b.value ? a : b), undefined);
+}
 
 /** The outcome the market rates most likely. */
 const top = (market: PredictionMarket) =>
@@ -81,7 +97,7 @@ export const prediction = operation({
         amountUSD: usdAmount(
             (v: Values, ctx) => ({
                 min: minimum(outcomeOf(ctx, v)?.minUSD ?? 1),
-                max: spendCap(ctx),
+                max: orderCap(ctx),
             }),
             (v, ctx) => {
                 const outcome = outcomeOf(ctx, v);

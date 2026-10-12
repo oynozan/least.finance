@@ -12,8 +12,9 @@ import {
 } from "@/lib/sentence";
 import { CATALOG, MOCK_HOLDINGS, type Catalog } from "@/lib/trade/catalog";
 import { toPredictionMarket } from "@/lib/trade/markets";
-import type { MarketView } from "@/server/src/protocol";
+import type { MarketView, QuoteView } from "@/server/src/protocol";
 import type { TradeCtx, TradeTerms } from "@/lib/trade/context";
+import { quoteRows } from "@/lib/trade/prediction-quote";
 import { TRADE } from "@/lib/trade/registry";
 import { balanceHistory, confirmedActivity, daysSince, depositActivity, mockTrades } from "@/lib/trade/activity";
 
@@ -220,6 +221,50 @@ test.describe("live prediction markets", () => {
     test("the amount's minimum is the outcome's minUSD", () => {
         const view = run("predict", [slot("amountUSD", "3")], live([rain, fed])).view;
         expect(view.blocking).toMatchObject({ message: "The minimum is $4.20." });
+    });
+
+    test("quoteRows reads the quote", () => {
+        const quote: QuoteView = {
+            eventId: "901",
+            tokenId: "rain-yes",
+            side: "buy",
+            amountUSD: "10",
+            shares: "32.258064",
+            avgPrice: 0.31,
+            worstPrice: 0.33,
+            feeUSD: "0.12",
+            payoutUSD: "32.258064",
+            minUSD: 1,
+        };
+        const rows = quoteRows(quote, "YES", "NO", 0.3);
+        expect(rows.map((r) => r.id)).toEqual(["shares", "win", "lose", "fee", "odds"]);
+        expect(rows[0]).toMatchObject({ label: "You buy", value: "32.258064 shares at 31\u00a2", primary: true });
+        expect(rows[1]).toMatchObject({
+            label: "If YES",
+            value: "you get $32.26 (+$22.26)",
+            tone: "gain",
+            primary: true,
+        });
+        expect(rows[2]).toMatchObject({ label: "If NO", value: "you lose $10.00", tone: "loss" });
+        expect(rows[3]).toMatchObject({ label: "Polymarket's fee", value: "$0.12" });
+        expect(rows[4]).toMatchObject({ label: "Market odds", value: "30% chance" });
+        expect(quoteRows(quote, "YES")[2]).toMatchObject({ label: "Otherwise" });
+    });
+
+    test("the amount is capped by maxOrderUSD with the limit message when live", () => {
+        const capped = (maxOrderUSD: number | null): TradeCtx => ({ ...live([rain]), maxOrderUSD });
+        const over = run("predict", [slot("amountUSD", "50")], capped(20)).view;
+        expect(over.blocking).toMatchObject({
+            message: "Predictions are limited to $20 right now.",
+            cta: "Over the limit",
+        });
+        expect(run("predict", [slot("amountUSD", "20")], capped(20)).view.blocking).toBeUndefined();
+        // Trading off, or not signed in: the balance alone caps it.
+        expect(run("predict", [slot("amountUSD", "50")], capped(null)).view.blocking).toBeUndefined();
+        expect(run("predict", [slot("amountUSD", "50")], live([rain])).view.blocking).toBeUndefined();
+        // The smaller of the two wins.
+        const poor = { ...capped(500), holdings: { ...MOCK_HOLDINGS, USDC: 30 } };
+        expect(run("predict", [slot("amountUSD", "50")], poor).view.blocking).toMatchObject({ cta: "Not enough USDC" });
     });
 
     test("a picked question that isn't listed still resolves", () => {

@@ -5,6 +5,8 @@ export type MarketsSnapshot = {
     trending: MarketView[];
     /** When the server last read Polymarket's list; null until it has one. */
     readAt: string | null;
+    /** The most one prediction may spend while trading is live; null when it isn't. */
+    maxOrderUSD: number | null;
     query: string;
     /** Search results for `query`; null while it has none, so the trending list shows. */
     results: MarketView[] | null;
@@ -24,11 +26,14 @@ const SEARCH_DEBOUNCE_MS = 250;
 const EMPTY: MarketsSnapshot = {
     trending: [],
     readAt: null,
+    maxOrderUSD: null,
     query: "",
     results: null,
     answered: null,
     known: new Map(),
 };
+
+const limitOf = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
 
 const isTrending = (value: unknown): value is TrendingView => !!value && Array.isArray((value as TrendingView).markets);
 
@@ -83,7 +88,12 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         const view = { ...result.body, markets: validMarkets(result.body.markets) };
         // An empty answer from a server still warming up shouldn't wipe the cached list.
         if (view.markets.length === 0 && view.readAt === null) return;
-        set({ trending: view.markets, readAt: view.readAt, known: remember(view.markets) });
+        set({
+            trending: view.markets,
+            readAt: view.readAt,
+            maxOrderUSD: limitOf(view.maxOrderUSD),
+            known: remember(view.markets),
+        });
         if (view.readAt !== null) saveCachedTrending(view);
     }
 
@@ -146,7 +156,12 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
             stopped = false;
             const cached = loadCachedTrending();
             if (cached && snapshot.trending.length === 0) {
-                set({ trending: cached.markets, readAt: cached.readAt, known: remember(cached.markets) });
+                set({
+                    trending: cached.markets,
+                    readAt: cached.readAt,
+                    maxOrderUSD: limitOf(cached.maxOrderUSD),
+                    known: remember(cached.markets),
+                });
             }
             void refreshTrending().then(scheduleTrending);
             syncWatch();

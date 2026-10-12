@@ -19,7 +19,8 @@ import {
 const DEPOSITS = HISTORY.length;
 const usd = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
 const HISTORY_BALANCE = usd(HISTORY_TOTAL);
-const POSITIONS = MOCK_POSITIONS.length;
+// Predictions are the account's own, so only the mock perps are listed.
+const POSITIONS = MOCK_POSITIONS.filter((p) => p.kind === "perp").length;
 
 const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
 const dock = (page: Page) => page.getByRole("button", { name: `Wallet ${addressOf(page)}` });
@@ -601,18 +602,15 @@ test("hovering a position reveals a close button in the PnL's color", async ({ p
     const tops = await rows.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
     expect(tops).toEqual([...tops].sort((a, b) => b - a));
 
-    // Each row names the position, then its leverage or outcome with its size, and its PnL.
+    // Each row names the position, then its leverage with its size, and its PnL.
     await expect(position(page, "Long BTC")).toContainText("10x · $4,200");
     await expect(position(page, "Long BTC")).toContainText("+$312.40");
-    await expect(position(page, "Will BTC reach $150K?")).toContainText("YES · $250");
-    await expect(position(page, "Will BTC reach $150K?")).toContainText("+$18.40");
     await expect(position(page, "Long BTC")).not.toContainText(/size|pnl|cost/i);
 
     for (const [name, label, color] of [
         ["Long BTC", "Close Long BTC 10x", GAIN],
         ["Short ETH", "Close Short ETH 5x", LOSS],
         ["Long SOL", "Close Long SOL 3x", FLAT],
-        ["Will ETH flip $5K?", "Close NO on Will ETH flip $5K?", LOSS],
     ] as const) {
         const row = position(page, name);
         const close = row.getByRole("button", { name: label });

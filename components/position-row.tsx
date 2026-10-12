@@ -1,10 +1,18 @@
 "use client";
 
-import { useState, type Ref } from "react";
+import { useId, useState, type Ref } from "react";
 import { motion, type Transition, type Variants } from "motion/react";
 import { CoinIcon } from "./coin-icons";
 import { canHover } from "./pointer";
-import { formatPnl, positionDetail, positionName, positionTitle, trendOf, type Position } from "./wallet-data";
+import {
+    formatPnl,
+    formatUsd,
+    positionDetail,
+    positionName,
+    positionTitle,
+    trendOf,
+    type Position,
+} from "./wallet-data";
 import styles from "./position-row.module.css";
 
 const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 };
@@ -38,6 +46,8 @@ export function PositionRow({ position, entranceDelay, onClose, ref }: PositionR
     const [tapped, setTapped] = useState(false);
     const revealed = hovered || focused || tapped;
     const trend = trendOf(pnl);
+    const live = position.kind === "prediction-live" ? position : null;
+    const reasonId = `${useId()}-reason`;
 
     return (
         <motion.li
@@ -67,7 +77,9 @@ export function PositionRow({ position, entranceDelay, onClose, ref }: PositionR
                 </span>
                 <span className={styles.detail}>{positionDetail(position)}</span>
             </span>
-            <span className={styles.pnl}>{formatPnl(pnl)}</span>
+            <span className={styles.pnl}>
+                {live ? (live.pending ? "Pending" : formatUsd(live.size)) : formatPnl(pnl)}
+            </span>
             {/* Always mounted, only collapsed, so keyboard users can tab to it. */}
             <motion.span
                 className={styles.closeSlot}
@@ -79,14 +91,21 @@ export function PositionRow({ position, entranceDelay, onClose, ref }: PositionR
                     type="button"
                     className={styles.close}
                     aria-label={`Close ${positionName(position)}`}
+                    aria-disabled={live ? true : undefined}
+                    aria-describedby={live ? reasonId : undefined}
                     initial={false}
                     animate={revealed ? { scale: 1, x: 0 } : { scale: 0.6, x: 12 }}
                     whileTap={{ scale: 0.9 }}
                     transition={spring}
-                    onClick={() => onClose(id)}
+                    onClick={() => !live && onClose(id)}
                 >
                     Close
                 </motion.button>
+                {live && (
+                    <span id={reasonId} className="sr-only">
+                        {live.reason}
+                    </span>
+                )}
             </motion.span>
         </motion.li>
     );

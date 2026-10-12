@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import {
     AnimatePresence,
@@ -39,7 +39,7 @@ import { canHover } from "./pointer";
 import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
 import { useSidebar } from "./sidebar";
-import { MOCK_POSITIONS, formatUsd, formatWhen, shortenAddress } from "./wallet-data";
+import { MOCK_POSITIONS, formatUsd, formatWhen, livePredictionRows, shortenAddress } from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
 import styles from "./wallet-sidebar.module.css";
 
@@ -131,8 +131,11 @@ function SignedInWallet() {
     const evmNetwork = useWalletNetwork(address);
     const network = active.kind === "solana" ? "solana" : evmNetwork;
 
-    // Mock positions until trading is live.
-    const [positions, setPositions] = useState(MOCK_POSITIONS);
+    // Predictions are the account's own; perps stay mock until trading is live.
+    const [perps, setPerps] = useState(() => MOCK_POSITIONS.filter((p) => p.kind === "perp"));
+    const { predictions, optimisticTrades } = account;
+    const real = useMemo(() => livePredictionRows(predictions, optimisticTrades), [predictions, optimisticTrades]);
+    const positions = useMemo(() => [...perps, ...real], [perps, real]);
 
     // Remount the animated parts on every open so they replay their entrance.
     const [openings, setOpenings] = useState(0);
@@ -145,7 +148,7 @@ function SignedInWallet() {
     if (!ready || !authenticated) return null;
 
     const closePosition = (id: string) => {
-        setPositions((list) => list.filter((p) => p.id !== id));
+        setPerps((list) => list.filter((p) => p.id !== id));
     };
 
     return (
@@ -175,6 +178,7 @@ function SignedInWallet() {
                 minDeposit={account.state.status === "ready" ? Number(account.state.rules.minDeposit) : null}
                 accountProblem={account.state.status === "failed" ? account.state.error.message : null}
                 notice={account.notice}
+                tradeNotice={account.tradeNotice}
                 onDeposit={account.deposit}
                 onDepositCoin={account.depositCoin}
                 quote={account.quote}
@@ -241,6 +245,8 @@ type WalletSectionProps = {
     /** Why the account couldn't be loaded. */
     accountProblem: string | null;
     notice: DepositNotice | null;
+    /** Why the last prediction didn't go through; shown ahead of the deposit text. */
+    tradeNotice: { message: string } | null;
     onDeposit: (amount: string, wallet: string) => Promise<DepositResult>;
     /** Bridges `amount` of a coin on another chain into the account. */
     onDepositCoin: (coin: string, amount: string, wallet: string) => Promise<DepositResult>;
@@ -265,6 +271,7 @@ function WalletSection({
     minDeposit,
     accountProblem,
     notice,
+    tradeNotice,
     onDeposit,
     onDepositCoin,
     quote,
@@ -382,9 +389,17 @@ function WalletSection({
             <div
                 role="status"
                 className={`${styles.status} ${order ? styles.progress : ""}`}
-                data-tone={order ? (isOutcome(order) ? "loss" : undefined) : statusTone(notice, status)}
+                data-tone={
+                    tradeNotice ? "loss" : order ? (isOutcome(order) ? "loss" : undefined) : statusTone(notice, status)
+                }
             >
-                {order ? <DepositProgress order={order} /> : (status ?? (notice && <NoticeText notice={notice} />))}
+                {tradeNotice ? (
+                    tradeNotice.message
+                ) : order ? (
+                    <DepositProgress order={order} />
+                ) : (
+                    (status ?? (notice && <NoticeText notice={notice} />))
+                )}
             </div>
 
             {/* Floats over the positions instead of pushing them down. */}
