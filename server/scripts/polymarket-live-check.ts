@@ -9,6 +9,8 @@ import { pino } from "pino";
 import { loadConfig } from "../src/config.ts";
 import { createPolymarketData } from "../src/markets/polymarket-data.ts";
 import { createPolymarketTrader } from "../src/predictions/polymarket-trader.ts";
+import { buyClearsMinimum } from "./live-check-guards.ts";
+import type { Book, MarketMeta } from "../src/predictions/trader.ts";
 import { limitBuyPrice, limitSellPrice, quoteBuy, quoteSell } from "../src/predictions/pricing.ts";
 
 if (!process.argv.includes("--yes-spend-real-money")) {
@@ -47,26 +49,38 @@ const picks = events
         );
     })
     .sort((a, b) => (b.event.volume24hr ?? 0) - (a.event.volume24hr ?? 0));
-const pick = picks[0];
-if (!pick) {
-    console.error("No trending question with a YES under 0.9 was found.");
+
+// 2. quote a $1 buy on the first candidate whose $1 buys at least the minimum order size, so the shares can be sold back
+const balanceBefore = await trader.balanceE6();
+let chosen:
+    | {
+          pick: (typeof picks)[number];
+          tokenId: string;
+          book: Book;
+          meta: MarketMeta;
+          buyQuote: NonNullable<ReturnType<typeof quoteBuy>>;
+      }
+    | undefined;
+for (const pick of picks.slice(0, 10)) {
+    const tokenId = pick.market.clobTokenIds[0]!;
+    const [book, meta] = await Promise.all([trader.book(tokenId), trader.meta(tokenId)]);
+    const buyQuote = quoteBuy(book, meta, SPEND_E6);
+    if (buyQuote && buyClearsMinimum(book, buyQuote.sharesE6)) {
+        chosen = { pick, tokenId, book, meta, buyQuote };
+        break;
+    }
+}
+if (!chosen) {
+    console.error(
+        "No trending question lets $1 buy at least the minimum order size, so the shares could not be sold back.",
+    );
     process.exit(1);
 }
-const tokenId = pick.market.clobTokenIds[0]!;
+const { pick, tokenId, meta, buyQuote } = chosen;
 console.log(
     `Question: ${pick.event.title} (${pick.market.groupItemTitle ?? pick.market.outcomes[0]}), YES token ${tokenId}`,
 );
-
-const balanceBefore = await trader.balanceE6();
 console.log(`balanceE6 before: ${balanceBefore} (${dollars(balanceBefore)})`);
-
-// 2. quote a $1 buy
-const [book, meta] = await Promise.all([trader.book(tokenId), trader.meta(tokenId)]);
-const buyQuote = quoteBuy(book, meta, SPEND_E6);
-if (!buyQuote) {
-    console.error("The book cannot fill a $1 buy.");
-    process.exit(1);
-}
 console.log(
     `Buy quote: ${buyQuote.sharesE6} shares e6, cost ${buyQuote.costE6}, fee ${buyQuote.feeE6}, worst ${buyQuote.worstPrice}`,
 );
@@ -120,6 +134,12 @@ const sharesE6 = looked.takingE6;
 
 // 7. sell everything at the bid
 const [sellBook, sellMeta] = await Promise.all([trader.book(tokenId), trader.meta(tokenId)]);
+if (!buyClearsMinimum(sellBook, sharesE6)) {
+    console.error(
+        `The ${sharesE6} shares e6 are below the book's minimum order size ${sellBook.minOrderSize}; sell or redeem them by hand.`,
+    );
+    process.exit(1);
+}
 const sellQuote = quoteSell(sellBook, sellMeta, sharesE6);
 if (!sellQuote) {
     console.error(`The bids cannot absorb ${sharesE6} shares e6; sell them by hand.`);
