@@ -17,7 +17,6 @@ export type SentencePart =
 
 type SlotViewBase = {
     id: string;
-    prompt: string;
     hint: string;
     /** The first issue on this slot, if any. */
     issue?: Issue;
@@ -25,6 +24,7 @@ type SlotViewBase = {
 
 export type ChoiceSlotView = SlotViewBase & {
     kind: "choice";
+    prompt?: string;
     value: string;
     selected?: Choice;
     choices: readonly Choice[];
@@ -42,6 +42,7 @@ export type ChoiceSlotView = SlotViewBase & {
 
 export type NumberSlotView = SlotViewBase & {
     kind: "number";
+    prompt: string;
     value: string;
     prefix?: string;
     suffix?: string;

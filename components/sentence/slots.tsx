@@ -42,6 +42,8 @@ type ChoiceSlotProps = {
         ChoiceSlotView,
         "prompt" | "hint" | "value" | "selected" | "choices" | "issue" | "custom" | "wide" | "empty" | "search"
     >;
+    /** The choices are still on their way; the picker shows skeleton rows. */
+    loading?: boolean;
     /** The pill's accessible name when nothing is selected. */
     placeholder?: string;
     onChange: (value: string) => void;
@@ -52,7 +54,14 @@ type ChoiceSlotProps = {
 };
 
 /** A pill that opens a picker; its label changes only once a choice is made. */
-export function ChoiceSlot({ view, placeholder = "pick one", onChange, onSearch, searchEmpty }: ChoiceSlotProps) {
+export function ChoiceSlot({
+    view,
+    placeholder = "pick one",
+    loading,
+    onChange,
+    onSearch,
+    searchEmpty,
+}: ChoiceSlotProps) {
     const [open, setOpen] = useState(false);
     const button = useRef<HTMLButtonElement>(null);
     const pickerId = useId();
@@ -97,7 +106,9 @@ export function ChoiceSlot({ view, placeholder = "pick one", onChange, onSearch,
                 id={pickerId}
                 open={open}
                 title={view.prompt}
+                label={view.prompt ?? view.hint}
                 choices={view.choices}
+                loading={loading}
                 selected={selected?.value}
                 custom={view.custom}
                 wide={view.wide}

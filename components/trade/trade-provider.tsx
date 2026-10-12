@@ -21,7 +21,7 @@ type TradeState = {
     dispatch: (action: SentenceAction) => void;
     wallet: WalletStatus;
     /** The question picker's search; absent while the questions are mock ones. */
-    search?: { onQuery: (query: string) => void; empty?: string };
+    search?: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
     catalog: Catalog;
     /** A number only while signed in with the server's trading on: predictions are placed for real. */
     maxOrderUSD: number | null;
@@ -133,7 +133,7 @@ function useLiveCatalog(): {
         store.start();
         return () => store.stop();
     }, [store]);
-    const { trending, query, results, answered, known, maxOrderUSD } = useSyncExternalStore(
+    const { trending, query, results, answered, searchFailed, loading, known, maxOrderUSD } = useSyncExternalStore(
         store.subscribe,
         store.getSnapshot,
         store.getSnapshot,
@@ -150,8 +150,20 @@ function useLiveCatalog(): {
             findMarket: view,
         };
     }, [trending, results, known]);
-    const empty = results?.length === 0 && answered === query ? `No markets match \u201c${query}\u201d.` : undefined;
-    const search = useMemo<MarketSearch>(() => ({ onQuery: store.search, empty }), [store, empty]);
+    const answeredNow = query !== "" && answered === query;
+    const empty = !answeredNow
+        ? undefined
+        : searchFailed
+          ? "Search isn't available right now."
+          : results?.length === 0
+            ? `No markets match \u201c${query}\u201d.`
+            : undefined;
+    // A pending search shows the skeleton, and so does the first trending list when no search answers instead.
+    const waiting = (query !== "" && !answeredNow) || (loading && results === null);
+    const search = useMemo<MarketSearch>(
+        () => ({ onQuery: store.search, empty, loading: waiting }),
+        [store, empty, waiting],
+    );
     return { catalog, store, search, maxOrderUSD, known };
 }
 

@@ -11,8 +11,13 @@ import { panelSpring, wobble } from "./motion";
 type PickerProps = {
     id: string;
     open: boolean;
-    title: string;
+    /** Shown above the list; without it the list starts at the top. */
+    title?: string;
+    /** The dialog's name for screen readers when it has no title. */
+    label: string;
     choices: readonly Choice[];
+    /** The host is still fetching the choices, so skeleton rows stand in for the list. */
+    loading?: boolean;
     selected?: string;
     /** Adds an input above the list for a value that isn't listed. */
     custom?: {
@@ -56,6 +61,9 @@ const iconVariants: Variants = {
 
 const TONE = { gain: "text-gain", loss: "text-loss", neutral: "" } as const;
 
+/** The skeleton's label widths, so its rows don't read as one block. */
+const SKELETON_WIDTHS = [72, 54, 66, 48, 60];
+
 /** A dropdown list of choices for one slot, dropped from its pill. */
 export function Picker(props: PickerProps) {
     const titleId = useId();
@@ -75,8 +83,10 @@ export function Picker(props: PickerProps) {
 
 function Options({
     title,
+    label,
     titleId,
     choices,
+    loading,
     selected,
     custom,
     search,
@@ -151,11 +161,11 @@ function Options({
     useLayoutEffect(() => {
         const row = rows.current[active];
         if (row) setBox({ top: row.offsetTop, height: row.offsetHeight });
-    }, [active, choices, search?.empty]);
+    }, [active, choices, search?.empty, loading]);
 
     const onKeyDown = (event: KeyboardEvent) => {
         if (event.target === field.current) {
-            if (event.key === "ArrowDown" && choices.length > 0) {
+            if (event.key === "ArrowDown" && choices.length > 0 && !loading) {
                 event.preventDefault();
                 inField.current = false;
                 rows.current[active]?.focus({ preventScroll: true });
@@ -212,10 +222,15 @@ function Options({
 
     return (
         <div onKeyDown={onKeyDown} className="text-[clamp(24px,0.9rem+1.2vw,30px)]">
-            <p id={titleId} className="px-[18px] pt-2.5 pb-2 text-base font-medium tracking-[-0.01em] text-muted">
-                {title}
+            <p
+                id={titleId}
+                className={
+                    title ? "px-[18px] pt-2.5 pb-2 text-base font-medium tracking-[-0.01em] text-muted" : "sr-only"
+                }
+            >
+                {title ?? label}
             </p>
-            {empty && choices.length === 0 && (
+            {empty && !loading && choices.length === 0 && (
                 <p className="px-[18px] pb-3 text-base tracking-[-0.01em] text-muted">{empty}</p>
             )}
             {search && (
@@ -235,7 +250,9 @@ function Options({
                     className="mb-1.5 h-11 w-full rounded-full border-0 bg-pill px-[18px] font-sans text-[20px] font-medium tracking-[-0.01em] text-foreground outline-none placeholder:font-normal placeholder:text-muted"
                 />
             )}
-            {search?.empty && <p className="px-[18px] pb-2 text-base tracking-[-0.01em] text-muted">{search.empty}</p>}
+            {search?.empty && !loading && (
+                <p className="px-[18px] pb-2 text-base tracking-[-0.01em] text-muted">{search.empty}</p>
+            )}
             {custom && (
                 <form
                     className="mb-1.5 flex items-center gap-2 rounded-full bg-pill py-1.5 pr-1.5 pl-[18px]"
@@ -278,142 +295,169 @@ function Options({
                     </motion.button>
                 </form>
             )}
-            <motion.div
-                role="listbox"
-                aria-labelledby={titleId}
-                className="relative isolate flex flex-col gap-0.5"
-                variants={listVariants}
-                initial="hidden"
-                animate="shown"
-            >
-                {/* The bottom layer of the list: a negative z-index inside the
+            {loading ? (
+                <Skeleton wide={wide} />
+            ) : (
+                <motion.div
+                    role="listbox"
+                    aria-labelledby={titleId}
+                    className="relative isolate flex flex-col gap-0.5"
+                    variants={listVariants}
+                    initial="hidden"
+                    animate="shown"
+                >
+                    {/* The bottom layer of the list: a negative z-index inside the
             isolated listbox paints below everything else in it, group
             headers and labels included, wherever the highlight slides. */}
-                {box && (
-                    <motion.span
-                        aria-hidden="true"
-                        data-highlight=""
-                        className={`pointer-events-none absolute inset-x-0 top-0 -z-10 bg-pill-hover ${wide ? "rounded-[26px]" : "rounded-full"}`}
-                        initial={{ opacity: 0, y: box.top, height: box.height }}
-                        animate={{ opacity: 1, y: box.top, height: box.height }}
-                        transition={{ ...panelSpring, opacity: { duration: 0.2, delay: 0.12 } }}
-                    />
-                )}
-                {groups.map((group, g) => {
-                    const headerId = `${base}-group-${g}`;
-                    return (
-                        <div
-                            key={group.name ?? g}
-                            role={group.name ? "group" : undefined}
-                            aria-labelledby={group.name ? headerId : undefined}
-                            className="flex flex-col gap-0.5"
-                        >
-                            {group.name && (
-                                <p
-                                    id={headerId}
-                                    className="px-[18px] pt-3 pb-1 text-[13px] font-semibold tracking-[0.04em] text-muted uppercase"
-                                >
-                                    {group.name}
-                                </p>
-                            )}
-                            {group.items.map(({ choice, index }) => {
-                                const isActive = index === active;
-                                const id = `${base}-${index}`;
-                                const note = choice.disabled ?? choice.detail;
-                                return (
-                                    <motion.button
-                                        key={choice.value}
-                                        ref={(node) => {
-                                            rows.current[index] = node;
-                                        }}
-                                        type="button"
-                                        role="option"
-                                        aria-selected={choice.value === selected}
-                                        // Still focusable and in arrow order; the reason is read out.
-                                        aria-disabled={choice.disabled ? true : undefined}
-                                        aria-labelledby={`${id}-label`}
-                                        aria-describedby={
-                                            [choice.description && `${id}-description`, note && `${id}-note`]
-                                                .filter(Boolean)
-                                                .join(" ") || undefined
-                                        }
-                                        tabIndex={isActive ? 0 : -1}
-                                        className={`relative z-10 flex w-full cursor-pointer items-center gap-[0.45em] px-[18px] py-[0.32em] text-left font-medium tracking-[-0.02em] outline-2 -outline-offset-2 outline-transparent focus-visible:outline-solid aria-disabled:cursor-default ${
-                                            wide ? "rounded-[26px]" : "rounded-full"
-                                        }`}
-                                        variants={itemVariants}
-                                        whileTap={choice.disabled ? undefined : { scale: 0.96 }}
-                                        // Only a real pointer move picks a row: the panel springs in
-                                        // under a resting pointer, and its rows sliding past would
-                                        // otherwise steal the highlight from the selected one.
-                                        onPointerMove={(event) => {
-                                            if (event.movementX || event.movementY) setActive(index);
-                                        }}
-                                        onClick={() => {
-                                            if (!choice.disabled) onSelect(choice.value);
-                                        }}
+                    {box && (
+                        <motion.span
+                            aria-hidden="true"
+                            data-highlight=""
+                            className={`pointer-events-none absolute inset-x-0 top-0 -z-10 bg-pill-hover ${wide ? "rounded-[26px]" : "rounded-full"}`}
+                            initial={{ opacity: 0, y: box.top, height: box.height }}
+                            animate={{ opacity: 1, y: box.top, height: box.height }}
+                            transition={{ ...panelSpring, opacity: { duration: 0.2, delay: 0.12 } }}
+                        />
+                    )}
+                    {groups.map((group, g) => {
+                        const headerId = `${base}-group-${g}`;
+                        return (
+                            <div
+                                key={group.name ?? g}
+                                role={group.name ? "group" : undefined}
+                                aria-labelledby={group.name ? headerId : undefined}
+                                className="flex flex-col gap-0.5"
+                            >
+                                {group.name && (
+                                    <p
+                                        id={headerId}
+                                        className="px-[18px] pt-3 pb-1 text-[13px] font-semibold tracking-[0.04em] text-muted uppercase"
                                     >
-                                        {choice.icon && (
-                                            <motion.span
-                                                className={`relative z-10 flex shrink-0 select-none ${choice.disabled ? "opacity-40" : ""}`}
-                                                variants={iconVariants}
-                                                initial={false}
-                                                animate={isActive && !choice.disabled ? "active" : "rest"}
-                                                transition={wobble}
-                                            >
-                                                <SentenceIcon icon={choice.icon} />
-                                            </motion.span>
-                                        )}
-                                        <span className="relative z-10 flex min-w-0 flex-1 flex-col">
-                                            <span
-                                                id={`${id}-label`}
-                                                className={`leading-[1.2] text-balance ${choice.disabled ? "text-muted" : TONE[choice.tone ?? "neutral"]}`}
-                                            >
-                                                {choice.label}
-                                            </span>
-                                            {choice.description && (
-                                                <span
-                                                    id={`${id}-description`}
-                                                    className="text-[15px] leading-snug font-normal text-muted"
+                                        {group.name}
+                                    </p>
+                                )}
+                                {group.items.map(({ choice, index }) => {
+                                    const isActive = index === active;
+                                    const id = `${base}-${index}`;
+                                    const note = choice.disabled ?? choice.detail;
+                                    return (
+                                        <motion.button
+                                            key={choice.value}
+                                            ref={(node) => {
+                                                rows.current[index] = node;
+                                            }}
+                                            type="button"
+                                            role="option"
+                                            aria-selected={choice.value === selected}
+                                            // Still focusable and in arrow order; the reason is read out.
+                                            aria-disabled={choice.disabled ? true : undefined}
+                                            aria-labelledby={`${id}-label`}
+                                            aria-describedby={
+                                                [choice.description && `${id}-description`, note && `${id}-note`]
+                                                    .filter(Boolean)
+                                                    .join(" ") || undefined
+                                            }
+                                            tabIndex={isActive ? 0 : -1}
+                                            className={`relative z-10 flex w-full cursor-pointer items-center gap-[0.45em] px-[18px] py-[0.32em] text-left font-medium tracking-[-0.02em] outline-2 -outline-offset-2 outline-transparent focus-visible:outline-solid aria-disabled:cursor-default ${
+                                                wide ? "rounded-[26px]" : "rounded-full"
+                                            }`}
+                                            variants={itemVariants}
+                                            whileTap={choice.disabled ? undefined : { scale: 0.96 }}
+                                            // Only a real pointer move picks a row: the panel springs in
+                                            // under a resting pointer, and its rows sliding past would
+                                            // otherwise steal the highlight from the selected one.
+                                            onPointerMove={(event) => {
+                                                if (event.movementX || event.movementY) setActive(index);
+                                            }}
+                                            onClick={() => {
+                                                if (!choice.disabled) onSelect(choice.value);
+                                            }}
+                                        >
+                                            {choice.icon && (
+                                                <motion.span
+                                                    className={`relative z-10 flex shrink-0 select-none ${choice.disabled ? "opacity-40" : ""}`}
+                                                    variants={iconVariants}
+                                                    initial={false}
+                                                    animate={isActive && !choice.disabled ? "active" : "rest"}
+                                                    transition={wobble}
                                                 >
-                                                    {choice.description}
-                                                </span>
+                                                    <SentenceIcon icon={choice.icon} />
+                                                </motion.span>
                                             )}
-                                            {/* Wide pickers keep long labels on one line: details go below. */}
-                                            {wide && note && (
+                                            <span className="relative z-10 flex min-w-0 flex-1 flex-col">
+                                                <span
+                                                    id={`${id}-label`}
+                                                    className={`leading-[1.2] text-balance ${choice.disabled ? "text-muted" : TONE[choice.tone ?? "neutral"]}`}
+                                                >
+                                                    {choice.label}
+                                                </span>
+                                                {choice.description && (
+                                                    <span
+                                                        id={`${id}-description`}
+                                                        className="text-[15px] leading-snug font-normal text-muted"
+                                                    >
+                                                        {choice.description}
+                                                    </span>
+                                                )}
+                                                {/* Wide pickers keep long labels on one line: details go below. */}
+                                                {wide && note && (
+                                                    <span
+                                                        id={`${id}-note`}
+                                                        className="mt-0.5 text-[15px] leading-snug font-normal text-muted"
+                                                    >
+                                                        {note}
+                                                    </span>
+                                                )}
+                                            </span>
+                                            {!wide && note && (
                                                 <span
                                                     id={`${id}-note`}
-                                                    className="mt-0.5 text-[15px] leading-snug font-normal text-muted"
+                                                    className="relative z-10 max-w-[45%] shrink-0 text-right text-[15px] leading-snug font-normal text-muted"
                                                 >
                                                     {note}
                                                 </span>
                                             )}
-                                        </span>
-                                        {!wide && note && (
-                                            <span
-                                                id={`${id}-note`}
-                                                className="relative z-10 max-w-[45%] shrink-0 text-right text-[15px] leading-snug font-normal text-muted"
-                                            >
-                                                {note}
-                                            </span>
-                                        )}
-                                        {choice.value === selected && (
-                                            <motion.span
-                                                className="relative z-10 flex size-[0.9em] shrink-0"
-                                                initial={{ scale: 0, rotate: -45 }}
-                                                animate={{ scale: 1, rotate: 0 }}
-                                                transition={{ ...wobble, delay: 0.12 }}
-                                            >
-                                                <CheckIcon />
-                                            </motion.span>
-                                        )}
-                                    </motion.button>
-                                );
-                            })}
-                        </div>
-                    );
-                })}
-            </motion.div>
+                                            {choice.value === selected && (
+                                                <motion.span
+                                                    className="relative z-10 flex size-[0.9em] shrink-0"
+                                                    initial={{ scale: 0, rotate: -45 }}
+                                                    animate={{ scale: 1, rotate: 0 }}
+                                                    transition={{ ...wobble, delay: 0.12 }}
+                                                >
+                                                    <CheckIcon />
+                                                </motion.span>
+                                            )}
+                                        </motion.button>
+                                    );
+                                })}
+                            </div>
+                        );
+                    })}
+                </motion.div>
+            )}
+        </div>
+    );
+}
+
+/** Rows shaped like the list's, pulsing while it loads. */
+function Skeleton({ wide }: { wide?: boolean }) {
+    return (
+        <div role="status" className="flex flex-col gap-0.5">
+            <span className="sr-only">Loading</span>
+            {SKELETON_WIDTHS.map((width, i) => (
+                <div key={i} aria-hidden="true" className="flex items-center gap-[0.45em] px-[18px] py-[0.32em]">
+                    <span className="size-[1.15em] shrink-0 animate-pulse rounded-full bg-pill motion-reduce:animate-none" />
+                    <span className="flex min-w-0 flex-1 flex-col gap-2 py-[0.1em]">
+                        <span
+                            className="h-[0.6em] animate-pulse rounded-full bg-pill motion-reduce:animate-none"
+                            style={{ width: `${width}%` }}
+                        />
+                        {wide && (
+                            <span className="h-[15px] w-[34%] animate-pulse rounded-full bg-pill motion-reduce:animate-none" />
+                        )}
+                    </span>
+                </div>
+            ))}
         </div>
     );
 }

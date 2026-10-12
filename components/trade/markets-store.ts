@@ -12,6 +12,10 @@ export type MarketsSnapshot = {
     results: MarketView[] | null;
     /** The query `results` answers; it trails `query` while a newer one is pending. */
     answered: string | null;
+    /** The search for `answered` got no answer, so `results` stays null. */
+    searchFailed: boolean;
+    /** Until the first answer for the trending list, or a cached one, there is nothing to show. */
+    loading: boolean;
     /** Every question seen, so one picked earlier still resolves after it leaves the list. */
     known: ReadonlyMap<string, MarketView>;
 };
@@ -31,6 +35,8 @@ const EMPTY: MarketsSnapshot = {
     query: "",
     results: null,
     answered: null,
+    searchFailed: false,
+    loading: true,
     known: new Map(),
 };
 
@@ -67,11 +73,14 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
     async function runSearch(query: string) {
         const result = await getJson(`/markets/search?q=${encodeURIComponent(query)}`);
         // The sent string is the token: an answer for an older query is dropped.
-        if (stopped || !result || query !== snapshot.query) return;
-        const body = result.body as { markets?: unknown } | null;
-        if (!body || !Array.isArray(body.markets)) return;
+        if (stopped || query !== snapshot.query) return;
+        const body = result?.body as { markets?: unknown } | null | undefined;
+        if (!body || !Array.isArray(body.markets)) {
+            set({ results: null, answered: query, searchFailed: true });
+            return;
+        }
         const markets = validMarkets(body.markets);
-        set({ results: markets, answered: query, known: remember(markets) });
+        set({ results: markets, answered: query, searchFailed: false, known: remember(markets) });
     }
 
     const visible = () => typeof document === "undefined" || document.visibilityState !== "hidden";
@@ -87,11 +96,20 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
 
     async function refreshTrending() {
         const result = await getJson("/markets/trending");
-        if (!running || !result || !isTrending(result.body)) return;
+        if (!running) return;
+        // Any answer, even a failed or empty one, ends the wait: the picker then says what it has.
+        if (!result || !isTrending(result.body)) {
+            if (snapshot.loading) set({ loading: false });
+            return;
+        }
         const view = { ...result.body, markets: validMarkets(result.body.markets) };
         // An empty answer from a server still warming up shouldn't wipe the cached list.
-        if (view.markets.length === 0 && view.readAt === null) return;
+        if (view.markets.length === 0 && view.readAt === null) {
+            if (snapshot.loading) set({ loading: false });
+            return;
+        }
         set({
+            loading: false,
             trending: view.markets,
             readAt: view.readAt,
             maxOrderUSD: limitOf(view.maxOrderUSD),
@@ -182,7 +200,12 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
             const cached = loadCachedTrending();
             if (cached && snapshot.trending.length === 0) {
                 // The limit is only as old as the answer that gave it, so a cache never turns live trading on
-                set({ trending: cached.markets, readAt: cached.readAt, known: remember(cached.markets) });
+                set({
+                    trending: cached.markets,
+                    readAt: cached.readAt,
+                    loading: false,
+                    known: remember(cached.markets),
+                });
             }
             void refreshTrending().then(scheduleTrending);
             syncWatch();
@@ -206,7 +229,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
             if (trimmed === snapshot.query) return;
             clearTimeout(searchTimer);
             if (trimmed.length < SEARCH_MIN) {
-                set({ query: "", results: null, answered: null });
+                set({ query: "", results: null, answered: null, searchFailed: false });
                 return;
             }
             // The earlier results stay on screen until this query's answer replaces them.

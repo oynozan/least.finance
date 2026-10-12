@@ -39,8 +39,6 @@ export type Bound = {
 };
 
 type SlotBase<Term extends string> = {
-    /** The picker title, or the number input's label: "Swap from which coin?" */
-    prompt: string;
     /** What the slot means, read after its value: "Coin you pay with". */
     hint: string;
     /** Copy for when the slot has no usable value (empty, or no longer offered). */
@@ -67,6 +65,8 @@ export type CustomChoice<V, Ctx, T extends string> = {
 
 export type ChoiceSpec<V, Ctx, T extends string, Term extends string> = SlotBase<Term> & {
     kind: "choice";
+    /** The picker's title: "Swap from which coin?" Without one the list starts at the top, named by the hint. */
+    prompt?: string;
     choices: (values: V, ctx: Ctx) => readonly Choice<T>[];
     custom?: CustomChoice<V, Ctx, T>;
     /** The picker needs room for long labels (e.g. market questions). */
@@ -81,6 +81,8 @@ export type ChoiceSpec<V, Ctx, T extends string, Term extends string> = SlotBase
 
 export type NumberSpec<V, Ctx, Term extends string> = SlotBase<Term> & {
     kind: "number";
+    /** The number input's label: "How much, in dollars?" */
+    prompt: string;
     prefix?: string;
     suffix?: string;
     decimals: number;

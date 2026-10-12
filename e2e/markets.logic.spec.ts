@@ -205,6 +205,76 @@ test.describe("live markets", () => {
         }
     });
 
+    test("loading lasts until the first trending answer, whatever it says", async () => {
+        (globalThis as { document?: unknown }).document = {
+            visibilityState: "visible",
+            addEventListener() {},
+            removeEventListener() {},
+        };
+        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+        const reply =
+            (body: unknown, status = 200): typeof fetch =>
+            async () =>
+                new Response(JSON.stringify(body), { status });
+        const answers: [string, typeof fetch][] = [
+            [
+                "a list",
+                reply({
+                    markets: [view("Good", "2030-01-01T00:00:00Z")],
+                    maxOrderUSD: null,
+                    readAt: "2026-10-12T00:00:00Z",
+                }),
+            ],
+            ["a warming server", reply({ markets: [], maxOrderUSD: null, readAt: null })],
+            ["an error status", reply({ error: "unavailable" }, 503)],
+            [
+                "no answer",
+                async () => {
+                    throw new Error("offline");
+                },
+            ],
+        ];
+        try {
+            for (const [name, fetch] of answers) {
+                const store = createMarketsStore({ apiUrl: "http://api", fetch });
+                expect(store.getSnapshot().loading, name).toBe(true);
+                store.start();
+                await wait(50);
+                store.stop();
+                expect(store.getSnapshot().loading, name).toBe(false);
+            }
+        } finally {
+            delete (globalThis as { document?: unknown }).document;
+        }
+    });
+
+    test("a cached list ends the loading at once", async () => {
+        const cached = {
+            markets: [view("Cached", "2030-01-01T00:00:00Z")],
+            maxOrderUSD: null,
+            readAt: "2026-10-12T00:00:00Z",
+        };
+        (globalThis as { localStorage?: unknown }).localStorage = {
+            getItem: () => JSON.stringify(cached),
+            setItem() {},
+        };
+        (globalThis as { document?: unknown }).document = {
+            visibilityState: "visible",
+            addEventListener() {},
+            removeEventListener() {},
+        };
+        try {
+            // The network never answers, so only the cache can end the wait
+            const store = createMarketsStore({ apiUrl: "http://api", fetch: () => new Promise<Response>(() => {}) });
+            store.start();
+            store.stop();
+            expect(store.getSnapshot()).toMatchObject({ loading: false, trending: cached.markets });
+        } finally {
+            delete (globalThis as { localStorage?: unknown }).localStorage;
+            delete (globalThis as { document?: unknown }).document;
+        }
+    });
+
     test.describe("malformed answers", () => {
         const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
         const good = view("Good", "2030-01-01T00:00:00Z");
@@ -379,6 +449,31 @@ test.describe("live markets", () => {
             } finally {
                 delete (globalThis as { document?: unknown }).document;
             }
+        });
+
+        test("a failed search is answered as failed, and an answered one clears it", async () => {
+            const replies: (() => Response)[] = [
+                () => {
+                    throw new Error("offline");
+                },
+                () => new Response(JSON.stringify({ error: "unavailable" }), { status: 503 }),
+                () => json({ query: "fed r", markets: [market("1", "Fed decision")] }),
+            ];
+            const store = createMarketsStore({ apiUrl: "http://api", fetch: async () => replies.shift()!() });
+            for (const query of ["fed", "fede"]) {
+                store.search(query);
+                await wait(300);
+                expect(store.getSnapshot(), query).toMatchObject({
+                    query,
+                    answered: query,
+                    results: null,
+                    searchFailed: true,
+                });
+            }
+            store.search("fed r");
+            await wait(300);
+            expect(store.getSnapshot()).toMatchObject({ answered: "fed r", searchFailed: false });
+            expect(store.getSnapshot().results?.map((m) => m.id)).toEqual(["1"]);
         });
 
         test("earlier results stay until the newer query is answered", async () => {

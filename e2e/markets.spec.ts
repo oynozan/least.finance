@@ -144,6 +144,40 @@ test("with nothing cached and Polymarket down, the picker says so", async ({ pag
     await expect(picker(page).getByRole("option")).toHaveCount(0);
 });
 
+test("while the markets load, the question picker shows skeleton rows", async ({ page }) => {
+    const [first] = (await trendingView()).markets;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/markets/trending", async (route) => {
+        await gate;
+        await route.continue();
+    });
+    await page.goto("/");
+    await pick(page, "Swap", /^Predict/);
+    await questionPill(page).click();
+    const skeleton = picker(page).getByRole("status");
+    await expect(skeleton).toHaveText("Loading");
+    await expect(picker(page).getByRole("option")).toHaveCount(0);
+    await expect(picker(page)).not.toContainText("No markets to show right now.");
+    release();
+    await expect(picker(page).getByRole("option", { name: first.title })).toBeVisible();
+    await expect(skeleton).toHaveCount(0);
+});
+
+test("the question picker has no title, and its hint names it", async ({ page }) => {
+    await page.goto("/");
+    await pick(page, "Swap", /^Predict/);
+    await questionPill(page).click();
+    await expect(picker(page)).toHaveAccessibleName("Prediction market");
+    await expect(picker(page).getByRole("searchbox", { name: "Search markets" })).toBeVisible();
+    await expect(picker(page).locator("p:not(.sr-only)", { hasText: "Prediction market" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(picker(page)).toBeHidden();
+    // Pickers with a title still show it
+    await pill(page, /^Predict/).click();
+    await expect(picker(page).getByText("What do you want to do?")).toBeVisible();
+});
+
 test("a question that stops being offered asks for a question again", async ({ page }) => {
     const view = await sampleView(samples.yesNo);
     await page.goto("/");
@@ -196,6 +230,20 @@ test("a query with no matches says so, over the trending list", async ({ page })
     await expect(picker(page)).not.toContainText(/loading|searching/i);
 });
 
+test("a search that fails says so, over the trending list", async ({ page }) => {
+    const [first] = (await trendingView()).markets;
+    await page.route("**/markets/search*", (route) =>
+        route.fulfill({ status: 503, json: { error: "unavailable" }, headers: cors }),
+    );
+    await page.goto("/");
+    await pick(page, "Swap", /^Predict/);
+    await questionPill(page).click();
+    await picker(page).getByRole("searchbox", { name: "Search markets" }).fill("fed");
+    await expect(picker(page)).toContainText("Search isn't available right now.");
+    await expect(picker(page).getByRole("option", { name: first.title })).toBeVisible();
+    await expect(picker(page).getByRole("status")).toHaveCount(0);
+});
+
 test("the search field is reachable by keyboard", async ({ page }) => {
     const [first] = (await trendingView()).markets;
     await page.goto("/");
@@ -206,6 +254,8 @@ test("the search field is reachable by keyboard", async ({ page }) => {
     // Typeahead is off, so letters go to the field only.
     await page.keyboard.type("zzzz");
     await expect(field).toHaveValue("zzzz");
+    // The rows come back with the answer; until then there's nothing to move to
+    await expect(picker(page)).toContainText("No markets match \u201czzzz\u201d.");
     await page.keyboard.press("ArrowDown");
     await expect(picker(page).getByRole("option").first()).toBeFocused();
     await expect(picker(page).getByRole("option", { name: first.title })).toBeVisible();
@@ -229,7 +279,7 @@ test("closing the picker ends the search", async ({ page }) => {
     await expect(picker(page).getByRole("option", { name: exact(extra.title) })).toHaveCount(0);
 });
 
-test("results arriving don't move focus", async ({ page }) => {
+test("a pending search shows skeleton rows, and its results arriving don't move focus", async ({ page }) => {
     const extra = await sampleView(samples.extra);
     let release = () => {};
     const gate = new Promise<void>((resolve) => (release = resolve));
@@ -242,11 +292,14 @@ test("results arriving don't move focus", async ({ page }) => {
     await questionPill(page).click();
     const field = picker(page).getByRole("searchbox", { name: "Search markets" });
     await field.fill(extra.title.split(" ")[0]);
-    await expect(field).toBeFocused();
+    const skeleton = picker(page).getByRole("status");
+    await expect(skeleton).toHaveText("Loading");
+    await expect(picker(page).getByRole("option")).toHaveCount(0);
+    // No rows to move to while they load
     await page.keyboard.press("ArrowDown");
-    await expect(picker(page).getByRole("option").first()).toBeFocused();
-    await page.evaluate(() => (document.activeElement as HTMLElement).blur());
+    await expect(field).toBeFocused();
     release();
     await expect(picker(page).getByRole("option", { name: exact(extra.title) })).toBeVisible();
-    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+    await expect(skeleton).toHaveCount(0);
+    await expect(field).toBeFocused();
 });

@@ -69,7 +69,6 @@ export const prediction = operation({
         },
         marketId: {
             kind: "choice",
-            prompt: "Which question?",
             hint: "Prediction market",
             wide: true,
             missing: { message: "Pick a question.", cta: "Pick a question" },

@@ -13,7 +13,7 @@ type TradeComposerProps = {
     view: SentenceView<TransactionIntent>;
     dispatch: (action: SentenceAction) => void;
     /** Answers the question picker's search; absent in demo mode. */
-    search?: { onQuery: (query: string) => void; empty?: string };
+    search?: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
 };
 
 const shownValue = (slot: SlotView) =>
@@ -90,6 +90,7 @@ export function TradeComposer({ view, dispatch, search }: TradeComposerProps) {
                 {slot.kind === "choice" ? (
                     <ChoiceSlot
                         view={slot}
+                        loading={slot.search ? search?.loading : undefined}
                         onChange={(value) => set(id, value)}
                         onSearch={search?.onQuery}
                         searchEmpty={search?.empty}
