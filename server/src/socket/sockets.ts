@@ -52,6 +52,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
     // Quotes ask outside providers, so they get a limit of their own.
     const quotes = new RateLimiterMemory({ keyPrefix: "quote", points: 30, duration: 60 });
+    const orders = new RateLimiterMemory({ keyPrefix: "order", points: 10, duration: 60 });
 
     io.use(async (socket, next) => {
         try {
@@ -152,6 +153,9 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("deposit:order", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(coinWalletAmount, payload);
+                await orders.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many deposit orders. Try again shortly.");
+                });
                 const account = await boundAccount(socket);
                 const wallet = await authorizedWallet(socket, input.wallet);
                 const { order, txs } = await services.orders.create(account, wallet, input.coin, input.amount);

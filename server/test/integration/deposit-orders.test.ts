@@ -172,3 +172,14 @@ test("the session hands back open orders", async () => {
     const { session } = await bind(user);
     expect(session.orders.map((order) => order.id)).toEqual([second.data.order.id, first.data.order.id]);
 });
+
+test("orders are rate limited per person", async () => {
+    const user = await stack.user();
+    const { socket } = await bind(user);
+    const acks: Ack<unknown>[] = [];
+    for (let i = 0; i < 12; i++) acks.push(await ask(socket, "ethereum:USDC", "1", user.wallet));
+    expect(acks.filter((a) => a.ok)).toHaveLength(10);
+    const refused = acks.filter((a) => !a.ok);
+    expect(refused).toHaveLength(2);
+    expect(refused.every((a) => !a.ok && a.error.code === "rate_limited")).toBe(true);
+});
