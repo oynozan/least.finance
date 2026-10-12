@@ -9,10 +9,10 @@ import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { ObjectId } from "mongodb";
 import { pino } from "pino";
-import { getAddress, isAddress, parseUnits, type Address } from "viem";
+import { formatUnits, getAddress, isAddress, parseUnits, type Address } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { ARC_CHAIN_ID } from "../../src/chain/arc.ts";
-import { EVM_COINS } from "../../src/crosschain/catalog.ts";
+import { coinByKey, EVM_COINS, parseCoinAmount } from "../../src/crosschain/catalog.ts";
 import { createSourceClients } from "../../src/crosschain/chains.ts";
 import { fixedPrices } from "../../src/crosschain/prices.ts";
 import { createSolanaRpc } from "../../src/crosschain/solana.ts";
@@ -22,6 +22,7 @@ import { formatUsdc, fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { startServer } from "../../src/server.ts";
 import { startAnvil } from "../support/anvil.ts";
 import { startArcEmulator } from "../support/arc-emulator.ts";
+import { FakeBridge } from "../support/fake-bridge.ts";
 import { startFakePrivy } from "../support/fake-privy.ts";
 import { startFakeSolanaRpc } from "../support/fake-solana-rpc.ts";
 import { startMongo } from "../support/mongo.ts";
@@ -70,13 +71,17 @@ const config = loadConfig({
     SOCKET_HANDSHAKES_PER_MINUTE: "100000",
     DEPOSIT_RECEIPT_TIMEOUT_MS: "4000",
 });
+const bridge = new FakeBridge({ arcRpcUrl: emulator.url, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
 const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
     sources: createSourceClients({ ethereum: [ethereum.url], bnb: [bnb.url] }),
     solana: createSolanaRpc([solanaRpc.url]),
     prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
+    bridges: [bridge],
 });
 const { services } = server;
 const chain = chainHelpers(anvil.url);
+const sources = { 1: sourceChain(ethereum.url, 1), 56: sourceChain(bnb.url, 56) };
+const rpcUrls: Record<number, string> = { 1: ethereum.url, 56: bnb.url, [ARC_CHAIN_ID]: emulator.url };
 
 /** The Privy DID the mock gives a wallet, so one address is always one user. */
 const userIdOf = (address: string) =>
@@ -162,18 +167,52 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
         } else {
             privy.setUser(userId, [wallet, ...(also as string[]).map((other) => normalize(other) as Address)]);
             await chain.fund(wallet as Address, String(usdc));
+            await sources[1].fund(wallet as Address, "1");
+            await sources[56].fund(wallet as Address, "1");
         }
         return { userId, token: await privy.token(userId) };
     },
     "/seed": async ({ address, deposits }) => seed(normalize(address), deposits as Seeded[]),
     /** The browser wallet's way onto the chain; anvil signs for funded test wallets. */
-    "/rpc": async ({ method, params }) => {
-        const response = await fetch(emulator.url, {
+    "/rpc": async ({ method, params, chainId = ARC_CHAIN_ID }) => {
+        const url = rpcUrls[Number(chainId)];
+        if (!url) throw new Error(`No test chain ${String(chainId)}`);
+        const response = await fetch(url, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: params ?? [] }),
         });
         return response.json();
+    },
+    /** Gives a wallet `amount` of a catalog coin on its own network, replacing what it held. */
+    "/source/fund": async ({ address, coin, amount }) => {
+        const owner = normalize(address);
+        const { chain: network, chainId, token, mint, decimals } = coinByKey(String(coin));
+        const units = parseCoinAmount(coinByKey(String(coin)), String(amount));
+        if (network === "solana") {
+            if (mint) solanaRpc.setTokenBalance(owner, mint, units);
+            else solanaRpc.setBalance(owner, units);
+        } else if (chainId === 1 || chainId === 56) {
+            const source = sources[chainId];
+            if (token) await source.setTokenBalance(token, owner as Address, units);
+            else await source.fund(owner as Address, formatUnits(units, decimals));
+        } else {
+            throw new Error(`Can't fund ${String(coin)}`);
+        }
+        return {};
+    },
+    /** Steps the newest bridge order of a person's account. */
+    "/bridge/advance": async ({ address, stage }) => {
+        if (!["pending", "filled", "refunded", "failed"].includes(String(stage))) throw new Error("Bad stage");
+        const account = await services.accounts.find(userIdOf(normalize(address)));
+        if (!account) throw new Error("No account");
+        const order = await services.database.collections.depositOrders.findOne(
+            { accountId: account._id },
+            { sort: { _id: -1 } },
+        );
+        if (!order) throw new Error("No order");
+        await bridge.advance(order.ref, stage as "pending" | "filled" | "refunded" | "failed");
+        return {};
     },
     /** A deposit sent from somewhere other than the app, like an exchange withdrawal. */
     "/send": async ({ to, usdc }) => {

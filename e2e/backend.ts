@@ -41,6 +41,14 @@ export const sendFromOutside = (to: string, usdc: string) => call<{ txHash: stri
 export const accountOf = (address: string) =>
     call<{ depositAddress: string; balance: string } | null>("/account", { address });
 
-/** A JSON-RPC call to the test chain. */
-export const chainRpc = (method: string, params: unknown[] = []) =>
-    call<{ result?: unknown; error?: { code: number; message: string } }>("/rpc", { method, params });
+/** A JSON-RPC call to a test chain: Ethereum (1), BNB Chain (56) or, by default, Arc. */
+export const chainRpc = (method: string, params: unknown[] = [], chainId?: number) =>
+    call<{ result?: unknown; error?: { code: number; message: string } }>("/rpc", { method, params, chainId });
+
+/** Sets what a wallet holds of a catalog coin such as "bnb:USDT", in the coin's own units. */
+export const fundSource = (address: string, coin: string, amount: string) =>
+    call<object>("/source/fund", { address, coin, amount }).then(() => undefined);
+
+/** Moves the newest bridge order of the person who owns `address`; "filled" pays out on Arc. */
+export const advanceBridge = (address: string, stage: "pending" | "filled" | "refunded" | "failed") =>
+    call<object>("/bridge/advance", { address, stage }).then(() => undefined);

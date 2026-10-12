@@ -323,7 +323,11 @@ type WalletWindow = {
     nextSend?: "reject" | "drop";
     useChain: (chainId: string) => void;
     lock: () => void;
-    sendToChain: (method: string, params: unknown[]) => Promise<{ result?: unknown; error?: { message: string } }>;
+    sendToChain: (
+        method: string,
+        params: unknown[],
+        chainId: number,
+    ) => Promise<{ result?: unknown; error?: { message: string } }>;
 };
 
 /** Every request the dapp has sent the wallet, oldest first. */
@@ -375,12 +379,15 @@ export const lockWallet = (page: Page) => page.evaluate(() => (window as unknown
  * chain, where the page's wallet is funded.
  */
 export async function installWallet(page: Page, address = addressOf(page)) {
-    await page.exposeFunction("sendToChain", (method: string, params: unknown[]) => chainRpc(method, params));
+    await page.exposeFunction("sendToChain", (method: string, params: unknown[], chainId: number) =>
+        chainRpc(method, params, chainId),
+    );
     await page.addInitScript((address) => {
         let connected = false;
         const account = address;
         let chainId = "0x1";
         const knownChains = new Set([chainId]);
+        const testChains = new Set(["0x1", "0x38", "0x13b2"]);
         const state = window as unknown as WalletWindow;
         state.walletRequests = [];
         const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
@@ -452,8 +459,9 @@ export async function installWallet(page: Page, address = addressOf(page)) {
                         const behavior = state.nextSend;
                         state.nextSend = undefined;
                         if (behavior === "reject") throw fail(4001, "User rejected the request.");
-                        // Only Arc is on the test chain; anything else would have gone to another network.
-                        if (chainId !== "0x13b2") throw fail(-32603, `The wallet is on chain ${chainId}, not Arc.`);
+                        // Only Ethereum, BNB Chain and Arc are on the test backend.
+                        if (!testChains.has(chainId))
+                            throw fail(-32603, `The wallet is on chain ${chainId}, which the tests don't run.`);
                         if (behavior === "drop") {
                             const bytes = crypto.getRandomValues(new Uint8Array(32));
                             return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
@@ -462,7 +470,13 @@ export async function installWallet(page: Page, address = addressOf(page)) {
                         // Like real wallets, refuse a transaction meant for another chain.
                         if (tx.chainId && tx.chainId.toLowerCase() !== chainId)
                             throw fail(-32602, `Expected chain ${tx.chainId}.`);
-                        const { result, error } = await state.sendToChain(method, [tx]);
+                        const { result, error } = await state.sendToChain(method, [tx], parseInt(chainId, 16));
+                        if (error) throw fail(-32603, error.message);
+                        return result;
+                    }
+                    case "eth_getTransactionReceipt": {
+                        if (!testChains.has(chainId)) return null;
+                        const { result, error } = await state.sendToChain(method, params ?? [], parseInt(chainId, 16));
                         if (error) throw fail(-32603, error.message);
                         return result;
                     }
