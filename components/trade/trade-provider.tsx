@@ -93,7 +93,11 @@ function useLiveCatalog(): { catalog: Catalog; store: MarketsStore; search: Mark
         store.start();
         return () => store.stop();
     }, [store]);
-    const { trending, query, results, answered, known } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+    const { trending, query, results, answered, known } = useSyncExternalStore(
+        store.subscribe,
+        store.getSnapshot,
+        store.getSnapshot,
+    );
     const catalog = useMemo<Catalog>(() => {
         const view = (id: string) => {
             const found = known.get(id);

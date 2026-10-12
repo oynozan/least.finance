@@ -31,11 +31,17 @@ function parseEvents(items: unknown[], logger?: Logger): GammaEvent[] {
         const parsed = gammaEvent.safeParse(item);
         return parsed.success ? [parsed.data] : [];
     });
-    if (events.length < items.length) logger?.warn({ dropped: items.length - events.length }, "Dropped events that failed the schema");
+    if (events.length < items.length)
+        logger?.warn({ dropped: items.length - events.length }, "Dropped events that failed the schema");
     return events;
 }
 
-export function createPolymarketData(options: { gammaUrl: string; clobUrl: string; fetch?: typeof fetch; logger?: Logger }): PolymarketData {
+export function createPolymarketData(options: {
+    gammaUrl: string;
+    clobUrl: string;
+    fetch?: typeof fetch;
+    logger?: Logger;
+}): PolymarketData {
     const { gammaUrl, clobUrl, fetch: call = fetch, logger } = options;
 
     async function send(base: string, path: string, init: RequestInit = {}, allowMissing = false): Promise<unknown> {

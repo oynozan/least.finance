@@ -30,9 +30,7 @@ beforeEach(async () => {
 });
 
 const shapedTop = () =>
-    fake.fixtures.top
-        .map((raw) => shapeEvent(gammaEvent.parse(raw), new Date(clock)))
-        .filter((view) => view !== null);
+    fake.fixtures.top.map((raw) => shapeEvent(gammaEvent.parse(raw), new Date(clock))).filter((view) => view !== null);
 
 test("trending is the first 50 events that shape, in volume order", async () => {
     await service.tick();
@@ -40,7 +38,11 @@ test("trending is the first 50 events that shape, in volume order", async () => 
     expect(markets.length).toBeGreaterThan(0);
     expect(markets.length).toBeLessThanOrEqual(50);
     expect(markets[0]!.id).toBe(shapedTop()[0]!.id);
-    expect(markets.map((m) => m.id)).toEqual(shapedTop().slice(0, 50).map((m) => m.id));
+    expect(markets.map((m) => m.id)).toEqual(
+        shapedTop()
+            .slice(0, 50)
+            .map((m) => m.id),
+    );
     expect(readAt).toBe(new Date(clock).toISOString());
 });
 

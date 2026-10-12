@@ -73,7 +73,17 @@ export function Picker(props: PickerProps) {
     );
 }
 
-function Options({ title, titleId, choices, selected, custom, search, wide, empty, onSelect }: PickerProps & { titleId: string }) {
+function Options({
+    title,
+    titleId,
+    choices,
+    selected,
+    custom,
+    search,
+    wide,
+    empty,
+    onSelect,
+}: PickerProps & { titleId: string }) {
     const isPresent = useIsPresent();
     const base = useId();
     const listed = choices.findIndex((c) => c.value === selected);
@@ -225,9 +235,7 @@ function Options({ title, titleId, choices, selected, custom, search, wide, empt
                     className="mb-1.5 h-11 w-full rounded-full border-0 bg-pill px-[18px] font-sans text-[20px] font-medium tracking-[-0.01em] text-foreground outline-none placeholder:font-normal placeholder:text-muted"
                 />
             )}
-            {search?.empty && (
-                <p className="px-[18px] pb-2 text-base tracking-[-0.01em] text-muted">{search.empty}</p>
-            )}
+            {search?.empty && <p className="px-[18px] pb-2 text-base tracking-[-0.01em] text-muted">{search.empty}</p>}
             {custom && (
                 <form
                     className="mb-1.5 flex items-center gap-2 rounded-full bg-pill py-1.5 pr-1.5 pl-[18px]"

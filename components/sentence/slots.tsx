@@ -38,7 +38,10 @@ function Chevron({ open }: { open: boolean }) {
 }
 
 type ChoiceSlotProps = {
-    view: Pick<ChoiceSlotView, "prompt" | "hint" | "value" | "selected" | "choices" | "issue" | "custom" | "wide" | "empty" | "search">;
+    view: Pick<
+        ChoiceSlotView,
+        "prompt" | "hint" | "value" | "selected" | "choices" | "issue" | "custom" | "wide" | "empty" | "search"
+    >;
     /** The pill's accessible name when nothing is selected. */
     placeholder?: string;
     onChange: (value: string) => void;
@@ -71,7 +74,13 @@ export function ChoiceSlot({ view, placeholder = "pick one", onChange, onSearch,
                 contentKey={selected?.value ?? "none"}
                 icon={selected?.icon && <SentenceIcon icon={selected.icon} />}
                 trailing={<Chevron open={open} />}
-                tone={selected ? (selected.tone === "gain" || selected.tone === "loss" ? selected.tone : "default") : "muted"}
+                tone={
+                    selected
+                        ? selected.tone === "gain" || selected.tone === "loss"
+                            ? selected.tone
+                            : "default"
+                        : "muted"
+                }
                 aria-label={selected?.label ?? placeholder}
                 aria-describedby={hintId}
                 aria-haspopup="dialog"

@@ -88,13 +88,15 @@ export class MarketService {
                 if (view && markets.length < TRENDING_COUNT) markets.push(view);
             }
             // An empty answer is more likely a changed schema than a quiet market
-            if (markets.length === 0) this.#deps.logger.warn({ read: top.length }, "Polymarket's top events shaped to nothing");
+            if (markets.length === 0)
+                this.#deps.logger.warn({ read: top.length }, "Polymarket's top events shaped to nothing");
             else this.#trending = { value: markets, at: now };
         } catch (error) {
             this.#deps.logger.warn({ err: error }, "Couldn't read Polymarket's top events");
         }
 
-        for (const [id, requestedAt] of this.#requested) if (now - requestedAt > REQUESTED_TTL_MS) this.#requested.delete(id);
+        for (const [id, requestedAt] of this.#requested)
+            if (now - requestedAt > REQUESTED_TTL_MS) this.#requested.delete(id);
         const recent = [...this.#requested].sort((a, b) => b[1] - a[1]).slice(0, MAX_REREADS);
         for (const [id] of recent) {
             if (signal?.aborted) return;

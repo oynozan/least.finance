@@ -68,8 +68,12 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
         if (!token) return null;
         // The recorded bid and ask are the first token's; the other side's book mirrors them
         const firstId = (JSON.parse(token.market.clobTokenIds) as string[])[0]!;
-        const first = overrides.get(firstId) ?? { bid: token.market.bestBid ?? null, ask: token.market.bestAsk ?? null };
-        const side = overrides.get(tokenId) ?? (token.first ? first : { bid: mirror(first.ask), ask: mirror(first.bid) });
+        const first = overrides.get(firstId) ?? {
+            bid: token.market.bestBid ?? null,
+            ask: token.market.bestAsk ?? null,
+        };
+        const side =
+            overrides.get(tokenId) ?? (token.first ? first : { bid: mirror(first.ask), ask: mirror(first.bid) });
         return {
             asset_id: tokenId,
             bids: side.bid === null ? [] : [{ price: String(side.bid), size: "100" }],

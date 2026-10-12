@@ -92,10 +92,12 @@ export function createApp(services: Services): express.Express {
 
     app.get("/markets/search", noStore, limit(60, 60_000), async (req, res) => {
         const { q } = parse(marketSearch, req.query);
-        res.json(await services.markets.search(q).catch((error: unknown) => {
-            req.log.warn({ err: error }, "Market search failed");
-            throw unavailable();
-        }));
+        res.json(
+            await services.markets.search(q).catch((error: unknown) => {
+                req.log.warn({ err: error }, "Market search failed");
+                throw unavailable();
+            }),
+        );
     });
 
     app.get("/markets/:eventId", noStore, limit(120, 60_000), async (req, res) => {

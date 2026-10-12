@@ -250,4 +250,3 @@ test("results arriving don't move focus", async ({ page }) => {
     await expect(picker(page).getByRole("option", { name: exact(extra.title) })).toBeVisible();
     expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
 });
-

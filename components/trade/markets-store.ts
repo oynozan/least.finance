@@ -21,7 +21,14 @@ const WATCH_MS = 10_000;
 const SEARCH_MIN = 2;
 const SEARCH_DEBOUNCE_MS = 250;
 
-const EMPTY: MarketsSnapshot = { trending: [], readAt: null, query: "", results: null, answered: null, known: new Map() };
+const EMPTY: MarketsSnapshot = {
+    trending: [],
+    readAt: null,
+    query: "",
+    results: null,
+    answered: null,
+    known: new Map(),
+};
 
 const isTrending = (value: unknown): value is TrendingView => !!value && Array.isArray((value as TrendingView).markets);
 
