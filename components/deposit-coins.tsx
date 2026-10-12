@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { motion, type Transition, type Variants } from "motion/react";
 import { sameWallet } from "@/lib/account/balances";
 import type { CoinBalance } from "@/server/src/protocol";
@@ -92,9 +92,16 @@ function listRef(list: HTMLUListElement | null) {
 /** The list of every supported coin in the person's wallets, to pick what to deposit. */
 export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: DepositCoinsProps) {
     const frame = useRef<HTMLDivElement>(null);
-    const highlightId = useId();
-    // The row under the pointer or keyboard focus; one highlight slides between them.
+    // The row under the pointer or keyboard focus; one highlight for the whole list slides between them.
     const [active, setActive] = useState<string | null>(null);
+    const rowEls = useRef(new Map<string, HTMLButtonElement>());
+    // The active row's layout box (offsets ignore the rows' entrance transforms). Kept after the
+    // pointer leaves, so the highlight fades out where it was.
+    const [box, setBox] = useState<{ top: number; height: number } | null>(null);
+    useLayoutEffect(() => {
+        const row = active ? rowEls.current.get(active) : undefined;
+        if (row) setBox({ top: row.offsetTop, height: row.offsetHeight });
+    }, [active]);
     // The Deposit button that opened the list, which gets focus back when it closes.
     const opener = useRef<Element | null>(null);
     useEffect(() => {
@@ -120,16 +127,11 @@ export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: Depo
             ?.address ?? row.wallet;
     const missing = (["evm", "solana"] as const).filter((kind) => !wallets.some((wallet) => wallet.kind === kind));
 
-    const highlight = (key: string) =>
-        active === key && (
-            <motion.span
-                layoutId={highlightId}
-                className={styles.coinHighlight}
-                aria-hidden="true"
-                transition={slide}
-            />
-        );
     const track = (key: string) => ({
+        ref: (node: HTMLButtonElement | null) => {
+            if (node) rowEls.current.set(key, node);
+            else rowEls.current.delete(key);
+        },
         onPointerMove: () => setActive(key),
         onFocus: (event: React.FocusEvent) => event.currentTarget.matches(":focus-visible") && setActive(key),
     });
@@ -177,6 +179,19 @@ export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: Depo
                     if (!event.currentTarget.contains(event.relatedTarget)) setActive(null);
                 }}
             >
+                {/* The list's bottom layer: a negative z-index inside the isolated
+                    list paints below every row, label and group header, wherever
+                    it slides. */}
+                {box && (
+                    <motion.li
+                        aria-hidden="true"
+                        data-highlight=""
+                        className={styles.coinHighlight}
+                        initial={{ opacity: 0, y: box.top, height: box.height }}
+                        animate={{ opacity: active ? 1 : 0, y: box.top, height: box.height }}
+                        transition={{ ...slide, opacity: { duration: 0.15 } }}
+                    />
+                )}
                 {groups.map((group) => [
                     group.label && (
                         <motion.li
@@ -219,7 +234,6 @@ export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: Depo
                                     {...track(key)}
                                     onClick={() => !blocked && onPick(row)}
                                 >
-                                    {highlight(key)}
                                     <span className={styles.coinMark}>
                                         <CoinIcon symbol={row.symbol} className={styles.coinIcon} />
                                         <NetworkLogo network={row.chainId ?? "solana"} className={styles.coinBadge} />
@@ -257,7 +271,6 @@ export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: Depo
                             {...track(`connect:${kind}`)}
                             onClick={() => onConnect(kind)}
                         >
-                            {highlight(`connect:${kind}`)}
                             <ConnectMark network={kind === "solana" ? "solana" : 1} />
                             <span className={styles.coinName}>
                                 {kind === "solana" ? "Connect a Solana wallet" : "Connect an EVM wallet"}

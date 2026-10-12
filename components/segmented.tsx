@@ -28,7 +28,13 @@ export function Segmented<T extends string>({ label, options, value, onChange }:
     };
 
     return (
-        <div role="radiogroup" aria-label={label} className="flex rounded-full bg-pill p-1" onKeyDown={onKeyDown}>
+        // Isolated, so the sliding highlight can sit at its bottom: below every label it passes.
+        <div
+            role="radiogroup"
+            aria-label={label}
+            className="isolate flex rounded-full bg-pill p-1"
+            onKeyDown={onKeyDown}
+        >
             {options.map((option, i) => {
                 const checked = option.value === value;
                 return (
@@ -49,7 +55,8 @@ export function Segmented<T extends string>({ label, options, value, onChange }:
                         {checked && (
                             <motion.span
                                 layoutId={`${id}-chosen`}
-                                className="absolute inset-0 rounded-full bg-foreground"
+                                data-highlight=""
+                                className="absolute inset-0 -z-10 rounded-full bg-foreground"
                                 transition={slide}
                             />
                         )}

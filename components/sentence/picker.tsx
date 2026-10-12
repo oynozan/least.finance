@@ -202,12 +202,14 @@ function Options({ title, titleId, choices, selected, custom, wide, onSelect }: 
                 initial="hidden"
                 animate="shown"
             >
-                {/* Behind every row: rows sit on a higher layer, even while their
-            entrance transforms make each one its own stacking context. */}
+                {/* The bottom layer of the list: a negative z-index inside the
+            isolated listbox paints below everything else in it, group
+            headers and labels included, wherever the highlight slides. */}
                 {box && (
                     <motion.span
                         aria-hidden="true"
-                        className={`pointer-events-none absolute inset-x-0 top-0 z-0 bg-pill-hover ${wide ? "rounded-[26px]" : "rounded-full"}`}
+                        data-highlight=""
+                        className={`pointer-events-none absolute inset-x-0 top-0 -z-10 bg-pill-hover ${wide ? "rounded-[26px]" : "rounded-full"}`}
                         initial={{ opacity: 0, y: box.top, height: box.height }}
                         animate={{ opacity: 1, y: box.top, height: box.height }}
                         transition={{ ...panelSpring, opacity: { duration: 0.2, delay: 0.12 } }}

@@ -386,8 +386,10 @@
     box-shadow: 0 0 0 2px rgb(255 255 255 / 0.3);
 }
 
-/* Rows sit flush; one highlight slides behind whichever is pointed at. */
+/* Rows sit flush; one highlight slides behind whichever is pointed at.
+   Isolated, so that highlight can be the list's bottom layer. */
 .coins {
+    isolation: isolate;
     gap: 0;
     padding: 0 0 4px;
 }
@@ -409,7 +411,6 @@
 
 .coinRow {
     position: relative;
-    isolation: isolate;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -427,12 +428,18 @@
     outline-color: rgb(255 255 255 / 0.3);
 }
 
+/* Below everything in the list: z-index -1 inside the isolated list. No
+   row may isolate itself, or the highlight sliding into it would paint
+   over the rows above. */
 .coinHighlight {
     position: absolute;
-    inset: 0;
+    top: 0;
+    left: 0;
+    right: 0;
     z-index: -1;
-    border-radius: inherit;
+    border-radius: 999px;
     background: var(--pill-hover);
+    pointer-events: none;
 }
 
 .coinRow[aria-disabled="true"] {
