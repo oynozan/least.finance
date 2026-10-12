@@ -186,3 +186,56 @@ test("settling queues one redemption per condition", async () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ marketId: m.id, state: "pending", transactionId: null, attempts: 0 });
 });
+
+test("shares bought after the resolver read the position are paid on the next pass", async () => {
+    const m = market();
+    const { account, position } = await holder(m);
+    fake.resolve(m.id, ["1", "0"]);
+    let bumped = false;
+    const ledger = new Proxy(h.ledger, {
+        get(target, key) {
+            if (key !== "runInTransaction") return Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key);
+            return async (work: Parameters<typeof target.runInTransaction>[0]) => {
+                if (!bumped) {
+                    bumped = true;
+                    await h.database.collections.positions.updateOne(
+                        { _id: position._id },
+                        { $set: { shares: toDecimal(30_000_000n) } },
+                    );
+                }
+                return target.runInTransaction(work);
+            };
+        },
+    });
+    const racing = new PredictionResolver({
+        collections: h.database.collections,
+        ledger,
+        data: createPolymarketData({ gammaUrl: fake.url, clobUrl: fake.url }),
+        bus: h.bus,
+        logger: h.logger,
+        resolveMs: 0,
+    });
+    await racing.tick();
+    expect((await positionOf(position._id))!.state).toBe("open");
+    expect(await payoutRows(account)).toHaveLength(0);
+
+    await racing.tick();
+    const won = (await positionOf(position._id))!;
+    expect(won.state).toBe("won");
+    expect(fromDecimal(won.payout!)).toBe(wei("30"));
+    expect((await h.state(account._id)).balance).toBe(wei("120"));
+});
+
+test("a resolved market beyond the first 100 open ones is still reached", async () => {
+    const fillers = Array.from({ length: 150 }, (_, i) => `0filler-${String(i).padStart(3, "0")}`);
+    for (const id of fillers) await holder({ id, yes: `y-${id}`, no: `n-${id}` });
+    const m = market();
+    const { account, position } = await holder(m);
+    fake.resolve(m.id, ["1", "0"]);
+
+    for (let pass = 0; pass < 6 && (await positionOf(position._id))!.state === "open"; pass++) await resolver.tick();
+
+    expect((await positionOf(position._id))!.state).toBe("won");
+    expect(await payoutRows(account)).toHaveLength(1);
+    await h.database.collections.positions.deleteMany({ marketId: { $in: fillers } });
+});

@@ -14,6 +14,9 @@ type Deps = {
     intervalMs: number;
 };
 
+/** A sell is signed to 2 decimals, so a closed position leaves what is under a step with the pool. */
+const SHARE_STEP_E6 = 10_000n;
+
 /** Compares what the pool holds on Polymarket with what open positions say it should; it only reports, and never touches anyone's money. */
 export class PredictionReconciler {
     readonly #deps: Deps;
@@ -53,11 +56,13 @@ export class PredictionReconciler {
         const trader = this.#deps.trader();
         if (!trader) return;
         const { positions, predictionOrders, predictionRedemptions } = this.#deps.collections;
-        const [holdings, owed, unsettled, unredeemed] = await Promise.all([
+        const [holdings, owed, sold, unsettled, unredeemed, redeemed] = await Promise.all([
             trader.holdings(),
             positions.find({ state: { $in: ["open", "closing"] } }).toArray(),
+            positions.find({ state: "closed" }).toArray(),
             predictionOrders.find({ state: { $in: ["placing", "posted"] } }).toArray(),
             predictionRedemptions.find({ state: { $ne: "confirmed" } }).toArray(),
+            predictionRedemptions.find({ state: "confirmed" }).toArray(),
         ]);
         const skipped = new Set(unsettled.map((order) => order.tokenId));
         if (unredeemed.length > 0) {
@@ -70,6 +75,15 @@ export class PredictionReconciler {
         const ledger = new Map<string, bigint>();
         for (const position of owed) {
             ledger.set(position.tokenId, (ledger.get(position.tokenId) ?? 0n) + fromDecimal(position.shares));
+        }
+        // The dust of sold positions stays with the pool until its condition is redeemed
+        const redeemedConditions = new Set(redeemed.map((row) => row.conditionId));
+        for (const position of sold) {
+            if (redeemedConditions.has(position.conditionId)) continue;
+            ledger.set(
+                position.tokenId,
+                (ledger.get(position.tokenId) ?? 0n) + (fromDecimal(position.shares) % SHARE_STEP_E6),
+            );
         }
         const pool = new Map(holdings.map((row) => [row.tokenId, row.sharesE6]));
         for (const tokenId of new Set([...ledger.keys(), ...pool.keys()])) {

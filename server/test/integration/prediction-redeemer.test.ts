@@ -5,7 +5,7 @@ import type { PositionDoc, PositionState, PredictionOrderDoc } from "../../src/d
 import { toDecimal } from "../../src/db/money.ts";
 import { PredictionReconciler } from "../../src/predictions/reconciler.ts";
 import { PredictionRedeemer } from "../../src/predictions/redeemer.ts";
-import { EVENT, predictionHarness, wei } from "../support/prediction-harness.ts";
+import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
 
 const TEN_MINUTES = 600_000;
 let clock = 1_000_000;
@@ -231,4 +231,37 @@ test("reconciliation skips tokens with an in-flight order or an unconfirmed rede
     await reconciler.tick();
     expect(mismatches(busy)).toHaveLength(1);
     expect(mismatches(won)).toHaveLength(1);
+});
+
+test("the dust a sell leaves with the pool does not trip reconciliation, however many positions leave it", async () => {
+    await h.service.refreshFloat();
+    const account = await h.seedAccount("90");
+    const sold = await position(TOKEN, 20_123_456n, "open", "0xcondition");
+    await h.database.collections.positions.updateOne({ _id: sold._id }, { $set: { accountId: account._id } });
+    const view = await h.service.close(account, {
+        requestId: crypto.randomUUID(),
+        positionId: sold._id.toHexString(),
+        quotedPrice: 0.48,
+    });
+    await until(async () => {
+        const order = await h.database.collections.predictionOrders.findOne({ requestId: view.requestId });
+        return order?.state === "filled";
+    });
+    expect((await h.database.collections.positions.findOne({ _id: sold._id }))!.state).toBe("closed");
+
+    // The 0.003456 of the sold position stays with the pool, next to a position still open
+    await position(TOKEN, 8_000_000n, "open", "0xcondition");
+    h.trader.setHoldings([{ tokenId: TOKEN, sharesE6: 8_003_456n }]);
+    await reconciler.tick();
+    expect(mismatches(TOKEN)).toHaveLength(0);
+
+    // Eleven more sells each leave nearly 0.01, and together they pass the 0.1 floor
+    for (let i = 0; i < 11; i++) await position(TOKEN, 5_009_999n, "closed", "0xcondition");
+    h.trader.setHoldings([{ tokenId: TOKEN, sharesE6: 8_003_456n + 11n * 9_999n }]);
+    await reconciler.tick();
+    expect(mismatches(TOKEN)).toHaveLength(0);
+
+    h.trader.setHoldings([{ tokenId: TOKEN, sharesE6: 8_003_456n + 11n * 9_999n + 100_001n }]);
+    await reconciler.tick();
+    expect(mismatches(TOKEN)).toHaveLength(1);
 });

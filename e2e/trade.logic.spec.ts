@@ -419,6 +419,20 @@ test.describe("balance history", () => {
         expect(days.at(-1)!.balance).toBe(110);
     });
 
+    test("a position settled 10 days ago still counts in the 30-day chart", () => {
+        const rows = predictionActivity(
+            position({
+                state: "won",
+                payoutUSD: "20",
+                openedAt: at(12).toISOString(),
+                settledAt: at(10).toISOString(),
+            }),
+        );
+        const days = balanceHistory([depositActivity({ key: "d", amountUSD: 100, at: at(20) }), ...rows], 30, now);
+        expect(days.at(-11)!.realized).toBe(10);
+        expect(days.at(-1)!.balance).toBe(110);
+    });
+
     test("a lost position is a realized loss", () => {
         const rows = predictionActivity(position({ state: "lost", settledAt: at(1).toISOString() }));
         expect(rows[1]).toMatchObject({ kind: "close", title: "Lost Yes on Will it rain?", change: -10 });

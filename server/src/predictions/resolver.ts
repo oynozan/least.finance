@@ -44,6 +44,8 @@ export class PredictionResolver {
     readonly #now: () => number;
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
+    /** The last market of the previous pass, so passes walk every market in turn */
+    #cursor: string | null = null;
 
     constructor(deps: Deps) {
         this.#deps = deps;
@@ -74,16 +76,18 @@ export class PredictionResolver {
         }
     }
 
-    /** One pass over the markets of open positions; an error on one market leaves the others to settle. */
+    /** One pass over the next markets of open positions, wrapping round after the last; an error on one market leaves the others to settle. */
     async tick(): Promise<void> {
         const { positions } = this.#deps.collections;
         const found = await positions
             .aggregate<{ _id: string }>([
-                { $match: { state: "open" } },
+                { $match: { state: "open", ...(this.#cursor === null ? {} : { marketId: { $gt: this.#cursor } }) } },
                 { $group: { _id: "$marketId" } },
+                { $sort: { _id: 1 } },
                 { $limit: MARKETS_PER_PASS },
             ])
             .toArray();
+        this.#cursor = found.length < MARKETS_PER_PASS ? null : found[found.length - 1]!._id;
         for (const { _id: marketId } of found) {
             await this.#resolve(marketId).catch((error: unknown) =>
                 this.#deps.logger.warn({ err: error, market: marketId }, "Couldn't settle a market's positions"),
@@ -143,14 +147,14 @@ export class PredictionResolver {
         );
     }
 
-    /** Moves one open position to won or lost and pays it, in one transaction; a position that moved meanwhile is left alone. */
+    /** Moves one open position to won or lost and pays it, in one transaction; a position that moved or grew meanwhile is left for the next pass. */
     async #settle(position: PositionDoc, priceE6: bigint): Promise<void> {
         const payout = e6ToWei((fromDecimal(position.shares) * priceE6) / 1_000_000n);
         const { positions, accounts } = this.#deps.collections;
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const now = new Date(this.#now());
             const moved = await positions.findOneAndUpdate(
-                { _id: position._id, state: "open" },
+                { _id: position._id, state: "open", shares: position.shares },
                 {
                     $set: {
                         state: payout > 0n ? "won" : "lost",

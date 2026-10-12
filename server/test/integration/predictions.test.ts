@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { ObjectId } from "mongodb";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
-import { fromDecimal } from "../../src/db/money.ts";
+import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { isAppError } from "../../src/errors.ts";
 import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
 
@@ -322,4 +322,40 @@ test("settling and failing use the account of the stored order, not the one in h
     const s = await h.state(account._id);
     expect(s.balance).toBe(wei("90"));
     expect(s.sum).toBe(s.balance);
+});
+
+test("positions keeps settled ones for the whole chart window, and drops older ones", async () => {
+    const account = await h.seedAccount("100");
+    const day = 86_400_000;
+    const settledAgo = async (days: number) => {
+        const at = new Date(Date.now() - days * day);
+        const _id = new ObjectId();
+        await h.database.collections.positions.insertOne({
+            _id,
+            accountId: account._id,
+            eventId: EVENT,
+            marketId: "mkt-1",
+            tokenId: TOKEN,
+            conditionId: "0xcondition",
+            question: "Will it rain?",
+            outcome: "YES",
+            shares: toDecimal(10_000_000n),
+            cost: toDecimal(wei("5")),
+            state: "lost",
+            proceeds: null,
+            payout: toDecimal(0n),
+            openedAt: at,
+            settledAt: at,
+            updatedAt: at,
+        });
+        return _id.toHexString();
+    };
+    const tenDays = await settledAgo(10);
+    const monthAgo = await settledAgo(29);
+    const ancient = await settledAgo(60);
+
+    const ids = (await h.service.positions(account)).positions.map((p) => p.id);
+    expect(ids).toContain(tenDays);
+    expect(ids).toContain(monthAgo);
+    expect(ids).not.toContain(ancient);
 });

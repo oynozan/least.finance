@@ -21,7 +21,8 @@ import { costOfFill, feeE6, limitBuyPrice, limitSellPrice, quoteBuy, quoteSell }
 import type { MarketMeta, PoolTrader, SignedRecord } from "./trader.ts";
 import { formatUsdShort, orderView, positionView } from "./views.ts";
 
-const SETTLED_KEEP_MS = 7 * 24 * 3_600_000;
+/** Covers the PnL page's 30-day chart; the sidebar trims its Won and Lost rows to a week itself */
+const SETTLED_KEEP_MS = 35 * 24 * 3_600_000;
 const FLOAT_LOW = 0.25;
 const FLOAT_HIGH = 2;
 const GIVE_UP_TRIES = 3;
