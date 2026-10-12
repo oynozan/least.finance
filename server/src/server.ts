@@ -146,7 +146,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         const marketLogger = logger.child({ component: "markets" });
         const predictionLogger = logger.child({ component: "predictions" });
         let trader: PoolTrader | null = overrides.trader ?? null;
-        let predictions: PredictionService | undefined;
         const markets = new MarketService({
             data: createPolymarketData({
                 gammaUrl: config.POLYMARKET_GAMMA_URL,
@@ -155,7 +154,8 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             }),
             logger: marketLogger,
             syncMs: config.MARKETS_SYNC_MS,
-            maxOrderUSD: () => predictions?.maxOrderUSD() ?? null,
+            // Read lazily: the service below needs the markets, so it's built after them
+            maxOrderUSD: () => service.maxOrderUSD(),
         });
         const service = new PredictionService({
             collections,
@@ -166,7 +166,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             logger: predictionLogger,
             config,
         });
-        predictions = service;
         const predictionTracker = new PredictionTracker({
             collections,
             service,
