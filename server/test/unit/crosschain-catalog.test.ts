@@ -1,5 +1,13 @@
 import { expect, test } from "vitest";
-import { COINS, EVM_COINS, SOLANA_COINS, coinByKey, formatCoinAmount, parseCoinAmount, toArcWei } from "../../src/crosschain/catalog.ts";
+import {
+    COINS,
+    EVM_COINS,
+    SOLANA_COINS,
+    coinByKey,
+    formatCoinAmount,
+    parseCoinAmount,
+    toArcWei,
+} from "../../src/crosschain/catalog.ts";
 
 test("the catalog holds the spec's coins, and no USDT on Arc", () => {
     expect(COINS.map((c) => c.key)).toEqual([

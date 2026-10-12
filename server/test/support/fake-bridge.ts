@@ -59,7 +59,8 @@ export class FakeBridge implements BridgeProvider {
     async quote(request: QuoteRequest, _signal?: AbortSignal): Promise<Quote> {
         const { coin, amount } = request;
         const rate = this.#rates[coin.symbol];
-        if (coin.chainId === null || coin.chain === "arc" || rate === undefined) throw new Error(`The fake bridge has no route for ${coin.key}`);
+        if (coin.chainId === null || coin.chain === "arc" || rate === undefined)
+            throw new Error(`The fake bridge has no route for ${coin.key}`);
 
         const ref: Hex = `0x${randomBytes(16).toString("hex")}`;
         const deposit: SourceTx = {

@@ -46,14 +46,22 @@ const lower = (value: string | null, by: bigint, decimals: number) => {
     return formatUnits(left > ZERO ? left : ZERO, decimals);
 };
 
+const scaleUsd = (usd: number | null, from: string | null, to: string | null) => {
+    if (usd === null || from === null || to === null) return usd;
+    const before = Number(from);
+    return before > 0 ? (usd * Number(to)) / before : 0;
+};
+
 /** The view with `amount` of `coin` taken out of `wallet`'s row, until the next read corrects it. */
 export function dropAfterSend(view: BalancesView, coin: string, wallet: string, amount: string): BalancesView {
     const rows = view.rows.map((row): CoinBalance => {
         if (row.coin !== coin || !sameWallet(row.wallet, wallet)) return row;
         const by = parseUnits(amount, row.decimals);
+        const left = lower(row.amount, by, row.decimals);
         return {
             ...row,
-            amount: lower(row.amount, by, row.decimals),
+            amount: left,
+            usd: scaleUsd(row.usd, row.amount, left),
             spendable: lower(row.spendable, by, row.decimals),
         };
     });

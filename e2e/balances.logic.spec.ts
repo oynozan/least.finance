@@ -80,6 +80,18 @@ test("dropAfterSend lowers the matching row only", () => {
     expect(v.rows[0].amount).toBe("5.5");
 });
 
+test("dropAfterSend scales usd with the amount left", () => {
+    const v = view([
+        row("ethereum:ETH", EVM, "1", { usd: 3000 }),
+        row("arc:USDC", EVM, "0", { usd: 0 }),
+        row("bnb:BNB", EVM, "2", { usd: null }),
+    ]);
+    expect(dropAfterSend(v, "ethereum:ETH", EVM, "0.1").rows[0].usd).toBeCloseTo(2700, 6);
+    expect(dropAfterSend(v, "ethereum:ETH", EVM, "5").rows[0].usd).toBe(0);
+    expect(dropAfterSend(v, "arc:USDC", EVM, "1").rows[1].usd).toBe(0);
+    expect(dropAfterSend(v, "bnb:BNB", EVM, "1").rows[2].usd).toBeNull();
+});
+
 test("dropAfterSend matches EVM case-insensitively and Solana exactly", () => {
     const v = view([row("arc:USDC", EVM, "5"), row("solana:USDC", SOL, "5")]);
     expect(dropAfterSend(v, "arc:USDC", EVM.toLowerCase(), "1").rows[0].amount).toBe("4");

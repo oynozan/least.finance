@@ -6,7 +6,7 @@ import {
     installWallet,
     mockArcRpc,
     mockPrivy,
-    useWallet,
+    pickWallet,
     walletRequests,
 } from "./privy-mock";
 
@@ -36,7 +36,7 @@ async function signInWithEvm(page: Page, arcUsdc = 100) {
 
 async function signInWithSolana(page: Page) {
     const address = randomSolanaAddress();
-    useWallet(page, address);
+    pickWallet(page, address);
     await installSolanaWallet(page, address);
     await mockPrivy(page);
     await page.goto("/");

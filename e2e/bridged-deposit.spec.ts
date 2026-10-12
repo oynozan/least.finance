@@ -7,7 +7,7 @@ import {
     mockArcRpc,
     mockPrivy,
     moveWalletTo,
-    useWallet,
+    pickWallet,
     walletRequests,
 } from "./privy-mock";
 
@@ -22,7 +22,7 @@ test("the test backend funds wallets on Ethereum, BNB Chain and Solana", async (
 
     const solana = randomSolanaAddress();
     await fundSource(solana, "solana:SOL", "2");
-    useWallet(page, solana);
+    pickWallet(page, solana);
     await installSolanaWallet(page, solana);
     await mockPrivy(page);
     await page.goto("/");

@@ -159,12 +159,15 @@ test("a merged account's deposit orders follow it to the survivor", async () => 
     const running = await boot(async (db) => {
         a = await seedAccount(db, did, "3");
         const b = await seedAccount(db, did, "2");
-        await mongo.db(db).collection("deposit_orders").insertOne({
-            _id: orderId,
-            accountId: b.id,
-            state: "bridging",
-            recipient: b.address,
-        } as never);
+        await mongo
+            .db(db)
+            .collection("deposit_orders")
+            .insertOne({
+                _id: orderId,
+                accountId: b.id,
+                state: "bridging",
+                recipient: b.address,
+            } as never);
     });
 
     const order = await collections(running).depositOrders.findOne({ _id: orderId });
@@ -272,10 +275,17 @@ test("a lookup by privyUserId uses the person index", async () => {
 test("a database that still has the old $type person index gets the new one", async () => {
     const did = newDid();
     const running = await boot(async (db) => {
-        await mongo.db(db).collection("accounts").createIndex(
-            { privyUserId: 1 },
-            { unique: true, name: "privy_user_unique", partialFilterExpression: { privyUserId: { $type: "string" } } },
-        );
+        await mongo
+            .db(db)
+            .collection("accounts")
+            .createIndex(
+                { privyUserId: 1 },
+                {
+                    unique: true,
+                    name: "privy_user_unique",
+                    partialFilterExpression: { privyUserId: { $type: "string" } },
+                },
+            );
         await seedAccount(db, did, "1");
     });
     const index = (await collections(running).accounts.indexes()).find((i) => i.name === "privy_user_unique");

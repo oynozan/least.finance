@@ -21,7 +21,7 @@ const wallets = new WeakMap<Page, string>();
  * as a mixed-case address must carry a valid EIP-55 checksum.
  */
 /** Signs `page` in with a wallet another page already uses, as a second tab or a later visit would. Call it first. */
-export function useWallet(page: Page, address: string) {
+export function pickWallet(page: Page, address: string) {
     // A Solana address is case-sensitive.
     wallets.set(page, isSolana(address) ? address : address.toLowerCase());
 }

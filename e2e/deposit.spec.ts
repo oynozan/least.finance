@@ -12,7 +12,7 @@ import {
     moveWalletTo,
     rejectNextChainSwitch,
     rejectNextSend,
-    useWallet,
+    pickWallet,
     walletChainId,
     walletRequests,
 } from "./privy-mock";
@@ -380,7 +380,7 @@ test("a later visit with the same wallet finds the server's balance and history"
     const later = await browser.newContext(isMobile ? { isMobile: true, hasTouch: true } : {});
     try {
         const visit = await later.newPage();
-        useWallet(visit, addressOf(page));
+        pickWallet(visit, addressOf(page));
         await mockPrivy(visit);
         await installWallet(visit);
         await start(visit, undefined, "$25.00");
@@ -399,7 +399,7 @@ test("two devices on the same wallet both see a deposit as it's credited", async
     const device = await browser.newContext(isMobile ? { isMobile: true, hasTouch: true } : {});
     try {
         const other = await device.newPage();
-        useWallet(other, addressOf(page));
+        pickWallet(other, addressOf(page));
         await mockPrivy(other);
         await installWallet(other);
         await start(other);

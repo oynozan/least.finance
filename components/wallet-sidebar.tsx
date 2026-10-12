@@ -284,13 +284,13 @@ function WalletSection({
     // The coin row picked, whose wallet the deposit is sent from.
     const [picked, setPicked] = useState<CoinBalance | null>(null);
     // The form closed: the Deposit button that takes its place gets focus.
-    const [refocus, setRefocus] = useState(false);
+    const refocus = useRef(false);
     const section = useRef<HTMLElement>(null);
     useEffect(() => {
-        if (!refocus || stage !== "closed") return;
-        setRefocus(false);
+        if (!refocus.current || stage !== "closed") return;
+        refocus.current = false;
         section.current?.querySelector<HTMLElement>("button[data-phase]")?.focus();
-    }, [refocus, stage]);
+    }, [stage]);
     const depositing = stage === "amount" && minDeposit !== null && picked !== null;
     const choosing = stage === "coins" && minDeposit !== null;
     // The history would cover the positions while a coin or an amount is chosen.
@@ -359,7 +359,7 @@ function WalletSection({
                     }
                     onClose={() => {
                         setStage("closed");
-                        setRefocus(true);
+                        refocus.current = true;
                     }}
                 />
             ) : (

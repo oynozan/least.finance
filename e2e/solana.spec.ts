@@ -6,14 +6,14 @@ import {
     installWallet,
     mockArcRpc,
     mockPrivy,
-    useWallet,
-    useWallet as signInAs,
+    pickWallet,
+    pickWallet as signInAs,
     walletRequests,
 } from "./privy-mock";
 
 test("signing in with a Solana wallet opens the account, with Solana in the header", async ({ page }) => {
     const address = randomSolanaAddress();
-    useWallet(page, address);
+    pickWallet(page, address);
     const arcRequests: string[] = [];
     await page.route(ARC_RPC, (route) => {
         arcRequests.push(route.request().postData() ?? "");

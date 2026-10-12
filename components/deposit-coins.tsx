@@ -83,6 +83,10 @@ export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: Depo
 
     const list = byValue(wallets.flatMap((wallet) => rowsOf(wallet, rows)));
     const crowded = (kind: WalletRef["kind"]) => wallets.filter((wallet) => wallet.kind === kind).length > 1;
+    // The wallet as the header spells it, not as the server's checksummed copy does.
+    const shown = (row: CoinBalance) =>
+        wallets.find((w) => (row.chain === "solana" ? w.address === row.wallet : sameWallet(w.address, row.wallet)))
+            ?.address ?? row.wallet;
     const missing = (["evm", "solana"] as const).filter((kind) => !wallets.some((wallet) => wallet.kind === kind));
 
     return (
@@ -112,7 +116,7 @@ export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: Depo
                     const zero = isZero(row);
                     const blocked = !open || zero;
                     const suffix = crowded(row.chain === "solana" ? "solana" : "evm")
-                        ? shortenAddress(row.wallet)
+                        ? shortenAddress(shown(row))
                         : null;
                     const label =
                         `${row.symbol} on ${row.chainName}` +
