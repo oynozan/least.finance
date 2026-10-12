@@ -69,7 +69,7 @@ const position = (over: Partial<PositionView> = {}): PositionView => ({
     ...over,
 });
 
-const predict = (requestId: string, usdc: string): AccountAction => ({
+const predict = (requestId: string, usdc: string, connection = 1): AccountAction => ({
     type: "predict",
     trade: {
         requestId,
@@ -81,6 +81,7 @@ const predict = (requestId: string, usdc: string): AccountAction => ({
         amountWei: toWei(usdc),
         shares: "20",
         at: 1000,
+        connection,
     },
 });
 
@@ -159,12 +160,32 @@ test.describe("optimistic predictions", () => {
                 predict(REQ_B, "5"),
                 // the server already debited A; B is still on its way
                 { type: "session", session: session("90", 2) },
-                { type: "positions", positions: { positions: [], orders: [placing] } },
+                { type: "positions", connection: 1, positions: { positions: [], orders: [placing] } },
             ],
             open("100"),
         );
         expect(ready(state).optimistic.map((t) => t.requestId)).toEqual([REQ_B]);
         expect(usdc(state)).toBe(toWei("85"));
+    });
+
+    test("a positions push on a later connection drops a trade the server never got", () => {
+        const placing = order(REQ_B, { state: "placing", positionId: null, shares: null });
+        const state = run(
+            [
+                predict(REQ_A, "10", 1),
+                predict(REQ_B, "5", 2),
+                { type: "session", session: session("100", 1) },
+                { type: "positions", connection: 2, positions: { positions: [], orders: [] } },
+            ],
+            open("100"),
+        );
+        expect(ready(state).optimistic.map((t) => t.requestId)).toEqual([REQ_B]);
+        expect(usdc(state)).toBe(toWei("95"));
+        const later = run(
+            [{ type: "positions", connection: 2, positions: { positions: [], orders: [placing] } }],
+            state,
+        );
+        expect(ready(later).optimistic).toEqual([]);
     });
 
     test("an older order update is ignored", () => {

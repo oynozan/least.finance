@@ -95,6 +95,8 @@ export class AccountClient {
     #noticeTimer: ReturnType<typeof setTimeout> | undefined;
     #tradeTimer: ReturnType<typeof setTimeout> | undefined;
     #attempt = 0;
+    /** Counts socket connections, so a trade can tell it was sent on an earlier one. */
+    #connection = 0;
     /** Deposits being confirmed right now, so a reconnect doesn't report one twice. */
     readonly #confirming = new Set<string>();
 
@@ -136,6 +138,7 @@ export class AccountClient {
 
         socket.on("connect", () => {
             this.#attempt = 0;
+            this.#connection++;
             void this.#bind(socket);
         });
         socket.on("deposit:credited", ({ deposit, account }) => {
@@ -150,7 +153,7 @@ export class AccountClient {
             if (order.state === "failed") this.#tradeNotice(FAILURE_COPY[order.reason ?? "rejected"]);
         });
         socket.on("positions", (positions) => {
-            this.#dispatch({ type: "positions", positions });
+            this.#dispatch({ type: "positions", positions, connection: this.#connection });
         });
         socket.on("balances", (view) => {
             if (this.#userId) saveCachedBalances(this.#userId, view);
@@ -316,6 +319,7 @@ export class AccountClient {
                 amountWei: toWei(input.amountUSD),
                 shares,
                 at: Date.now(),
+                connection: this.#connection,
             },
         });
         void socket

@@ -64,6 +64,8 @@ export type OptimisticTrade = {
     /** The quote's estimate. */
     shares: string;
     at: number;
+    /** The socket connection it was sent on; a later snapshot without it means it never arrived. */
+    connection: number;
 };
 
 export type AccountState =
@@ -107,7 +109,7 @@ export type AccountAction =
     /** The server turned the order down, or it never got there. */
     | { type: "predict-failed"; requestId: string }
     | { type: "prediction"; update: PredictionUpdate }
-    | { type: "positions"; positions: PositionsView };
+    | { type: "positions"; positions: PositionsView; connection: number };
 
 export const initialAccountState: AccountState = { status: "idle" };
 
@@ -202,7 +204,9 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
             return {
                 ...state,
                 predictions: action.positions,
-                optimistic: state.optimistic.filter((t) => !known.has(t.requestId)),
+                optimistic: state.optimistic.filter(
+                    (t) => !known.has(t.requestId) && t.connection >= action.connection,
+                ),
             };
         }
     }
