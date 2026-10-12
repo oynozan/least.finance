@@ -22,6 +22,7 @@ The Predict sentence trades real Polymarket markets with the person's Arc balanc
 | Location             | No check, for a private demo only. See "Not included".                                                                                 |
 | Builder fee          | None. People pay only Polymarket's own fee, shown in the review.                                                                       |
 | Order type           | Fill-or-kill market orders with a price limit. An order fills completely or not at all.                                               |
+| Trades are optimistic | Confirming accepts the trade in the app at once. Only if the server fails it does the app take it back, with a message.             |
 
 ## 1. Live markets
 
@@ -34,7 +35,7 @@ The Predict sentence trades real Polymarket markets with the person's Arc balanc
     - `GET /markets/search?q=`
     - `GET /markets/:eventId`
 
-  They sit outside `/v1`, so they take no token, and they're rate-limited per IP.
+  They sit outside `/v1`, so they take no token, and they're rate-limited per IP. `GET /markets/trending` returns `{ markets, maxOrderUSD }`. `maxOrderUSD` is the pool's current per-order limit (section 2), and `null` while trading is off.
 
 **Shaping an event into a question.** A market is offered when it is active, not closed, accepting orders, has an order book, closes more than an hour from now, and its spread is at most 10¢. An outcome is offered when its buy price is between 1¢ and 99¢. Then, taking the first rule that fits:
 
@@ -134,12 +135,28 @@ The review asks for one when it opens, again when the amount changes, and every 
         - The order records the shares and what was really spent.
         - Anything unspent is credited back (`prediction_refund`).
         - The position is created or grown (shares, and cost).
-    - **Not filled** (the price moved past the limit, or the market closed): the whole amount is credited back. The person sees "The price moved. Check the new price and try again." or "This market just closed."
+    - **Not filled** (the price moved past the limit, or the market closed): the whole amount is credited back.
     - **Delayed** (live sports markets wait a few seconds), **or no clear answer** (a timeout):
         - The order stays `posted`, and the money stays held.
         - A tracker looks the order up by its hash until it's filled or cancelled, then settles as above.
-        - The person sees "Confirming with Polymarket…" under the button.
-5. **Push.** `prediction:update { order, position, account }` goes to the person's sockets, and the balance and the sidebar change in place.
+5. **Push.** `prediction:update { requestId, order, position, account }` goes to the person's sockets.
+
+**Optimistic in the app.** The person never waits for Polymarket:
+
+- **On confirm**, the app accepts the trade at once, before the server answers:
+    - The review closes as done.
+    - The balance drops by the amount.
+    - The position appears in the sidebar with the quote's shares.
+    - No "confirming" state is shown.
+- **A fill** replaces the shares and cost with the real ones in place, and the balance takes the server's value. Each optimistic change is keyed by its `requestId`, so the server's push replaces it instead of counting twice.
+- **A failure takes it all back:**
+    - The position disappears.
+    - The balance returns.
+    - One message explains why (see Errors).
+- **A delayed or unclear order** stays shown as accepted while the tracker settles it.
+- **Not connected at confirm:** the trade is taken back at once with "You're offline. Nothing was spent."
+- **After a reload**, the `positions` push includes orders that haven't settled yet, so a trade still in flight stays shown.
+- **Fewer failures:** the amount's upper bound is the smaller of the person's balance and the pool's current limit (`maxOrderUSD`, served with the market data). So the float rarely refuses an order the app has already accepted.
 
 **Recovery.** On startup, an order still `placing` was never posted (it has no hash), so it's refunded. Any `posted` order goes to the tracker.
 
@@ -177,6 +194,10 @@ The review asks for one when it opens, again when the amount changes, and every 
 - A fill-or-kill market sell of all the position's shares, with `minPrice` = the quoted price − 2¢, clamped to 1¢ and rounded to the tick.
 - The proceeds after fees are credited (`prediction_sell`), and the position becomes `closed`.
 - The same order states and tracker as buying.
+- **Optimistic, like buying.**
+    - Close removes the position from the open list at once and raises the balance by the quoted proceeds.
+    - A fill sets the real proceeds.
+    - A failure puts the position back, lowers the balance again, and shows the message.
 - A position smaller than the market's minimum order size can't be sold. Its Close is disabled with "Too small to sell. It pays out when the market resolves."
 - Partial closes aren't offered.
 
@@ -199,13 +220,17 @@ The review asks for one when it opens, again when the amount changes, and every 
 
 ## Errors
 
-| What happens                       | What the person sees                                                 | Money                    |
+Every failure after an optimistic accept takes the trade back in the app (as in section 2), then shows one message in the sidebar's status line.
+
+| What happens                       | The message                                                          | Money on the server      |
 | ---------------------------------- | -------------------------------------------------------------------- | ------------------------ |
-| The price moved past the limit     | "The price moved. Check the new price and try again."                | Refunded at once         |
-| The market closed meanwhile        | "This market just closed."                                           | Refunded at once         |
-| The float is short                 | "Predictions are limited to $X right now."                           | Nothing moved            |
+| The price moved past the limit     | "The price moved, so your prediction didn't go through. Nothing was spent." | Refunded at once  |
+| The market closed meanwhile        | "This market just closed. Nothing was spent."                        | Refunded at once         |
+| The float is short                 | "Predictions are limited to $X right now. Nothing was spent."        | Nothing moved            |
 | Polymarket doesn't answer at all   | "Polymarket isn't answering. Nothing was spent."                     | Refunded (never posted)  |
-| An answer is late or unclear       | "Confirming with Polymarket…", then the result                       | Held until settled       |
+| Not connected at confirm           | "You're offline. Nothing was spent."                                 | Nothing moved            |
+| An answer is late or unclear       | Nothing: the trade stays accepted until the tracker settles it       | Held until settled       |
+| A close fails                      | "Couldn't sell right now. Your position is back."                    | Nothing moved            |
 | Gamma sync fails                   | Nothing. The last good list stays, and a warning is logged.          | n/a                      |
 
 ## Testing
@@ -255,9 +280,11 @@ Its controls set prices, fill or reject the next order, delay it, and resolve a 
 - Search finds a market that isn't trending.
 - A multi-outcome event reads "Predict [No change] on [Fed decision in October?]".
 - A prediction:
-    - lowers the balance and adds a position in the sidebar
-    - shows "The price moved…" when the fake rejects it, and the balance comes back
-- Close credits the balance.
+    - lowers the balance and adds a position in the sidebar at once, while the fake is still holding the order
+    - takes the real shares in place when the fake fills it
+    - rolls back when the fake rejects it: the position goes, the balance comes back, and "The price moved…" shows
+    - survives a reload while the fake holds it
+- Close credits the balance at once, and puts the position back if the fake rejects the sale.
 - Resolving through the fake pays a win into the balance.
 - Signed out, the picker still shows live markets.
 
@@ -280,11 +307,12 @@ Each phase gets its own implementation plan.
     - approval from builder@polymarket.com, if their rollout still requires it
 - A fresh EOA for the pool owner.
 - Running the setup script once, then funding the printed wallet with pUSD: $100 to start, through Polymarket's bridge or by wrapping Polygon USDC.
-- **Hosting the server outside Polymarket's restricted regions.** Polymarket sees our server's IP on every order, and orders from blocked or close-only regions (the US and the UK among them) are rejected.
+- **Hosting the server outside Polymarket's restricted regions.** Polymarket sees our server's IP on every order, and orders from blocked or close-only regions (the US and the UK among them) are rejected. The server calls Polymarket directly from its host, with no proxies.
 
 ## Not included
 
 - **A location check on people.** Polymarket asks apps that place orders for their users to apply its geoblock. With the pooled account, people in close-only regions could open positions they couldn't open on Polymarket directly. This is acceptable only for a private demo. It must be decided before any public launch, and the order path has one place a check can go: step 1 of placing a prediction.
+- **routing Polymarket traffic through proxies, rotating or not, to appear to be in another country.** That would get around Polymarket's location controls, which exist for sanctions and regulatory reasons.
 - automatic rebalancing between Arc and Polygon (a later phase, possibly sharing the multichain work's CCTP client)
 - a builder fee
 - betting NO on one option of a multi-outcome event
