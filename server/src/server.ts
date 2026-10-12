@@ -8,6 +8,7 @@ import { PrivyIdentity, type IdentityProvider } from "./auth/identity.ts";
 import { ARC_CHAIN_ID, assertArc, createArcClient } from "./chain/arc.ts";
 import type { Config } from "./config.ts";
 import { DepositOrders } from "./crosschain/orders.ts";
+import { OrderTracker } from "./crosschain/tracker.ts";
 import { createAcross } from "./crosschain/providers/across.ts";
 import { createRelay } from "./crosschain/providers/relay.ts";
 import type { BridgeProvider } from "./crosschain/providers/types.ts";
@@ -88,14 +89,11 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             confirmations: config.DEPOSIT_CONFIRMATIONS,
             receiptTimeoutMs: config.DEPOSIT_RECEIPT_TIMEOUT_MS,
         });
-        const orders = new DepositOrders({
-            collections,
-            bus,
-            providers: overrides.bridges ?? [
-                createRelay({ apiKey: config.RELAY_API_KEY }),
-                createAcross({ integratorId: config.ACROSS_INTEGRATOR_ID }),
-            ],
-        });
+        const bridges = overrides.bridges ?? [
+            createRelay({ apiKey: config.RELAY_API_KEY }),
+            createAcross({ integratorId: config.ACROSS_INTEGRATOR_ID }),
+        ];
+        const orders = new DepositOrders({ collections, bus, providers: bridges });
         const sessions = new Sessions({
             accounts,
             deposits,
@@ -116,6 +114,14 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         });
         const sources =
             overrides.sources ?? createSourceClients({ ethereum: config.ETHEREUM_RPC_URLS, bnb: config.BNB_RPC_URLS });
+        const tracker = new OrderTracker({
+            collections,
+            providers: bridges,
+            sources,
+            bus,
+            logger: logger.child({ component: "order-tracker" }),
+            pollMs: config.ORDER_POLL_MS,
+        });
         const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
         const prices = overrides.prices ?? lifiPrices();
         const balances = new WalletBalances({
@@ -145,6 +151,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         const io = attachSockets(httpServer, services);
         await listen(httpServer, config.PORT, config.HOST);
         watcher.start();
+        tracker.start();
         // A bad secret is logged loudly, but the server keeps serving: wallets already connected carry on.
         void identity.checkApi();
 
@@ -154,6 +161,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             url: `http://${host === "0.0.0.0" || host === "[::]" ? "127.0.0.1" : host}:${port}`,
             services,
             async close() {
+                await tracker.stop();
                 await watcher.stop();
                 // Closes the HTTP server too; idle keep-alive connections would hold it open.
                 httpServer.closeIdleConnections();
