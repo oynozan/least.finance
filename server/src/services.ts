@@ -6,6 +6,7 @@ import type { Config } from "./config.ts";
 import type { Database } from "./db/mongo.ts";
 import type { DepositService } from "./deposits/deposits.ts";
 import type { DepositWatcher } from "./deposits/watcher.ts";
+import type { DepositOrders } from "./crosschain/orders.ts";
 import type { Bus } from "./events.ts";
 import type { Sessions } from "./sessions.ts";
 
@@ -21,4 +22,5 @@ export type Services = {
     sessions: Sessions;
     watcher: DepositWatcher;
     balances: WalletBalances;
+    orders: DepositOrders;
 };

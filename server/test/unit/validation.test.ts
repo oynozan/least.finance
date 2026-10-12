@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AppError } from "../../src/errors.ts";
-import { depositPage, depositReport, parse } from "../../src/validation.ts";
+import { coinWalletAmount, depositPage, depositReport, parse, sourceReport } from "../../src/validation.ts";
 
 const hash = `0x${"AB".repeat(32)}`;
 const catchError = (fn: () => unknown) => {
@@ -52,5 +52,41 @@ describe("parse", () => {
             expect(error.code).toBe("bad_request");
             expect(error.message).toContain("before");
         }
+    });
+});
+
+describe("deposit order input", () => {
+    const wallet = "0x52908400098527886E0F7030069857D2E4169EE7";
+
+    it("accepts a coin, a decimal amount and a wallet", () => {
+        expect(parse(coinWalletAmount, { coin: "ethereum:ETH", amount: "0.5", wallet: ` ${wallet} ` })).toEqual({
+            coin: "ethereum:ETH",
+            amount: "0.5",
+            wallet,
+        });
+    });
+
+    it.each(["", "-1", "1e3", ".5", "1.", "0x10", "1,5"])("rejects the amount '%s'", (amount) => {
+        expect(() => parse(coinWalletAmount, { coin: "ethereum:ETH", amount, wallet })).toThrow(AppError);
+    });
+
+    it("rejects a short coin, a short wallet and a long wallet", () => {
+        expect(() => parse(coinWalletAmount, { coin: "ET", amount: "1", wallet })).toThrow(AppError);
+        expect(() => parse(coinWalletAmount, { coin: "ethereum:ETH", amount: "1", wallet: "0x12" })).toThrow(AppError);
+        expect(() => parse(coinWalletAmount, { coin: "ethereum:ETH", amount: "1", wallet: "a".repeat(65) })).toThrow(
+            AppError,
+        );
+    });
+
+    it("lowercases the hashes of a source report", () => {
+        expect(parse(sourceReport, { orderId: "a".repeat(24), txHashes: [hash] }).txHashes).toEqual([
+            hash.toLowerCase(),
+        ]);
+    });
+
+    it("rejects a bad order id and none or too many hashes", () => {
+        expect(() => parse(sourceReport, { orderId: "nope", txHashes: [hash] })).toThrow(AppError);
+        expect(() => parse(sourceReport, { orderId: "a".repeat(24), txHashes: [] })).toThrow(AppError);
+        expect(() => parse(sourceReport, { orderId: "a".repeat(24), txHashes: Array(5).fill(hash) })).toThrow(AppError);
     });
 });

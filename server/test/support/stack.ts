@@ -14,6 +14,7 @@ import { loadConfig } from "../../src/config.ts";
 import type { ClientToServerEvents, ServerToClientEvents } from "../../src/protocol.ts";
 import { startServer, type RunningServer } from "../../src/server.ts";
 import { startArcEmulator, type ArcEmulator, type EmulatorOptions } from "./arc-emulator.ts";
+import { FakeBridge } from "./fake-bridge.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
 import { startFakeSolanaRpc, type FakeSolanaRpc } from "./fake-solana-rpc.ts";
 import { sourceChain } from "./source-chains.ts";
@@ -67,6 +68,8 @@ export type Stack = {
     emulator: ArcEmulator;
     /** The Solana RPC stand-in the server reads balances from. */
     solanaRpc: FakeSolanaRpc;
+    /** The only bridge the server quotes from; a test steps its orders by hand. */
+    bridge: FakeBridge;
     chain: ChainHelpers;
     /** A signed-in Privy user with one funded wallet. */
     user(options?: { usdc?: string }): Promise<User>;
@@ -137,11 +140,13 @@ export async function startStack({
         DEPOSIT_RECEIPT_TIMEOUT_MS: "3000",
         ...env,
     });
+    const bridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
     const logger = pino({ level: config.LOG_LEVEL });
     const server = await startServer(config, logger, {
         sources: createSourceClients({ ethereum: [ethereumUrl], bnb: [bnbUrl] }),
         solana: createSolanaRpc([solanaRpc.url]),
         prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
+        bridges: [bridge],
         now,
     });
     const chain = chainHelpers(anvilUrl);
@@ -153,6 +158,7 @@ export async function startStack({
         privy,
         emulator,
         solanaRpc,
+        bridge,
         chain,
         async user({ usdc = "1000" } = {}) {
             const wallet = privateKeyToAddress(generatePrivateKey());

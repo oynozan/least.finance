@@ -30,6 +30,44 @@ export type DepositView = {
     blockNumber: number;
     /** ISO 8601. */
     creditedAt: string;
+    /** Set when a bridged order delivered it: what the person sent. */
+    origin?: DepositOrigin;
+};
+
+/** The coin a bridged deposit came from. */
+export type DepositOrigin = { coin: string; amount: string; txHash: Hex };
+
+export type OrderState = "created" | "sent" | "in_block" | "bridging" | "delivered" | "refunded" | "failed" | "expired";
+
+/** What a coin would pay out in USDC on Arc, without opening an order. */
+export type DepositQuoteView = {
+    coin: string;
+    amount: string;
+    usdcOut: UsdcAmount;
+    etaSeconds: number;
+    provider: string;
+};
+
+/** One transaction the person's wallet signs on the coin's chain. */
+export type SourceTxView = { chainId: number; to: Hex; data: Hex; value: Hex };
+
+export type DepositOrderView = {
+    id: string;
+    /** The catalog key, like "ethereum:ETH". */
+    coin: string;
+    /** In the coin's own units, as a decimal. */
+    amount: string;
+    /** The sending wallet, which a failed bridge refunds. */
+    wallet: string;
+    usdcOut: UsdcAmount;
+    etaSeconds: number;
+    state: OrderState;
+    sourceTxHashes: Hex[];
+    /** The credited deposit once delivered. */
+    depositId: string | null;
+    /** ISO 8601. */
+    createdAt: string;
+    updatedAt: string;
 };
 
 /** Newest first. `next` is the cursor for older deposits, null on the last page. */
@@ -73,6 +111,8 @@ export type WalletSession = {
     account: AccountView;
     deposits: DepositPage;
     rules: DepositRules;
+    /** Open bridge orders, newest first. */
+    orders: DepositOrderView[];
 };
 
 /** The outcome of a deposit transaction the client reported. */
@@ -112,12 +152,29 @@ export type ClientToServerEvents = {
     "deposit:submit": (payload: { txHash: string }, ack: (result: Ack<DepositReceipt>) => void) => void;
     /** Asks for fresh balances; within 30 s of the last read nothing happens and `read` is false. */
     "balances:refresh": (payload: Record<string, never>, ack: (result: Ack<{ read: boolean }>) => void) => void;
+    /** What a coin in one of the person's wallets would pay out on Arc. */
+    "deposit:quote": (
+        payload: { coin: string; amount: string; wallet: string },
+        ack: (result: Ack<DepositQuoteView>) => void,
+    ) => void;
+    /** Opens a bridge order and hands back the transactions the wallet signs. */
+    "deposit:order": (
+        payload: { coin: string; amount: string; wallet: string },
+        ack: (result: Ack<{ order: DepositOrderView; txs: SourceTxView[] }>) => void,
+    ) => void;
+    /** Reports the hashes of the transactions the wallet sent for an order. */
+    "deposit:source": (
+        payload: { orderId: string; txHashes: string[] },
+        ack: (result: Ack<DepositOrderView>) => void,
+    ) => void;
 };
 
 export type ServerToClientEvents = {
     "deposit:credited": (payload: { deposit: DepositView; account: AccountView }) => void;
     /** The account's coin balances, pushed after `account:open` and whenever a read finishes. */
     balances: (payload: BalancesView) => void;
+    /** A bridge order changed state. */
+    "deposit:progress": (payload: { order: DepositOrderView }) => void;
     /** The access token expired; the server disconnects next, and the client reconnects with a fresh one. */
     "session:expired": () => void;
 };

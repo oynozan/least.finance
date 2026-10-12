@@ -9,6 +9,19 @@ export const depositReport = z.object({
         .transform((hash) => hash.toLowerCase() as `0x${string}`),
 });
 
+const txHash = depositReport.shape.txHash;
+
+export const coinWalletAmount = z.object({
+    coin: z.string().min(3).max(32),
+    amount: z.string().regex(/^\d+(\.\d+)?$/, "an amount such as 0.5"),
+    wallet: z.string().trim().min(32).max(64),
+});
+
+export const sourceReport = z.object({
+    orderId: z.string().regex(/^[0-9a-f]{24}$/i, "an order id"),
+    txHashes: z.array(txHash).min(1).max(4),
+});
+
 export const depositPage = z.object({
     before: z
         .string()

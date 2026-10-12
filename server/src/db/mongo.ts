@@ -1,4 +1,5 @@
 import { MongoClient, MongoServerError, type Collection, type Db, type Decimal128, type ObjectId } from "mongodb";
+import type { OrderState } from "../protocol.ts";
 import { mergeAccountsByPerson, type MigrationReport } from "./migrations.ts";
 
 /** A person's account. Addresses are stored lowercase. */
@@ -36,6 +37,36 @@ export type DepositDoc = {
     /** Which path credited it first: the chain scan, or the client reporting its transaction. */
     source: "scan" | "report";
     creditedAt: Date;
+    /** Set when a bridged order delivered it. */
+    origin?: { coin: string; amount: string; txHash: string; orderId: ObjectId };
+};
+
+/** A coin from another chain, bridged to the account's address on Arc. */
+export type DepositOrderDoc = {
+    _id: ObjectId;
+    accountId: ObjectId;
+    /** The catalog key. */
+    coin: string;
+    /** In the coin's own units, as a decimal. */
+    amount: string;
+    /** The sending wallet, checksummed. */
+    wallet: string;
+    provider: string;
+    /** The provider's id for the bridge. */
+    ref: string;
+    /** Wei of USDC on Arc. */
+    usdcOut: Decimal128;
+    etaSeconds: number;
+    /** The account's deposit address, lowercase. */
+    recipient: string;
+    /** Where a failed bridge pays back, lowercase. */
+    refundTo: string;
+    state: OrderState;
+    sourceTxHashes: string[];
+    fillTxHash: string | null;
+    depositId: ObjectId | null;
+    createdAt: Date;
+    updatedAt: Date;
 };
 
 /** Every change to a balance, so it can be audited and replayed. */
@@ -60,6 +91,7 @@ export type Collections = {
     accounts: Collection<AccountDoc>;
     deposits: Collection<DepositDoc>;
     ledger: Collection<LedgerEntryDoc>;
+    depositOrders: Collection<DepositOrderDoc>;
     cursors: Collection<CursorDoc>;
     counters: Collection<CounterDoc>;
 };
@@ -86,6 +118,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             accounts: db.collection("accounts"),
             deposits: db.collection("deposits"),
             ledger: db.collection("ledger"),
+            depositOrders: db.collection("deposit_orders"),
             cursors: db.collection("cursors"),
             counters: db.collection("counters"),
         };
@@ -107,7 +140,7 @@ async function assertTransactions(db: Db) {
     );
 }
 
-async function ensureIndexes({ accounts, deposits, ledger }: Collections) {
+async function ensureIndexes({ accounts, deposits, ledger, depositOrders }: Collections) {
     await Promise.all([
         accounts.createIndexes([
             { key: { depositAddress: 1 }, name: "deposit_address_unique", unique: true },
@@ -134,6 +167,10 @@ async function ensureIndexes({ accounts, deposits, ledger }: Collections) {
         ledger.createIndexes([
             { key: { kind: 1, refId: 1 }, name: "ref_unique", unique: true },
             { key: { accountId: 1, _id: -1 }, name: "account_history" },
+        ]),
+        depositOrders.createIndexes([
+            { key: { accountId: 1, _id: -1 }, name: "account_orders" },
+            { key: { state: 1, updatedAt: 1 }, name: "state_updated" },
         ]),
     ]);
 }

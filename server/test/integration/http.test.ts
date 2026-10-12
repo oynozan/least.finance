@@ -168,7 +168,6 @@ describe("authentication", () => {
         const token = await stack.privy.token(user.userId, { expiresInSeconds: -10 });
         expect((await connect({ ...user, token })).status).toBe(401);
     });
-
 });
 
 describe("opening accounts", () => {
@@ -184,6 +183,7 @@ describe("opening accounts", () => {
             },
             deposits: { items: [], next: null },
             rules: { chainId: 5042, minDeposit: "0.01" },
+            orders: [],
         });
     });
 

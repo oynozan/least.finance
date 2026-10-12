@@ -7,6 +7,10 @@ import { createKeyring } from "./accounts/keyring.ts";
 import { PrivyIdentity, type IdentityProvider } from "./auth/identity.ts";
 import { ARC_CHAIN_ID, assertArc, createArcClient } from "./chain/arc.ts";
 import type { Config } from "./config.ts";
+import { DepositOrders } from "./crosschain/orders.ts";
+import { createAcross } from "./crosschain/providers/across.ts";
+import { createRelay } from "./crosschain/providers/relay.ts";
+import type { BridgeProvider } from "./crosschain/providers/types.ts";
 import { readBalances } from "./crosschain/balances.ts";
 import { createSourceClients, type SourceClients } from "./crosschain/chains.ts";
 import { lifiPrices, type PriceFeed } from "./crosschain/prices.ts";
@@ -37,6 +41,8 @@ type Overrides = {
     sources?: SourceClients;
     solana?: SolanaRpc;
     prices?: PriceFeed;
+    /** The bridges that quote deposits; Relay and Across by default. */
+    bridges?: BridgeProvider[];
     /** The clock the balance refresh limit runs on. */
     now?: () => number;
 };
@@ -82,9 +88,18 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             confirmations: config.DEPOSIT_CONFIRMATIONS,
             receiptTimeoutMs: config.DEPOSIT_RECEIPT_TIMEOUT_MS,
         });
+        const orders = new DepositOrders({
+            collections,
+            bus,
+            providers: overrides.bridges ?? [
+                createRelay({ apiKey: config.RELAY_API_KEY }),
+                createAcross({ integratorId: config.ACROSS_INTEGRATOR_ID }),
+            ],
+        });
         const sessions = new Sessions({
             accounts,
             deposits,
+            orders,
             rules: { chainId: ARC_CHAIN_ID, minDeposit: formatUsdc(config.DEPOSIT_MIN_USDC) },
         });
         const watcher = new DepositWatcher({
@@ -122,6 +137,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             sessions,
             watcher,
             balances,
+            orders,
         };
 
         const httpServer = createServer(createApp(services));

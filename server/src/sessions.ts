@@ -1,3 +1,5 @@
+import type { DepositOrders } from "./crosschain/orders.ts";
+import { orderView } from "./crosschain/views.ts";
 import type { AccountService } from "./accounts/accounts.ts";
 import type { Identity } from "./auth/identity.ts";
 import type { AccountDoc } from "./db/mongo.ts";
@@ -9,6 +11,7 @@ import type { DepositRules, WalletSession } from "./protocol.ts";
 type Deps = {
     accounts: AccountService;
     deposits: DepositService;
+    orders: DepositOrders;
     rules: DepositRules;
 };
 
@@ -32,6 +35,7 @@ export class Sessions {
             account: accountView(current),
             deposits: await this.#deps.deposits.list(current),
             rules: this.#deps.rules,
+            orders: (await this.#deps.orders.open(current._id)).map(orderView),
         };
     }
 

@@ -52,14 +52,18 @@ Everything under `/v1` takes `Authorization: Bearer <Privy access token>`. Error
 
 The handshake carries `auth: { token }`; a token that expires gets `session:expired` and a disconnect, and the client reconnects with a fresh one. Every event takes an acknowledgement and answers `{ ok: true, data } | { ok: false, error }`.
 
-| Event                                 |                                                                                                                                                          |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `account:open` `{}`                   | Binds the socket to the person's account (opening it) and answers like the HTTP route.                                                                   |
-| `deposits:list` `{ before?, limit? }` | A page of deposits.                                                                                                                                      |
-| `deposit:submit` `{ txHash }`         | Like the HTTP route.                                                                                                                                     |
-| `deposit:credited` (server → client)  | `{ deposit, account }`, for each deposit as it's credited.                                                                                               |
-| `balances:refresh` `{}`               | Reads the person's wallets again, silently: answers `{ read }`, and `read` is false within 30 s of the last read. A wallet not read yet is read at once. |
-| `balances` (server → client)          | `{ readAt, rows }`: every supported coin in every linked wallet. Pushed after `account:open` and after each read, to every socket of the account.        |
+| Event                                      |                                                                                                                                                          |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `account:open` `{}`                        | Binds the socket to the person's account (opening it) and answers like the HTTP route.                                                                   |
+| `deposits:list` `{ before?, limit? }`      | A page of deposits.                                                                                                                                      |
+| `deposit:submit` `{ txHash }`              | Like the HTTP route.                                                                                                                                     |
+| `deposit:credited` (server → client)       | `{ deposit, account }`, for each deposit as it's credited.                                                                                               |
+| `balances:refresh` `{}`                    | Reads the person's wallets again, silently: answers `{ read }`, and `read` is false within 30 s of the last read. A wallet not read yet is read at once. |
+| `balances` (server → client)               | `{ readAt, rows }`: every supported coin in every linked wallet. Pushed after `account:open` and after each read, to every socket of the account.        |
+| `deposit:quote` `{ coin, amount, wallet }` | What the coin would pay in USDC on Arc, with no order opened. 30 a minute per user. The wallet must be linked to the person.                             |
+| `deposit:order` `{ coin, amount, wallet }` | Opens a bridge order paying the account's Arc address and refunding the wallet; answers `{ order, txs }`, the transactions the wallet signs.             |
+| `deposit:source` `{ orderId, txHashes }`   | Reports the sent hashes: a created order becomes sent, and a repeat changes nothing.                                                                     |
+| `deposit:progress` (server → client)       | `{ order }`, whenever an order of the account changes.                                                                                                   |
 
 A failed network keeps its last values in `rows` (a coin never read has a null amount). Solana balances are read from `SOLANA_RPC_URLS` (the Ethereum and BNB Chain ones from `ETHEREUM_RPC_URLS` and `BNB_RPC_URLS`), so a production deployment should list a paid endpoint first: the public one rate-limits.
 
@@ -105,7 +109,8 @@ It opens an account, deposits `ARC_LIVE_AMOUNT` USDC from that key on Arc Mainne
 - `src/auth/identity.ts`: Privy token checks, and which wallets a user has linked.
 - `src/accounts/`: accounts and deposit address derivation.
 - `src/deposits/`: crediting (`ledger.ts`), the chain scan (`watcher.ts`, `registry.ts`), and reported deposits and history (`deposits.ts`).
+- `src/crosschain/`: coins, quotes and bridge providers, balances on other chains, and deposit orders (`orders.ts`).
 - `src/chain/`: Arc's chain definition and reading its transfer logs.
 - `src/db/`: collections, indexes and money conversions.
 
-Collections in the `TradeEverything` database: `accounts`, `deposits`, `ledger` (every balance change), `cursors` (how far the scan has got) and `counters`.
+Collections in the `TradeEverything` database: `accounts`, `deposits`, `ledger` (every balance change), `deposit_orders` (bridged deposits), `cursors` (how far the scan has got) and `counters`.

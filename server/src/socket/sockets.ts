@@ -1,13 +1,15 @@
 import type { Server as HttpServer } from "node:http";
 import type { ObjectId } from "mongodb";
+import type { Address } from "viem";
 import { RateLimiterMemory } from "rate-limiter-flexible";
 import { Server, type Socket } from "socket.io";
 import type { Identity } from "../auth/identity.ts";
+import { orderView, sourceTxView } from "../crosschain/views.ts";
 import { accountView, depositView } from "../deposits/views.ts";
 import { AppError, isAppError, toApiError } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
 import type { Services } from "../services.ts";
-import { depositPage, depositReport, parse } from "../validation.ts";
+import { coinWalletAmount, depositPage, depositReport, parse, sourceReport } from "../validation.ts";
 
 type SocketData = {
     identity: Identity;
@@ -20,6 +22,8 @@ type IoSocket = Socket<ClientToServerEvents, ServerToClientEvents, Record<string
 
 /** setTimeout fires at once past this many milliseconds. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
+
+const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 const roomOf = (accountId: ObjectId) => `account:${accountId.toHexString()}`;
 
@@ -45,6 +49,9 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     const events = new RateLimiterMemory({ keyPrefix: "event", points: 40, duration: 10 });
     // Reports make the server watch the chain for a while, so they get a tighter limit of their own.
     const reports = new RateLimiterMemory({ keyPrefix: "report", points: 20, duration: 60 });
+
+    // Quotes ask outside providers, so they get a limit of their own.
+    const quotes = new RateLimiterMemory({ keyPrefix: "quote", points: 30, duration: 60 });
 
     io.use(async (socket, next) => {
         try {
@@ -101,9 +108,11 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 socket.data.account = { id: account._id, room };
                 const session = await services.sessions.describe(account);
                 // Pushed once the ack is on its way; a failed read is logged, never the sign-in's problem.
-                services.balances.refresh(account, socket.data.identity, "bind", (view) => socket.emit("balances", view)).catch((error: unknown) => {
-                    logger.warn({ err: error }, "Couldn't read balances at sign-in");
-                });
+                services.balances
+                    .refresh(account, socket.data.identity, "bind", (view) => socket.emit("balances", view))
+                    .catch((error: unknown) => {
+                        logger.warn({ err: error }, "Couldn't read balances at sign-in");
+                    });
                 return session;
             }),
         );
@@ -125,6 +134,40 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     throw new AppError("rate_limited", "Too many deposits reported. Try again shortly.");
                 });
                 return services.deposits.report(await boundAccount(socket), txHash);
+            }),
+        );
+
+        socket.on("deposit:quote", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(coinWalletAmount, payload);
+                await quotes.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many quotes. Try again shortly.");
+                });
+                const account = await boundAccount(socket);
+                const wallet = await authorizedWallet(socket, input.wallet);
+                return services.orders.preview(account, wallet, input.coin, input.amount);
+            }),
+        );
+
+        socket.on("deposit:order", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(coinWalletAmount, payload);
+                const account = await boundAccount(socket);
+                const wallet = await authorizedWallet(socket, input.wallet);
+                const { order, txs } = await services.orders.create(account, wallet, input.coin, input.amount);
+                return { order: orderView(order), txs: txs.map(sourceTxView) };
+            }),
+        );
+
+        socket.on("deposit:source", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(sourceReport, payload);
+                const order = await services.orders.reportSource(
+                    await boundAccount(socket),
+                    input.orderId,
+                    input.txHashes,
+                );
+                return orderView(order);
             }),
         );
     });
@@ -154,6 +197,27 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 }
             });
     });
+
+    bus.on("order:updated", ({ order }) => {
+        const payload = { order: orderView(order) };
+        void io
+            .in(roomOf(order.accountId))
+            .fetchSockets()
+            .then(async (sockets) => {
+                const owner = await services.accounts.findById(order.accountId);
+                for (const socket of sockets) {
+                    if (socket.data.identity.userId === owner?.privyUserId) socket.emit("deposit:progress", payload);
+                    else socket.leave(roomOf(order.accountId));
+                }
+            })
+            .catch((error: unknown) => logger.warn({ err: error }, "Couldn't push an order update"));
+    });
+
+    /** The wallet as the account knows it: Solana is turned away before Privy is asked, an EVM wallet must be linked. */
+    async function authorizedWallet(socket: IoSocket, wallet: string) {
+        if (BASE58_ADDRESS.test(wallet)) throw new AppError("bad_request", "Deposits from Solana aren't open yet.");
+        return (await services.identity.authorizeWallet(socket.data.identity, wallet)) as Address;
+    }
 
     async function boundAccount(socket: IoSocket) {
         const bound = socket.data.account;
