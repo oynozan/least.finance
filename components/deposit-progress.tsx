@@ -74,11 +74,7 @@ export function DepositProgress({ order }: { order: DepositOrderView }) {
                             aria-current={step === "active" ? "step" : undefined}
                         >
                             <span className={styles.stepMark} aria-hidden="true">
-                                {step === "done" ? (
-                                    <Tick />
-                                ) : step === "active" ? (
-                                    <span className={styles.pendingDot} />
-                                ) : null}
+                                {step === "done" ? <Tick /> : step === "active" ? <Spinner /> : null}
                             </span>
                             {name}
                             <span className="sr-only">, {STATE_TEXT[step]}</span>
@@ -90,6 +86,15 @@ export function DepositProgress({ order }: { order: DepositOrderView }) {
                 })}
             </ol>
         </>
+    );
+}
+
+/** An arc turning around the active step's mark. */
+function Spinner() {
+    return (
+        <svg viewBox="0 0 20 20" fill="none" className={styles.stepSpinner}>
+            <path d="M10 2a8 8 0 0 1 8 8" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />
+        </svg>
     );
 }
 
