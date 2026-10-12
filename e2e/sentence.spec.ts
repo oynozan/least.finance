@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { seedDeposits } from "./backend";
+import { fundSource } from "./backend";
 import { toPredictionMarket } from "@/lib/trade/markets";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 import { sampleView, samples, trendingView } from "./polymarket";
@@ -414,7 +414,7 @@ test("Review opens the details in the sidebar, then confirms", async ({ page, is
 
     await setAmount(page, "5000");
     await expect(review(page)).toHaveAttribute("aria-disabled", "true");
-    await expect(review(page)).toHaveAccessibleDescription("That's more than your $4,013.00 of ETH on Ethereum.");
+    await expect(review(page)).toHaveAccessibleDescription("That's more than your $3,203.98 of ETH on Ethereum.");
     await setAmount(page, "100");
 
     await review(page).click();
@@ -465,24 +465,26 @@ test("Review opens the details in the sidebar, then confirms", async ({ page, is
     await expect(page.getByRole("complementary", { name: "Wallet" })).toBeVisible();
 });
 
-for (const [seeded, blocked] of [
+for (const [funded, blocked] of [
     ["2400", true],
     ["3500", false],
 ] as const) {
-    test(`a buy of 3000 USD is ${blocked ? "blocked" : "allowed"} with ${seeded} USDC in the account`, async ({
+    test(`a buy of 3000 USD is ${blocked ? "blocked" : "allowed"} with ${funded} USDC in the wallet`, async ({
         page,
     }) => {
-        // Seeded before connecting, so the session loads it.
-        await seedDeposits(addressOf(page), [{ amount: seeded, daysAgo: 1 }]);
+        // Funded before connecting, so the sign-in's read sees it.
+        await fundSource(addressOf(page), "ethereum:USDC", funded);
         await connect(page);
-        await expect(sidebar(page).getByRole("button", { name: /^Balance/ })).toHaveAccessibleName(
-            `Balance $${Number(seeded).toLocaleString("en-US")}.00, show deposits`,
-        );
         await pick(page, "Swap", /^Buy/);
+        // The slider tops out at the wallet's USDC once its coins are in.
+        await amountPill(page).click();
+        await expect(slider(page)).toHaveAttribute("aria-valuemax", funded);
+        await page.keyboard.press("Escape");
+        await expect(picker(page)).toBeHidden();
         await setAmount(page, "3000");
         if (blocked) {
             await expect(review(page)).toHaveAttribute("aria-disabled", "true");
-            await expect(review(page)).toHaveAccessibleDescription("You have $2,400.00 USDC on Arc to spend.");
+            await expect(review(page)).toHaveAccessibleDescription("You have $2,400.00 USDC on Ethereum to spend.");
         } else {
             await expect(review(page)).not.toHaveAttribute("aria-disabled");
         }
@@ -640,15 +642,16 @@ test("the amount drops down under its pill, and dragging rolls the sentence live
 test("with a wallet, the slider tops out at what it can spend", async ({ page }) => {
     await connect(page);
     await amountPill(page).click();
-    await expect(slider(page)).toHaveAttribute("aria-valuemax", /^4013(\.\d+)?$/);
-    await expect(picker(page)).toContainText("4,013 USD");
+    // The e2e wallet holds 1 ETH on Ethereum, less 0.002 ETH kept for gas: 0.998 x $3,210.40.
+    await expect(slider(page)).toHaveAttribute("aria-valuemax", /^3203\.97\d*$/);
+    await expect(picker(page)).toContainText("3,203.98 USD");
     await slider(page).focus();
     await page.keyboard.press("End");
-    await expect(amountField(page)).toHaveValue(/^4013(\.\d+)?$/);
+    await expect(amountField(page)).toHaveValue(/^3203\.97\d*$/);
     await expect(review(page)).not.toHaveAttribute("aria-disabled");
     // Typing past it turns the amount red and says why, in the dropdown only.
     await amountField(page).fill("5000");
-    await expect(picker(page)).toContainText("That's more than your $4,013.00 of ETH on Ethereum.");
+    await expect(picker(page)).toContainText("That's more than your $3,203.98 of ETH on Ethereum.");
     await expect(amountField(page)).toHaveCSS("color", "rgb(255, 107, 91)");
 });
 

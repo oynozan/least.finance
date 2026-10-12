@@ -15,7 +15,8 @@ import {
 } from "@/lib/account/state";
 import { sellableShares } from "@/components/wallet-data";
 import { dropAfterSend, loadCachedBalances, needsRefresh, saveCachedBalances } from "@/lib/account/balances";
-import type { BalancesView, ClientToServerEvents, ServerToClientEvents } from "@/server/src/protocol";
+import { loadCachedSwapHoldings, saveCachedSwapHoldings, validHoldings } from "@/lib/trade/wallet-holdings";
+import type { BalancesView, ClientToServerEvents, ServerToClientEvents, SwapHoldingsView } from "@/server/src/protocol";
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -44,6 +45,8 @@ export type AccountSnapshot = {
     state: AccountState;
     notice: DepositNotice | null;
     balances: BalancesView | null;
+    /** The coins the account's wallets hold on the swap networks; null until a snapshot (cached or pushed) is in. */
+    swapHoldings: SwapHoldingsView | null;
     /** Why the last prediction didn't go through, or that it couldn't be sent. */
     tradeNotice: { message: string } | null;
 };
@@ -91,6 +94,7 @@ export class AccountClient {
         state: initialAccountState,
         notice: null,
         balances: null,
+        swapHoldings: null,
         tradeNotice: null,
     };
     readonly #listeners = new Set<() => void>();
@@ -124,7 +128,11 @@ export class AccountClient {
         this.disconnect();
         this.#userId = userId;
         // The last snapshot shows at once; the server's push replaces it.
-        this.#snapshot = { ...this.#snapshot, balances: loadCachedBalances(userId) };
+        this.#snapshot = {
+            ...this.#snapshot,
+            balances: loadCachedBalances(userId),
+            swapHoldings: loadCachedSwapHoldings(userId),
+        };
         this.#emit();
         this.#dispatch({ type: "connecting" });
 
@@ -167,6 +175,13 @@ export class AccountClient {
         socket.on("balances", (view) => {
             if (this.#userId) saveCachedBalances(this.#userId, view);
             this.#snapshot = { ...this.#snapshot, balances: view };
+            this.#emit();
+        });
+        socket.on("swap:holdings", (pushed) => {
+            const view = validHoldings(pushed);
+            if (!view) return;
+            if (this.#userId) saveCachedSwapHoldings(this.#userId, view);
+            this.#snapshot = { ...this.#snapshot, swapHoldings: view };
             this.#emit();
         });
         socket.on("disconnect", (reason) => {
@@ -218,9 +233,15 @@ export class AccountClient {
         this.#userId = null;
         this.#attempt = 0;
         this.#confirming.clear();
-        const { state, notice, balances, tradeNotice } = this.#snapshot;
-        if (state.status !== "idle" || notice || balances || tradeNotice) {
-            this.#snapshot = { state: initialAccountState, notice: null, balances: null, tradeNotice: null };
+        const { state, notice, balances, swapHoldings, tradeNotice } = this.#snapshot;
+        if (state.status !== "idle" || notice || balances || swapHoldings || tradeNotice) {
+            this.#snapshot = {
+                state: initialAccountState,
+                notice: null,
+                balances: null,
+                swapHoldings: null,
+                tradeNotice: null,
+            };
             this.#emit();
         }
     }
@@ -501,6 +522,13 @@ export class AccountClient {
         if (!socket || this.#snapshot.state.status !== "ready") return;
         if (!needsRefresh(this.#snapshot.balances, wallets, Date.now())) return;
         socket.emit("balances:refresh", {}, () => undefined);
+    }
+
+    /** Asks the server to read the wallets' swap coins again, silently; it skips a read within 15 s of the last. */
+    refreshSwapHoldings() {
+        const socket = this.#socket;
+        if (!socket?.connected || this.#snapshot.state.status !== "ready") return;
+        socket.emit("swap:holdings:refresh", {}, () => undefined);
     }
 
     /** Takes a sent amount out of the shown balance; the next read corrects it. */

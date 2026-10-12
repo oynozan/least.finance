@@ -8,6 +8,12 @@ const pay = (page: Page) => trade(page).locator('[data-part="swap:fromToken"]').
 const receive = (page: Page) => trade(page).locator('[data-part="term:token"]').getByRole("button");
 const option = (page: Page, name: string) => picker(page).getByRole("option", { name, exact: true });
 const back = (page: Page) => picker(page).getByRole("button", { name: "Back" });
+const amountPill = (page: Page) => trade(page).getByRole("button", { name: /USD$/ });
+const amountField = (page: Page) => picker(page).getByRole("textbox");
+const review = (page: Page) => page.getByRole("button", { name: "Review", exact: true });
+const sidebar = (page: Page) => page.locator("#wallet-sidebar");
+// A network row by its label; its accessible name may carry the amounts too.
+const row = (page: Page, network: string) => picker(page).getByRole("option").filter({ hasText: network }).first();
 
 /** The sentence as a reader sees it: pill names and the typed amount, no hidden hints or badges. */
 async function text(page: Page) {
@@ -247,4 +253,110 @@ test("the badge's ring is the colour of what it sits on", async ({ page, isMobil
     const rowBadge = option(page, "Base").locator("[data-badge]");
     const panel = await picker(page).evaluate((el) => getComputedStyle(el).backgroundColor);
     expect(await rowBadge.evaluate((el) => getComputedStyle(el).boxShadow)).toContain(panel);
+});
+
+/** Signs the e2e wallet in, which holds 1 ETH on the Ethereum chain, and folds the sidebar away. */
+async function connect(page: Page) {
+    await page.getByRole("button", { name: "Connect wallet" }).click();
+    await page.locator("#privy-modal-content").getByRole("button", { name: "MetaMask" }).click();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await expect(sidebar(page).getByRole("button", { name: /^Balance/ })).not.toHaveAccessibleName(/loading/, {
+        timeout: 10_000,
+    });
+    await page.keyboard.press("Escape");
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+}
+
+/** Types an amount into the amount's dropdown, then closes it with Enter. */
+async function setAmount(page: Page, value: string) {
+    await amountPill(page).click();
+    await expect(amountField(page)).toBeVisible();
+    await amountField(page).fill(value);
+    await amountField(page).press("Enter");
+    await expect(picker(page)).toBeHidden();
+}
+
+/** Lets the page's socket through, minus the server's holdings pushes; counts the refreshes the page asks for. */
+async function blockHoldings(page: Page) {
+    const asked = { refreshes: 0 };
+    await page.routeWebSocket(/socket\.io/, (ws) => {
+        const server = ws.connectToServer();
+        ws.onMessage((message) => {
+            if (typeof message === "string" && message.includes('"swap:holdings:refresh"')) asked.refreshes += 1;
+            server.send(message);
+        });
+        server.onMessage((message) => {
+            if (typeof message === "string" && message.includes('"swap:holdings"')) return;
+            ws.send(message);
+        });
+    });
+    // Routing only reaches pages loaded after it.
+    await page.goto("/");
+    await page.evaluate(() => document.fonts.ready);
+    return asked;
+}
+
+test("the amount turns red past the wallet's real balance", async ({ page }) => {
+    await connect(page);
+    // 1 ETH on Ethereum, less the 0.002 ETH kept for gas, at $3,210.40.
+    await setAmount(page, "5000");
+    await expect(amountPill(page)).toHaveAttribute("aria-invalid", "true");
+    await expect(review(page)).toHaveAttribute("aria-disabled", "true");
+    await expect(review(page)).toHaveAccessibleDescription("That's more than your $3,203.98 of ETH on Ethereum.");
+    await setAmount(page, "100");
+    await expect(amountPill(page)).not.toHaveAttribute("aria-invalid");
+    await expect(review(page)).not.toHaveAttribute("aria-disabled");
+});
+
+test("the network step shows the wallet's amount on each network", async ({ page }) => {
+    await connect(page);
+    await pay(page).click();
+    await option(page, "ETH").click();
+    await expect(picker(page)).toHaveAccessibleName("On which network?");
+    await expect(row(page, "Ethereum")).toContainText("1 ETH");
+    await expect(row(page, "Ethereum")).toContainText("$3,210.40");
+    await expect(row(page, "Ethereum")).not.toHaveAttribute("aria-disabled");
+    await expect(row(page, "Base")).toHaveAttribute("aria-disabled", "true");
+    await expect(row(page, "Base")).toContainText("Nothing here");
+    // The paying side is the wallet's: a network with nothing stays out of reach.
+    await expect(picker(page).locator("[data-highlight]")).toHaveCount(1);
+});
+
+test("holdings that never arrive leave the sentence uncapped", async ({ page }) => {
+    await blockHoldings(page);
+    await connect(page);
+    // The push is lost, so give it the time it would take.
+    await page.waitForTimeout(1_500);
+    await setAmount(page, "5000");
+    await expect(amountPill(page)).not.toHaveAttribute("aria-invalid");
+    await expect(review(page)).not.toHaveAttribute("aria-disabled");
+
+    await pay(page).click();
+    await option(page, "ETH").click();
+    await expect(picker(page)).toHaveAccessibleName("On which network?");
+    await expect(picker(page).getByRole("option")).toHaveCount(9);
+    await expect(picker(page).getByText("Nothing here")).toHaveCount(0);
+    for (const network of ["Ethereum", "Base", "Solana"]) {
+        await expect(row(page, network)).not.toHaveAttribute("aria-disabled");
+    }
+    await back(page).click();
+    // The coin rows show prices, not amounts, and none is disabled.
+    await expect(option(page, "ETH")).toContainText("$3,210.40");
+    await expect(option(page, "SOL")).toContainText("$147.20");
+    await expect(picker(page).locator('[role="option"][aria-disabled="true"]')).toHaveCount(0);
+});
+
+test("opening a coin pill asks the server for fresh holdings", async ({ page }) => {
+    const asked = await blockHoldings(page);
+    await connect(page);
+    await page.waitForTimeout(500);
+    const before = asked.refreshes;
+    await receive(page).click();
+    await expect.poll(() => asked.refreshes).toBeGreaterThan(before);
+    await page.keyboard.press("Escape");
+    // The amount is not a coin: opening it asks for nothing.
+    const after = asked.refreshes;
+    await amountPill(page).click();
+    await page.waitForTimeout(300);
+    expect(asked.refreshes).toBe(after);
 });

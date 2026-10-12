@@ -109,3 +109,16 @@ export function reduce<I, T extends Str, C>(
         terms: withTerms(op, draft, state.terms),
     };
 }
+
+/** The current draft normalized again against a changed context; the same state when nothing moves. */
+export function refit<I, T extends Str, C>(
+    registry: Registry<I, T, C>,
+    state: SentenceState<T>,
+    ctx: C,
+): SentenceState<T> {
+    const { op } = findVerb(registry, state.verbId);
+    const before = state.drafts[op.id];
+    const draft = enter(registry, state, state.verbId, ctx);
+    if (before && Object.keys(draft).every((key) => draft[key] === before[key])) return state;
+    return { ...state, drafts: { ...state.drafts, [op.id]: draft }, terms: withTerms(op, draft, state.terms) };
+}

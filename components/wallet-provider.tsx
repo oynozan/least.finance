@@ -3,7 +3,7 @@
 import type { ReactNode } from "react";
 import { PrivyProvider } from "@privy-io/react-auth";
 import { toSolanaWalletConnectors } from "@privy-io/react-auth/solana";
-import { bsc, mainnet } from "viem/chains";
+import { arbitrum, avalanche, base, bsc, mainnet, optimism, polygon } from "viem/chains";
 import { arc } from "./arc";
 
 const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
@@ -22,8 +22,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             clientId={clientId}
             config={{
                 loginMethods: ["wallet"],
-                // No default chain, which would have Privy switch every wallet on connect; these are the networks a deposit can switch to.
-                supportedChains: [arc, mainnet, bsc],
+                // No default chain, which would have Privy switch every wallet on connect; these are the networks a deposit or swap can switch to.
+                supportedChains: [arc, mainnet, bsc, arbitrum, base, optimism, polygon, avalanche],
                 // Coinbase's smart wallet only runs on its own chain list, so offer the extension and app instead.
                 externalWallets: {
                     coinbaseWallet: { config: { preference: { options: "eoaOnly" } } },

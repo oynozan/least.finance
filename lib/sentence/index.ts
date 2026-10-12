@@ -1,6 +1,6 @@
 export * from "./types";
 export { schema, findVerb, type Registry } from "./schema";
-export { initialState, reduce, accept, type SentenceState, type SentenceAction } from "./state";
+export { initialState, reduce, refit, accept, type SentenceState, type SentenceAction } from "./state";
 export {
     resolve,
     type SentencePart,

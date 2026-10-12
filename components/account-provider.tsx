@@ -29,6 +29,7 @@ import type {
     PositionView,
     PositionsView,
     QuoteView,
+    SwapHoldingRow,
 } from "@/server/src/protocol";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
@@ -45,6 +46,10 @@ export type Account = {
     balances: CoinBalance[] | null;
     /** Reads fresh balances silently; does nothing within 30 s of the last read unless a linked wallet is new. */
     refreshBalances: () => void;
+    /** The coins the account's wallets hold on the swap networks, one row per wallet, network and coin; null until a snapshot (cached or pushed) is in. */
+    swapHoldings: SwapHoldingRow[] | null;
+    /** Asks the server to read those coins again; it skips a read within 15 s of the last. */
+    refreshSwapHoldings: () => void;
     /** Bridge orders still open, newest first. */
     orders: DepositOrderView[];
     /** What `amount` of `coin` would pay out on Arc, from the wallet the deposit uses. */
@@ -70,7 +75,13 @@ export type Account = {
 
 type PlaceInput = Parameters<AccountClient["placePrediction"]>[0];
 
-const IDLE: AccountSnapshot = { state: { status: "idle" }, notice: null, balances: null, tradeNotice: null };
+const IDLE: AccountSnapshot = {
+    state: { status: "idle" },
+    notice: null,
+    balances: null,
+    swapHoldings: null,
+    tradeNotice: null,
+};
 const NO_PREDICTIONS: PositionsView = { positions: [], orders: [] };
 const NO_OPTIMISTIC: OptimisticTrade[] = [];
 const UNAVAILABLE: ApiError = { code: "unavailable", message: "Predictions aren't available right now." };
@@ -125,6 +136,11 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (accountReady) refreshBalances();
     }, [accountReady, refreshBalances]);
+    const refreshSwapHoldings = useCallback(() => client.refreshSwapHoldings(), [client]);
+    // A wallet linked mid-session has no swap coins read yet.
+    useEffect(() => {
+        if (accountReady) refreshSwapHoldings();
+    }, [accountReady, refreshSwapHoldings, walletKey]);
 
     const deposit = async (amount: string, from: string): Promise<DepositResult> => {
         const wallet = wallets.find((w) => w.address.toLowerCase() === from.toLowerCase());
@@ -168,6 +184,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             quote={quote}
             depositCoin={depositCoin}
             refreshBalances={refreshBalances}
+            refreshSwapHoldings={refreshSwapHoldings}
             dismissNotice={() => client.dismissNotice()}
             quotePrediction={(input) => client.quotePrediction(input)}
             placePrediction={(input) => client.placePrediction(input)}
@@ -186,6 +203,7 @@ function Provide({
     depositCoin = async () => "failed",
     dismissNotice = () => undefined,
     refreshBalances = () => undefined,
+    refreshSwapHoldings = () => undefined,
     quotePrediction = async () => UNAVAILABLE,
     placePrediction = () => ({ requestId: "", sent: false }),
     closePosition = () => undefined,
@@ -198,6 +216,7 @@ function Provide({
     depositCoin?: Account["depositCoin"];
     dismissNotice?: () => void;
     refreshBalances?: () => void;
+    refreshSwapHoldings?: () => void;
     quotePrediction?: Account["quotePrediction"];
     placePrediction?: Account["placePrediction"];
     closePosition?: Account["closePosition"];
@@ -214,6 +233,8 @@ function Provide({
         notice,
         balances: snapshot.balances?.rows ?? null,
         refreshBalances,
+        swapHoldings: snapshot.swapHoldings?.rows ?? null,
+        refreshSwapHoldings,
         orders: state.status === "ready" ? state.orders : [],
         quote,
         depositCoin,

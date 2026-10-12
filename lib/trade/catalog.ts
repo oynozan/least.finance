@@ -51,10 +51,7 @@ export const TOKENS: Token[] = COINS.map((coin) => ({
     })),
 }));
 
-/**
- * What the mock connected wallet holds, in coin units. With a real wallet
- * connected, its USDC is replaced by the account's deposited balance.
- */
+/** What the demo wallet holds (no Privy app ID), in coin units; a signed-in person has only their real coins. */
 export const MOCK_HOLDINGS: Record<string, number> = {
     ETH: 1.25,
     SOL: 42,

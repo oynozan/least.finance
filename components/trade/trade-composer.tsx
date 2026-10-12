@@ -14,6 +14,8 @@ type TradeComposerProps = {
     dispatch: (action: SentenceAction) => void;
     /** Answers the question picker's search; absent in demo mode. */
     search?: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
+    /** Called as a coin's picker opens, to refresh what the wallet holds. */
+    onCoinOpen?: () => void;
 };
 
 const shownValue = (slot: SlotView) => {
@@ -41,7 +43,7 @@ function useAnnouncer() {
  * The trade sentence itself. Fully controlled: the view and dispatch come
  * from the shared trade state. The details live in the review sidebar.
  */
-export function TradeComposer({ view, dispatch, search }: TradeComposerProps) {
+export function TradeComposer({ view, dispatch, search, onCoinOpen }: TradeComposerProps) {
     const headingId = useId();
     const issueId = useId();
     const [typing, setTyping] = useState(false);
@@ -100,6 +102,7 @@ export function TradeComposer({ view, dispatch, search }: TradeComposerProps) {
                         loading={slot.search ? search?.loading : undefined}
                         onChange={(value) => set(id, value)}
                         onThen={companion && ((value) => set(companion.id, value, id))}
+                        onOpen={companion && onCoinOpen}
                         onSearch={search?.onQuery}
                         searchEmpty={search?.empty}
                     />

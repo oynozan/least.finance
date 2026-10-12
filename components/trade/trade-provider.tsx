@@ -5,11 +5,16 @@ import { useLogin, usePrivy } from "@privy-io/react-auth";
 import type { MarketView } from "@/server/src/protocol";
 import type { SentenceAction, SentenceView } from "@/lib/sentence";
 import { API_URL } from "@/lib/api";
-import { CATALOG, MOCK_HOLDINGS, QUOTE, type Catalog } from "@/lib/trade/catalog";
+import { CATALOG, MOCK_HOLDINGS, QUOTE, TOKENS, type Catalog } from "@/lib/trade/catalog";
+import type { WalletHoldings } from "@/lib/trade/context";
 import type { TransactionIntent } from "@/lib/trade/intent";
+import { toTokens } from "@/lib/trade/live-coins";
 import { toPredictionMarket } from "@/lib/trade/markets";
+import { walletHoldings } from "@/lib/trade/wallet-holdings";
 import { useAccount } from "@/components/account-provider";
+import { depositWalletAddress, linkedWallets, useActiveWallet } from "@/components/arc-wallet";
 import { walletEnabled } from "@/components/wallet-provider";
+import { createCoinsStore } from "./coins-store";
 import { createMarketsStore, type MarketsStore } from "./markets-store";
 import { useTradeSentence } from "./use-trade-sentence";
 
@@ -27,6 +32,8 @@ type TradeState = {
     maxOrderUSD: number | null;
     /** Every question seen, with the sell prices that value open positions. */
     known: ReadonlyMap<string, MarketView>;
+    /** Asks for fresh swap coins in the signing wallets; absent in the demo. */
+    refreshHoldings?: () => void;
 };
 
 const NO_KNOWN: ReadonlyMap<string, MarketView> = new Map();
@@ -57,11 +64,20 @@ export function TradeProvider({ children }: { children: ReactNode }) {
 }
 
 function PrivyTradeProvider({ children }: { children: ReactNode }) {
-    const { ready, authenticated } = usePrivy();
+    const { ready, authenticated, user } = usePrivy();
     const { login } = useLogin();
-    const { balance } = useAccount();
+    const { balance, predictions, swapHoldings, refreshSwapHoldings } = useAccount();
     const { catalog, store, search, maxOrderUSD, known } = useLiveCatalog();
-    const { predictions } = useAccount();
+    const active = useActiveWallet();
+    // The wallets that will sign: the active EVM one for the eight EVM networks, the first linked Solana one for Solana.
+    const evm = user ? depositWalletAddress(user, active) : undefined;
+    const solana = user ? linkedWallets(user).find((wallet) => wallet.kind === "solana")?.address : undefined;
+    const wallet = useMemo<WalletHoldings | null>(
+        () => (swapHoldings ? walletHoldings(swapHoldings, { evm, solana }) : null),
+        [swapHoldings, evm, solana],
+    );
+    // USDC is what the account has deposited, and still pays for Predict, Long and Short. Until it loads, nothing is capped rather than everything.
+    const holdings = useMemo(() => (balance == null ? null : { [QUOTE]: balance }), [balance]);
     // The questions of open positions are read on a timer, whether or not they are trending.
     const heldKey = predictions.positions
         .filter((p) => p.state === "open")
@@ -77,6 +93,7 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             <Provide
                 wallet={{ status: "loading" }}
                 holdings={null}
+                walletCoins={null}
                 catalog={catalog}
                 store={store}
                 search={search}
@@ -91,6 +108,7 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             <Provide
                 wallet={{ status: "disconnected", connect: () => login({ loginMethods: ["wallet"] }) }}
                 holdings={null}
+                walletCoins={null}
                 catalog={catalog}
                 store={store}
                 search={search}
@@ -100,18 +118,17 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             </Provide>
         );
     }
-    // USDC is what the account has deposited; other coins stay mock until trading is live.
-    // Until the account loads, nothing is capped rather than everything.
-    const holdings = balance == null ? null : { ...MOCK_HOLDINGS, [QUOTE]: balance };
     return (
         <Provide
             wallet={{ status: "connected" }}
             holdings={holdings}
+            walletCoins={wallet}
             catalog={catalog}
             store={store}
             search={search}
             maxOrderUSD={maxOrderUSD}
             known={known}
+            refreshHoldings={refreshSwapHoldings}
         >
             {children}
         </Provide>
@@ -129,10 +146,17 @@ function useLiveCatalog(): {
     known: ReadonlyMap<string, MarketView>;
 } {
     const [store] = useState(() => createMarketsStore({ apiUrl: API_URL }));
+    const [coins] = useState(() => createCoinsStore({ apiUrl: API_URL }));
     useEffect(() => {
         store.start();
         return () => store.stop();
     }, [store]);
+    useEffect(() => {
+        coins.start();
+        return () => coins.stop();
+    }, [coins]);
+    const { view: coinsView } = useSyncExternalStore(coins.subscribe, coins.getSnapshot, coins.getSnapshot);
+    const tokens = useMemo(() => toTokens(coinsView, TOKENS), [coinsView]);
     const { trending, query, results, answered, searchFailed, loading, known, maxOrderUSD } = useSyncExternalStore(
         store.subscribe,
         store.getSnapshot,
@@ -145,11 +169,12 @@ function useLiveCatalog(): {
         };
         return {
             ...CATALOG,
+            tokens,
             // A search with no matches lists the trending questions under its notice.
             markets: (results?.length ? results : trending).map((m) => toPredictionMarket(m, new Date())),
             findMarket: view,
         };
-    }, [trending, results, known]);
+    }, [tokens, trending, results, known]);
     const answeredNow = query !== "" && answered === query;
     const empty = !answeredNow
         ? undefined
@@ -170,23 +195,28 @@ function useLiveCatalog(): {
 function Provide({
     wallet,
     holdings,
+    walletCoins,
     catalog,
     store,
     search,
     maxOrderUSD = null,
     known = NO_KNOWN,
+    refreshHoldings,
     children,
 }: {
     wallet: WalletStatus;
     holdings: Record<string, number> | null;
+    /** The signing wallets' coins per network; null until they load, and absent in the demo. */
+    walletCoins?: WalletHoldings | null;
     catalog: Catalog;
     store?: MarketsStore;
     search?: MarketSearch;
     maxOrderUSD?: number | null;
     known?: ReadonlyMap<string, MarketView>;
+    refreshHoldings?: () => void;
     children: ReactNode;
 }) {
-    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD);
+    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, walletCoins);
     const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;
     const marketId = watched?.kind === "choice" && watched.value ? watched.value : null;
     useEffect(() => {
@@ -194,6 +224,8 @@ function Provide({
         return () => store?.watch(null);
     }, [store, marketId]);
     return (
-        <TradeContext value={{ view, dispatch, wallet, search, catalog, maxOrderUSD, known }}>{children}</TradeContext>
+        <TradeContext value={{ view, dispatch, wallet, search, catalog, maxOrderUSD, known, refreshHoldings }}>
+            {children}
+        </TradeContext>
     );
 }
