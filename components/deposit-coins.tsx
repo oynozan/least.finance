@@ -22,8 +22,8 @@ type DepositCoinsProps = {
     onClose: () => void;
 };
 
-/** Only USDC on Arc can be deposited so far. */
-const isOpen = (row: CoinBalance) => row.coin === "arc:USDC";
+/** Arc, Ethereum and BNB Chain can be deposited from; Solana can't yet. */
+const isOpen = (row: CoinBalance) => row.chain !== "solana";
 
 const isZero = (row: CoinBalance) => row.amount !== null && Number(row.amount) === 0;
 

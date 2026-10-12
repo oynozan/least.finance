@@ -463,6 +463,33 @@ test.describe("bridged deposits", () => {
         expect(ready(state).orders.map((o) => o.id)).toEqual([oid(2), oid(1)]);
     });
 
+    test("a delivered order gives the credited deposit its origin", () => {
+        const delivered = { ...order(1, "delivered"), depositId: oid(5), sourceTxHashes: [hash(8), hash(9)] };
+        const state = run([{ type: "order", order: delivered }], open("300", 1, [deposit(5, "300")]));
+        expect(historyRows(state).map((r) => r.origin)).toEqual([
+            { coin: "ethereum:ETH", amount: "0.1", txHash: hash(9) },
+        ]);
+    });
+
+    test("a deposit credited after its order was delivered still gets the origin", () => {
+        const delivered = { ...order(1, "delivered"), depositId: oid(5), sourceTxHashes: [hash(9)] };
+        const state = run(
+            [
+                { type: "order", order: delivered },
+                { type: "credited", deposit: deposit(5, "300"), account: account("300", 2) },
+            ],
+            open("0", 1),
+        );
+        expect(historyRows(state).map((r) => r.origin?.txHash)).toEqual([hash(9)]);
+    });
+
+    test("a delivered order leaves a deposit that already has an origin alone", () => {
+        const origin = { coin: "bnb:BNB", amount: "1", txHash: hash(7) };
+        const delivered = { ...order(1, "delivered"), depositId: oid(5), sourceTxHashes: [hash(9)] };
+        const state = run([{ type: "order", order: delivered }], open("300", 1, [deposit(5, "300", { origin })]));
+        expect(historyRows(state).map((r) => r.origin)).toEqual([origin]);
+    });
+
     test("a bridged deposit's history row keeps its origin", () => {
         const origin = { coin: "ethereum:ETH", amount: "0.1", txHash: hash(7) };
         const rows = historyRows(open("300", 1, [deposit(2, "5"), deposit(1, "300", { origin })]));

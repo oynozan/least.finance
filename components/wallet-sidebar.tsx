@@ -15,7 +15,8 @@ import {
 } from "motion/react";
 import { sameWallet as sameAddress } from "@/lib/account/balances";
 import { toUsdc, type HistoryRow } from "@/lib/account/state";
-import type { CoinBalance } from "@/server/src/protocol";
+import type { ApiError, DepositQuoteView } from "@/lib/account/state";
+import type { CoinBalance, DepositOrderView } from "@/server/src/protocol";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
 import {
@@ -30,7 +31,9 @@ import {
 import { CoinIcon } from "./coin-icons";
 import { DepositButton } from "./deposit-button";
 import { DepositCoins } from "./deposit-coins";
+import { coinLabel } from "./deposit-coins-catalog";
 import { DepositForm } from "./deposit-form";
+import { DepositProgress, isRunning, shownOrder } from "./deposit-progress";
 import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { NetworkLogo } from "./network-icons";
 import { canHover } from "./pointer";
@@ -50,6 +53,9 @@ const settle: Transition = { type: "spring", visualDuration: 0.4, bounce: 0.15 }
 const STAGGERED_ROWS = 8;
 const entranceDelay = (index: number, count: number) =>
     0.12 + Math.max(0, index - Math.max(0, count - STAGGERED_ROWS)) * 0.03;
+
+/** How long a finished bridged deposit stays under the button. */
+const ENDED_VISIBLE_MS = 10_000;
 
 const deal: Transition = { type: "spring", visualDuration: 0.2, bounce: 0.25 };
 
@@ -175,6 +181,9 @@ function SignedInWallet() {
                 accountProblem={account.state.status === "failed" ? account.state.error.message : null}
                 notice={account.notice}
                 onDeposit={account.deposit}
+                onDepositCoin={account.depositCoin}
+                quote={account.quote}
+                orders={account.orders}
                 onStartDeposit={account.dismissNotice}
                 balances={account.balances}
                 wallets={linked}
@@ -240,6 +249,11 @@ type WalletSectionProps = {
     accountProblem: string | null;
     notice: DepositNotice | null;
     onDeposit: (amount: string) => Promise<DepositResult>;
+    /** Bridges `amount` of a coin on another chain into the account. */
+    onDepositCoin: (coin: string, amount: string) => Promise<DepositResult>;
+    quote: (coin: string, amount: string) => Promise<DepositQuoteView | ApiError>;
+    /** Bridge orders still open, newest first. */
+    orders: DepositOrderView[];
     onStartDeposit: () => void;
     /** Every coin in every linked wallet; null before any read. */
     balances: CoinBalance[] | null;
@@ -260,6 +274,9 @@ function WalletSection({
     accountProblem,
     notice,
     onDeposit,
+    onDepositCoin,
+    quote,
+    orders,
     onStartDeposit,
     balances,
     wallets,
@@ -272,11 +289,27 @@ function WalletSection({
     const [pinned, setPinned] = useState(false);
     // Deposit opens the coin list; picking a coin opens the amount field.
     const [stage, setStage] = useState<"closed" | "coins" | "amount">("closed");
-    const depositing = stage === "amount" && minDeposit !== null;
+    // The coin row picked, whose wallet the deposit is sent from.
+    const [picked, setPicked] = useState<CoinBalance | null>(null);
+    const depositing = stage === "amount" && minDeposit !== null && picked !== null;
     const choosing = stage === "coins" && minDeposit !== null;
     // The history would cover the positions while a coin or an amount is chosen.
     const showHistory = (hovered || focused || pinned) && !depositing && !choosing;
     const status = notice ? null : accountProblem;
+
+    // A bridged deposit's progress, until it has ended for a while or the next deposit starts.
+    const [dismissed, setDismissed] = useState<string | null>(null);
+    const [since] = useState(() => Date.now() - ENDED_VISIBLE_MS);
+    const order = notice ? null : shownOrder(orders, dismissed, since);
+    const endedId = order && !isRunning(order) ? order.id : null;
+    useEffect(() => {
+        if (!endedId) return;
+        const timer = setTimeout(() => setDismissed(endedId), ENDED_VISIBLE_MS);
+        return () => clearTimeout(timer);
+    }, [endedId]);
+    // The row as the latest read has it, so a deposit just sent shows in what's left.
+    const coin =
+        picked && (balances?.find((r) => r.coin === picked.coin && sameAddress(r.wallet, picked.wallet)) ?? picked);
 
     return (
         <section
@@ -308,18 +341,22 @@ function WalletSection({
 
             {depositing ? (
                 <DepositForm
+                    coin={coin!}
                     walletBalance={walletBalance}
                     minDeposit={minDeposit}
-                    onSubmit={onDeposit}
+                    onSubmit={coin!.coin === "arc:USDC" ? onDeposit : (amount) => onDepositCoin(coin!.coin, amount)}
+                    preview={coin!.coin === "arc:USDC" ? undefined : (amount) => quote(coin!.coin, amount)}
                     onClose={() => setStage("closed")}
                 />
             ) : (
                 // Not `disabled` while the account loads, which would drop keyboard focus.
                 <DepositButton
                     notice={notice}
+                    order={order}
                     disabled={minDeposit === null}
                     onClick={() => {
                         if (minDeposit === null) return;
+                        if (endedId) setDismissed(endedId);
                         onStartDeposit();
                         onOpenCoins();
                         setStage("coins");
@@ -328,9 +365,13 @@ function WalletSection({
             )}
 
             {/* Always mounted, so screen readers announce what appears in it. */}
-            <p role="status" className={styles.status} data-tone={statusTone(notice, status)}>
-                {status ?? (notice && <NoticeText notice={notice} />)}
-            </p>
+            {order ? (
+                <DepositProgress order={order} />
+            ) : (
+                <p role="status" className={styles.status} data-tone={statusTone(notice, status)}>
+                    {status ?? (notice && <NoticeText notice={notice} />)}
+                </p>
+            )}
 
             {/* Floats over the positions instead of pushing them down. */}
             <AnimatePresence>
@@ -341,6 +382,7 @@ function WalletSection({
                         wallets={wallets}
                         onPick={(row) => {
                             onPick(row);
+                            setPicked(row);
                             setStage("amount");
                         }}
                         onConnect={onConnect}
@@ -369,8 +411,19 @@ function WalletSection({
                                         data-pending={row.pending || undefined}
                                         style={{ zIndex: history.length - i }}
                                     >
-                                        <CoinIcon symbol="USDC" className={styles.depositCoin} />
-                                        <span className={styles.depositAmount}>+{formatUsd(toUsdc(row.amount))}</span>
+                                        <CoinIcon
+                                            symbol={row.origin ? row.origin.coin.split(":")[1]! : "USDC"}
+                                            className={styles.depositCoin}
+                                        />
+                                        <span className={styles.depositAmount}>
+                                            +{formatUsd(toUsdc(row.amount))}
+                                            {row.origin && (
+                                                <span className={styles.depositOrigin}>
+                                                    {" · "}
+                                                    {row.origin.amount} {coinLabel(row.origin.coin)}
+                                                </span>
+                                            )}
+                                        </span>
                                         {row.pending ? (
                                             <span className={`${styles.depositWhen} ${styles.depositPending}`}>
                                                 <span className={styles.pendingDot} aria-hidden="true" />

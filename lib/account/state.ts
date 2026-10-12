@@ -105,11 +105,12 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
         case "order": {
             if (state.status !== "ready") return state;
             const rest = state.orders.filter((o) => o.id !== action.order.id);
-            return { ...state, orders: sortOrders(action.order.state === "expired" ? rest : [action.order, ...rest]) };
+            const orders = sortOrders(action.order.state === "expired" ? rest : [action.order, ...rest]);
+            return { ...state, orders, deposits: withOrigins(state.deposits, orders) };
         }
         case "credited":
             if (state.status !== "ready") return state;
-            return settle(withAccount(mergeDeposits(state, [action.deposit]), action.account));
+            return settle(withAccount(withOrders(mergeDeposits(state, [action.deposit])), action.account));
         case "older":
             if (state.status !== "ready") return state;
             return { ...mergeDeposits(state, action.deposits), next: action.next };
@@ -136,6 +137,18 @@ const sortOrders = (orders: DepositOrderView[]) =>
     orders
         .filter((o) => o.state !== "expired")
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+
+/** A delivered order's deposit is credited before the order is linked to it, so the link is made here too. */
+function withOrigins(deposits: DepositView[], orders: DepositOrderView[]): DepositView[] {
+    return deposits.map((deposit) => {
+        if (deposit.origin) return deposit;
+        const order = orders.find((o) => o.state === "delivered" && o.depositId === deposit.id);
+        const txHash = order?.sourceTxHashes.at(-1);
+        return order && txHash ? { ...deposit, origin: { coin: order.coin, amount: order.amount, txHash } } : deposit;
+    });
+}
+
+const withOrders = (state: Ready): Ready => ({ ...state, deposits: withOrigins(state.deposits, state.orders) });
 
 /** Takes the server's account unless a newer version is already showing; pushes can arrive out of order. */
 function withAccount(state: Ready, account: AccountView): Ready {

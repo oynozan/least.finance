@@ -17,3 +17,9 @@ export const SOLANA_CATALOG: readonly CatalogCoin[] = [
     { coin: "solana:SOL", chain: "solana", chainId: null, chainName: "Solana", symbol: "SOL", decimals: 9 },
     { coin: "solana:USDC", chain: "solana", chainId: null, chainName: "Solana", symbol: "USDC", decimals: 6 },
 ];
+
+/** "ETH on Ethereum" for a catalog key such as "ethereum:ETH"; the key itself if it isn't listed. */
+export function coinLabel(key: string) {
+    const coin = [...EVM_CATALOG, ...SOLANA_CATALOG].find((c) => c.coin === key);
+    return coin ? `${coin.symbol} on ${coin.chainName}` : key;
+}

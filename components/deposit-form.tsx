@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { motion, useAnimate, useReducedMotion, type Transition } from "motion/react";
+import type { ApiError, DepositQuoteView } from "@/lib/account/state";
+import type { CoinBalance } from "@/server/src/protocol";
 import type { DepositResult } from "./account-client";
 import { CloseIcon } from "./icons";
 import { formatUsd } from "./wallet-data";
@@ -15,18 +17,20 @@ const GAS_RESERVE = 0.01;
 const MAX_DECIMALS = 6;
 
 const OVER_WALLET = "That's more than your wallet holds, after gas.";
+/** How long the amount rests before the quote is asked for. */
+const QUOTE_DELAY_MS = 400;
 
 /** The most the wallet can send and still pay for gas, to the cent. */
 export const maxDeposit = (walletBalance: number) => Math.max(0, Math.floor((walletBalance - GAS_RESERVE) * 100) / 100);
 
-/** Keeps digits and one decimal point, with at most six decimals. */
-function cleanAmount(text: string) {
+/** Keeps digits and one decimal point, with at most `decimals` decimals. */
+function cleanAmount(text: string, decimals: number) {
     const [whole = "", ...rest] = text
         .replace(/,/g, ".")
         .replace(/[^\d.]/g, "")
         .split(".");
     if (rest.length === 0) return whole;
-    return `${whole}.${rest.join("").slice(0, MAX_DECIMALS)}`;
+    return `${whole}.${rest.join("").slice(0, decimals)}`;
 }
 
 /** "25." → "25", ".5" → "0.5"; null when there's no number yet. */
@@ -36,36 +40,76 @@ function normalizeAmount(text: string) {
     return fraction ? `${whole || "0"}.${fraction}` : whole;
 }
 
+/** "2 s", "3 min". */
+const etaText = (seconds: number) =>
+    seconds < 60 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`;
+
 type DepositFormProps = {
-    /** The wallet's own USDC, undefined while loading and null when it couldn't be read. */
+    /** The coin being deposited, in the wallet it was picked from. */
+    coin: CoinBalance;
+    /** The wallet's own USDC on Arc, undefined while loading and null when it couldn't be read. */
     walletBalance: number | null | undefined;
     minDeposit: number;
     onSubmit: (amount: string) => Promise<DepositResult>;
+    /** What an amount of a bridged coin would pay out on Arc; leave out for USDC on Arc. */
+    preview?: (amount: string) => Promise<DepositQuoteView | ApiError>;
     onClose: () => void;
 };
 
 /** The amount to send from the wallet, in place of the deposit button. */
-export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: DepositFormProps) {
+export function DepositForm({ coin, walletBalance, minDeposit, onSubmit, preview, onClose }: DepositFormProps) {
     const [text, setText] = useState("");
     const [sending, setSending] = useState(false);
     const [walletProblem, setWalletProblem] = useState<string | null>(null);
+    const [quoted, setQuoted] = useState<{ amount: string; result: DepositQuoteView | ApiError } | null>(null);
+    // USDC on Arc keeps its dollar path; any other coin is typed in its own units.
+    const isArc = coin.coin === "arc:USDC";
+    const decimals = isArc ? MAX_DECIMALS : coin.decimals;
 
     const [field, animateField] = useAnimate<HTMLLabelElement>();
     const reduceMotion = useReducedMotion();
 
     const amount = normalizeAmount(text);
     const value = amount === null ? 0 : Number(amount);
-    const max = walletBalance == null ? null : maxDeposit(walletBalance);
+    const max = isArc
+        ? walletBalance == null
+            ? null
+            : maxDeposit(walletBalance)
+        : coin.spendable === null
+          ? null
+          : Number(coin.spendable);
     const isOver = (v: number) => max !== null && v > max;
     // More than the wallet holds shows on the amount itself: red, with a shake.
     const over = isOver(value);
+    // The quote that belongs to the amount showing, once it has come back.
+    const quote = preview && quoted?.amount === amount ? quoted.result : null;
+    const quoteError = quote && "code" in quote ? quote.message : null;
+    const payout = quote && !("code" in quote) ? quote : null;
     const issue =
         amount === null || value === 0 || over
             ? null
-            : value < minDeposit
+            : isArc && value < minDeposit
               ? `The minimum deposit is ${formatUsd(minDeposit)}.`
-              : null;
+              : quoteError;
     const canSend = amount !== null && value > 0 && !over && issue === null && !sending;
+
+    // Asks for the quote once the amount has rested; an answer for an amount since changed is dropped.
+    const ask = useRef(preview);
+    useEffect(() => {
+        ask.current = preview;
+    });
+    const quoting = preview !== undefined;
+    useEffect(() => {
+        if (!quoting || amount === null || Number(amount) === 0) return;
+        let current = true;
+        const timer = setTimeout(() => {
+            void ask.current?.(amount).then((result) => current && setQuoted({ amount, result }));
+        }, QUOTE_DELAY_MS);
+        return () => {
+            current = false;
+            clearTimeout(timer);
+        };
+    }, [quoting, amount]);
 
     const shake = () => {
         if (!reduceMotion)
@@ -85,23 +129,33 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
         if (result === "failed") return setWalletProblem("Your wallet couldn't send the deposit. Try again.");
         if (result === "switch_failed")
             return setWalletProblem(
-                "Your wallet couldn't switch to Arc. Add Arc (chain ID 5042) in its network settings, or connect another wallet.",
+                isArc
+                    ? "Your wallet couldn't switch to Arc. Add Arc (chain ID 5042) in its network settings, or connect another wallet."
+                    : `Your wallet couldn't switch to ${coin.chainName}. Switch it there yourself and try again.`,
             );
         if (result === "wrong_network")
-            return setWalletProblem("Your wallet is on another network. Switch it to Arc and try again.");
+            return setWalletProblem(`Your wallet is on another network. Switch it to ${coin.chainName} and try again.`);
         // Sent: the balance already counts it, and the status line follows its confirmation.
         onClose();
     };
 
     // Only problems are written out; the wallet's balance is for screen readers.
-    const hint = walletProblem ?? issue ?? (walletBalance === null ? "Couldn't read your wallet's balance." : null);
+    const preText = payout ? `≈ ${formatUsd(Number(payout.usdcOut))} in about ${etaText(payout.etaSeconds)}` : null;
+    const hint =
+        walletProblem ??
+        issue ??
+        preText ??
+        (isArc && walletBalance === null ? "Couldn't read your wallet's balance." : null);
+    const held = isArc ? walletBalance : coin.amount === null ? null : Number(coin.amount);
     const wallet = over
         ? OVER_WALLET
-        : walletBalance === undefined
+        : held === undefined
           ? "Checking your wallet…"
-          : walletBalance === null
+          : held === null
             ? ""
-            : `In your wallet: ${formatUsd(walletBalance)}`;
+            : isArc
+              ? `In your wallet: ${formatUsd(held)}`
+              : `In your wallet: ${coin.amount} ${coin.symbol}`;
 
     return (
         <motion.div
@@ -126,9 +180,11 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
                     data-invalid={over || issue !== null || undefined}
                     data-over={over || undefined}
                 >
-                    <span className={styles.amountPrefix} aria-hidden="true">
-                        $
-                    </span>
+                    {isArc && (
+                        <span className={styles.amountPrefix} aria-hidden="true">
+                            $
+                        </span>
+                    )}
                     <input
                         className={styles.amountInput}
                         aria-label="Deposit amount"
@@ -142,7 +198,7 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
                         readOnly={sending}
                         value={text}
                         onChange={(event) => {
-                            const next = cleanAmount(event.target.value);
+                            const next = cleanAmount(event.target.value, decimals);
                             const nextValue = Number(normalizeAmount(next) ?? 0);
                             // Shakes on the way past the wallet, not while deleting back down.
                             if (isOver(nextValue) && nextValue > value) shake();
@@ -150,12 +206,17 @@ export function DepositForm({ walletBalance, minDeposit, onSubmit, onClose }: De
                             setWalletProblem(null);
                         }}
                     />
+                    {!isArc && (
+                        <span className={styles.amountUnit} aria-hidden="true">
+                            {coin.symbol}
+                        </span>
+                    )}
                     {max !== null && max > 0 && (
                         <button
                             type="button"
                             className={styles.maxButton}
                             disabled={sending}
-                            onClick={() => setText(String(max))}
+                            onClick={() => setText(isArc ? String(max) : (coin.spendable ?? String(max)))}
                         >
                             Max
                         </button>

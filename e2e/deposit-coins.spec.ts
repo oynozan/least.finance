@@ -67,8 +67,9 @@ test("Deposit lists every supported coin, even at zero", async ({ page }) => {
         await expect(coins.getByRole("button", { name })).toBeVisible();
 
     const eth = coins.getByRole("button", { name: "ETH on Ethereum" });
-    await expect(eth).toHaveAttribute("aria-disabled", "true");
-    await expect(eth).toHaveAttribute("title", "Deposits from Ethereum aren't open yet.");
+    // Ethereum and BNB Chain rows are open; only Solana's wait (see the Solana-only test).
+    await expect(eth).not.toHaveAttribute("aria-disabled");
+    await expect(eth).not.toHaveAttribute("title");
     await expect(sidebarOf(page).getByText(/checking|loading/i)).toHaveCount(0);
 });
 

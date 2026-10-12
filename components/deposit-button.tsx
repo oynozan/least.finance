@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion, useAnimate, useReducedMotion, type Transition } from "motion/react";
+import type { DepositOrderView } from "@/server/src/protocol";
 import type { DepositNotice } from "./account-client";
 import { CloseIcon, PlusIcon } from "./icons";
 import styles from "./wallet-sidebar.module.css";
@@ -33,8 +34,20 @@ const phaseOf = (notice: DepositNotice | null): Phase =>
             ? "error"
             : "idle";
 
+/** A bridged deposit runs from the wallet's report until it lands, is refunded or fails. */
+const phaseOfOrder = (order: DepositOrderView | null | undefined): Phase =>
+    !order
+        ? "idle"
+        : order.state === "delivered"
+          ? "done"
+          : order.state === "refunded" || order.state === "failed"
+            ? "error"
+            : "running";
+
 type DepositButtonProps = {
     notice: DepositNotice | null;
+    /** The bridged deposit being followed, if any. */
+    order?: DepositOrderView | null;
     /** The account hasn't loaded. */
     disabled: boolean;
     onClick: () => void;
@@ -46,20 +59,21 @@ type DepositButtonProps = {
  * and turns from gray to green; once it's credited it fills and holds green
  * with a check, then settles back.
  */
-export function DepositButton({ notice, disabled, onClick }: DepositButtonProps) {
+export function DepositButton({ notice, order, disabled, onClick }: DepositButtonProps) {
     const reduce = useReducedMotion();
     const [fill, animate] = useAnimate<HTMLSpanElement>();
     const [button, animateButton] = useAnimate<HTMLButtonElement>();
-    const target = phaseOf(notice);
+    const target = notice ? phaseOf(notice) : phaseOfOrder(order);
+    const subject = notice ?? order ?? null;
     // Done and failed hold for a moment, then the button settles back even while the notice stays.
-    const [settled, setSettled] = useState<DepositNotice | null>(null);
-    const phase = settled === notice && target !== "running" ? "idle" : target;
+    const [settled, setSettled] = useState<DepositNotice | DepositOrderView | null>(null);
+    const phase = settled === subject && target !== "running" ? "idle" : target;
 
     useEffect(() => {
         if (target !== "done" && target !== "error") return;
-        const timer = setTimeout(() => setSettled(notice), target === "done" ? DONE_MS : ERROR_MS);
+        const timer = setTimeout(() => setSettled(subject), target === "done" ? DONE_MS : ERROR_MS);
         return () => clearTimeout(timer);
-    }, [target, notice]);
+    }, [target, subject]);
 
     useEffect(() => {
         const node = fill.current;
