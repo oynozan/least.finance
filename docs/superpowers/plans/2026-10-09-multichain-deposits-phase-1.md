@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Superseded in part (2026-10-12):** Tasks 1–5 are built. Tasks 6–11 are replaced by `docs/superpowers/plans/2026-10-12-coin-list-and-bridged-deposits.md`, which follows the approved wallets/accounts/instant-balances design (one account per Privy user, balances pushed at sign-in).
+
 **Goal:** A user picks a coin from a list of their balances on Ethereum, BNB Chain and Arc, signs the bridge's transactions in their wallet, and watches the deposit arrive in their Arc account step by step.
 
 **Architecture:** A new `server/src/crosschain/` module holds four parts:
