@@ -28,6 +28,10 @@ describe("AppError", () => {
         expect(new AppError("rate_limited", "x").status).toBe(429);
         expect(new AppError("unavailable", "x").status).toBe(503);
         expect(new AppError("internal", "x").status).toBe(500);
+        expect(new AppError("insufficient_funds", "x").status).toBe(409);
+        expect(new AppError("market_closed", "x").status).toBe(409);
+        expect(new AppError("float_short", "x").status).toBe(409);
+        expect(new AppError("trading_off", "x").status).toBe(503);
     });
 
     it("is recognised by isAppError", () => {

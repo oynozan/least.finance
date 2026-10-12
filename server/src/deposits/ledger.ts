@@ -1,8 +1,15 @@
-import { ObjectId, type MongoClient } from "mongodb";
+import { ObjectId, type ClientSession, type MongoClient } from "mongodb";
 import type { Logger } from "pino";
 import { ARC_CHAIN_ID } from "../chain/arc.ts";
+import { AppError } from "../errors.ts";
 import type { NativeTransfer } from "../chain/native-transfers.ts";
-import { isDuplicateKey, type AccountDoc, type Collections, type DepositDoc } from "../db/mongo.ts";
+import {
+    isDuplicateKey,
+    type AccountDoc,
+    type Collections,
+    type DepositDoc,
+    type LedgerEntryDoc,
+} from "../db/mongo.ts";
 import { formatUsdc, toDecimal } from "../db/money.ts";
 import type { Bus } from "../events.ts";
 
@@ -70,6 +77,71 @@ export class Ledger {
             if (isDuplicateKey(error)) return this.#existing(transfer);
             throw error;
         }
+    }
+
+    /** Takes wei off the balance inside the caller's transaction, which owns the order's state move and the bus event. */
+    async debitInSession(
+        session: ClientSession,
+        accountId: ObjectId,
+        wei: bigint,
+        kind: "prediction_buy",
+        refId: ObjectId,
+    ): Promise<AccountDoc> {
+        const now = new Date();
+        const account = await this.#deps.collections.accounts.findOneAndUpdate(
+            { _id: accountId, balance: { $gte: toDecimal(wei) } },
+            { $inc: { balance: toDecimal(-wei), version: 1 }, $set: { updatedAt: now } },
+            { session, returnDocument: "after" },
+        );
+        if (!account)
+            throw new AppError("insufficient_funds", "You don't have enough USDC for this. Nothing was spent.");
+        await this.#entry(session, account, -wei, kind, refId, now);
+        return account;
+    }
+
+    /** Puts wei back on the balance inside the caller's transaction; a repeat of (kind, refId) hits ref_unique. */
+    async creditInSession(
+        session: ClientSession,
+        accountId: ObjectId,
+        wei: bigint,
+        kind: "prediction_refund" | "prediction_sell" | "prediction_payout",
+        refId: ObjectId,
+    ): Promise<AccountDoc> {
+        const now = new Date();
+        const account = await this.#deps.collections.accounts.findOneAndUpdate(
+            { _id: accountId },
+            { $inc: { balance: toDecimal(wei), version: 1 }, $set: { updatedAt: now } },
+            { session, returnDocument: "after" },
+        );
+        if (!account) throw new Error(`No account ${accountId.toHexString()} to credit`);
+        await this.#entry(session, account, wei, kind, refId, now);
+        return account;
+    }
+
+    runInTransaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
+        return this.#deps.client.withSession((session) => session.withTransaction(() => work(session)));
+    }
+
+    async #entry(
+        session: ClientSession,
+        account: AccountDoc,
+        signed: bigint,
+        kind: LedgerEntryDoc["kind"],
+        refId: ObjectId,
+        createdAt: Date,
+    ) {
+        await this.#deps.collections.ledger.insertOne(
+            {
+                _id: new ObjectId(),
+                accountId: account._id,
+                kind,
+                amount: toDecimal(signed),
+                balanceAfter: account.balance,
+                refId,
+                createdAt,
+            },
+            { session },
+        );
     }
 
     async #creditOnce(transfer: NativeTransfer, accountId: ObjectId, source: DepositDoc["source"]): Promise<Credit> {

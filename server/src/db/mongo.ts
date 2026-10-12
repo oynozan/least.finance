@@ -73,13 +73,83 @@ export type DepositOrderDoc = {
 export type LedgerEntryDoc = {
     _id: ObjectId;
     accountId: ObjectId;
-    kind: "deposit" | "merge_in" | "merge_out";
+    kind:
+        | "deposit"
+        | "merge_in"
+        | "merge_out"
+        | "prediction_buy"
+        | "prediction_refund"
+        | "prediction_sell"
+        | "prediction_payout";
     /** Signed wei. */
     amount: Decimal128;
     balanceAfter: Decimal128;
     /** The deposit (or, later, trade) the entry records. */
     refId: ObjectId;
     createdAt: Date;
+};
+
+export type PredictionOrderState = "placing" | "posted" | "filled" | "failed";
+export type PredictionFailure = "price_moved" | "market_closed" | "unavailable" | "rejected";
+
+/** A prediction order; a buy holds `amount` wei of the balance until it settles. */
+export type PredictionOrderDoc = {
+    _id: ObjectId;
+    accountId: ObjectId;
+    /** The client's UUID; a repeat of (accountId, requestId) is the same order. */
+    requestId: string;
+    side: "buy" | "sell";
+    eventId: string;
+    marketId: string;
+    tokenId: string;
+    conditionId: string;
+    question: string;
+    outcome: string;
+    /** Wei held, for a buy. */
+    amount: Decimal128;
+    /** E6 shares, for a sell. */
+    shares: Decimal128 | null;
+    quotedPrice: number;
+    limitPrice: number;
+    /** The position a sell closes. */
+    positionId: ObjectId | null;
+    orderHash: string | null;
+    clobOrderId: string | null;
+    signed: unknown | null;
+    state: PredictionOrderState;
+    reason: PredictionFailure | null;
+    /** E6 shares. */
+    filledShares: Decimal128 | null;
+    /** Wei. */
+    cost: Decimal128 | null;
+    postedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+};
+
+export type PositionState = "open" | "closing" | "closed" | "won" | "lost";
+
+export type PositionDoc = {
+    _id: ObjectId;
+    accountId: ObjectId;
+    eventId: string;
+    marketId: string;
+    tokenId: string;
+    conditionId: string;
+    question: string;
+    outcome: string;
+    /** E6 shares. */
+    shares: Decimal128;
+    /** Wei. */
+    cost: Decimal128;
+    state: PositionState;
+    /** Wei, once closed. */
+    proceeds: Decimal128 | null;
+    /** Wei, once the market resolved. */
+    payout: Decimal128 | null;
+    openedAt: Date;
+    settledAt: Date | null;
+    updatedAt: Date;
 };
 
 /** How far a chain scan has got. */
@@ -92,6 +162,8 @@ export type Collections = {
     deposits: Collection<DepositDoc>;
     ledger: Collection<LedgerEntryDoc>;
     depositOrders: Collection<DepositOrderDoc>;
+    predictionOrders: Collection<PredictionOrderDoc>;
+    positions: Collection<PositionDoc>;
     cursors: Collection<CursorDoc>;
     counters: Collection<CounterDoc>;
 };
@@ -119,6 +191,8 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             deposits: db.collection("deposits"),
             ledger: db.collection("ledger"),
             depositOrders: db.collection("deposit_orders"),
+            predictionOrders: db.collection("prediction_orders"),
+            positions: db.collection("positions"),
             cursors: db.collection("cursors"),
             counters: db.collection("counters"),
         };
@@ -140,7 +214,7 @@ async function assertTransactions(db: Db) {
     );
 }
 
-async function ensureIndexes({ accounts, deposits, ledger, depositOrders }: Collections) {
+async function ensureIndexes({ accounts, deposits, ledger, depositOrders, predictionOrders, positions }: Collections) {
     await Promise.all([
         accounts.createIndexes([
             { key: { depositAddress: 1 }, name: "deposit_address_unique", unique: true },
@@ -171,6 +245,21 @@ async function ensureIndexes({ accounts, deposits, ledger, depositOrders }: Coll
         depositOrders.createIndexes([
             { key: { accountId: 1, _id: -1 }, name: "account_orders" },
             { key: { state: 1, updatedAt: 1 }, name: "state_updated" },
+        ]),
+        predictionOrders.createIndexes([
+            { key: { accountId: 1, requestId: 1 }, name: "request_unique", unique: true },
+            { key: { state: 1, updatedAt: 1 }, name: "state_updated" },
+            { key: { accountId: 1, _id: -1 }, name: "account_orders" },
+        ]),
+        positions.createIndexes([
+            {
+                key: { accountId: 1, tokenId: 1 },
+                name: "open_unique",
+                unique: true,
+                partialFilterExpression: { state: { $in: ["open", "closing"] } },
+            },
+            { key: { accountId: 1, _id: -1 }, name: "account_positions" },
+            { key: { state: 1, marketId: 1 }, name: "state_market" },
         ]),
     ]);
 }

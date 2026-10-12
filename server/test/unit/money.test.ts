@@ -1,6 +1,6 @@
 import { Decimal128 } from "mongodb";
 import { describe, expect, it } from "vitest";
-import { formatUsdc, fromDecimal, toDecimal } from "../../src/db/money.ts";
+import { e6ToWei, formatE6, formatUsdc, fromDecimal, toDecimal, weiToE6 } from "../../src/db/money.ts";
 
 describe("money", () => {
     it.each([0n, 1n, 10n ** 16n, 12_345_678_901_234_567_890n, 10n ** 27n, 10n ** 33n + 7n, -1n, -(10n ** 27n)])(
@@ -39,5 +39,22 @@ describe("money", () => {
         expect(formatUsdc(12_500_000_000_000_000_000n)).toBe("12.5");
         expect(formatUsdc(10n ** 27n)).toBe("1000000000");
         expect(formatUsdc(-(10n ** 18n))).toBe("-1");
+    });
+
+    it("converts between e6 and wei", () => {
+        expect(e6ToWei(1_500_000n)).toBe(1_500_000n * 10n ** 12n);
+        expect(weiToE6(1_500_000n * 10n ** 12n)).toBe(1_500_000n);
+    });
+
+    it("floors wei to e6", () => {
+        expect(weiToE6(1_999_999_999_999n)).toBe(1n);
+        expect(weiToE6(999_999_999_999n)).toBe(0n);
+    });
+
+    it("formats e6 with up to six places and no trailing zeros", () => {
+        expect(formatE6(1_234_500n)).toBe("1.2345");
+        expect(formatE6(2_000_000n)).toBe("2");
+        expect(formatE6(1n)).toBe("0.000001");
+        expect(formatE6(0n)).toBe("0");
     });
 });

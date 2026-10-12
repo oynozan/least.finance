@@ -12,6 +12,10 @@ const STATUS: Record<ErrorCode, number> = {
     no_deposit: 422,
     below_minimum: 422,
     unavailable: 503,
+    insufficient_funds: 409,
+    market_closed: 409,
+    float_short: 409,
+    trading_off: 503,
     internal: 500,
 };
 

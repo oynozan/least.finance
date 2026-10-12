@@ -29,3 +29,14 @@ export function fromDecimal(value: Decimal128): bigint {
 
 /** Wei as the wire's decimal USDC string. */
 export const formatUsdc = (wei: bigint): UsdcAmount => formatUnits(wei, NATIVE_DECIMALS);
+
+/** Polymarket's pUSD and shares have 6 decimals; the ledger has 18. */
+export const E6_TO_WEI = 10n ** 12n;
+
+export const e6ToWei = (e6: bigint) => e6 * E6_TO_WEI;
+
+/** Floors, so rounding never favors the person. */
+export const weiToE6 = (wei: bigint) => wei / E6_TO_WEI;
+
+/** A decimal with up to 6 places and no trailing zeros. */
+export const formatE6 = (e6: bigint) => formatUnits(e6, 6);

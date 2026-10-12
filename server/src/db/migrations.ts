@@ -1,5 +1,5 @@
-import { MongoServerError, ObjectId, type MongoClient } from "mongodb";
-import type { AccountDoc, Collections, LedgerEntryDoc } from "./mongo.ts";
+import { MongoServerError, ObjectId, type ClientSession, type MongoClient } from "mongodb";
+import type { AccountDoc, Collections, LedgerEntryDoc, PositionDoc } from "./mongo.ts";
 import { fromDecimal, toDecimal } from "./money.ts";
 
 export type MigrationReport = { rekeyed: number; merged: number };
@@ -44,7 +44,7 @@ export async function mergeAccountsByPerson(client: MongoClient, collections: Co
 /** Moves one account into another in a single transaction, so the ledger stays double-entry. */
 async function mergeInto(
     client: MongoClient,
-    { accounts, deposits, ledger, depositOrders }: Collections,
+    { accounts, deposits, ledger, depositOrders, predictionOrders, positions }: Collections,
     into: AccountDoc["_id"],
     from: AccountDoc["_id"],
 ) {
@@ -95,11 +95,45 @@ async function mergeInto(
             // Deposits and their orders move: the known-deposit path and the order tracker read their account, and the ledger rows stay with the account they sum for.
             await deposits.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
             await depositOrders.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
+            await predictionOrders.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
+            await movePositions(positions, into, from, now, session);
             return true;
         });
     } finally {
         await session.endSession();
     }
+}
+
+/** Both accounts can hold the same token, and only one open position per token may exist, so the survivor absorbs the other's. */
+async function movePositions(
+    positions: Collections["positions"],
+    into: AccountDoc["_id"],
+    from: AccountDoc["_id"],
+    now: Date,
+    session: ClientSession,
+) {
+    const live = { $in: ["open", "closing"] satisfies PositionDoc["state"][] };
+    for (const position of await positions.find({ accountId: from, state: live }, { session }).toArray()) {
+        const twin = await positions.findOne({ accountId: into, tokenId: position.tokenId, state: live }, { session });
+        if (!twin) continue;
+        await positions.updateOne(
+            { _id: twin._id },
+            {
+                $set: {
+                    shares: toDecimal(fromDecimal(twin.shares) + fromDecimal(position.shares)),
+                    cost: toDecimal(fromDecimal(twin.cost) + fromDecimal(position.cost)),
+                    updatedAt: now,
+                },
+            },
+            { session },
+        );
+        await positions.updateOne(
+            { _id: position._id },
+            { $set: { state: "closed", proceeds: toDecimal(0n), settledAt: now, updatedAt: now } },
+            { session },
+        );
+    }
+    await positions.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
 }
 
 /** The planner skips a `$type` partial index for an equality lookup, so an index built that way is rebuilt with `$gt`. */

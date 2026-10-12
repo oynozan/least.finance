@@ -174,6 +174,76 @@ test("a merged account's deposit orders follow it to the survivor", async () => 
     expect(order?.accountId.equals(a.id)).toBe(true);
 });
 
+const orderDoc = (accountId: ObjectId, requestId: string) => ({
+    _id: new ObjectId(),
+    accountId,
+    requestId,
+    state: "posted",
+});
+const positionDoc = (accountId: ObjectId, tokenId: string, shares: string, cost: string, state = "open") => ({
+    _id: new ObjectId(),
+    accountId,
+    tokenId,
+    shares: Decimal128.fromString(shares),
+    cost: Decimal128.fromString(cost),
+    state,
+});
+
+test("merging moves prediction orders and positions", async () => {
+    const did = newDid();
+    let a!: Seed;
+    const order = orderDoc(new ObjectId(), "r1");
+    const position = positionDoc(new ObjectId(), "tok-1", "5000000", "3000000000000000000");
+    const running = await boot(async (db) => {
+        a = await seedAccount(db, did, "3");
+        const b = await seedAccount(db, did, "2");
+        order.accountId = b.id;
+        position.accountId = b.id;
+        await mongo
+            .db(db)
+            .collection("prediction_orders")
+            .insertOne(order as never);
+        await mongo
+            .db(db)
+            .collection("positions")
+            .insertOne(position as never);
+    });
+
+    const { predictionOrders, positions } = collections(running);
+    expect((await predictionOrders.findOne({ _id: order._id }))?.accountId.equals(a.id)).toBe(true);
+    expect((await positions.findOne({ _id: position._id }))?.accountId.equals(a.id)).toBe(true);
+});
+
+test("merging two open positions on one token sums them instead of failing", async () => {
+    const did = newDid();
+    let a!: Seed;
+    const keep = positionDoc(new ObjectId(), "tok-1", "5000000", "3000000000000000000");
+    const other = positionDoc(new ObjectId(), "tok-1", "2000000", "1000000000000000000");
+    const closing = positionDoc(new ObjectId(), "tok-2", "1000000", "500000000000000000", "closing");
+    const running = await boot(async (db) => {
+        a = await seedAccount(db, did, "3");
+        const b = await seedAccount(db, did, "2");
+        keep.accountId = a.id;
+        other.accountId = b.id;
+        closing.accountId = b.id;
+        await mongo
+            .db(db)
+            .collection("positions")
+            .insertMany([keep, other, closing] as never);
+    });
+
+    const { positions } = collections(running);
+    const survivor = await positions.findOne({ _id: keep._id });
+    expect(survivor).toMatchObject({ state: "open" });
+    expect(survivor!.shares.toString()).toBe("7000000");
+    expect(survivor!.cost.toString()).toBe("4000000000000000000");
+    const absorbed = await positions.findOne({ _id: other._id });
+    expect(absorbed).toMatchObject({ state: "closed" });
+    expect(absorbed!.proceeds?.toString()).toBe("0");
+    expect((await positions.findOne({ _id: closing._id }))?.accountId.equals(a.id)).toBe(true);
+    expect(await positions.countDocuments({ accountId: a.id, state: { $in: ["open", "closing"] } })).toBe(2);
+});
+
 test("accounts without a Privy user aren't merged together", async () => {
     const did = newDid();
     let orphans!: Seed[];

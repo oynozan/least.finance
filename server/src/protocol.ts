@@ -137,6 +137,11 @@ export type ErrorCode =
     | "no_deposit"
     | "below_minimum"
     | "unavailable"
+    | "insufficient_funds"
+    | "market_closed"
+    /** The pool can't cover an order this size right now. */
+    | "float_short"
+    | "trading_off"
     | "internal";
 
 export type ApiError = { code: ErrorCode; message: string };
