@@ -18,10 +18,11 @@ import {
     type AccountState,
     type ApiError,
     type HistoryRow,
+    type OptimisticTrade,
 } from "@/lib/account/state";
 import { API_URL } from "@/lib/api";
 import { ensureNetwork } from "@/lib/wallet/network";
-import type { CoinBalance, DepositOrderView, DepositQuoteView } from "@/server/src/protocol";
+import type { CoinBalance, DepositOrderView, DepositQuoteView, PositionsView, QuoteView } from "@/server/src/protocol";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
 import { linkedWallets } from "./arc-wallet";
@@ -46,9 +47,24 @@ export type Account = {
     /** Sends a deposit of `amount` USDC (a decimal string) on Arc from the wallet `from`. */
     deposit: (amount: string, from: string) => Promise<DepositResult>;
     dismissNotice: () => void;
+    /** The server's positions and orders; empty while signed out. */
+    predictions: PositionsView;
+    /** Accepted buys the server hasn't shown back yet, newest first. */
+    optimisticTrades: OptimisticTrade[];
+    tradeNotice: { message: string } | null;
+    /** What a prediction buy would cost and return right now. */
+    quotePrediction: (input: { eventId: string; tokenId: string; amountUSD: string }) => Promise<QuoteView | ApiError>;
+    /** Places a prediction buy, counted at once; the outcome arrives as a push. */
+    placePrediction: (input: PlaceInput) => { requestId: string };
+    dismissTradeNotice: () => void;
 };
 
-const IDLE: AccountSnapshot = { state: { status: "idle" }, notice: null, balances: null };
+type PlaceInput = Parameters<AccountClient["placePrediction"]>[0];
+
+const IDLE: AccountSnapshot = { state: { status: "idle" }, notice: null, balances: null, tradeNotice: null };
+const NO_PREDICTIONS: PositionsView = { positions: [], orders: [] };
+const NO_OPTIMISTIC: OptimisticTrade[] = [];
+const UNAVAILABLE: ApiError = { code: "unavailable", message: "Predictions aren't available right now." };
 
 const NO_WALLET: ApiError = { code: "bad_request", message: "Connect a wallet to deposit." };
 
@@ -144,6 +160,9 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             depositCoin={depositCoin}
             refreshBalances={refreshBalances}
             dismissNotice={() => client.dismissNotice()}
+            quotePrediction={(input) => client.quotePrediction(input)}
+            placePrediction={(input) => client.placePrediction(input)}
+            dismissTradeNotice={() => client.dismissTradeNotice()}
         >
             {children}
         </Provide>
@@ -157,6 +176,9 @@ function Provide({
     depositCoin = async () => "failed",
     dismissNotice = () => undefined,
     refreshBalances = () => undefined,
+    quotePrediction = async () => UNAVAILABLE,
+    placePrediction = () => ({ requestId: "" }),
+    dismissTradeNotice = () => undefined,
     children,
 }: {
     snapshot: AccountSnapshot;
@@ -165,6 +187,9 @@ function Provide({
     depositCoin?: Account["depositCoin"];
     dismissNotice?: () => void;
     refreshBalances?: () => void;
+    quotePrediction?: Account["quotePrediction"];
+    placePrediction?: Account["placePrediction"];
+    dismissTradeNotice?: () => void;
     children: ReactNode;
 }) {
     const { state, notice } = snapshot;
@@ -182,6 +207,12 @@ function Provide({
         depositCoin,
         deposit,
         dismissNotice,
+        predictions: state.status === "ready" ? state.predictions : NO_PREDICTIONS,
+        optimisticTrades: state.status === "ready" ? state.optimistic : NO_OPTIMISTIC,
+        tradeNotice: snapshot.tradeNotice,
+        quotePrediction,
+        placePrediction,
+        dismissTradeNotice,
     };
     return <AccountContext value={value}>{children}</AccountContext>;
 }

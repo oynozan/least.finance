@@ -9,6 +9,8 @@ import {
     type ApiError,
     type DepositQuoteView,
     type Hex,
+    type PredictionFailure,
+    type QuoteView,
 } from "@/lib/account/state";
 import { dropAfterSend, loadCachedBalances, needsRefresh, saveCachedBalances } from "@/lib/account/balances";
 import type { BalancesView, ClientToServerEvents, ServerToClientEvents } from "@/server/src/protocol";
@@ -36,7 +38,22 @@ export type BridgeWallet = {
     ensure(chainId: number): Promise<"ready" | "declined" | "switch_failed" | "wrong_network">;
 };
 
-export type AccountSnapshot = { state: AccountState; notice: DepositNotice | null; balances: BalancesView | null };
+export type AccountSnapshot = {
+    state: AccountState;
+    notice: DepositNotice | null;
+    balances: BalancesView | null;
+    /** Why the last prediction didn't go through, or that it couldn't be sent. */
+    tradeNotice: { message: string } | null;
+};
+
+/** What the person is told when a placed prediction fails on the server. */
+const FAILURE_COPY: Record<PredictionFailure, string> = {
+    price_moved: "The price moved, so your prediction didn't go through. Nothing was spent.",
+    market_closed: "This market just closed. Nothing was spent.",
+    unavailable: "Polymarket isn't answering. Nothing was spent.",
+    rejected: "Your prediction didn't go through. Nothing was spent.",
+};
+const OFFLINE_COPY = "You're offline. Nothing was spent.";
 
 /** EIP-1193's code for a request the user turned down in their wallet. */
 const USER_REJECTED = 4001;
@@ -49,6 +66,7 @@ const CONNECT_TIMEOUT_MS = 15_000;
 const RECEIPT_POLL_MS = 1_000;
 const RECEIPT_TIMEOUT_MS = 120_000;
 const CREDITED_NOTICE_MS = 5_000;
+const TRADE_NOTICE_MS = 8_000;
 const MAX_RETRY_MS = 30_000;
 
 const UNREACHABLE: ApiError = { code: "unavailable", message: "Couldn't reach the server. Retrying…" };
@@ -64,12 +82,18 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export class AccountClient {
     readonly #url: string;
-    #snapshot: AccountSnapshot = { state: initialAccountState, notice: null, balances: null };
+    #snapshot: AccountSnapshot = {
+        state: initialAccountState,
+        notice: null,
+        balances: null,
+        tradeNotice: null,
+    };
     readonly #listeners = new Set<() => void>();
     #socket: AppSocket | null = null;
     #userId: string | null = null;
     #retry: ReturnType<typeof setTimeout> | undefined;
     #noticeTimer: ReturnType<typeof setTimeout> | undefined;
+    #tradeTimer: ReturnType<typeof setTimeout> | undefined;
     #attempt = 0;
     /** Deposits being confirmed right now, so a reconnect doesn't report one twice. */
     readonly #confirming = new Set<string>();
@@ -120,6 +144,14 @@ export class AccountClient {
         socket.on("deposit:progress", ({ order }) => {
             this.#dispatch({ type: "order", order });
         });
+        socket.on("prediction:update", (update) => {
+            this.#dispatch({ type: "prediction", update });
+            const { order } = update;
+            if (order.state === "failed") this.#tradeNotice(FAILURE_COPY[order.reason ?? "rejected"]);
+        });
+        socket.on("positions", (positions) => {
+            this.#dispatch({ type: "positions", positions });
+        });
         socket.on("balances", (view) => {
             if (this.#userId) saveCachedBalances(this.#userId, view);
             this.#snapshot = { ...this.#snapshot, balances: view };
@@ -167,14 +199,16 @@ export class AccountClient {
     disconnect() {
         clearTimeout(this.#retry);
         clearTimeout(this.#noticeTimer);
+        clearTimeout(this.#tradeTimer);
         this.#socket?.removeAllListeners();
         this.#socket?.disconnect();
         this.#socket = null;
         this.#userId = null;
         this.#attempt = 0;
         this.#confirming.clear();
-        if (this.#snapshot.state.status !== "idle" || this.#snapshot.notice || this.#snapshot.balances) {
-            this.#snapshot = { state: initialAccountState, notice: null, balances: null };
+        const { state, notice, balances, tradeNotice } = this.#snapshot;
+        if (state.status !== "idle" || notice || balances || tradeNotice) {
+            this.#snapshot = { state: initialAccountState, notice: null, balances: null, tradeNotice: null };
             this.#emit();
         }
     }
@@ -231,6 +265,86 @@ export class AccountClient {
             .catch(() => null);
         if (!result) return UNREACHABLE;
         return result.ok ? result.data : result.error;
+    }
+
+    /** What a prediction buy would cost and return right now. */
+    async quotePrediction(input: {
+        eventId: string;
+        tokenId: string;
+        amountUSD: string;
+    }): Promise<QuoteView | ApiError> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        const result = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("prediction:quote", input)
+            .catch(() => null);
+        if (!result) return UNREACHABLE;
+        return result.ok ? result.data : result.error;
+    }
+
+    /**
+     * Places a prediction buy and counts it at once. The server's push decides the outcome;
+     * only a refusal rolls it back here, and a missing answer leaves it accepted.
+     */
+    placePrediction(input: {
+        eventId: string;
+        tokenId: string;
+        amountUSD: string;
+        quotedPrice: number;
+        question: string;
+        outcome: string;
+        shares: string;
+    }): { requestId: string } {
+        const requestId = crypto.randomUUID();
+        const socket = this.#socket;
+        this.#tradeNotice(null);
+        if (this.#snapshot.state.status !== "ready" || !socket?.connected) {
+            this.#tradeNotice(OFFLINE_COPY);
+            return { requestId };
+        }
+        const { question, outcome, shares, ...wire } = input;
+        this.#dispatch({
+            type: "predict",
+            trade: {
+                requestId,
+                side: "buy",
+                eventId: input.eventId,
+                tokenId: input.tokenId,
+                question,
+                outcome,
+                amountWei: toWei(input.amountUSD),
+                shares,
+                at: Date.now(),
+            },
+        });
+        void socket
+            .timeout(REPORT_TIMEOUT_MS)
+            .emitWithAck("prediction:order", { requestId, ...wire })
+            .catch(() => null)
+            .then((result) => {
+                if (this.#socket !== socket || !result || result.ok) return;
+                this.#dispatch({ type: "predict-failed", requestId });
+                this.#tradeNotice(result.error.message);
+            });
+        return { requestId };
+    }
+
+    dismissTradeNotice() {
+        this.#tradeNotice(null);
+    }
+
+    #tradeNotice(message: string | null) {
+        clearTimeout(this.#tradeTimer);
+        const tradeNotice = message ? { message } : null;
+        if (!tradeNotice && !this.#snapshot.tradeNotice) return;
+        this.#snapshot = { ...this.#snapshot, tradeNotice };
+        this.#emit();
+        if (tradeNotice) {
+            this.#tradeTimer = setTimeout(() => {
+                if (this.#snapshot.tradeNotice === tradeNotice) this.#tradeNotice(null);
+            }, TRADE_NOTICE_MS);
+        }
     }
 
     /**

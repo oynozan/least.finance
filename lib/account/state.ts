@@ -9,6 +9,12 @@ import type {
     DepositRules,
     DepositView,
     Hex,
+    PositionView,
+    PositionsView,
+    PredictionFailure,
+    PredictionOrderView,
+    PredictionUpdate,
+    QuoteView,
     SourceTxView,
     WalletSession,
 } from "@/server/src/protocol";
@@ -23,6 +29,12 @@ export type {
     DepositRules,
     DepositView,
     Hex,
+    PositionView,
+    PositionsView,
+    PredictionFailure,
+    PredictionOrderView,
+    PredictionUpdate,
+    QuoteView,
     SourceTxView,
     WalletSession,
 };
@@ -37,6 +49,21 @@ export type PendingDeposit = {
     amount: bigint;
     /** When the wallet handed back the transaction, in ms. */
     sentAt: number;
+};
+
+/** A prediction buy the server has accepted but not yet shown back, counted against the balance meanwhile. */
+export type OptimisticTrade = {
+    requestId: string;
+    side: "buy";
+    eventId: string;
+    tokenId: string;
+    question: string;
+    outcome: string;
+    /** Wei. */
+    amountWei: bigint;
+    /** The quote's estimate. */
+    shares: string;
+    at: number;
 };
 
 export type AccountState =
@@ -57,6 +84,10 @@ export type AccountState =
           pending: PendingDeposit[];
           /** Bridge orders still open, newest first. */
           orders: DepositOrderView[];
+          /** The server's view of the account's predictions. */
+          predictions: PositionsView;
+          /** Newest first; counted against the balance until the server's order shows up. */
+          optimistic: OptimisticTrade[];
       };
 
 export type AccountAction =
@@ -71,7 +102,12 @@ export type AccountAction =
     | { type: "sent"; txHash: Hex; amount: bigint; sentAt: number }
     | { type: "settled"; receipt: DepositReceipt }
     /** The server couldn't confirm the deposit, so it comes back out of the balance. */
-    | { type: "reverted"; txHash: Hex };
+    | { type: "reverted"; txHash: Hex }
+    | { type: "predict"; trade: OptimisticTrade }
+    /** The server turned the order down, or it never got there. */
+    | { type: "predict-failed"; requestId: string }
+    | { type: "prediction"; update: PredictionUpdate }
+    | { type: "positions"; positions: PositionsView };
 
 export const initialAccountState: AccountState = { status: "idle" };
 
@@ -100,6 +136,9 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 rules,
                 pending,
                 orders: sortOrders(action.session.orders),
+                // Positions follow as their own push after the session.
+                predictions: state.status === "ready" ? state.predictions : { positions: [], orders: [] },
+                optimistic: state.status === "ready" ? state.optimistic : [],
             });
         }
         case "order": {
@@ -131,10 +170,48 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
         case "reverted":
             if (state.status !== "ready") return state;
             return { ...state, pending: state.pending.filter((p) => p.txHash !== action.txHash) };
+        case "predict":
+            if (state.status !== "ready") return state;
+            if (state.optimistic.some((t) => t.requestId === action.trade.requestId)) return state;
+            return { ...state, optimistic: [action.trade, ...state.optimistic] };
+        case "predict-failed":
+            if (state.status !== "ready") return state;
+            return { ...state, optimistic: state.optimistic.filter((t) => t.requestId !== action.requestId) };
+        case "prediction": {
+            if (state.status !== "ready") return state;
+            const { update } = action;
+            const held = state.predictions.orders.find((o) => o.id === update.order.id);
+            const stale = !!held && held.updatedAt > update.order.updatedAt;
+            const next = withAccount(state, update.account);
+            return {
+                ...next,
+                predictions: stale
+                    ? next.predictions
+                    : {
+                          orders: upsert(next.predictions.orders, update.order),
+                          positions: update.position
+                              ? upsert(next.predictions.positions, update.position)
+                              : next.predictions.positions,
+                      },
+                optimistic: next.optimistic.filter((t) => t.requestId !== update.requestId),
+            };
+        }
+        case "positions": {
+            if (state.status !== "ready") return state;
+            const known = new Set(action.positions.orders.map((o) => o.requestId));
+            return {
+                ...state,
+                predictions: action.positions,
+                optimistic: state.optimistic.filter((t) => !known.has(t.requestId)),
+            };
+        }
     }
 }
 
 type Ready = Extract<AccountState, { status: "ready" }>;
+
+/** Replaces the entry with the same id, or adds it on top. */
+const upsert = <T extends { id: string }>(items: T[], item: T): T[] => [item, ...items.filter((i) => i.id !== item.id)];
 
 const sortOrders = (orders: DepositOrderView[]) =>
     orders
@@ -178,7 +255,11 @@ function settle(state: Ready): Ready {
 /** The balance to show: the server's, plus whatever is still on its way. */
 export function optimisticBalance(state: AccountState): bigint | null {
     if (state.status !== "ready") return null;
-    return state.pending.reduce((sum, p) => sum + p.amount, state.balance);
+    const placed = new Set(state.predictions.orders.map((o) => o.requestId));
+    // An order the server has is already debited in `account.balance`.
+    const inFlight = state.optimistic.filter((t) => !placed.has(t.requestId));
+    const afterDeposits = state.pending.reduce((sum, p) => sum + p.amount, state.balance);
+    return inFlight.reduce((sum, t) => sum - t.amountWei, afterDeposits);
 }
 
 export type HistoryRow = {
