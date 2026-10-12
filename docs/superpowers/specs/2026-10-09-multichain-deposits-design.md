@@ -69,15 +69,16 @@ Everything lands as USDC in the account on Arc.
 - **The vault pays the quoted output it showed the user.** It absorbs the small slippage between quote and fill.
 - **Payouts set `maxFeePerGas` to at least 20 gwei.** Arc silently drops transactions that bid lower.
 - **An alert fires when the vault's free balance falls below 25% of its target size.**
+- **How deep "in a block" is, per chain.** The vault pays once the source transaction has `VAULT_CONFIRMATIONS_ETHEREUM` and `VAULT_CONFIRMATIONS_BNB` blocks on top of it, both 1 by default (the product owner's "in a block"). Raising Ethereum to 2 or 3 shrinks the reorg risk below for about 12 s a block. BNB Chain finalizes in seconds, so 1 is enough there.
 
 ## Failures
 
-| What happens                                  | Fronted                                                                                                  | Direct                                                                            |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| The source transaction reverts or never lands | The reservation is released. The user sees "Didn't go through".                                          | The user sees "Didn't go through".                                                |
-| The bridge fails and refunds                  | The refund lands in our treasury, since the user was already paid. It is logged for re-bridging by hand. | The refund returns to the user's wallet. The user sees "Refunded to your wallet". |
-| The bridge is slow                            | The user doesn't see it.                                                                                 | The steps stay up with the provider's estimate.                                   |
-| The source chain reorganizes after we paid    | An accepted risk for the demo. It is logged.                                                             | Nothing is credited before delivery.                                              |
+| What happens                                  | Fronted                                                                                                                                                        | Direct                                                                            |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| The source transaction reverts or never lands | The reservation is released. The user sees "Didn't go through".                                                                                                | The user sees "Didn't go through".                                                |
+| The bridge fails and refunds                  | The refund lands in our treasury, since the user was already paid. It is logged for re-bridging by hand.                                                       | The refund returns to the user's wallet. The user sees "Refunded to your wallet". |
+| The bridge is slow                            | The user doesn't see it.                                                                                                                                       | The steps stay up with the provider's estimate.                                   |
+| The source chain reorganizes after we paid    | An accepted risk for the demo. A dropped transaction is usually mined again and completes; the loss is one the sender replaced inside the reorg. It is logged. | Nothing is credited before delivery.                                              |
 
 ## Bridge providers
 
