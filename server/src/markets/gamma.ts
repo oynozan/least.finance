@@ -16,6 +16,8 @@ const jsonList = <T extends z.ZodType>(item: T) =>
 
 // Prices come as numeric text ("0.84"), and a few fields arrive as numbers
 const decimal = z.coerce.number().finite();
+// An empty string would coerce to 0, which reads as a price of nothing rather than no price
+const price = z.preprocess((value) => (value === "" ? null : value), decimal.nullish());
 
 const gammaMarket = z.object({
     id: z.string(),
@@ -25,8 +27,8 @@ const gammaMarket = z.object({
     enableOrderBook: z.boolean(),
     endDate: z.string().nullish(),
     // Both are for the first outcome's token, and either is null while a side of the book is empty
-    bestBid: decimal.nullish(),
-    bestAsk: decimal.nullish(),
+    bestBid: price,
+    bestAsk: price,
     orderMinSize: decimal,
     outcomes: jsonList(z.string()),
     outcomePrices: jsonList(decimal),

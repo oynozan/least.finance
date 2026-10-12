@@ -258,3 +258,41 @@ test("a tick that throws once doesn't stop the sync loop", async () => {
     await looping.stop();
     expect(logged).toHaveBeenCalled();
 });
+
+test("entries left alone for 10 minutes are swept by a tick", async () => {
+    const id = fake.fixtures.samples.extra;
+    await service.event(id);
+    expect(count(`GET /events/${id}`)).toBe(1);
+    // Past the requested window and the event TTL, the next tick drops the cached read
+    clock += 600_001;
+    await service.tick();
+    await service.event(id);
+    expect(count(`GET /events/${id}`)).toBe(2);
+    clock += 600_001;
+    await service.tick();
+    clock += 1;
+    await service.event(id);
+    expect(count("POST /books")).toBe(3);
+});
+
+test("an unknown event is remembered as unknown for 60 s", async () => {
+    expect(await service.event("999999")).toBeNull();
+    expect(await service.event("999999")).toBeNull();
+    expect(count("GET /events/999999")).toBe(1);
+    clock += 60_000;
+    expect(await service.event("999999")).toBeNull();
+    expect(count("GET /events/999999")).toBe(2);
+});
+
+test("identical searches in flight share one request", async () => {
+    const results = await Promise.all([service.search("fed"), service.search(" Fed "), service.search("fed")]);
+    expect(results[1]).toEqual(results[0]);
+    expect(count("GET /public-search")).toBe(1);
+});
+
+test("a crossed book from the CLOB makes the event unavailable", async () => {
+    const id = fake.fixtures.samples.yesNo;
+    const token = shapedTop().find((m) => m.id === id)!.outcomes[0]!.tokenId;
+    fake.setBook(token, { bid: 0.6, ask: 0.5 });
+    expect(await service.event(id)).toBeNull();
+});

@@ -13,6 +13,7 @@ const round4 = (value: number) => Math.round(value * 10_000) / 10_000;
 export function isOffered(market: GammaMarket, eventEndDate: string | null | undefined, now: Date): boolean {
     if (!market.active || market.closed || !market.acceptingOrders || !market.enableOrderBook) return false;
     if (market.bestBid == null || market.bestAsk == null) return false;
+    if (market.bestAsk < market.bestBid) return false;
     if (market.outcomes.length !== 2 || market.clobTokenIds.length !== 2) return false;
     if (round4(market.bestAsk - market.bestBid) > MAX_SPREAD) return false;
     const end = Date.parse(market.endDate ?? eventEndDate ?? "");

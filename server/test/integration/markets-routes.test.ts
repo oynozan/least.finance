@@ -73,5 +73,6 @@ describe("market routes", () => {
         const over = await get("/markets/search?q=fed");
         expect(over.status).toBe(429);
         expect(over.json.error.code).toBe("rate_limited");
+        expect(over.headers.get("cache-control")).toBe("no-store");
     });
 });

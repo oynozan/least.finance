@@ -118,3 +118,10 @@ test("a market with malformed clobTokenIds or no bestBid is skipped, the event s
     expect(after.outcomes.length).toBeLessThan(before.outcomes.length);
     expect(gammaEvent.parse(source).markets).toHaveLength(source.markets.length - 1);
 });
+
+test("an empty price or a crossed book isn't offered", () => {
+    expect(edited({ bestBid: "" })).toBeNull();
+    expect(edited({ bestAsk: "" })).toBeNull();
+    expect(edited({ bestBid: 0.6, bestAsk: 0.5 })).toBeNull();
+    expect(edited({ bestBid: 0.5, bestAsk: 0.52 })).not.toBeNull();
+});

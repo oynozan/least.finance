@@ -86,11 +86,11 @@ export function createApp(services: Services): express.Express {
     };
     const unavailable = () => new AppError("unavailable", "Markets are unavailable right now. Try again shortly.");
 
-    app.get("/markets/trending", limit(120, 60_000), noStore, (_req, res) => {
+    app.get("/markets/trending", noStore, limit(120, 60_000), (_req, res) => {
         res.json(services.markets.trending());
     });
 
-    app.get("/markets/search", limit(60, 60_000), noStore, async (req, res) => {
+    app.get("/markets/search", noStore, limit(60, 60_000), async (req, res) => {
         const { q } = parse(marketSearch, req.query);
         res.json(await services.markets.search(q).catch((error: unknown) => {
             req.log.warn({ err: error }, "Market search failed");
@@ -98,7 +98,7 @@ export function createApp(services: Services): express.Express {
         }));
     });
 
-    app.get("/markets/:eventId", limit(120, 60_000), noStore, async (req, res) => {
+    app.get("/markets/:eventId", noStore, limit(120, 60_000), async (req, res) => {
         const id = parse(marketId, req.params.eventId);
         const market = await services.markets.event(id).catch((error: unknown) => {
             req.log.warn({ err: error }, "Market read failed");

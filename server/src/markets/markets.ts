@@ -12,6 +12,9 @@ const SEARCH_TTL_MS = 60_000;
 const EVENT_TTL_MS = 60_000;
 const BOOKS_TTL_MS = 5_000;
 const REQUESTED_TTL_MS = 600_000;
+const UNKNOWN_TTL_MS = 60_000;
+/** Cached reads nobody asked for lately are dropped, so public routes can't grow the maps. */
+const KEEP_MS = 600_000;
 /** Re-reads per sync, most recently requested first. */
 const MAX_REREADS = 50;
 
@@ -36,6 +39,9 @@ export class MarketService {
     /** When each event was last asked for, so the sync keeps it fresh. */
     readonly #requested = new Map<string, number>();
     readonly #reading = new Map<string, Promise<MarketView | null>>();
+    readonly #searching = new Map<string, Promise<MarketView[]>>();
+    /** When each unknown event ID was last found missing. */
+    readonly #unknown = new Map<string, number>();
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
@@ -101,6 +107,20 @@ export class MarketService {
                 this.#deps.logger.warn({ err: error, event: id }, "Couldn't re-read a requested event");
             }
         }
+        this.sweep();
+    }
+
+    /** Drops cached reads that are stale and neither requested nor trending, and expired searches and unknown IDs. */
+    sweep(): void {
+        const now = this.#now();
+        const trending = new Set(this.#trending?.value.map((view) => view.id));
+        for (const cache of [this.#events, this.#books]) {
+            for (const [id, read] of cache) {
+                if (now - read.at > KEEP_MS && !this.#requested.has(id) && !trending.has(id)) cache.delete(id);
+            }
+        }
+        for (const [key, read] of this.#searches) if (now - read.at >= SEARCH_TTL_MS) this.#searches.delete(key);
+        for (const [id, at] of this.#unknown) if (now - at >= UNKNOWN_TTL_MS) this.#unknown.delete(id);
     }
 
     trending(): TrendingView {
@@ -116,10 +136,15 @@ export class MarketService {
         if (key.length < MIN_QUERY_LENGTH) return { query: key, markets: [] };
 
         const now = this.#now();
-        for (const [cached, read] of this.#searches) if (now - read.at >= SEARCH_TTL_MS) this.#searches.delete(cached);
         const hit = this.#searches.get(key);
-        if (hit) return { query: key, markets: hit.value };
+        if (hit && now - hit.at < SEARCH_TTL_MS) return { query: key, markets: hit.value };
 
+        const pending = this.#searching.get(key) ?? this.#find(key, now).finally(() => this.#searching.delete(key));
+        this.#searching.set(key, pending);
+        return { query: key, markets: await pending };
+    }
+
+    async #find(key: string, now: number): Promise<MarketView[]> {
         const events = await this.#deps.data.search(key);
         const date = new Date(now);
         const markets = events
@@ -127,7 +152,7 @@ export class MarketService {
             .filter((view) => view !== null)
             .slice(0, SEARCH_RESULTS);
         this.#searches.set(key, { value: markets, at: now });
-        return { query: key, markets };
+        return markets;
     }
 
     /** One event with its prices from the order books; null when it's gone or nothing in it can be bought. */
@@ -139,6 +164,8 @@ export class MarketService {
 
     async #read(id: string): Promise<MarketView | null> {
         const now = this.#now();
+        const missing = this.#unknown.get(id);
+        if (missing !== undefined && now - missing < UNKNOWN_TTL_MS) return null;
         let cached = this.#events.get(id);
         if (!cached || now - cached.at >= EVENT_TTL_MS) {
             const event = await this.#deps.data.event(id);
@@ -146,6 +173,7 @@ export class MarketService {
                 this.#events.delete(id);
                 this.#books.delete(id);
                 this.#requested.delete(id);
+                this.#unknown.set(id, now);
                 return null;
             }
             cached = { value: event, at: now };
@@ -170,7 +198,10 @@ export class MarketService {
         const view = shapeEvent(patched, new Date(now));
         // Only an event that can be shown is kept fresh, so unknown IDs cost nothing
         if (view) this.#requested.set(id, now);
-        else this.#requested.delete(id);
+        else {
+            this.#requested.delete(id);
+            this.#unknown.set(id, now);
+        }
         return view;
     }
 
