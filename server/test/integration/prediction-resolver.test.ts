@@ -187,33 +187,40 @@ test("settling queues one redemption per condition", async () => {
     expect(rows[0]).toMatchObject({ marketId: m.id, state: "pending", transactionId: null, attempts: 0 });
 });
 
-test("shares bought after the resolver read the position are paid on the next pass", async () => {
-    const m = market();
-    const { account, position } = await holder(m);
-    fake.resolve(m.id, ["1", "0"]);
-    let bumped = false;
+/** A resolver whose first settle transaction starts after `before` has run, as if a buy or a sale landed since it read the position. */
+function resolverRacing(before: () => Promise<void>) {
+    let raced = false;
     const ledger = new Proxy(h.ledger, {
         get(target, key) {
             if (key !== "runInTransaction") return Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key);
             return async (work: Parameters<typeof target.runInTransaction>[0]) => {
-                if (!bumped) {
-                    bumped = true;
-                    await h.database.collections.positions.updateOne(
-                        { _id: position._id },
-                        { $set: { shares: toDecimal(30_000_000n) } },
-                    );
+                if (!raced) {
+                    raced = true;
+                    await before();
                 }
                 return target.runInTransaction(work);
             };
         },
     });
-    const racing = new PredictionResolver({
+    return new PredictionResolver({
         collections: h.database.collections,
         ledger,
         data: createPolymarketData({ gammaUrl: fake.url, clobUrl: fake.url }),
         bus: h.bus,
         logger: h.logger,
         resolveMs: 0,
+    });
+}
+
+test("shares bought after the resolver read the position are paid on the next pass", async () => {
+    const m = market();
+    const { account, position } = await holder(m);
+    fake.resolve(m.id, ["1", "0"]);
+    const racing = resolverRacing(async () => {
+        await h.database.collections.positions.updateOne(
+            { _id: position._id },
+            { $set: { shares: toDecimal(30_000_000n) } },
+        );
     });
     await racing.tick();
     expect((await positionOf(position._id))!.state).toBe("open");
@@ -224,6 +231,20 @@ test("shares bought after the resolver read the position are paid on the next pa
     expect(won.state).toBe("won");
     expect(fromDecimal(won.payout!)).toBe(wei("30"));
     expect((await h.state(account._id)).balance).toBe(wei("120"));
+});
+
+test("a position that starts closing after the resolver read it is not paid", async () => {
+    const m = market();
+    const { account, position } = await holder(m);
+    fake.resolve(m.id, ["1", "0"]);
+    const racing = resolverRacing(async () => {
+        await h.database.collections.positions.updateOne({ _id: position._id }, { $set: { state: "closing" } });
+    });
+    await racing.tick();
+
+    expect((await positionOf(position._id))!.state).toBe("closing");
+    expect(await payoutRows(account)).toHaveLength(0);
+    expect((await h.state(account._id)).balance).toBe(wei("90"));
 });
 
 test("a resolved market beyond the first 100 open ones is still reached", async () => {

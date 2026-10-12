@@ -165,6 +165,43 @@ test("recover refunds placing orders once", async () => {
     expect(after.sum).toBe(after.balance);
 });
 
+test("recover leaves a posted order alone: no refund row and the debit stays", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "delay");
+    const view = await h.service.place(account, input("20"));
+    await until(async () => (await orderOf(view.requestId))?.state === "posted");
+
+    await h.service.recover();
+
+    const order = (await orderOf(view.requestId))!;
+    expect(order.state).toBe("posted");
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("80"));
+    expect(kinds(s.rows)).toEqual(["deposit", "prediction_buy"]);
+    expect(s.sum).toBe(s.balance);
+});
+
+test("settling the same exact-spend fill twice books its shares once", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "delay");
+    const view = await h.service.place(account, input("10"));
+    await until(async () => (await orderOf(view.requestId))?.state === "posted");
+    const order = (await orderOf(view.requestId))!;
+
+    // Spending the whole amount leaves no refund row for ref_unique to reject a repeat with
+    await h.service.settle(order, 10_000_000n, 20_000_000n);
+    await h.service.settle(order, 10_000_000n, 20_000_000n);
+
+    const positions = await h.database.collections.positions.find({ accountId: account._id }).toArray();
+    expect(positions).toHaveLength(1);
+    expect(fromDecimal(positions[0]!.shares)).toBe(20_000_000n);
+    expect(fromDecimal(positions[0]!.cost)).toBe(wei("10"));
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("90"));
+    expect(kinds(s.rows)).toEqual(["deposit", "prediction_buy"]);
+    expect(s.sum).toBe(s.balance);
+});
+
 test("maxOrderUSD is null while trading is off and the free float when on", async () => {
     const on = await predictionHarness();
     const off = await predictionHarness({ trading: "off" });

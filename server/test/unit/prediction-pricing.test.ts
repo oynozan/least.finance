@@ -28,6 +28,11 @@ describe("feeE6", () => {
         expect(feeE6(1_000_001n, 0.5, meta)).toBe(17_501n);
     });
 
+    it("rounds a fractional fee up when the exponent is not 1", () => {
+        // 1.000001 shares × 0.07 × 0.25² = 4375.004375, so 4376 and not 4375
+        expect(feeE6(1_000_001n, 0.5, { ...meta, feeExponent: 2 })).toBe(4_376n);
+    });
+
     it("is zero without a rate", () => {
         expect(feeE6(100_000_000n, 0.5, free)).toBe(0n);
     });
