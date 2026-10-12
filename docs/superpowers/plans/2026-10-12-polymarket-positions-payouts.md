@@ -5,6 +5,7 @@
 **Goal:** People can sell a prediction early from the sidebar, and winners are paid into their balance when the market resolves. Both happen exactly once, optimistically in the app. The pool redeems winning shares and reconciles its holdings in the background.
 
 **Architecture:** This builds on phase 2's `PredictionService`, `PredictionTracker`, `PoolTrader` and the client's optimistic list.
+
 - **Closing** is a fill-or-kill sell order through the same state machine. While it's in flight, its position is `closing`.
 - **Payouts.** A `PredictionResolver` reads Gamma's market by ID for markets with open positions, and pays from Gamma's final prices.
 - **Redemption.** A `PredictionRedeemer` redeems resolved conditions through the relayer and retries failures.
@@ -35,15 +36,15 @@
     - Proceeds are net of the fee (phase 2's `quoteSell` and `feeE6`).
 - **Timing.**
 
-  | Process | Interval |
-  | --- | --- |
-  | Resolver | every `PREDICTIONS_RESOLVE_MS`, default 60 000, at most 100 markets per pass |
-  | Redemption retry | every 10 minutes after a failure; logged at warn, and at error from the 6th attempt |
-  | Reconciliation | every 10 minutes |
-  | Settled positions shown | 7 days |
-
+    | Process                 | Interval                                                                            |
+    | ----------------------- | ----------------------------------------------------------------------------------- |
+    | Resolver                | every `PREDICTIONS_RESOLVE_MS`, default 60 000, at most 100 markets per pass        |
+    | Redemption retry        | every 10 minutes after a failure; logged at warn, and at error from the 6th attempt |
+    | Reconciliation          | every 10 minutes                                                                    |
+    | Settled positions shown | 7 days                                                                              |
     - Reconciliation tolerates differences of 0.1 share (100 000 e6), the Data API's dust floor.
     - It skips tokens with an unsettled order and markets whose redemption isn't confirmed.
+
 - **Copy, verbatim:**
     - A failed close: "Couldn't sell right now. Your position is back."
     - A busy position: "This position is already being sold."
@@ -64,6 +65,7 @@
 ### Task 1: Closing a position on the server
 
 **Files:**
+
 - Modify:
     - `server/src/predictions/predictions.ts`
     - `server/src/predictions/tracker.ts`
@@ -77,6 +79,7 @@
 - Test: `server/test/integration/prediction-close.test.ts`
 
 **Interfaces:**
+
 - **Sell quote.** `prediction:quote` also accepts `{ positionId }` and answers `SellQuoteView = { positionId: string; side: "sell"; shares: string; proceedsUSD: UsdcAmount; avgPrice: number; worstPrice: number; feeUSD: UsdcAmount; minShares: number }`. It uses `quoteSell` over the sellable shares.
 - **`prediction:close {requestId, positionId, quotedPrice}`** → `PredictionOrderView`, using the `prediction` limiter. `PredictionService.close(account, input)` does these steps in order:
     1. Trading is off → `trading_off`.
@@ -111,6 +114,7 @@
 ### Task 2: Paying winners at resolution
 
 **Files:**
+
 - Create: `server/src/predictions/resolver.ts`
 - Modify:
     - `server/src/markets/gamma.ts`: optional `umaResolutionStatus` and `conditionId` on markets
@@ -125,6 +129,7 @@
 - Test: `server/test/integration/prediction-resolver.test.ts`
 
 **Interfaces:**
+
 - **`PredictionResolver`:**
     - **Constructor:** `{ collections, ledger, data: PolymarketData, bus, logger, resolveMs, now? }`. It has `start`, `stop` and a public `tick`, like the tracker.
     - **Each `tick`:**
@@ -151,6 +156,7 @@
 ### Task 3: Redemption and reconciliation
 
 **Files:**
+
 - Create:
     - `server/src/predictions/redeemer.ts`
     - `server/src/predictions/reconciler.ts`
@@ -165,6 +171,7 @@
     - `server/test/integration/polymarket-trader.test.ts`
 
 **Interfaces:**
+
 - **`PoolTrader` gains:**
     - `redeem(conditionId): Promise<{ transactionId: string }>`: the adapter calls `client.redeemPositions({conditionId})` and returns `handle.transactionId`, without awaiting `wait()`.
     - `transaction(transactionId): Promise<"pending" | "confirmed" | "failed">`: the adapter calls `fetchTransaction`, where `STATE_CONFIRMED` means confirmed and `STATE_FAILED` or `STATE_INVALID` mean failed.
@@ -201,6 +208,7 @@
 ### Task 4: Close, live value and settled rows in the sidebar
 
 **Files:**
+
 - Modify:
     - `server/src/protocol.ts` and `server/src/markets/shape.ts`: `MarketOutcomeView` gains `sellPrice: number` (side A is `bestBid`; side B is `1 − bestAsk`; 4 decimals) and `minShares: number` (the market's `orderMinSize`)
     - `lib/trade/markets.ts`: `isMarketView` accepts both, and stays tolerant of cached views that don't have them
@@ -216,6 +224,7 @@
     - `e2e/predictions.spec.ts`
 
 **Interfaces:**
+
 - **The account client:**
     - `closePosition(position: PositionView, sellPrice: number | null): void` is synchronous.
         - If offline: set `tradeNotice` to the offline line and return.
@@ -254,6 +263,7 @@
 ### Task 5: Real predictions on the PnL page
 
 **Files:**
+
 - Modify:
     - `lib/trade/activity.ts`: `predictionActivity(position: PositionView, optimistic?)`
     - `components/pnl/use-activity.ts`
@@ -263,18 +273,19 @@
     - `e2e/pnl.spec.ts`
 
 **Interfaces:**
+
 - **`predictionActivity`** turns a position into rows:
 
-  | Row | Kind | `change` | Title | ID |
-  | --- | --- | --- | --- | --- |
-  | Opening | `predict` | 0 | `${outcome} on ${question}` | `prediction:${id}:open` |
-  | Sold (`closed`) | `close` | `proceeds − cost` | `Sold ${outcome} on ${question}` | `prediction:${id}:settle` |
-  | Won | `close` | `payout − cost` | `Won ${outcome} on ${question}` | `prediction:${id}:settle` |
-  | Lost | `close` | `−cost` | `Lost ${outcome} on ${question}` | `prediction:${id}:settle` |
-
+    | Row             | Kind      | `change`          | Title                            | ID                        |
+    | --------------- | --------- | ----------------- | -------------------------------- | ------------------------- |
+    | Opening         | `predict` | 0                 | `${outcome} on ${question}`      | `prediction:${id}:open`   |
+    | Sold (`closed`) | `close`   | `proceeds − cost` | `Sold ${outcome} on ${question}` | `prediction:${id}:settle` |
+    | Won             | `close`   | `payout − cost`   | `Won ${outcome} on ${question}`  | `prediction:${id}:settle` |
+    | Lost            | `close`   | `−cost`           | `Lost ${outcome} on ${question}` | `prediction:${id}:settle` |
     - The opening row's `amountUSD` is the cost.
     - Every row's `symbols` is `[QUOTE]`.
     - An optimistic buy is an opening row with `pending: true`.
+
 - **`use-activity`:** for a signed-in person, the real prediction rows replace the mock `predict` rows (`mockTrades(now).filter(t => t.kind !== "predict")`). Demo is unchanged. `ActivityState` keeps its shape.
 - **Balance math** stays: deposits + realized (`kind === "close"`) + fees. Real payouts count as realized, so winning days are coloured.
 
@@ -292,12 +303,14 @@
 ### Task 6: The owner's runbook and live check
 
 **Files:**
+
 - Create: `server/scripts/polymarket-live-check.ts`
 - Modify:
     - `README.md`: a "Prediction trading" section
     - `server/.env.example`, if a note is missing
 
 **Interfaces:**
+
 - **`polymarket-live-check.ts`** uses `createPolymarketTrader` with the real config and no database. It runs these steps in order:
     1. Pick the most liquid trending question from `GET {gamma}/events?...` (top by 24-hour volume, an offered YES under 0.9).
     2. Quote a $1 buy.
@@ -314,6 +327,7 @@
     - the units of the post amounts
     - the sell fee being netted
     - the fetchOrder status words
+
 - **The README section covers, in plain steps:**
     - the builder profile and its keys
     - a fresh pool key

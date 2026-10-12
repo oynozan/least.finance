@@ -5,6 +5,7 @@
 **Goal:** Confirming a prediction places a real fill-or-kill order on Polymarket from the pooled account. The app accepts it at once, the server settles it exactly once against the person's Arc balance, and a failure rolls back in the app with one message.
 
 **Architecture:**
+
 - **Trader seam.** A `PoolTrader` interface hides Polymarket's SDK (`@polymarket/client` 0.13.0). Production uses an SDK adapter. Tests use an in-process `FakeTrader`, injected through `Overrides.trader` the way bridges are.
 - **Server order flow.** `PredictionService`:
     - holds the money (an order row plus a guarded debit, in one transaction)
@@ -75,6 +76,7 @@
 ### Task 1: Prediction money in the ledger
 
 **Files:**
+
 - Modify:
     - `server/src/db/money.ts`
     - `server/src/db/mongo.ts`
@@ -86,6 +88,7 @@
     - `server/test/integration/migration.test.ts`
 
 **Interfaces:**
+
 - Produces, in `money.ts`:
     - `E6_TO_WEI = 10n ** 12n`
     - `e6ToWei(e6: bigint): bigint`
@@ -94,20 +97,56 @@
 - Produces, in `mongo.ts`:
     - `LedgerEntryDoc.kind` gains `"prediction_buy" | "prediction_refund" | "prediction_sell" | "prediction_payout"`.
     - New types:
-      ```ts
-      type PredictionOrderState = "placing" | "posted" | "filled" | "failed";
-      type PredictionFailure = "price_moved" | "market_closed" | "unavailable" | "rejected";
-      type PredictionOrderDoc = { _id: ObjectId; accountId: ObjectId; requestId: string; side: "buy" | "sell";
-        eventId: string; marketId: string; tokenId: string; conditionId: string; question: string; outcome: string;
-        amount: Decimal128 /* wei held, buy */; shares: Decimal128 | null /* e6, sell */; quotedPrice: number; limitPrice: number;
-        positionId: ObjectId | null; orderHash: string | null; clobOrderId: string | null; signed: unknown | null;
-        state: PredictionOrderState; reason: PredictionFailure | null; filledShares: Decimal128 | null /* e6 */;
-        cost: Decimal128 | null /* wei */; postedAt: Date | null; createdAt: Date; updatedAt: Date };
-      type PositionState = "open" | "closing" | "closed" | "won" | "lost";
-      type PositionDoc = { _id: ObjectId; accountId: ObjectId; eventId: string; marketId: string; tokenId: string;
-        conditionId: string; question: string; outcome: string; shares: Decimal128 /* e6 */; cost: Decimal128 /* wei */;
-        state: PositionState; proceeds: Decimal128 | null; payout: Decimal128 | null; openedAt: Date; settledAt: Date | null; updatedAt: Date };
-      ```
+        ```ts
+        type PredictionOrderState = "placing" | "posted" | "filled" | "failed";
+        type PredictionFailure = "price_moved" | "market_closed" | "unavailable" | "rejected";
+        type PredictionOrderDoc = {
+            _id: ObjectId;
+            accountId: ObjectId;
+            requestId: string;
+            side: "buy" | "sell";
+            eventId: string;
+            marketId: string;
+            tokenId: string;
+            conditionId: string;
+            question: string;
+            outcome: string;
+            amount: Decimal128 /* wei held, buy */;
+            shares: Decimal128 | null /* e6, sell */;
+            quotedPrice: number;
+            limitPrice: number;
+            positionId: ObjectId | null;
+            orderHash: string | null;
+            clobOrderId: string | null;
+            signed: unknown | null;
+            state: PredictionOrderState;
+            reason: PredictionFailure | null;
+            filledShares: Decimal128 | null /* e6 */;
+            cost: Decimal128 | null /* wei */;
+            postedAt: Date | null;
+            createdAt: Date;
+            updatedAt: Date;
+        };
+        type PositionState = "open" | "closing" | "closed" | "won" | "lost";
+        type PositionDoc = {
+            _id: ObjectId;
+            accountId: ObjectId;
+            eventId: string;
+            marketId: string;
+            tokenId: string;
+            conditionId: string;
+            question: string;
+            outcome: string;
+            shares: Decimal128 /* e6 */;
+            cost: Decimal128 /* wei */;
+            state: PositionState;
+            proceeds: Decimal128 | null;
+            payout: Decimal128 | null;
+            openedAt: Date;
+            settledAt: Date | null;
+            updatedAt: Date;
+        };
+        ```
     - `Collections` gains `predictionOrders` (collection `prediction_orders`) and `positions` (collection `positions`).
     - Indexes:
         - `prediction_orders.request_unique {accountId:1, requestId:1}`, unique
@@ -127,7 +166,7 @@
     - `float_short` (409)
     - `trading_off` (503)
 
-  `test/unit/errors.test.ts` covers them.
+    `test/unit/errors.test.ts` covers them.
 
 - [ ] **Step 1: Write the failing tests.**
     - Unit:
@@ -150,6 +189,7 @@
 ### Task 2: The trader seam, quote math and the fake trader
 
 **Files:**
+
 - Create:
     - `server/src/predictions/trader.ts`: the interface and types only
     - `server/src/predictions/pricing.ts`: pure math
@@ -157,28 +197,39 @@
 - Test: `server/test/unit/prediction-pricing.test.ts`
 
 **Interfaces:**
+
 - Produces, in `trader.ts`:
-  ```ts
-  export type Level = { price: number; size: number };                 // size in shares
-  export type Book = { bids: Level[]; asks: Level[]; tickSize: number; minOrderSize: number; negRisk: boolean }; // best first
-  export type MarketMeta = { conditionId: string; negRisk: boolean; tickSize: number; feeRate: number; feeExponent: number };
-  export type SignedRecord = { orderHash: string; signed: unknown };     // signed = the SDK SignedOrder as plain JSON
-  export type PostResult =
-    | { kind: "filled"; orderId: string; makingE6: bigint; takingE6: bigint }  // buy: making = pUSD, taking = shares
-    | { kind: "delayed"; orderId: string }
-    | { kind: "rejected"; reason: "price_moved" | "market_closed" | "unavailable" | "rejected"; message: string }
-    | { kind: "unknown" };                                                     // timeout or transport error after sending
-  export type LookupResult = { kind: "filled"; makingE6: bigint; takingE6: bigint } | { kind: "open" } | { kind: "cancelled" } | { kind: "missing" };
-  export interface PoolTrader {
-      book(tokenId: string): Promise<Book>;
-      meta(tokenId: string): Promise<MarketMeta>;
-      signBuy(o: { tokenId: string; spendE6: bigint; maxPrice: number }): Promise<SignedRecord>;
-      signSell(o: { tokenId: string; sharesE6: bigint; minPrice: number }): Promise<SignedRecord>;
-      post(record: SignedRecord): Promise<PostResult>;
-      lookup(o: { orderHash: string; clobOrderId: string | null; tokenId: string }): Promise<LookupResult>;
-      balanceE6(): Promise<bigint>;
-  }
-  ```
+    ```ts
+    export type Level = { price: number; size: number }; // size in shares
+    export type Book = { bids: Level[]; asks: Level[]; tickSize: number; minOrderSize: number; negRisk: boolean }; // best first
+    export type MarketMeta = {
+        conditionId: string;
+        negRisk: boolean;
+        tickSize: number;
+        feeRate: number;
+        feeExponent: number;
+    };
+    export type SignedRecord = { orderHash: string; signed: unknown }; // signed = the SDK SignedOrder as plain JSON
+    export type PostResult =
+        | { kind: "filled"; orderId: string; makingE6: bigint; takingE6: bigint } // buy: making = pUSD, taking = shares
+        | { kind: "delayed"; orderId: string }
+        | { kind: "rejected"; reason: "price_moved" | "market_closed" | "unavailable" | "rejected"; message: string }
+        | { kind: "unknown" }; // timeout or transport error after sending
+    export type LookupResult =
+        | { kind: "filled"; makingE6: bigint; takingE6: bigint }
+        | { kind: "open" }
+        | { kind: "cancelled" }
+        | { kind: "missing" };
+    export interface PoolTrader {
+        book(tokenId: string): Promise<Book>;
+        meta(tokenId: string): Promise<MarketMeta>;
+        signBuy(o: { tokenId: string; spendE6: bigint; maxPrice: number }): Promise<SignedRecord>;
+        signSell(o: { tokenId: string; sharesE6: bigint; minPrice: number }): Promise<SignedRecord>;
+        post(record: SignedRecord): Promise<PostResult>;
+        lookup(o: { orderHash: string; clobOrderId: string | null; tokenId: string }): Promise<LookupResult>;
+        balanceE6(): Promise<bigint>;
+    }
+    ```
 - Produces, in `pricing.ts` (all pure, no I/O):
     - `feeE6(sharesE6: bigint, price: number, meta: Pick<MarketMeta,"feeRate"|"feeExponent">): bigint`. It computes `shares × rate × (p(1−p))^exp` and rounds **up** to e6.
     - `quoteBuy(book: Book, meta, spendE6: bigint): { sharesE6: bigint; costE6: bigint; feeE6: bigint; avgPrice: number; worstPrice: number } | null`. It walks the asks best-first until `cost + fee` reaches `spendE6`, and returns `null` when the book can't fill it.
@@ -208,6 +259,7 @@
 ### Task 3: The Polymarket adapter, config and setup script
 
 **Files:**
+
 - Modify:
     - `server/package.json` and lockfile: add `@polymarket/client` at exactly `0.13.0`
     - `server/src/config.ts`
@@ -221,28 +273,29 @@
     - `server/test/unit/config.test.ts`
 
 **Interfaces:**
+
 - Consumes `PoolTrader` and its types (Task 2). Read `.superpowers/sdd/polymarket-phase-2-3-research/sdk.md`, sections 1–4, 7, 9 and 10.
 - Config (zod, following the file's conventions):
 
-  | Variable | Type | Default |
-  | --- | --- | --- |
-  | `PREDICTIONS_TRADING` | `on` / `off` | `off` |
-  | `POLYMARKET_POOL_KEY` | `optionalKey`, 0x + 64 hex | |
-  | `POLYMARKET_BUILDER_API_KEY`, `_SECRET`, `_PASSPHRASE` | `optionalKey` | |
-  | `POLYMARKET_BUILDER_CODE` | optional, 0x + 64 hex | |
-  | `POLYMARKET_DEPOSIT_WALLET` | optional address | |
-  | `POLYGON_RPC_URL` | url | `https://polygon.drpc.org` |
-  | `POLYMARKET_RELAYER_URL` | url | `https://relayer-v2.polymarket.com` |
-  | `POLYMARKET_DATA_URL` | url | `https://data-api.polymarket.com` |
-  | `POLYMARKET_FLOAT_USD` | positive number | 100 |
-  | `PREDICTIONS_POLL_MS` | int | 2000 |
-
+    | Variable                                               | Type                       | Default                             |
+    | ------------------------------------------------------ | -------------------------- | ----------------------------------- |
+    | `PREDICTIONS_TRADING`                                  | `on` / `off`               | `off`                               |
+    | `POLYMARKET_POOL_KEY`                                  | `optionalKey`, 0x + 64 hex |                                     |
+    | `POLYMARKET_BUILDER_API_KEY`, `_SECRET`, `_PASSPHRASE` | `optionalKey`              |                                     |
+    | `POLYMARKET_BUILDER_CODE`                              | optional, 0x + 64 hex      |                                     |
+    | `POLYMARKET_DEPOSIT_WALLET`                            | optional address           |                                     |
+    | `POLYGON_RPC_URL`                                      | url                        | `https://polygon.drpc.org`          |
+    | `POLYMARKET_RELAYER_URL`                               | url                        | `https://relayer-v2.polymarket.com` |
+    | `POLYMARKET_DATA_URL`                                  | url                        | `https://data-api.polymarket.com`   |
+    | `POLYMARKET_FLOAT_USD`                                 | positive number            | 100                                 |
+    | `PREDICTIONS_POLL_MS`                                  | int                        | 2000                                |
     - With `PREDICTIONS_TRADING=on`, `loadConfig` requires the pool key and all three builder secrets, and names each one missing.
     - `.env.example` gets a "Prediction trading" section, one comment line per variable. Its notes:
         - fund the printed wallet with pUSD
         - Polymarket's Collateral Onramp wraps USDC.e, not native USDC
         - host the server outside Polymarket's restricted regions
         - call Polymarket directly, with no proxies
+
 - Produces `createPolymarketTrader(config, logger): Promise<PoolTrader & { wallet: string }>`:
     - **Client.** `createSecureClient({ signer: hashingSigner(privateKey signer), wallet?, apiKey: builderApiKey(...), environment: forkEnvironmentConfig({ name: "app", rpc: POLYGON_RPC_URL, clob: {rest: POLYMARKET_CLOB_URL}, relayer: {rest: POLYMARKET_RELAYER_URL}, gamma: {rest: POLYMARKET_GAMMA_URL}, data: {rest: POLYMARKET_DATA_URL} }) })`.
     - **Hashing signer.** `hashingSigner` wraps the signer. When `signTypedData` sees `primaryType === "TypedDataSign"`, it computes `hashTypedData({ domain: payload.domain, types: { Order: payload.types.Order }, primaryType: "Order", message: payload.message.contents })` into an `AsyncLocalStorage` capture set by `signBuy`/`signSell`.
@@ -271,7 +324,8 @@
     - `POST /order`
     - `/data/order/:id`
 
-  Its controls set the next post's response, either as a JSON body or as an HTTP status with a body.
+    Its controls set the next post's response, either as a JSON body or as an HTTP status with a body.
+
 - `scripts/polymarket-setup.ts` loads the config and runs `createSecureClient` (which deploys the deposit wallet), `setupTradingApprovals()`, and `updateBalanceAllowance(COLLATERAL)`. It prints the wallet address and its pUSD balance, and never prints secrets.
 
 - [ ] **Step 1: Write the failing tests.**
@@ -293,6 +347,7 @@
 ### Task 4: Placing and settling an order
 
 **Files:**
+
 - Create:
     - `server/src/predictions/predictions.ts` (`PredictionService`)
     - `server/src/predictions/tracker.ts` (`PredictionTracker`)
@@ -306,24 +361,66 @@
     - `server/test/integration/prediction-tracker.test.ts`
 
 **Interfaces:**
+
 - Consumes the ledger methods (Task 1) and `PoolTrader`, the pricing functions and `FakeTrader` (Task 2).
 - `MarketService` changes:
     - New: `outcome(eventId: string, tokenId: string): Promise<{ outcome: MarketOutcomeView; marketId: string; question: string } | null>`. It goes through `event(eventId)`, so it's at most 5 s fresh, and finds the raw market whose `clobTokenIds` contains `tokenId`. The `question` is the event title.
     - Its constructor takes an optional `maxOrderUSD: () => number | null`, which `trending()` uses (default `() => null`).
 - Types added to `protocol.ts` (strings for money; `UsdcAmount` is the existing decimal string):
-  ```ts
-  export type PredictionFailure = "price_moved" | "market_closed" | "unavailable" | "rejected";
-  export type PredictionOrderView = { id: string; requestId: string; side: "buy" | "sell"; state: "placing" | "posted" | "filled" | "failed";
-    reason: PredictionFailure | null; eventId: string; tokenId: string; question: string; outcome: string;
-    amountUSD: UsdcAmount | null; shares: string | null; positionId: string | null; createdAt: string; updatedAt: string };
-  export type PositionView = { id: string; eventId: string; marketId: string; tokenId: string; question: string; outcome: string;
-    shares: string; costUSD: UsdcAmount; state: "open" | "closing" | "closed" | "won" | "lost";
-    proceedsUSD: UsdcAmount | null; payoutUSD: UsdcAmount | null; openedAt: string; settledAt: string | null; updatedAt: string };
-  export type PositionsView = { positions: PositionView[]; orders: PredictionOrderView[] };
-  export type QuoteView = { eventId: string; tokenId: string; side: "buy"; amountUSD: UsdcAmount; shares: string; avgPrice: number;
-    worstPrice: number; feeUSD: UsdcAmount; payoutUSD: UsdcAmount; minUSD: number };
-  export type PredictionUpdate = { requestId: string; order: PredictionOrderView; position: PositionView | null; account: AccountView };
-  ```
+    ```ts
+    export type PredictionFailure = "price_moved" | "market_closed" | "unavailable" | "rejected";
+    export type PredictionOrderView = {
+        id: string;
+        requestId: string;
+        side: "buy" | "sell";
+        state: "placing" | "posted" | "filled" | "failed";
+        reason: PredictionFailure | null;
+        eventId: string;
+        tokenId: string;
+        question: string;
+        outcome: string;
+        amountUSD: UsdcAmount | null;
+        shares: string | null;
+        positionId: string | null;
+        createdAt: string;
+        updatedAt: string;
+    };
+    export type PositionView = {
+        id: string;
+        eventId: string;
+        marketId: string;
+        tokenId: string;
+        question: string;
+        outcome: string;
+        shares: string;
+        costUSD: UsdcAmount;
+        state: "open" | "closing" | "closed" | "won" | "lost";
+        proceedsUSD: UsdcAmount | null;
+        payoutUSD: UsdcAmount | null;
+        openedAt: string;
+        settledAt: string | null;
+        updatedAt: string;
+    };
+    export type PositionsView = { positions: PositionView[]; orders: PredictionOrderView[] };
+    export type QuoteView = {
+        eventId: string;
+        tokenId: string;
+        side: "buy";
+        amountUSD: UsdcAmount;
+        shares: string;
+        avgPrice: number;
+        worstPrice: number;
+        feeUSD: UsdcAmount;
+        payoutUSD: UsdcAmount;
+        minUSD: number;
+    };
+    export type PredictionUpdate = {
+        requestId: string;
+        order: PredictionOrderView;
+        position: PositionView | null;
+        account: AccountView;
+    };
+    ```
 - `PredictionService`:
     - **Constructor:** `{ collections, ledger, markets: MarketService, trader: () => PoolTrader | null, bus, logger, config, now? }`.
     - **`quote({eventId, tokenId, amountUSD})`:**
@@ -391,6 +488,7 @@
 ### Task 5: Prediction events on the socket, wired into the server
 
 **Files:**
+
 - Modify:
     - `server/src/socket/sockets.ts`
     - `server/src/validation.ts`
@@ -403,6 +501,7 @@
 - Test: `server/test/integration/prediction-socket.test.ts`
 
 **Interfaces:**
+
 - Consumes `PredictionService` and its types (Task 4).
 - **Socket events**, which also go into `protocol.ts`'s event maps:
     - `prediction:quote {eventId, tokenId, amountUSD}` → `QuoteView`, using limiter `prediction-quote` (60/min)
@@ -426,7 +525,7 @@
     - `/polymarket/balance {usd}`
     - `/polymarket/settle-delayed {tokenId, outcome}`
 
-  `e2e/backend.ts` gains matching wrappers: `nextOrder`, `releaseOrder`, `setPoolBalance` and `settleDelayed`.
+    `e2e/backend.ts` gains matching wrappers: `nextOrder`, `releaseOrder`, `setPoolBalance` and `settleDelayed`.
     - The e2e tests that need the simulated Review keep working: they use the Swap verb, which stays simulated.
     - Any existing e2e test that confirms a **prediction** and expects "Trading isn't live yet" must switch to the live expectations in Task 7, or use Swap.
 
@@ -447,6 +546,7 @@
 ### Task 6: Optimistic predictions in the account client
 
 **Files:**
+
 - Modify:
     - `lib/account/state.ts`
     - `components/account-client.ts`
@@ -454,15 +554,25 @@
 - Test: `e2e/account.logic.spec.ts`, which may also be split into a new `e2e/predictions.logic.spec.ts`
 
 **Interfaces:**
+
 - Consumes the protocol types (Tasks 4–5). Read `.superpowers/sdd/polymarket-phase-2-3-research/client-map.md`, sections 1–2 and 7.
 - **The `ready` state** gains:
     - `predictions: { positions: PositionView[]; orders: PredictionOrderView[] }`, from the server
     - `optimistic: OptimisticTrade[]`, client-only, where:
 
-      ```ts
-      type OptimisticTrade = { requestId: string; side: "buy"; eventId: string; tokenId: string; question: string; outcome: string;
-        amountWei: bigint; shares: string /* the quote's estimate */; at: number };
-      ```
+        ```ts
+        type OptimisticTrade = {
+            requestId: string;
+            side: "buy";
+            eventId: string;
+            tokenId: string;
+            question: string;
+            outcome: string;
+            amountWei: bigint;
+            shares: string /* the quote's estimate */;
+            at: number;
+        };
+        ```
 
 - **Actions:**
     - `predict` adds an `OptimisticTrade`.
@@ -493,7 +603,7 @@
     - `placePrediction`
     - `dismissTradeNotice`
 
-  Demo and signed-out get safe defaults: empty lists, a `quote` that answers unavailable, and a `placePrediction` that does nothing.
+    Demo and signed-out get safe defaults: empty lists, a `quote` that answers unavailable, and a `placePrediction` that does nothing.
 
 - [ ] **Step 1: Write the failing logic tests** for the reducer and `optimisticBalance`:
     - `"an accepted prediction lowers the balance at once"`
@@ -510,6 +620,7 @@
 ### Task 7: Live predictions in the review and the sidebar
 
 **Files:**
+
 - Modify:
     - `components/trade/markets-store.ts`: `maxOrderUSD` in the snapshot, from trending and the cache
     - `components/trade/trade-provider.tsx` and `components/trade/use-trade-sentence.ts`: `ctx.maxOrderUSD`
@@ -526,18 +637,19 @@
     - `e2e/markets.logic.spec.ts`
 
 **Interfaces:**
+
 - Consumes `useAccount()`'s new members (Task 6) and the e2e controls (Task 5).
 - **Trading is live** when `ctx.maxOrderUSD` is a number, which means signed in with Privy and the server has trading on. Otherwise everything stays simulated.
 - **The amount bound:** `max` = the smaller of `spendCap(ctx)` and a new `predictionCap(ctx)` bound (value `maxOrderUSD`, with the Global Constraints message and button text) when live.
 - **`lib/trade/prediction-quote.ts`:** `quoteRows(quote: QuoteView, outcomeLabel: string, binaryOther?: string): PreviewRow[]` returns these rows, in this order:
 
-  | Row | Value |
-  | --- | --- |
-  | `shares` "You buy" (primary) | `${shares} shares at ${formatCents(avgPrice)}` |
-  | `win` `If ${label}` (primary, gain) | `you get ${formatUsd(payout)} (+${formatUsd(payout − amount)})` |
-  | `lose` `If ${other}` or "Otherwise" (loss) | `you lose ${formatUsd(amount)}` |
-  | `fee` "Polymarket's fee" | `formatUsd(fee)` |
-  | `odds` "Market odds" | from the outcome's chance, as today |
+    | Row                                        | Value                                                           |
+    | ------------------------------------------ | --------------------------------------------------------------- |
+    | `shares` "You buy" (primary)               | `${shares} shares at ${formatCents(avgPrice)}`                  |
+    | `win` `If ${label}` (primary, gain)        | `you get ${formatUsd(payout)} (+${formatUsd(payout − amount)})` |
+    | `lose` `If ${other}` or "Otherwise" (loss) | `you lose ${formatUsd(amount)}`                                 |
+    | `fee` "Polymarket's fee"                   | `formatUsd(fee)`                                                |
+    | `odds` "Market odds"                       | from the outcome's chance, as today                             |
 
 - **Review panel**, for a live prediction (signed in):
     - It asks `account.quote` when it opens, again 300 ms after the amount changes, and every 10 s while open. The quote's rows replace the preview rows while a quote is present.
