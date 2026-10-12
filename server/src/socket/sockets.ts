@@ -99,12 +99,23 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 // Joined before reading the account, so a deposit credited meanwhile is pushed, not lost.
                 await socket.join(room);
                 socket.data.account = { id: account._id, room };
-                return services.sessions.describe(account);
+                const session = await services.sessions.describe(account);
+                // Pushed once the ack is on its way; a failed read is logged, never the sign-in's problem.
+                services.balances.refresh(account, socket.data.identity, "bind").catch((error: unknown) => {
+                    logger.warn({ err: error }, "Couldn't read balances at sign-in");
+                });
+                return session;
             }),
         );
 
         socket.on("deposits:list", (payload, ack) =>
             reply(ack, async () => services.deposits.list(await boundAccount(socket), parse(depositPage, payload))),
+        );
+
+        socket.on("balances:refresh", (_payload, ack) =>
+            reply(ack, async () =>
+                services.balances.refresh(await boundAccount(socket), socket.data.identity, "click"),
+            ),
         );
 
         socket.on("deposit:submit", (payload, ack) =>
@@ -128,6 +139,18 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 for (const socket of sockets) {
                     if (socket.data.identity.userId === account.privyUserId) socket.emit("deposit:credited", payload);
                     else socket.leave(roomOf(deposit.accountId));
+                }
+            });
+    });
+
+    bus.on("balances:updated", ({ accountId, privyUserId, view }) => {
+        void io
+            .in(roomOf(accountId))
+            .fetchSockets()
+            .then((sockets) => {
+                for (const socket of sockets) {
+                    if (socket.data.identity.userId === privyUserId) socket.emit("balances", view);
+                    else socket.leave(roomOf(accountId));
                 }
             });
     });

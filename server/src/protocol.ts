@@ -61,6 +61,13 @@ export type CoinBalance = {
     usd: number | null;
 };
 
+/** Every coin in every wallet linked to the person, as of `readAt`. */
+export type BalancesView = {
+    /** ISO 8601: when the last full read started its 30 s window. */
+    readAt: string;
+    rows: CoinBalance[];
+};
+
 /** What opening the account hands back: everything the sidebar shows. */
 export type WalletSession = {
     account: AccountView;
@@ -103,10 +110,14 @@ export type ClientToServerEvents = {
     "deposits:list": (payload: { before?: string; limit?: number }, ack: (result: Ack<DepositPage>) => void) => void;
     /** Reports a deposit transaction so it's credited without waiting for the chain scan. */
     "deposit:submit": (payload: { txHash: string }, ack: (result: Ack<DepositReceipt>) => void) => void;
+    /** Asks for fresh balances; within 30 s of the last read nothing happens and `read` is false. */
+    "balances:refresh": (payload: Record<string, never>, ack: (result: Ack<{ read: boolean }>) => void) => void;
 };
 
 export type ServerToClientEvents = {
     "deposit:credited": (payload: { deposit: DepositView; account: AccountView }) => void;
+    /** The account's coin balances, pushed after `account:open` and whenever a read finishes. */
+    balances: (payload: BalancesView) => void;
     /** The access token expired; the server disconnects next, and the client reconnects with a fresh one. */
     "session:expired": () => void;
 };

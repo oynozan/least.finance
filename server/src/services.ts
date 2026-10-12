@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import type { AccountService } from "./accounts/accounts.ts";
 import type { IdentityProvider } from "./auth/identity.ts";
+import type { WalletBalances } from "./balances/wallet-balances.ts";
 import type { Config } from "./config.ts";
 import type { Database } from "./db/mongo.ts";
 import type { DepositService } from "./deposits/deposits.ts";
@@ -19,4 +20,5 @@ export type Services = {
     deposits: DepositService;
     sessions: Sessions;
     watcher: DepositWatcher;
+    balances: WalletBalances;
 };

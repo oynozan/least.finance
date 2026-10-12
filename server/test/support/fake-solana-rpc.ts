@@ -1,17 +1,21 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
+export type FakeSolanaRpc = Awaited<ReturnType<typeof startFakeSolanaRpc>>;
+
 /** A Solana JSON-RPC stand-in that answers getBalance and getTokenAccountsByOwner from what's been set. */
 export async function startFakeSolanaRpc() {
     const lamports = new Map<string, bigint>();
     const tokens = new Map<string, bigint>();
     let failures = 0;
     let failStatus = 500;
+    let requests = 0;
 
     const server = createServer((req, res) => {
         let raw = "";
         req.on("data", (chunk) => (raw += chunk));
         req.on("end", () => {
+            requests += 1;
             if (failures > 0) {
                 failures -= 1;
                 res.writeHead(failStatus).end("fail");
@@ -47,6 +51,8 @@ export async function startFakeSolanaRpc() {
         url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
         setBalance: (owner: string, amount: bigint) => void lamports.set(owner, amount),
         setTokenBalance: (owner: string, mint: string, units: bigint) => void tokens.set(`${owner}:${mint}`, units),
+        /** JSON-RPC requests received so far, failed ones included. */
+        requests: () => requests,
         failNext(count: number, status = 500) {
             failures = count;
             failStatus = status;

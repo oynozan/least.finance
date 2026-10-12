@@ -6,11 +6,17 @@ import { io as connectSocket, type Socket } from "socket.io-client";
 import { createTestClient, http, parseUnits, publicActions, walletActions, type Address, type Hash } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { arcChain } from "../../src/chain/arc.ts";
+import { EVM_COINS } from "../../src/crosschain/catalog.ts";
+import { createSourceClients } from "../../src/crosschain/chains.ts";
+import { fixedPrices } from "../../src/crosschain/prices.ts";
+import { createSolanaRpc } from "../../src/crosschain/solana.ts";
 import { loadConfig } from "../../src/config.ts";
 import type { ClientToServerEvents, ServerToClientEvents } from "../../src/protocol.ts";
 import { startServer, type RunningServer } from "../../src/server.ts";
 import { startArcEmulator, type ArcEmulator, type EmulatorOptions } from "./arc-emulator.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
+import { startFakeSolanaRpc, type FakeSolanaRpc } from "./fake-solana-rpc.ts";
+import { sourceChain } from "./source-chains.ts";
 
 export const WEB_ORIGIN = "http://localhost:3000";
 
@@ -59,6 +65,8 @@ export type Stack = {
     url: string;
     privy: FakePrivy;
     emulator: ArcEmulator;
+    /** The Solana RPC stand-in the server reads balances from. */
+    solanaRpc: FakeSolanaRpc;
     chain: ChainHelpers;
     /** A signed-in Privy user with one funded wallet. */
     user(options?: { usdc?: string }): Promise<User>;
@@ -72,6 +80,11 @@ export type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 type StackOptions = {
     mongoUri: string;
     anvilUrl: string;
+    /** The Ethereum and BNB Chain anvils; inside vitest they default to the global setup's. */
+    ethereumUrl?: string;
+    bnbUrl?: string;
+    /** The clock the balance refresh limit runs on. */
+    now?: () => number;
     env?: Record<string, string>;
     emulator?: EmulatorOptions;
 };
@@ -80,9 +93,28 @@ type StackOptions = {
 export async function startStack({
     mongoUri,
     anvilUrl,
+    ethereumUrl,
+    bnbUrl,
+    now,
     env = {},
     emulator: emulatorOptions,
 }: StackOptions): Promise<Stack> {
+    if (!ethereumUrl || !bnbUrl) {
+        const { inject } = await import("vitest");
+        ethereumUrl ??= inject("ethereumUrl");
+        bnbUrl ??= inject("bnbUrl");
+    }
+    // The anvils are fresh, not forks, so the stand-in tokens must exist for balances to read.
+    for (const [url, id] of [
+        [ethereumUrl, 1],
+        [bnbUrl, 56],
+    ] as const) {
+        const chain = sourceChain(url, id);
+        for (const { chain: key, token } of EVM_COINS) {
+            if (token && key === (id === 1 ? "ethereum" : "bnb")) await chain.installToken(token);
+        }
+    }
+    const solanaRpc = await startFakeSolanaRpc();
     const privy = await startFakePrivy();
     const emulator = await startArcEmulator(anvilUrl, emulatorOptions);
     const config = loadConfig({
@@ -106,7 +138,12 @@ export async function startStack({
         ...env,
     });
     const logger = pino({ level: config.LOG_LEVEL });
-    const server = await startServer(config, logger);
+    const server = await startServer(config, logger, {
+        sources: createSourceClients({ ethereum: [ethereumUrl], bnb: [bnbUrl] }),
+        solana: createSolanaRpc([solanaRpc.url]),
+        prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
+        now,
+    });
     const chain = chainHelpers(anvilUrl);
     const sockets: AppSocket[] = [];
 
@@ -115,6 +152,7 @@ export async function startStack({
         url: server.url,
         privy,
         emulator,
+        solanaRpc,
         chain,
         async user({ usdc = "1000" } = {}) {
             const wallet = privateKeyToAddress(generatePrivateKey());
@@ -144,6 +182,7 @@ export async function startStack({
             await db.dropDatabase().catch(() => undefined);
             await server.close();
             await emulator.stop();
+            await solanaRpc.stop();
             await privy.stop();
         },
     };

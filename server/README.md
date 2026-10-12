@@ -39,25 +39,29 @@ The variables are documented in [.env.example](.env.example). The server checks 
 
 Everything under `/v1` takes `Authorization: Bearer <Privy access token>`. Errors are `{ "error": { "code", "message" } }`, with the codes listed in [src/protocol.ts](src/protocol.ts).
 
-| Route                                              |                                                                                                                                                |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /health`                                      | Liveness.                                                                                                                                      |
-| `GET /ready`                                       | 200 once MongoDB answers and the deposit scan has run in the last minute; 503 otherwise. Reports how many blocks the scan is behind.           |
-| `POST /v1/account` | Opens the signed-in person's account on first use and returns the account, its latest deposits and the deposit rules. |
-| `GET /v1/account` | The account. |
-| `GET /v1/account/deposits?before=&limit=` | Deposits, newest first, up to 100 a page. |
-| `POST /v1/account/deposits` `{ txHash }` | Credits what a transaction sent to the account's deposit address. |
+| Route                                     |                                                                                                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /health`                             | Liveness.                                                                                                                            |
+| `GET /ready`                              | 200 once MongoDB answers and the deposit scan has run in the last minute; 503 otherwise. Reports how many blocks the scan is behind. |
+| `POST /v1/account`                        | Opens the signed-in person's account on first use and returns the account, its latest deposits and the deposit rules.                |
+| `GET /v1/account`                         | The account.                                                                                                                         |
+| `GET /v1/account/deposits?before=&limit=` | Deposits, newest first, up to 100 a page.                                                                                            |
+| `POST /v1/account/deposits` `{ txHash }`  | Credits what a transaction sent to the account's deposit address.                                                                    |
 
 ### Socket.io
 
 The handshake carries `auth: { token }`; a token that expires gets `session:expired` and a disconnect, and the client reconnects with a fresh one. Every event takes an acknowledgement and answers `{ ok: true, data } | { ok: false, error }`.
 
-| Event                                 |                                                                                        |
-| ------------------------------------- | -------------------------------------------------------------------------------------- |
-| `account:open` `{}` | Binds the socket to the person's account (opening it) and answers like the HTTP route. |
-| `deposits:list` `{ before?, limit? }` | A page of deposits.                                                                    |
-| `deposit:submit` `{ txHash }`         | Like the HTTP route.                                                                   |
-| `deposit:credited` (server → client)  | `{ deposit, account }`, for each deposit as it's credited.                             |
+| Event                                 |                                                                                                                                                          |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `account:open` `{}`                   | Binds the socket to the person's account (opening it) and answers like the HTTP route.                                                                   |
+| `deposits:list` `{ before?, limit? }` | A page of deposits.                                                                                                                                      |
+| `deposit:submit` `{ txHash }`         | Like the HTTP route.                                                                                                                                     |
+| `deposit:credited` (server → client)  | `{ deposit, account }`, for each deposit as it's credited.                                                                                               |
+| `balances:refresh` `{}`               | Reads the person's wallets again, silently: answers `{ read }`, and `read` is false within 30 s of the last read. A wallet not read yet is read at once. |
+| `balances` (server → client)          | `{ readAt, rows }`: every supported coin in every linked wallet. Pushed after `account:open` and after each read, to every socket of the account.        |
+
+A failed network keeps its last values in `rows` (a coin never read has a null amount). Solana balances are read from `SOLANA_RPC_URLS` (the Ethereum and BNB Chain ones from `ETHEREUM_RPC_URLS` and `BNB_RPC_URLS`), so a production deployment should list a paid endpoint first: the public one rate-limits.
 
 The types for both live in [src/protocol.ts](src/protocol.ts), which the web app imports as types only.
 

@@ -188,7 +188,6 @@ describe("when Privy can't answer", () => {
     test("binding needs no answer from Privy's API", async () => {
         const s = await stack();
         const user = await s.user();
-        const lookups = s.privy.userLookups;
         s.privy.failLookups(10, 500);
         try {
             const socket = await s.socket(user);
@@ -196,7 +195,6 @@ describe("when Privy can't answer", () => {
             const hash = await s.chain.send(user.wallet, account.depositAddress, "2");
             const receipt = await socket.timeout(10_000).emitWithAck("deposit:submit", { txHash: hash });
             expect(receipt).toMatchObject({ ok: true, data: { account: { balance: "2" } } });
-            expect(s.privy.userLookups).toBe(lookups);
         } finally {
             s.privy.failLookups(0, 500);
         }

@@ -2,10 +2,15 @@ import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Logger } from "pino";
 import { AccountService } from "./accounts/accounts.ts";
+import { WalletBalances } from "./balances/wallet-balances.ts";
 import { createKeyring } from "./accounts/keyring.ts";
 import { PrivyIdentity, type IdentityProvider } from "./auth/identity.ts";
 import { ARC_CHAIN_ID, assertArc, createArcClient } from "./chain/arc.ts";
 import type { Config } from "./config.ts";
+import { readBalances } from "./crosschain/balances.ts";
+import { createSourceClients, type SourceClients } from "./crosschain/chains.ts";
+import { lifiPrices, type PriceFeed } from "./crosschain/prices.ts";
+import { createSolanaRpc, readSolanaBalances, type SolanaRpc } from "./crosschain/solana.ts";
 import { connectDatabase } from "./db/mongo.ts";
 import { formatUsdc } from "./db/money.ts";
 import { DepositService } from "./deposits/deposits.ts";
@@ -28,6 +33,12 @@ export type RunningServer = {
 type Overrides = {
     /** Stands in for Privy, for tests that don't run a fake Privy API. */
     identity?: IdentityProvider;
+    /** Stand-ins for the Ethereum and BNB Chain RPCs, the Solana RPC and the price feed. */
+    sources?: SourceClients;
+    solana?: SolanaRpc;
+    prices?: PriceFeed;
+    /** The clock the balance refresh limit runs on. */
+    now?: () => number;
 };
 
 /** Connects everything, starts listening and starts the deposit scan. */
@@ -88,7 +99,30 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             scanRange: config.DEPOSIT_SCAN_RANGE,
             startBlock: config.DEPOSIT_START_BLOCK,
         });
-        const services: Services = { config, logger, database, bus, identity, accounts, deposits, sessions, watcher };
+        const sources =
+            overrides.sources ?? createSourceClients({ ethereum: config.ETHEREUM_RPC_URLS, bnb: config.BNB_RPC_URLS });
+        const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
+        const prices = overrides.prices ?? lifiPrices();
+        const balances = new WalletBalances({
+            identity,
+            bus,
+            logger: logger.child({ component: "balances" }),
+            readEvm: (owner) => readBalances({ sources, arc: client, prices }, owner),
+            readSolana: (owner) => readSolanaBalances({ solana, prices }, owner),
+            now: overrides.now,
+        });
+        const services: Services = {
+            config,
+            logger,
+            database,
+            bus,
+            identity,
+            accounts,
+            deposits,
+            sessions,
+            watcher,
+            balances,
+        };
 
         const httpServer = createServer(createApp(services));
         httpServer.headersTimeout = 20_000;

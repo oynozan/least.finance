@@ -12,6 +12,10 @@ import { pino } from "pino";
 import { getAddress, isAddress, parseUnits, type Address } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { ARC_CHAIN_ID } from "../../src/chain/arc.ts";
+import { EVM_COINS } from "../../src/crosschain/catalog.ts";
+import { createSourceClients } from "../../src/crosschain/chains.ts";
+import { fixedPrices } from "../../src/crosschain/prices.ts";
+import { createSolanaRpc } from "../../src/crosschain/solana.ts";
 import { loadConfig } from "../../src/config.ts";
 import type { DepositDoc } from "../../src/db/mongo.ts";
 import { formatUsdc, fromDecimal, toDecimal } from "../../src/db/money.ts";
@@ -19,7 +23,9 @@ import { startServer } from "../../src/server.ts";
 import { startAnvil } from "../support/anvil.ts";
 import { startArcEmulator } from "../support/arc-emulator.ts";
 import { startFakePrivy } from "../support/fake-privy.ts";
+import { startFakeSolanaRpc } from "../support/fake-solana-rpc.ts";
 import { startMongo } from "../support/mongo.ts";
+import { sourceChain } from "../support/source-chains.ts";
 import { chainHelpers } from "../support/stack.ts";
 
 const API_PORT = Number(process.env.E2E_API_PORT ?? 4100);
@@ -29,7 +35,18 @@ const WEB_ORIGINS = process.env.E2E_WEB_ORIGINS ?? "http://localhost:3100";
 /** e2e/privy-mock.ts builds the app with this app ID. */
 const PRIVY_APP_ID = process.env.E2E_PRIVY_APP_ID ?? "cmtestapp0000000000000000";
 
-const [mongo, anvil] = await Promise.all([startMongo(), startAnvil()]);
+const [mongo, anvil, ethereum, bnb] = await Promise.all([
+    startMongo(),
+    startAnvil(),
+    startAnvil(undefined, { chainId: 1 }),
+    startAnvil(undefined, { chainId: 56 }),
+]);
+// Fresh anvils aren't forks, so the stand-in tokens must exist for balances to read.
+for (const { chain, token } of EVM_COINS) {
+    if (token && chain === "ethereum") await sourceChain(ethereum.url, 1).installToken(token);
+    if (token && chain === "bnb") await sourceChain(bnb.url, 56).installToken(token);
+}
+const solanaRpc = await startFakeSolanaRpc();
 const emulator = await startArcEmulator(anvil.url);
 const privy = await startFakePrivy(PRIVY_APP_ID);
 const config = loadConfig({
@@ -53,7 +70,11 @@ const config = loadConfig({
     SOCKET_HANDSHAKES_PER_MINUTE: "100000",
     DEPOSIT_RECEIPT_TIMEOUT_MS: "4000",
 });
-const server = await startServer(config, pino({ level: config.LOG_LEVEL }));
+const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
+    sources: createSourceClients({ ethereum: [ethereum.url], bnb: [bnb.url] }),
+    solana: createSolanaRpc([solanaRpc.url]),
+    prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
+});
 const { services } = server;
 const chain = chainHelpers(anvil.url);
 
@@ -67,7 +88,8 @@ function isSolanaAddress(address: string) {
 }
 
 /** An Ethereum address checksummed, a Solana one as it came. */
-const normalize = (address: unknown) => (isSolanaAddress(String(address)) ? String(address) : getAddress(String(address)));
+const normalize = (address: unknown) =>
+    isSolanaAddress(String(address)) ? String(address) : getAddress(String(address));
 
 type Seeded = { amount: string; daysAgo: number };
 
@@ -215,7 +237,15 @@ async function stop() {
     stopping = true;
     control.close();
     await server.close().catch(() => undefined);
-    await Promise.allSettled([emulator.stop(), privy.stop(), anvil.stop(), mongo.stop()]);
+    await Promise.allSettled([
+        emulator.stop(),
+        privy.stop(),
+        anvil.stop(),
+        ethereum.stop(),
+        bnb.stop(),
+        solanaRpc.stop(),
+        mongo.stop(),
+    ]);
     process.exit(0);
 }
 process.on("SIGINT", stop);
