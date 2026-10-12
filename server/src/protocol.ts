@@ -317,3 +317,7 @@ export type PredictionUpdate = {
     position: PositionView | null;
     account: AccountView;
 };
+
+/** A network swaps run on. */
+export type SwapNetworkId =
+    "ethereum" | "arbitrum" | "base" | "optimism" | "polygon" | "bnb" | "avalanche" | "arc" | "solana";
