@@ -59,7 +59,11 @@ export class MarketService {
 
     async #run(signal: AbortSignal) {
         while (!signal.aborted) {
-            await this.tick(signal);
+            try {
+                await this.tick(signal);
+            } catch (error) {
+                this.#deps.logger.warn({ err: error }, "Market sync failed");
+            }
             await sleep(this.#deps.syncMs, undefined, { signal }).catch(() => undefined);
         }
     }

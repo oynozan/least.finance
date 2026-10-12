@@ -81,6 +81,11 @@ const schema = z.object({
     ACROSS_INTEGRATOR_ID: optionalKey,
     /** How often a bridge order's status is checked. */
     ORDER_POLL_MS: z.coerce.number().int().min(100).default(1_500),
+
+    POLYMARKET_GAMMA_URL: z.url().default("https://gamma-api.polymarket.com"),
+    POLYMARKET_CLOB_URL: z.url().default("https://clob.polymarket.com"),
+    /** How often the top Polymarket events are re-read. */
+    MARKETS_SYNC_MS: z.coerce.number().int().min(1_000).default(60_000),
 });
 
 export type Config = z.output<typeof schema>;

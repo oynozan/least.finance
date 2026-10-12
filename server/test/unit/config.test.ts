@@ -23,6 +23,13 @@ describe("loadConfig", () => {
         }
     });
 
+    it("Polymarket URLs and the sync interval have defaults", () => {
+        const config = load();
+        expect(config.POLYMARKET_GAMMA_URL).toBe("https://gamma-api.polymarket.com");
+        expect(config.POLYMARKET_CLOB_URL).toBe("https://clob.polymarket.com");
+        expect(config.MARKETS_SYNC_MS).toBe(60_000);
+    });
+
     it("fills in defaults", () => {
         const config = load();
         expect(config.PORT).toBe(4500);

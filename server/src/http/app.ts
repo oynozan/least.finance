@@ -8,7 +8,7 @@ import type { Identity } from "../auth/identity.ts";
 import { AppError, toApiError } from "../errors.ts";
 import type { ApiError } from "../protocol.ts";
 import type { Services } from "../services.ts";
-import { depositPage, depositReport, parse } from "../validation.ts";
+import { depositPage, depositReport, marketId, marketSearch, parse } from "../validation.ts";
 
 const REQUEST_ID = /^[\w.:-]{1,64}$/;
 
@@ -77,6 +77,35 @@ export function createApp(services: Services): express.Express {
                 lagBlocks: scan.head !== null && scan.scannedThrough !== null ? scan.head - scan.scannedThrough : null,
             },
         });
+    });
+
+    // Public: the list is the same for everyone, and it's only Polymarket's data.
+    const noStore: RequestHandler = (_req, res, next) => {
+        res.set("Cache-Control", "no-store");
+        next();
+    };
+    const unavailable = () => new AppError("unavailable", "Markets are unavailable right now. Try again shortly.");
+
+    app.get("/markets/trending", limit(120, 60_000), noStore, (_req, res) => {
+        res.json(services.markets.trending());
+    });
+
+    app.get("/markets/search", limit(60, 60_000), noStore, async (req, res) => {
+        const { q } = parse(marketSearch, req.query);
+        res.json(await services.markets.search(q).catch((error: unknown) => {
+            req.log.warn({ err: error }, "Market search failed");
+            throw unavailable();
+        }));
+    });
+
+    app.get("/markets/:eventId", limit(120, 60_000), noStore, async (req, res) => {
+        const id = parse(marketId, req.params.eventId);
+        const market = await services.markets.event(id).catch((error: unknown) => {
+            req.log.warn({ err: error }, "Market read failed");
+            throw unavailable();
+        });
+        if (!market) throw new AppError("not_found", "That market isn't available.");
+        res.json(market);
     });
 
     const v1 = express.Router();

@@ -246,3 +246,15 @@ test("events that fail the schema are counted in a warning", async () => {
     expect(await data.topEvents()).toEqual([]);
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ dropped: 2 }), expect.any(String));
 });
+
+test("a tick that throws once doesn't stop the sync loop", async () => {
+    const logger = pino({ level: "silent" });
+    const logged = vi.spyOn(logger, "warn");
+    const data = { topEvents: async () => [] } as unknown as PolymarketData;
+    const looping = new MarketService({ data, logger, syncMs: 10 });
+    const tick = vi.spyOn(looping, "tick").mockRejectedValueOnce(new Error("boom"));
+    looping.start();
+    await vi.waitFor(() => expect(tick.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await looping.stop();
+    expect(logged).toHaveBeenCalled();
+});

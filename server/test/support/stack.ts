@@ -15,6 +15,7 @@ import type { ClientToServerEvents, ServerToClientEvents } from "../../src/proto
 import { startServer, type RunningServer } from "../../src/server.ts";
 import { startArcEmulator, type ArcEmulator, type EmulatorOptions } from "./arc-emulator.ts";
 import { FakeBridge } from "./fake-bridge.ts";
+import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
 import { startFakeSolanaRpc, type FakeSolanaRpc } from "./fake-solana-rpc.ts";
 import { sourceChain } from "./source-chains.ts";
@@ -68,6 +69,8 @@ export type Stack = {
     emulator: ArcEmulator;
     /** The Solana RPC stand-in the server reads balances from. */
     solanaRpc: FakeSolanaRpc;
+    /** The Polymarket stand-in the server reads markets from. */
+    polymarket: FakePolymarket;
     /** The only bridge the server quotes from; a test steps its orders by hand. */
     bridge: FakeBridge;
     chain: ChainHelpers;
@@ -118,6 +121,7 @@ export async function startStack({
         }
     }
     const solanaRpc = await startFakeSolanaRpc();
+    const polymarket = await startFakePolymarket();
     const privy = await startFakePrivy();
     const emulator = await startArcEmulator(anvilUrl, emulatorOptions);
     const config = loadConfig({
@@ -138,6 +142,8 @@ export async function startStack({
         // anvil mines only when sent a transaction, so the head would never get past a lag.
         DEPOSIT_SCAN_LAG_BLOCKS: "0",
         DEPOSIT_RECEIPT_TIMEOUT_MS: "3000",
+        POLYMARKET_GAMMA_URL: polymarket.url,
+        POLYMARKET_CLOB_URL: polymarket.url,
         ...env,
     });
     const bridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
@@ -149,6 +155,8 @@ export async function startStack({
         bridges: [bridge],
         now,
     });
+    // The first list is in before the first request, not a sync interval later.
+    await server.services.markets.tick();
     const chain = chainHelpers(anvilUrl);
     const sockets: AppSocket[] = [];
 
@@ -158,6 +166,7 @@ export async function startStack({
         privy,
         emulator,
         solanaRpc,
+        polymarket,
         bridge,
         chain,
         async user({ usdc = "1000" } = {}) {
@@ -189,6 +198,7 @@ export async function startStack({
             await server.close();
             await emulator.stop();
             await solanaRpc.stop();
+            await polymarket.stop();
             await privy.stop();
         },
     };

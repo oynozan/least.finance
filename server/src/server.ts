@@ -23,6 +23,8 @@ import { Ledger } from "./deposits/ledger.ts";
 import { DepositRegistry } from "./deposits/registry.ts";
 import { DepositWatcher } from "./deposits/watcher.ts";
 import { Bus } from "./events.ts";
+import { MarketService } from "./markets/markets.ts";
+import { createPolymarketData } from "./markets/polymarket-data.ts";
 import { createApp } from "./http/app.ts";
 import type { Services } from "./services.ts";
 import { Sessions } from "./sessions.ts";
@@ -133,6 +135,16 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             readSolana: (owner) => readSolanaBalances({ solana, prices }, owner),
             now: overrides.now,
         });
+        const marketLogger = logger.child({ component: "markets" });
+        const markets = new MarketService({
+            data: createPolymarketData({
+                gammaUrl: config.POLYMARKET_GAMMA_URL,
+                clobUrl: config.POLYMARKET_CLOB_URL,
+                logger: marketLogger,
+            }),
+            logger: marketLogger,
+            syncMs: config.MARKETS_SYNC_MS,
+        });
         const services: Services = {
             config,
             logger,
@@ -145,6 +157,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             watcher,
             balances,
             orders,
+            markets,
         };
 
         const httpServer = createServer(createApp(services));
@@ -153,6 +166,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         await listen(httpServer, config.PORT, config.HOST);
         watcher.start();
         tracker.start();
+        markets.start();
         // A bad secret is logged loudly, but the server keeps serving: wallets already connected carry on.
         void identity.checkApi();
 
@@ -162,6 +176,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             url: `http://${host === "0.0.0.0" || host === "[::]" ? "127.0.0.1" : host}:${port}`,
             services,
             async close() {
+                await markets.stop();
                 await tracker.stop();
                 await watcher.stop();
                 // Closes the HTTP server too; idle keep-alive connections would hold it open.

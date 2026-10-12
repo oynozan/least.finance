@@ -30,6 +30,10 @@ export const depositPage = z.object({
     limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
+export const marketSearch = z.object({ q: z.string().max(100) });
+
+export const marketId = z.string().regex(/^\d{1,12}$/, "a market id");
+
 /** Parses client input, turning a mismatch into a 400 that names the field. */
 export function parse<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
     const result = schema.safeParse(input ?? {});

@@ -23,6 +23,7 @@ import { startServer } from "../../src/server.ts";
 import { startAnvil } from "../support/anvil.ts";
 import { startArcEmulator } from "../support/arc-emulator.ts";
 import { FakeBridge } from "../support/fake-bridge.ts";
+import { startFakePolymarket } from "../support/fake-polymarket.ts";
 import { startFakePrivy } from "../support/fake-privy.ts";
 import { startFakeSolanaRpc } from "../support/fake-solana-rpc.ts";
 import { startMongo } from "../support/mongo.ts";
@@ -49,6 +50,7 @@ for (const { chain, token } of EVM_COINS) {
 }
 const solanaRpc = await startFakeSolanaRpc();
 const emulator = await startArcEmulator(anvil.url);
+const polymarket = await startFakePolymarket();
 const privy = await startFakePrivy(PRIVY_APP_ID);
 const config = loadConfig({
     NODE_ENV: "test",
@@ -70,6 +72,8 @@ const config = loadConfig({
     // Every browser in the suite connects from this machine.
     SOCKET_HANDSHAKES_PER_MINUTE: "100000",
     DEPOSIT_RECEIPT_TIMEOUT_MS: "4000",
+    POLYMARKET_GAMMA_URL: polymarket.url,
+    POLYMARKET_CLOB_URL: polymarket.url,
 });
 const bridge = new FakeBridge({ arcRpcUrl: emulator.url, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
 const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
@@ -79,6 +83,7 @@ const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
     bridges: [bridge],
 });
 const { services } = server;
+await services.markets.tick();
 const chain = chainHelpers(anvil.url);
 const sources = { 1: sourceChain(ethereum.url, 1), 56: sourceChain(bnb.url, 56) };
 const rpcUrls: Record<number, string> = { 1: ethereum.url, 56: bnb.url, [ARC_CHAIN_ID]: emulator.url };
@@ -283,6 +288,7 @@ async function stop() {
         ethereum.stop(),
         bnb.stop(),
         solanaRpc.stop(),
+        polymarket.stop(),
         mongo.stop(),
     ]);
     process.exit(0);
