@@ -252,6 +252,44 @@ test.describe("networks", () => {
         expect(flipped.intent).toMatchObject({ toToken: "ETH", toNetwork: "base" });
     });
 
+    test("a flip puts the pay side where it is held, not on the receive side's empty network", () => {
+        // DOGE lives on BNB only, so picking it to receive makes both pairs identical
+        const demo = run("swap", [
+            slot("fromToken", "DOGE"),
+            slot("toToken", "ETH"),
+            slot("toNetwork", "base"),
+            slot("toToken", "DOGE"),
+        ]);
+        expect(demo.view.intent).toMatchObject({
+            fromToken: "ETH",
+            fromNetwork: "ethereum",
+            toToken: "DOGE",
+            toNetwork: "bnb",
+        });
+        expect(demo.view.issues).toEqual([]);
+        // A real wallet that holds SOL on Solana only, received on Ethereum, then BNB picked there
+        const wallet = withWallet({ BNB: { bnb: 2 }, SOL: { solana: 5 } });
+        const real = run(
+            "swap",
+            [slot("fromToken", "BNB"), slot("toToken", "SOL"), slot("toNetwork", "ethereum"), slot("toToken", "BNB")],
+            wallet,
+        );
+        expect(real.view.intent).toMatchObject({
+            fromToken: "SOL",
+            fromNetwork: "solana",
+            toToken: "BNB",
+            toNetwork: "bnb",
+        });
+        // A network that is held there stays
+        const held = withWallet({ BNB: { bnb: 2 }, ETH: { base: 1, ethereum: 3 } });
+        const kept = run(
+            "swap",
+            [slot("fromToken", "BNB"), slot("toToken", "ETH"), slot("toNetwork", "base"), slot("toToken", "BNB")],
+            held,
+        );
+        expect(kept.view.intent).toMatchObject({ fromToken: "ETH", fromNetwork: "base", toToken: "BNB" });
+    });
+
     test("the row that would make both sides identical is disabled", () => {
         const { state, view } = run("swap", [slot("toToken", "ETH")]);
         const rows = toNetworks(view, "toToken").choicesFor("ETH");
@@ -475,7 +513,7 @@ test.describe("networks", () => {
             return Math.floor((seed / 4_294_967_296) * n);
         };
         const problems: string[] = [];
-        for (let round = 0; round < 300; round++) {
+        for (let round = 0; round < 20000; round++) {
             const ctx = wallets[next(wallets.length)];
             let state = initialState(TRADE, ["swap", "buy", "sell"][next(3)], ctx);
             for (let step = 0; step < 12; step++) {

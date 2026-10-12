@@ -125,7 +125,11 @@ export const swap = operation({
             return { ...repaired, toToken: cause.prev, toNetwork: next.fromNetwork };
         }
         if (cause.type === "slot" && cause.slot === "toToken") {
-            return { ...repaired, fromToken: cause.prev, fromNetwork: next.toNetwork };
+            // The old receive network only becomes the pay network where the wallet holds the coin
+            const flippedNetwork = networkFits(ctx, cause.prev, next.toNetwork, "pay")
+                ? next.toNetwork
+                : defaultPayNetwork(ctx, cause.prev);
+            return { ...repaired, fromToken: cause.prev, fromNetwork: flippedNetwork };
         }
         const payWith = payableCoin(ctx, next.toToken);
         return { ...repaired, fromToken: payWith, fromNetwork: defaultPayNetwork(ctx, payWith) };
