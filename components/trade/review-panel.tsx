@@ -42,6 +42,15 @@ export function ReviewPanel() {
     const { open, view: sidebarView, setOpen } = useSidebar();
     const showing = open && sidebarView === "review";
 
+    // A prediction refused once the sidebar is closed would go unseen, so the wallet opens on its notice.
+    const { tradeNotice } = useAccount();
+    const shownNotice = useRef<object | null>(null);
+    useEffect(() => {
+        if (!tradeNotice || tradeNotice === shownNotice.current) return;
+        shownNotice.current = tradeNotice;
+        if (!open) setOpen(true);
+    }, [tradeNotice, open, setOpen]);
+
     // Remount on every opening, so the entrance replays and an earlier
     // "nothing was sent" doesn't linger. Closing leaves the content as it is,
     // so it slides away whole.

@@ -128,14 +128,6 @@ function SignedInWallet() {
     }, [ready, authenticated, setOpen]);
 
     const account = useAccount();
-    // A prediction refused after the review was closed would otherwise go unseen, so the sidebar opens on its notice.
-    const { tradeNotice } = account;
-    const shownNotice = useRef<object | null>(null);
-    useEffect(() => {
-        if (!tradeNotice || tradeNotice === shownNotice.current) return;
-        shownNotice.current = tradeNotice;
-        if (!open) setOpen(true);
-    }, [tradeNotice, open, setOpen]);
     const evmNetwork = useWalletNetwork(address);
     const network = active.kind === "solana" ? "solana" : evmNetwork;
 
