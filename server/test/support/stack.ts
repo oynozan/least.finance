@@ -20,7 +20,7 @@ import { startFakeLifi, type FakeLifi } from "./fake-lifi.ts";
 import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
 import { startFakeSolanaRpc, type FakeSolanaRpc } from "./fake-solana-rpc.ts";
-import { sourceChain } from "./source-chains.ts";
+import { installMulticall3, sourceChain } from "./source-chains.ts";
 
 export const WEB_ORIGIN = "http://localhost:3000";
 
@@ -38,6 +38,20 @@ export const SWAP_PRICES = {
     ARB: 0.74,
     OP: 1.8,
 };
+
+/** Nothing listens here, so a network pointed at it refuses every request. */
+const REFUSED_RPC = "http://127.0.0.1:9";
+
+/** The swap holdings' RPC lists: the local Ethereum and BNB Chain, and a refusing URL for the five networks without a local chain. */
+export const swapRpcEnv = (ethereumUrl: string, bnbUrl: string) => ({
+    ETHEREUM_RPC_URLS: ethereumUrl,
+    BNB_RPC_URLS: bnbUrl,
+    ARBITRUM_RPC_URLS: REFUSED_RPC,
+    BASE_RPC_URLS: REFUSED_RPC,
+    OPTIMISM_RPC_URLS: REFUSED_RPC,
+    POLYGON_RPC_URLS: REFUSED_RPC,
+    AVALANCHE_RPC_URLS: REFUSED_RPC,
+});
 
 export type ChainHelpers = ReturnType<typeof chainHelpers>;
 
@@ -110,7 +124,7 @@ type StackOptions = {
     /** The Ethereum and BNB Chain anvils; inside vitest they default to the global setup's. */
     ethereumUrl?: string;
     bnbUrl?: string;
-    /** The clock the balance refresh limit runs on. */
+    /** The clock the balance and holdings refresh limits run on. */
     now?: () => number;
     env?: Record<string, string>;
     emulator?: EmulatorOptions;
@@ -141,6 +155,8 @@ export async function startStack({
             if (token && key === (id === 1 ? "ethereum" : "bnb")) await chain.installToken(token);
         }
     }
+    // The swap holdings read through Multicall3, which the fresh anvils lack.
+    for (const url of [ethereumUrl, bnbUrl, anvilUrl]) await installMulticall3(url);
     const solanaRpc = await startFakeSolanaRpc();
     const polymarket = await startFakePolymarket();
     const lifi = await startFakeLifi({ prices: SWAP_PRICES });
@@ -159,6 +175,7 @@ export async function startStack({
         PRIVY_VERIFICATION_KEY: privy.verificationKey,
         PRIVY_API_URL: privy.url,
         ARC_RPC_URLS: emulator.url,
+        ...swapRpcEnv(ethereumUrl, bnbUrl),
         DEPOSIT_MNEMONIC: generateMnemonic(wordlist),
         DEPOSIT_POLL_MS: "100",
         // anvil mines only when sent a transaction, so the head would never get past a lag.

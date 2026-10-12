@@ -135,6 +135,11 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     .catch((error: unknown) => {
                         logger.warn({ err: error }, "Couldn't read balances at sign-in");
                     });
+                services.swapHoldings
+                    .refresh(account, socket.data.identity, "bind", (view) => socket.emit("swap:holdings", view))
+                    .catch((error: unknown) => {
+                        logger.warn({ err: error }, "Couldn't read swap holdings at sign-in");
+                    });
                 // Read and sent in the account's push order, so a settling push can't be overwritten by an older snapshot
                 enqueue(account._id.toHexString(), async () => {
                     try {
@@ -154,6 +159,12 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("balances:refresh", (_payload, ack) =>
             reply(ack, async () =>
                 services.balances.refresh(await boundAccount(socket), socket.data.identity, "click"),
+            ),
+        );
+
+        socket.on("swap:holdings:refresh", (_payload, ack) =>
+            reply(ack, async () =>
+                services.swapHoldings.refresh(await boundAccount(socket), socket.data.identity, "click"),
             ),
         );
 
@@ -264,6 +275,18 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             .then((sockets) => {
                 for (const socket of sockets) {
                     if (socket.data.identity.userId === privyUserId) socket.emit("balances", view);
+                    else socket.leave(roomOf(accountId));
+                }
+            });
+    });
+
+    bus.on("swap:holdings", ({ accountId, privyUserId, view }) => {
+        void io
+            .in(roomOf(accountId))
+            .fetchSockets()
+            .then((sockets) => {
+                for (const socket of sockets) {
+                    if (socket.data.identity.userId === privyUserId) socket.emit("swap:holdings", view);
                     else socket.leave(roomOf(accountId));
                 }
             });

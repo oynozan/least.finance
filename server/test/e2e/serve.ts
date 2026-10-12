@@ -29,8 +29,8 @@ import { startFakePolymarket } from "../support/fake-polymarket.ts";
 import { startFakePrivy } from "../support/fake-privy.ts";
 import { startFakeSolanaRpc } from "../support/fake-solana-rpc.ts";
 import { startMongo } from "../support/mongo.ts";
-import { sourceChain } from "../support/source-chains.ts";
-import { chainHelpers, SWAP_PRICES } from "../support/stack.ts";
+import { installMulticall3, sourceChain } from "../support/source-chains.ts";
+import { chainHelpers, SWAP_PRICES, swapRpcEnv } from "../support/stack.ts";
 
 const API_PORT = Number(process.env.E2E_API_PORT ?? 4100);
 const CONTROL_PORT = Number(process.env.E2E_CONTROL_PORT ?? 4101);
@@ -50,6 +50,8 @@ for (const { chain, token } of EVM_COINS) {
     if (token && chain === "ethereum") await sourceChain(ethereum.url, 1).installToken(token);
     if (token && chain === "bnb") await sourceChain(bnb.url, 56).installToken(token);
 }
+// The swap holdings read through Multicall3, which the fresh anvils lack.
+for (const url of [ethereum.url, bnb.url, anvil.url]) await installMulticall3(url);
 const solanaRpc = await startFakeSolanaRpc();
 const emulator = await startArcEmulator(anvil.url);
 const polymarket = await startFakePolymarket();
@@ -68,6 +70,7 @@ const config = loadConfig({
     PRIVY_VERIFICATION_KEY: privy.verificationKey,
     PRIVY_API_URL: privy.url,
     ARC_RPC_URLS: emulator.url,
+    ...swapRpcEnv(ethereum.url, bnb.url),
     DEPOSIT_MNEMONIC: generateMnemonic(wordlist),
     DEPOSIT_POLL_MS: "200",
     // anvil mines only when sent a transaction, so the head would never get past a lag.

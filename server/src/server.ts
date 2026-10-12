@@ -36,6 +36,8 @@ import { createApp } from "./http/app.ts";
 import type { Services } from "./services.ts";
 import { Sessions } from "./sessions.ts";
 import { SwapCatalog } from "./swaps/catalog.ts";
+import { createSwapClients } from "./swaps/clients.ts";
+import { SwapHoldings, multicallReader, solanaReader } from "./swaps/holdings.ts";
 import { createLifi } from "./swaps/lifi.ts";
 import { attachSockets } from "./socket/sockets.ts";
 
@@ -66,7 +68,7 @@ type Overrides = {
     bridges?: BridgeProvider[];
     /** Stands in for the pool's Polymarket trader. */
     trader?: PoolTrader;
-    /** The clock the balance refresh limit runs on. */
+    /** The clock the balance and holdings refresh limits run on. */
     now?: () => number;
 };
 
@@ -175,6 +177,26 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             logger: logger.child({ component: "swaps" }),
             syncMs: config.SWAPS_CATALOG_SYNC_MS,
         });
+        const swapHoldings = new SwapHoldings({
+            identity,
+            bus,
+            logger: logger.child({ component: "swap-holdings" }),
+            catalog: swapCatalog,
+            readEvm: multicallReader(
+                createSwapClients({
+                    ethereum: config.ETHEREUM_RPC_URLS,
+                    arbitrum: config.ARBITRUM_RPC_URLS,
+                    base: config.BASE_RPC_URLS,
+                    optimism: config.OPTIMISM_RPC_URLS,
+                    polygon: config.POLYGON_RPC_URLS,
+                    bnb: config.BNB_RPC_URLS,
+                    avalanche: config.AVALANCHE_RPC_URLS,
+                    arc: config.ARC_RPC_URLS,
+                }),
+            ),
+            readSolana: solanaReader(solana),
+            now: overrides.now,
+        });
         const service = new PredictionService({
             collections,
             ledger,
@@ -245,6 +267,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             markets,
             predictions: service,
             swapCatalog,
+            swapHoldings,
         };
 
         const httpServer = createServer(createApp(services));

@@ -77,6 +77,12 @@ const fields = z.object({
     /** RPCs for the chains deposits are bridged from, tried in order. */
     ETHEREUM_RPC_URLS: list(["https://ethereum-rpc.publicnode.com"]),
     BNB_RPC_URLS: list(["https://bsc-dataseed.bnbchain.org"]),
+    /** RPCs for the other EVM networks swaps read wallets' holdings from, tried in order. */
+    ARBITRUM_RPC_URLS: list(["https://arb1.arbitrum.io/rpc"]),
+    BASE_RPC_URLS: list(["https://mainnet.base.org"]),
+    OPTIMISM_RPC_URLS: list(["https://mainnet.optimism.io"]),
+    POLYGON_RPC_URLS: list(["https://polygon.drpc.org"]),
+    AVALANCHE_RPC_URLS: list(["https://api.avax.network/ext/bc/C/rpc"]),
     /** RPCs for reading Solana wallets' balances, tried in order. */
     SOLANA_RPC_URLS: list(["https://api.mainnet-beta.solana.com"]),
     RELAY_API_KEY: optionalKey,

@@ -161,6 +161,8 @@ export type ClientToServerEvents = {
     "deposit:submit": (payload: { txHash: string }, ack: (result: Ack<DepositReceipt>) => void) => void;
     /** Asks for fresh balances; within 30 s of the last read nothing happens and `read` is false. */
     "balances:refresh": (payload: Record<string, never>, ack: (result: Ack<{ read: boolean }>) => void) => void;
+    /** Asks for fresh swap holdings; within 15 s of the last read nothing happens and `read` is false. */
+    "swap:holdings:refresh": (payload: Record<string, never>, ack: (result: Ack<{ read: boolean }>) => void) => void;
     /** What a coin in one of the person's wallets would pay out on Arc. */
     "deposit:quote": (
         payload: { coin: string; amount: string; wallet: string },
@@ -197,6 +199,8 @@ export type ServerToClientEvents = {
     "deposit:credited": (payload: { deposit: DepositView; account: AccountView }) => void;
     /** The account's coin balances, pushed after `account:open` and whenever a read finishes. */
     balances: (payload: BalancesView) => void;
+    /** The coins the account's wallets hold on the swap networks, pushed after `account:open` and whenever a read finishes. */
+    "swap:holdings": (payload: SwapHoldingsView) => void;
     /** A bridge order changed state. */
     "deposit:progress": (payload: { order: DepositOrderView }) => void;
     /** The access token expired; the server disconnects next, and the client reconnects with a fresh one. */
@@ -336,3 +340,15 @@ export type SwapCatalogView = {
     /** When the prices were read; null before the first read. */
     readAt: string | null;
 };
+
+/** One coin a wallet holds on one network; `amount` is a decimal string in coin units and `usd` is null without a price. */
+export type SwapHoldingRow = {
+    wallet: string;
+    network: SwapNetworkId;
+    symbol: string;
+    amount: string;
+    usd: number | null;
+};
+
+/** Only the non-zero holdings of the account's linked wallets, as of `readAt` (ISO 8601). */
+export type SwapHoldingsView = { readAt: string; rows: SwapHoldingRow[] };

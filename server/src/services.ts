@@ -12,6 +12,7 @@ import type { MarketService } from "./markets/markets.ts";
 import type { PredictionService } from "./predictions/predictions.ts";
 import type { Sessions } from "./sessions.ts";
 import type { SwapCatalog } from "./swaps/catalog.ts";
+import type { SwapHoldings } from "./swaps/holdings.ts";
 
 /** Everything the HTTP and socket layers call into. */
 export type Services = {
@@ -29,4 +30,5 @@ export type Services = {
     markets: MarketService;
     predictions: PredictionService;
     swapCatalog: SwapCatalog;
+    swapHoldings: SwapHoldings;
 };
