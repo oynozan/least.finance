@@ -6,12 +6,13 @@ import { ArcLogo } from "./icons";
 /**
  * The networks' official logos, from cryptologos.cc, in public/logos/networks.
  * `bare` ones are just the mark, so they sit on a light disc. Arc isn't on
- * cryptologos: its official mark is ArcLogo. Base has no logo here yet, so it
- * shows the plain globe until one is added. Never draw a stand-in for a real logo.
+ * cryptologos: its official mark is ArcLogo, and Base's square is from Base's
+ * brand kit. Never draw a stand-in for a real logo.
  */
 const LOGOS: Partial<Record<Network, { file: string; bare?: true }>> = {
     1: { file: "ethereum", bare: true },
     56: { file: "bnb-chain" },
+    8453: { file: "base", bare: true },
     42161: { file: "arbitrum" },
     10: { file: "optimism" },
     137: { file: "polygon", bare: true },
