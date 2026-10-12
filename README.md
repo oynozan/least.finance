@@ -18,6 +18,23 @@ Balances and deposits come from the deposit server. Set it up as [server/README.
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Prediction trading
+
+Predictions are simulated until you turn real trading on. To send real orders to Polymarket from the pool's wallet, set up the server (`server/`) in this order:
+
+1. Create a builder profile on [polymarket.com](https://polymarket.com) and generate its API key, secret and passphrase (Settings, Builders). Put them in `server/.env` as `POLYMARKET_BUILDER_API_KEY`, `POLYMARKET_BUILDER_API_SECRET` and `POLYMARKET_BUILDER_API_PASSPHRASE`. `POLYMARKET_BUILDER_CODE` is optional and only attributes orders to you.
+2. Make a fresh private key for the pool (`0x` and 64 hex characters), used for nothing else, and set it as `POLYMARKET_POOL_KEY`. Whoever holds it controls the pool's funds.
+3. From `server/`, run `node --env-file=.env scripts/polymarket-setup.ts`. It deploys the pool's Polymarket deposit wallet, approves Polymarket's contracts and prints the wallet's address. Running it again is safe.
+4. Fund that address with pUSD, either through Polymarket's bridge deposit or by wrapping USDC.e into pUSD with the Collateral Onramp. The Onramp takes USDC.e (bridged), not native USDC, so swap native USDC first. Set `POLYMARKET_FLOAT_USD` to the balance you mean to keep.
+5. Host the server outside Polymarket's restricted regions, and let it call Polymarket directly. Do not route its traffic through proxies to appear to be elsewhere.
+6. Run the live check from `server/`: `node --env-file=.env scripts/polymarket-live-check.ts --yes-spend-real-money`. It buys and sells about $1 on the most liquid trending question, and prints PASS or FAIL for each assumption that could not be confirmed offline: the CLOB order ID equals the computed order hash, the units of the post amounts, the sell fee being netted, and the words an order lookup answers with. Do not go on if any line fails.
+7. Set `PREDICTIONS_TRADING=on` and restart the server.
+8. Set `TRUST_PROXY` to the number of reverse proxies in front of the server (0 when it is exposed directly), so per-IP limits see the real client.
+
+After launch, watch the logs for "The pool's Polymarket float is low" and "is high" warnings (top up or withdraw), and for the errors "The pool's holdings don't match the positions" and "Prediction reconciliation failed" (the ledger and the pool disagree; look into them before anything else).
+
+A location check on users is still a launch blocker. Polymarket asks apps that place orders to geoblock their users, and the pooled account has none, so keep real trading to a private demo until one exists (see "Not included" in the [design](docs/superpowers/specs/2026-10-12-polymarket-predictions-design.md)).
+
 ## Where things live
 
 - `app/page.tsx`: page shell (centered layout)
