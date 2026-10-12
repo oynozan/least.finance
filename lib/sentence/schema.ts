@@ -41,6 +41,18 @@ export function schema<Terms extends Str, Ctx>() {
                 }
                 if (spec.term) terms.add(spec.term);
             }
+            const followed = new Map<string, string>();
+            for (const [slot, spec] of Object.entries(op.slots)) {
+                if (spec.kind !== "choice" || spec.then === undefined) continue;
+                const next = Object.hasOwn(op.slots, spec.then) ? op.slots[spec.then] : undefined;
+                const bad = `${op.id}: "${slot}" has then "${spec.then}", which`;
+                if (!next) throw new Error(`${bad} is not a slot`);
+                if (next.kind !== "choice") throw new Error(`${bad} is not a choice slot`);
+                if (next.then !== undefined) throw new Error(`${bad} has a then of its own`);
+                const other = followed.get(spec.then);
+                if (other) throw new Error(`${bad} is already the then of "${other}"`);
+                followed.set(spec.then, slot);
+            }
             for (const verb of op.verbs) {
                 if (seen.has(verb.id)) throw new Error(`The verb "${verb.id}" is defined twice`);
                 seen.add(verb.id);

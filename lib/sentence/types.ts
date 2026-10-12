@@ -9,7 +9,13 @@ export type Str = Record<string, string>;
 export type Tone = "gain" | "loss" | "neutral";
 
 /** Opaque to the engine; the UI resolves `set` through its icon registry. */
-export type IconRef = { set: string; id: string; tone?: Tone };
+export type IconRef = {
+    set: string;
+    id: string;
+    tone?: Tone;
+    /** Drawn small at the icon's bottom-right, such as a network on a coin */
+    badge?: IconRef;
+};
 
 export type Choice<T extends string = string> = {
     value: T;
@@ -21,6 +27,8 @@ export type Choice<T extends string = string> = {
     description?: string;
     /** Muted trailing text in the picker: a price, odds, a balance. */
     detail?: string;
+    /** A second trailing line under `detail`, which then shows in the foreground colour */
+    subdetail?: string;
     tone?: Tone;
     icon?: IconRef;
     /** Picker section this choice is listed under. */
@@ -77,6 +85,8 @@ export type ChoiceSpec<V, Ctx, T extends string, Term extends string> = SlotBase
     search?: { placeholder: string };
     /** The slot whose value this one's choices come from; while that one is missing, this one stays quiet. */
     needs?: string;
+    /** The choice slot that holds this one's follow-up value (a coin's network), kept out of the template */
+    then?: string;
 };
 
 export type NumberSpec<V, Ctx, Term extends string> = SlotBase<Term> & {

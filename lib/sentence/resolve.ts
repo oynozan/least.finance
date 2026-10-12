@@ -1,7 +1,7 @@
 import { isEntered } from "./decimal";
 import { findVerb, type Registry } from "./schema";
 import type { SentenceState } from "./state";
-import type { Choice, Issue, Preview, Str } from "./types";
+import type { Choice, ChoiceSpec, Issue, Preview, Str } from "./types";
 
 /**
  * One item of the rendered sentence. Keys are stable across verbs: words by
@@ -22,12 +22,25 @@ type SlotViewBase = {
     issue?: Issue;
 };
 
+/** A host slot's follow-up slot (a coin's network), which the sentence itself never shows */
+export type CompanionView = {
+    id: string;
+    prompt?: string;
+    hint: string;
+    value: string;
+    selected?: Choice;
+    /** The companion's choices as they would be were the host set to this value */
+    choicesFor(hostValue: string): readonly Choice[];
+};
+
 export type ChoiceSlotView = SlotViewBase & {
     kind: "choice";
     prompt?: string;
     value: string;
+    /** Carries the companion's icon as its badge when both have one */
     selected?: Choice;
     choices: readonly Choice[];
+    then?: CompanionView;
     /** Present when the picker also takes a typed value. */
     custom?: {
         placeholder: string;
@@ -79,6 +92,18 @@ export type SentenceView<Intent> = {
 
 const TOKEN = /[.,!?;:]+|[^\s.,!?;:]+/g;
 const PUNCTUATION = /^[.,!?;:]+$/;
+
+function select<C>(
+    spec: ChoiceSpec<Str, C, string, string>,
+    choices: readonly Choice[],
+    value: string,
+    values: Str,
+    ctx: C,
+): Choice | undefined {
+    const { custom } = spec;
+    const typed = custom && value !== "" && custom.parse(value, values, ctx) === value;
+    return choices.find((c) => c.value === value) ?? (typed ? custom.choice(value, values, ctx) : undefined);
+}
 
 export function resolve<I, T extends Str, C>(
     registry: Registry<I, T, C>,
@@ -160,14 +185,38 @@ export function resolve<I, T extends Str, C>(
         } else {
             const choices = spec.choices(values, ctx);
             const custom = spec.custom;
-            const typed = custom && value !== "" && custom.parse(value, values, ctx) === value;
-            const selected =
-                choices.find((c) => c.value === value) ?? (typed ? custom.choice(value, values, ctx) : undefined);
+            let selected = select(spec, choices, value, values, ctx);
             // A value that is no longer offered (a market closed, a coin sold)
             // surfaces as an issue rather than being silently replaced.
-            if (!selected || selected.disabled) {
+            const usable = !!selected && !selected.disabled;
+            if (!usable) {
                 slotIssues.push({ code: "missing", severity: "incomplete", slot: id, ...spec.missing });
             }
+
+            let then: CompanionView | undefined;
+            const companion = spec.then ? op.slots[spec.then] : undefined;
+            if (spec.then && companion?.kind === "choice") {
+                const thenId = spec.then;
+                const thenValue = values[thenId] ?? "";
+                const thenChoices = companion.choices(values, ctx);
+                const thenSelected = select(companion, thenChoices, thenValue, values, ctx);
+                // A host without a usable value reports only its own gap
+                if (usable && (!thenSelected || thenSelected.disabled)) {
+                    slotIssues.push({ code: "missing", severity: "incomplete", slot: id, ...companion.missing });
+                }
+                if (selected?.icon && thenSelected?.icon) {
+                    selected = { ...selected, icon: { ...selected.icon, badge: thenSelected.icon } };
+                }
+                then = {
+                    id: thenId,
+                    prompt: companion.prompt,
+                    hint: companion.hint,
+                    value: thenValue,
+                    selected: thenSelected,
+                    choicesFor: (hostValue) => companion.choices({ ...values, [id]: hostValue }, ctx),
+                };
+            }
+
             slots[id] = {
                 kind: "choice",
                 id,
@@ -176,6 +225,7 @@ export function resolve<I, T extends Str, C>(
                 value,
                 selected,
                 choices,
+                ...(then && { then }),
                 wide: spec.wide,
                 empty: spec.empty,
                 search: spec.search,

@@ -7,6 +7,7 @@ export {
     type SentenceView,
     type SlotView,
     type ChoiceSlotView,
+    type CompanionView,
     type NumberSlotView,
 } from "./resolve";
 export { sanitizeDecimal, canonicalDecimal, isEntered } from "./decimal";
