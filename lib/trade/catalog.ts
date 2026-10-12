@@ -4,22 +4,52 @@
  * context, so tests (and later live data) can pass their own.
  */
 
+import { COINS, type NetworkId } from "@/server/src/swaps/coins";
+
+export type TokenNetwork = {
+    network: NetworkId;
+    /** What a wrapped or pegged form is called ("WBTC") */
+    label?: string;
+    wrapped?: true;
+    /** Coin units kept out of the cap for gas */
+    reserve?: number;
+};
+
 export type Token = {
     symbol: string;
     name: string;
     priceUSD: number;
+    home: NetworkId;
+    /** The networks the coin exists on, in the picker's order */
+    networks: readonly TokenNetwork[];
 };
 
-export const TOKENS: Token[] = [
-    { symbol: "ETH", name: "Ethereum", priceUSD: 3_210.4 },
-    { symbol: "SOL", name: "Solana", priceUSD: 147.2 },
-    { symbol: "BTC", name: "Bitcoin", priceUSD: 97_300 },
-    { symbol: "USDC", name: "USD Coin", priceUSD: 1 },
-    { symbol: "LINK", name: "Chainlink", priceUSD: 18.45 },
-    { symbol: "DOGE", name: "Dogecoin", priceUSD: 0.182 },
-    { symbol: "AVAX", name: "Avalanche", priceUSD: 32.1 },
-    { symbol: "ARB", name: "Arbitrum", priceUSD: 0.74 },
-];
+const PRICES: Readonly<Record<string, number>> = {
+    ETH: 3_210.4,
+    SOL: 147.2,
+    BTC: 97_300,
+    USDC: 1,
+    USDT: 1,
+    BNB: 600,
+    LINK: 18.45,
+    DOGE: 0.182,
+    AVAX: 32.1,
+    ARB: 0.74,
+    OP: 1.8,
+};
+
+export const TOKENS: Token[] = COINS.map((coin) => ({
+    symbol: coin.symbol,
+    name: coin.name,
+    priceUSD: PRICES[coin.symbol] ?? 0,
+    home: coin.home,
+    networks: coin.entries.map(({ network, label, wrapped, reserve }) => ({
+        network,
+        ...(label && { label }),
+        ...(wrapped && { wrapped }),
+        ...(reserve && { reserve }),
+    })),
+}));
 
 /**
  * What the mock connected wallet holds, in coin units. With a real wallet

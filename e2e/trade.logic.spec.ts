@@ -13,7 +13,16 @@ import {
 import { CATALOG, MOCK_HOLDINGS, type Catalog } from "@/lib/trade/catalog";
 import { toPredictionMarket } from "@/lib/trade/markets";
 import type { MarketView, QuoteView } from "@/server/src/protocol";
-import type { TradeCtx, TradeTerms } from "@/lib/trade/context";
+import { heldOn, heldTotal, type TradeCtx, type TradeTerms, type WalletHoldings } from "@/lib/trade/context";
+import { networkName } from "@/lib/trade/networks";
+import { NETWORKS } from "@/server/src/swaps/coins";
+import {
+    buyPayNetwork,
+    defaultPayNetwork,
+    defaultReceiveNetwork,
+    networkChoices,
+    usdcCap,
+} from "@/lib/trade/operations/shared";
 import { quoteRows } from "@/lib/trade/prediction-quote";
 import { TRADE } from "@/lib/trade/registry";
 import {
@@ -28,6 +37,7 @@ import type { PositionView } from "@/server/src/protocol";
 
 const connected: TradeCtx = { catalog: CATALOG, holdings: MOCK_HOLDINGS };
 const disconnected: TradeCtx = { catalog: CATALOG, holdings: null };
+const withWallet = (wallet: WalletHoldings | null): TradeCtx => ({ catalog: CATALOG, holdings: null, wallet });
 
 function run(verb: string, actions: SentenceAction[] = [], ctx = connected) {
     let state: SentenceState<TradeTerms> = initialState(TRADE, verb, ctx);
@@ -48,8 +58,21 @@ test.describe("sentences", () => {
     });
 
     test("a complete sentence produces its normalized intent", () => {
-        expect(run("swap").view.intent).toEqual({ type: "swap", fromToken: "ETH", toToken: "SOL", amountUSD: "10" });
-        expect(run("sell").view.intent).toEqual({ type: "spot", side: "sell", token: "SOL", amountUSD: "10" });
+        expect(run("swap").view.intent).toEqual({
+            type: "swap",
+            fromToken: "ETH",
+            fromNetwork: "ethereum",
+            toToken: "SOL",
+            toNetwork: "solana",
+            amountUSD: "10",
+        });
+        expect(run("sell").view.intent).toEqual({
+            type: "spot",
+            side: "sell",
+            token: "SOL",
+            network: "solana",
+            amountUSD: "10",
+        });
         expect(run("short").view.intent).toEqual({
             type: "perp",
             side: "short",
@@ -118,15 +141,18 @@ test.describe("switching verbs", () => {
 
     test("arriving at Swap with its source coin never swaps a coin into itself", () => {
         const { view } = run("buy", [slot("token", "ETH"), verb("swap")]);
-        expect(view.intent).toMatchObject({ type: "swap", toToken: "ETH" });
+        expect(view.intent).toMatchObject({ type: "swap", toToken: "ETH", toNetwork: "ethereum" });
         expect(view.intent).not.toMatchObject({ fromToken: "ETH" });
     });
 });
 
 test.describe("preventing invalid sentences", () => {
-    test("picking the other side's coin flips the swap", () => {
-        expect(run("swap", [slot("toToken", "ETH")]).view.text).toBe("I want to Swap my SOL to ETH for 10 USD.");
+    test("picking the other side's coin flips the swap when both sides would be identical", () => {
         expect(run("swap", [slot("fromToken", "SOL")]).view.text).toBe("I want to Swap my SOL to ETH for 10 USD.");
+        // BNB lives on one network, so receiving it while paying it is the same pair
+        const wallet = withWallet({ BNB: { bnb: 2 }, SOL: { solana: 5 } });
+        const bnb = run("swap", [slot("fromToken", "BNB"), slot("toToken", "BNB")], wallet).view;
+        expect(bnb.intent).toMatchObject({ fromToken: "SOL", toToken: "BNB", toNetwork: "bnb" });
     });
 
     test("disabled, unknown and verb-fixed values are ignored", () => {
@@ -162,6 +188,363 @@ test.describe("preventing invalid sentences", () => {
     test("a new question keeps your side", () => {
         const { view } = run("predict", [slot("outcomeId", "no"), slot("marketId", "eth-5k-2026")]);
         expect(view.intent).toMatchObject({ marketId: "eth-5k-2026", outcomeId: "no" });
+    });
+});
+
+test.describe("networks", () => {
+    const toNetworks = (view: ReturnType<typeof run>["view"], id: string) => {
+        const host = view.slots[id];
+        if (host.kind !== "choice" || !host.then) throw new Error(`${id} has no companion`);
+        return host.then;
+    };
+
+    test("defaults: ETH pays from Ethereum and SOL arrives on Solana, not as Wormhole SOL", () => {
+        const swap = { fromToken: "ETH", fromNetwork: "ethereum", toToken: "SOL", toNetwork: "solana" };
+        expect(run("swap").view.intent).toMatchObject(swap);
+        expect(run("swap", [], disconnected).view.intent).toMatchObject(swap);
+        expect(run("swap", [], withWallet({ ETH: { ethereum: 1 } })).view.intent).toMatchObject(swap);
+        expect(run("buy").view.intent).toMatchObject({ token: "SOL", network: "solana" });
+    });
+
+    test("the pay side defaults to where the wallet holds the most, else the home network", () => {
+        const wallet = withWallet({ ETH: { base: 0.5, arbitrum: 0.2 } });
+        expect(defaultPayNetwork(wallet, "ETH")).toBe("base");
+        expect(run("swap", [], wallet).view.intent).toMatchObject({ fromNetwork: "base" });
+        expect(defaultPayNetwork(withWallet({}), "ETH")).toBe("ethereum");
+        expect(defaultPayNetwork(withWallet(null), "USDC")).toBe("arc");
+        expect(defaultPayNetwork(disconnected, "BNB")).toBe("bnb");
+    });
+
+    test("the receive side defaults to the pay network unless the coin is wrapped there", () => {
+        const eth = (network: "ethereum" | "arbitrum" | "base") => ({ token: "ETH", network });
+        expect(defaultReceiveNetwork(connected, "USDC", eth("base"))).toBe("base");
+        expect(defaultReceiveNetwork(connected, "SOL", eth("base"))).toBe("solana");
+        expect(defaultReceiveNetwork(connected, "SOL", eth("ethereum"))).toBe("solana");
+        expect(defaultReceiveNetwork(connected, "BTC")).toBe("ethereum");
+        // The coin being paid starts at home, or on its first other entry when home is the pay network
+        expect(defaultReceiveNetwork(connected, "ETH", eth("arbitrum"))).toBe("ethereum");
+        expect(defaultReceiveNetwork(connected, "ETH", eth("ethereum"))).toBe("arbitrum");
+        expect(defaultReceiveNetwork(connected, "USDC", { token: "USDC", network: "arc" })).toBe("ethereum");
+    });
+
+    test("the same coin on another network is a bridge, not a flip", () => {
+        const { view } = run("swap", [slot("toToken", "ETH")]);
+        expect(view.text).toBe("I want to Swap my ETH to ETH for 10 USD.");
+        expect(view.intent).toMatchObject({
+            fromToken: "ETH",
+            fromNetwork: "ethereum",
+            toToken: "ETH",
+            toNetwork: "arbitrum",
+        });
+    });
+
+    test("a coin pick that makes both sides identical flips them", () => {
+        const { view } = run("swap", [slot("fromToken", "SOL")]);
+        expect(view.intent).toMatchObject({
+            fromToken: "SOL",
+            fromNetwork: "solana",
+            toToken: "ETH",
+            toNetwork: "ethereum",
+        });
+        // The other side takes the previous network too, not a default
+        const base = withWallet({ ETH: { base: 1 }, SOL: { solana: 5 } });
+        const flipped = run("swap", [slot("toToken", "SOL"), slot("fromToken", "SOL")], base).view;
+        expect(flipped.intent).toMatchObject({ toToken: "ETH", toNetwork: "base" });
+    });
+
+    test("the row that would make both sides identical is disabled", () => {
+        const { state, view } = run("swap", [slot("toToken", "ETH")]);
+        const rows = toNetworks(view, "toToken").choicesFor("ETH");
+        expect(rows.find((c) => c.value === "ethereum")).toMatchObject({ disabled: "Same as the other side" });
+        expect(rows.find((c) => c.value === "arbitrum")?.disabled).toBeUndefined();
+        expect(reduce(TRADE, state, slot("toNetwork", "ethereum"), connected)).toBe(state);
+        expect(reduce(TRADE, state, slot("toNetwork", "base"), connected)).not.toBe(state);
+        // The pay side sees the same conflict from the other end, and an empty row says so first
+        const funded = withWallet({ ETH: { ethereum: 1, arbitrum: 1, base: 0 } });
+        const bridge = run("swap", [slot("toToken", "ETH")], funded).view;
+        const pay = toNetworks(bridge, "fromToken").choicesFor("ETH");
+        expect(pay.find((c) => c.value === "arbitrum")).toMatchObject({ disabled: "Same as the other side" });
+        expect(pay.find((c) => c.value === "base")).toMatchObject({ disabled: "Nothing here" });
+    });
+
+    test("a coin on one network commits with that network", () => {
+        const { view } = run("swap", [slot("toToken", "BNB")]);
+        expect(view.intent).toMatchObject({ toToken: "BNB", toNetwork: "bnb" });
+        expect(
+            toNetworks(view, "toToken")
+                .choicesFor("BNB")
+                .map((c) => c.value),
+        ).toEqual(["bnb"]);
+    });
+
+    test("network rows carry the label, the wallet's amount and the badge", () => {
+        const wallet = withWallet({ ETH: { ethereum: 1.5, base: 0.25 } });
+        const rows = networkChoices(wallet, "ETH", "pay");
+        expect(rows.map((c) => c.value)).toEqual([
+            "ethereum",
+            "arbitrum",
+            "base",
+            "optimism",
+            "polygon",
+            "bnb",
+            "avalanche",
+            "arc",
+            "solana",
+        ]);
+        expect(rows[0]).toMatchObject({
+            label: "Ethereum",
+            detail: "1.5 ETH",
+            subdetail: "$4,815.60",
+            icon: { set: "coin", id: "ETH", badge: { set: "network", id: "ethereum" } },
+        });
+        expect(rows[0].description).toBeUndefined();
+        expect(rows.find((c) => c.value === "polygon")).toMatchObject({
+            label: "Polygon",
+            description: "WETH",
+            disabled: "Nothing here",
+        });
+        expect(rows.find((c) => c.value === "solana")?.description).toBe("Wormhole ETH");
+        // Receiving is never blocked by an empty row, and nothing known shows no amount
+        const receive = networkChoices(wallet, "ETH", "receive");
+        expect(receive.every((c) => !c.disabled)).toBe(true);
+        expect(receive.find((c) => c.value === "polygon")?.detail).toBeUndefined();
+        expect(networkChoices(withWallet(null), "ETH", "pay")[0].detail).toBeUndefined();
+        expect(networkName("bnb")).toBe("BNB Chain");
+    });
+
+    test("the cap is the wallet's dollars on that network, minus gas for native coins", () => {
+        const wallet = withWallet({ ETH: { base: 0.5 } });
+        const view = run("swap", [slot("amountUSD", "5000")], wallet).view;
+        expect(view.blocking).toMatchObject({
+            code: "max",
+            message: "That's more than your $1,604.56 of ETH on Base.",
+            cta: "Not enough ETH",
+        });
+        // A token has no gas reserve, and an empty network says so
+        const link = run(
+            "sell",
+            [slot("token", "LINK"), slot("amountUSD", "5000")],
+            withWallet({ LINK: { base: 10 } }),
+        );
+        expect(link.view.blocking).toMatchObject({ message: "That's more than your $184.50 of LINK on Base." });
+        const none = withWallet({ ETH: { base: 0.0001 } });
+        expect(run("swap", [slot("amountUSD", "5")], none).view.blocking).toMatchObject({
+            message: "You don't hold any ETH on Base.",
+        });
+    });
+
+    test("nothing loaded means no cap and no disabled networks", () => {
+        const loading = withWallet(null);
+        expect(heldOn(loading, "ETH", "ethereum")).toBeNull();
+        expect(heldTotal(loading, "ETH")).toBeNull();
+        const view = run("swap", [slot("amountUSD", "5000")], loading).view;
+        expect(view.blocking).toBeUndefined();
+        expect(networkChoices(loading, "ETH", "pay").some((c) => c.disabled)).toBe(false);
+        expect(run("sell", [slot("token", "AVAX")], loading).view.text).toBe("I want to Sell 10 USD of my AVAX.");
+        expect(usdcCap(loading)).toBeUndefined();
+    });
+
+    test("demo holdings sit on each coin's home network", () => {
+        expect(heldOn(connected, "ETH", "ethereum")).toBe(1.25);
+        expect(heldOn(connected, "ETH", "base")).toBe(0);
+        expect(heldOn(connected, "SOL", "solana")).toBe(42);
+        expect(heldOn(connected, "USDC", "arc")).toBe(2_400);
+        expect(heldTotal(connected, "DOGE")).toBe(5_000);
+        expect(heldOn(disconnected, "ETH", "ethereum")).toBeNull();
+        expect(heldTotal(disconnected, "ETH")).toBeNull();
+        const over = run("swap", [slot("amountUSD", "5000")]).view;
+        expect(over.blocking).toMatchObject({ message: "That's more than your $4,013.00 of ETH on Ethereum." });
+    });
+
+    test("a real wallet's rows replace the demo holdings and sum across networks", () => {
+        const wallet = withWallet({ ETH: { ethereum: 1, base: 2 } });
+        expect(heldTotal(wallet, "ETH")).toBe(3);
+        expect(heldTotal(wallet, "SOL")).toBe(0);
+        expect(heldOn(wallet, "ETH", "polygon")).toBe(0);
+    });
+
+    test("Buy pays from the coin's network when its USDC covers it, else where USDC is largest", () => {
+        const wallet = withWallet({ USDC: { base: 500, polygon: 50, arc: 900 } });
+        expect(buyPayNetwork(wallet, "base", 100)).toBe("base");
+        expect(buyPayNetwork(wallet, "base", 600)).toBe("arc");
+        expect(buyPayNetwork(wallet, "polygon", 100)).toBe("arc");
+        expect(buyPayNetwork(wallet, "ethereum", 1)).toBe("arc");
+        expect(buyPayNetwork(withWallet(null), "base", 10)).toBeNull();
+        expect(buyPayNetwork(disconnected, "base", 10)).toBeNull();
+        const paid = (ctx: TradeCtx, actions: SentenceAction[]) =>
+            run("buy", actions, ctx).view.preview.rows.find((r) => r.id === "from")?.value;
+        expect(paid(wallet, [slot("token", "LINK"), slot("amountUSD", "20")])).toBe("USDC on Arc");
+        expect(paid(withWallet({ USDC: { ethereum: 500 } }), [slot("token", "LINK")])).toBe("USDC on Ethereum");
+        expect(paid(withWallet(null), [])).toBe("USDC");
+    });
+
+    test("Buy's cap is the largest USDC balance on one network", () => {
+        const wallet = withWallet({ USDC: { base: 500, polygon: 300 } });
+        expect(usdcCap(wallet)).toMatchObject({ value: 500, cta: "Not enough USDC" });
+        expect(usdcCap(wallet)?.message).toContain("Base");
+        const view = run("buy", [slot("amountUSD", "600")], wallet).view;
+        expect(view.blocking).toMatchObject({ code: "max", cta: "Not enough USDC" });
+        expect(run("buy", [slot("amountUSD", "400")], wallet).view.blocking).toBeUndefined();
+        expect(usdcCap(withWallet({ USDC: { base: 0 } }))?.message).toBe("You don't hold any USDC.");
+    });
+
+    test("Sell receives USDC on the coin's own network", () => {
+        const wallet = withWallet({ ETH: { base: 1 } });
+        const rows = run("sell", [slot("token", "ETH")], wallet).view.preview.rows;
+        expect(rows.find((r) => r.id === "to")).toMatchObject({ label: "Received on", value: "USDC on Base" });
+    });
+
+    test("Swap previews its route", () => {
+        expect(run("swap").view.preview.rows.find((r) => r.id === "route")).toMatchObject({
+            label: "Route",
+            value: "Ethereum → Solana",
+        });
+    });
+
+    test("coin and network carry from Swap to Buy together", () => {
+        const wallet = withWallet({ ETH: { ethereum: 1 }, USDC: { base: 100 } });
+        const bought = run("swap", [slot("toToken", "BTC"), slot("toNetwork", "base"), verb("buy")], wallet).view;
+        expect(bought.text).toBe("I want to Buy 10 USD of BTC.");
+        expect(bought.intent).toMatchObject({ type: "spot", token: "BTC", network: "base" });
+        // And back again, a Swap that keeps the pair it carries
+        const back = run("buy", [slot("token", "LINK"), slot("network", "arbitrum"), verb("swap")], wallet).view;
+        expect(back.intent).toMatchObject({ toToken: "LINK", toNetwork: "arbitrum" });
+    });
+
+    test("a carried network the wallet holds nothing on falls back to the default", () => {
+        const wallet = withWallet({ ETH: { ethereum: 1 } });
+        const sold = run("swap", [slot("toToken", "ETH"), slot("toNetwork", "arbitrum"), verb("sell")], wallet).view;
+        expect(sold.slots.token.kind === "choice" && sold.slots.token.value).toBe("ETH");
+        expect(toNetworks(sold, "token").value).toBe("ethereum");
+        expect(sold.intent).toMatchObject({ side: "sell", token: "ETH", network: "ethereum" });
+    });
+
+    test("a coin pick resets the network to that coin's default", () => {
+        const wallet = withWallet({ ETH: { base: 1 }, LINK: { polygon: 3 }, USDC: { base: 100 } });
+        const picked = run("sell", [slot("token", "ETH"), slot("token", "LINK")], wallet).view;
+        expect(picked.intent).toMatchObject({ token: "LINK", network: "polygon" });
+        // A picked network sticks until the coin changes
+        const net = run("buy", [slot("token", "LINK"), slot("network", "base")], wallet).view;
+        expect(net.intent).toMatchObject({ token: "LINK", network: "base" });
+    });
+
+    test("a wrapped network that arrives without its coin is dropped for the default", () => {
+        // The carried Ethereum belongs to USDC, and SOL there is only Wormhole SOL
+        const usdc = run("swap", [slot("toToken", "USDC"), verb("buy")]).view;
+        expect(usdc.intent).toMatchObject({ token: "SOL", network: "solana" });
+        // Long has no network, so the Solana left behind would make ETH Wormhole ETH
+        const long = run("swap", [verb("long"), slot("asset", "ETH"), verb("buy")]).view;
+        expect(long.intent).toMatchObject({ token: "ETH", network: "ethereum" });
+    });
+
+    test("a bridge survives a round trip through another verb", () => {
+        const { view } = run("swap", [slot("toToken", "ETH"), verb("buy"), verb("swap")]);
+        expect(view.intent).toMatchObject({
+            fromToken: "ETH",
+            fromNetwork: "ethereum",
+            toToken: "ETH",
+            toNetwork: "arbitrum",
+        });
+    });
+
+    test("any run of picks and verb changes leaves each side on a row its coin offers", () => {
+        const wallets: TradeCtx[] = [
+            connected,
+            disconnected,
+            withWallet(null),
+            withWallet({}),
+            withWallet({
+                ETH: { ethereum: 1, base: 2 },
+                SOL: { solana: 3 },
+                USDC: { base: 500 },
+                LINK: { polygon: 4 },
+            }),
+        ];
+        const coins = CATALOG.tokens.map((t) => t.symbol);
+        const networks = NETWORKS.map((n) => n.id);
+        const verbs = ["swap", "buy", "sell", "long", "short", "predict"];
+        const sides = [
+            ["swap", "swap", "fromToken", "fromNetwork", "pay"],
+            ["swap", "swap", "toToken", "toNetwork", "receive"],
+            ["spot", "buy", "token", "network", "receive"],
+            ["spot", "sell", "token", "network", "pay"],
+        ] as const;
+        let seed = 7;
+        const next = (n: number) => {
+            seed = (seed * 1_664_525 + 1_013_904_223) % 4_294_967_296;
+            return Math.floor((seed / 4_294_967_296) * n);
+        };
+        const problems: string[] = [];
+        for (let round = 0; round < 300; round++) {
+            const ctx = wallets[next(wallets.length)];
+            let state = initialState(TRADE, ["swap", "buy", "sell"][next(3)], ctx);
+            for (let step = 0; step < 12; step++) {
+                const kind = next(4);
+                state = reduce(
+                    TRADE,
+                    state,
+                    kind === 0
+                        ? verb(verbs[next(verbs.length)])
+                        : kind === 1
+                          ? slot(["fromToken", "toToken", "token"][next(3)], coins[next(coins.length)])
+                          : kind === 2
+                            ? slot(["fromNetwork", "toNetwork", "network"][next(3)], networks[next(networks.length)])
+                            : slot("amountUSD", String(next(5000))),
+                    ctx,
+                );
+                for (const [op, verbId, coin, network, side] of sides) {
+                    const draft = state.drafts[op];
+                    if (!draft || state.verbId !== verbId) continue;
+                    const rows = networkChoices(ctx, draft[coin], side);
+                    const row = rows.find((c) => c.value === draft[network]);
+                    if (rows.length && !row)
+                        problems.push(`${round}.${step} ${coin}=${draft[coin]} on ${draft[network]}`);
+                    if (row?.disabled && rows.some((c) => !c.disabled))
+                        problems.push(`${round}.${step} ${row.disabled}`);
+                    const identical = draft.fromToken === draft.toToken && draft.fromNetwork === draft.toNetwork;
+                    if (op === "swap" && identical) problems.push(`${round}.${step} identical pairs`);
+                }
+            }
+        }
+        expect(problems).toEqual([]);
+    });
+
+    test("a network that is not one of the coin's, or a missing one, is ignored", () => {
+        const start = run("buy", [slot("token", "BTC")]).state;
+        expect(reduce(TRADE, start, slot("network", "solana"), connected)).toBe(start);
+        expect(reduce(TRADE, start, slot("network", "mars"), connected)).toBe(start);
+    });
+
+    test("a companion left empty blocks with its own copy", () => {
+        const { state } = run("buy");
+        const draft = { ...state.drafts.spot!, network: "" };
+        const view = resolve(TRADE, { ...state, drafts: { ...state.drafts, spot: draft } }, connected);
+        expect(view.blocking).toMatchObject({ message: "Pick a network.", cta: "Pick a network" });
+        expect(view.intent).toBeNull();
+    });
+
+    test("the sentence stays three pills with bare symbols", () => {
+        const { view } = run("swap", [slot("toToken", "BTC")]);
+        expect(view.text).toBe("I want to Swap my ETH to BTC for 10 USD.");
+        expect(view.parts.filter((p) => p.kind === "slot").map((p) => p.key)).toEqual([
+            "swap:fromToken",
+            "term:token",
+            "term:amountUSD",
+        ]);
+        // The pill's badge is the companion's own icon, the coin with its network badge
+        const from = view.slots.fromToken;
+        expect(from.kind === "choice" && from.selected?.icon).toMatchObject({
+            set: "coin",
+            id: "ETH",
+            badge: { set: "coin", id: "ETH", badge: { set: "network", id: "ethereum" } },
+        });
+        expect(toNetworks(view, "fromToken")).toMatchObject({
+            id: "fromNetwork",
+            prompt: "On which network?",
+            hint: "Network you pay from",
+        });
+        expect(toNetworks(view, "toToken")).toMatchObject({ id: "toNetwork", hint: "Network you receive on" });
+        expect(toNetworks(run("buy").view, "token")).toMatchObject({ id: "network", hint: "Network of the coin" });
     });
 });
 
