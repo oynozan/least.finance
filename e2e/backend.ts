@@ -52,3 +52,18 @@ export const fundSource = (address: string, coin: string, amount: string) =>
 /** Moves the newest bridge order of the person who owns `address`; "filled" pays out on Arc. */
 export const advanceBridge = (address: string, stage: "pending" | "filled" | "refunded" | "failed") =>
     call<object>("/bridge/advance", { address, stage }).then(() => undefined);
+
+/** What the pool's trader does with the next order on a token; "hold" keeps it unanswered until `releaseOrder`. */
+export const nextOrder = (tokenId: string, behavior: string) =>
+    call<object>("/polymarket/next", { tokenId, behavior }).then(() => undefined);
+
+/** Answers the order held on a token: "fill" or "reject:price_moved", "reject:market_closed", "reject:rejected". */
+export const releaseOrder = (tokenId: string, behavior: string) =>
+    call<object>("/polymarket/release", { tokenId, behavior }).then(() => undefined);
+
+/** Sets the pool's pUSD in whole dollars. */
+export const setPoolBalance = (usd: number) => call<object>("/polymarket/balance", { usd }).then(() => undefined);
+
+/** Resolves the newest delayed order on a token: "fill" or "cancel". */
+export const settleDelayed = (tokenId: string, outcome: "fill" | "cancel") =>
+    call<object>("/polymarket/settle-delayed", { tokenId, outcome }).then(() => undefined);

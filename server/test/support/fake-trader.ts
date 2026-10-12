@@ -1,4 +1,5 @@
 import { quoteBuy, quoteSell } from "../../src/predictions/pricing.ts";
+import type { FakePolymarket } from "./fake-polymarket.ts";
 import type {
     Book,
     LookupResult,
@@ -174,3 +175,20 @@ export class FakeTrader implements PoolTrader {
         return { kind: "filled", orderId: record.orderHash, makingE6: fill.makingE6, takingE6: fill.takingE6 };
     }
 }
+
+/** A deep book with the best prices of one the fake Polymarket serves. */
+export function bookFromFake(raw: ReturnType<FakePolymarket["book"]>): Book {
+    if (!raw) throw new Error("unknown token");
+    const levels = (side: { price: string }[]) => side.map((l) => ({ price: Number(l.price), size: 1_000_000 }));
+    return {
+        bids: levels(raw.bids),
+        asks: levels(raw.asks),
+        tickSize: Number(raw.tick_size),
+        minOrderSize: Number(raw.min_order_size),
+        negRisk: false,
+    };
+}
+
+/** The pool's trader over the fake Polymarket's books, holding a deep float. */
+export const fakePoolTrader = (polymarket: FakePolymarket, balanceE6 = 1_000_000_000_000n) =>
+    new FakeTrader({ bookOf: (tokenId) => bookFromFake(polymarket.book(tokenId)), balanceE6 });

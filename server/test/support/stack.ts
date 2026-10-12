@@ -14,6 +14,7 @@ import { loadConfig } from "../../src/config.ts";
 import type { ClientToServerEvents, ServerToClientEvents } from "../../src/protocol.ts";
 import { startServer, type RunningServer } from "../../src/server.ts";
 import { startArcEmulator, type ArcEmulator, type EmulatorOptions } from "./arc-emulator.ts";
+import { fakePoolTrader, type FakeTrader } from "./fake-trader.ts";
 import { FakeBridge } from "./fake-bridge.ts";
 import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
@@ -73,6 +74,8 @@ export type Stack = {
     polymarket: FakePolymarket;
     /** The only bridge the server quotes from; a test steps its orders by hand. */
     bridge: FakeBridge;
+    /** The pool's trader over the fake Polymarket's books; used only while a test turns PREDICTIONS_TRADING on. */
+    trader: FakeTrader;
     chain: ChainHelpers;
     /** A signed-in Privy user with one funded wallet. */
     user(options?: { usdc?: string }): Promise<User>;
@@ -147,16 +150,19 @@ export async function startStack({
         ...env,
     });
     const bridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
+    const trader = fakePoolTrader(polymarket);
     const logger = pino({ level: config.LOG_LEVEL });
     const server = await startServer(config, logger, {
         sources: createSourceClients({ ethereum: [ethereumUrl], bnb: [bnbUrl] }),
         solana: createSolanaRpc([solanaRpc.url]),
         prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
         bridges: [bridge],
+        trader,
         now,
     });
     // The first list is in before the first request, not a sync interval later.
     await server.services.markets.tick();
+    await server.services.predictions.refreshFloat();
     const chain = chainHelpers(anvilUrl);
     const sockets: AppSocket[] = [];
 
@@ -168,6 +174,7 @@ export async function startStack({
         solanaRpc,
         polymarket,
         bridge,
+        trader,
         chain,
         async user({ usdc = "1000" } = {}) {
             const wallet = privateKeyToAddress(generatePrivateKey());

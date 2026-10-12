@@ -72,6 +72,12 @@ export function createApp(services: Services): express.Express {
             database,
             // Reported, not a reason to take the server out of rotation: signed-in people don't need Privy.
             privy: services.identity.apiState(),
+            predictions:
+                services.config.PREDICTIONS_TRADING !== "on"
+                    ? "off"
+                    : services.predictions.maxOrderUSD() === null
+                      ? "unavailable"
+                      : "ready",
             depositScan: {
                 ...scan,
                 lagBlocks: scan.head !== null && scan.scannedThrough !== null ? scan.head - scan.scannedThrough : null,

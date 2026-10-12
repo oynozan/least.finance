@@ -23,6 +23,7 @@ import { startServer } from "../../src/server.ts";
 import { startAnvil } from "../support/anvil.ts";
 import { startArcEmulator } from "../support/arc-emulator.ts";
 import { FakeBridge } from "../support/fake-bridge.ts";
+import { fakePoolTrader, type Behavior } from "../support/fake-trader.ts";
 import { startFakePolymarket } from "../support/fake-polymarket.ts";
 import { startFakePrivy } from "../support/fake-privy.ts";
 import { startFakeSolanaRpc } from "../support/fake-solana-rpc.ts";
@@ -74,16 +75,24 @@ const config = loadConfig({
     DEPOSIT_RECEIPT_TIMEOUT_MS: "4000",
     POLYMARKET_GAMMA_URL: polymarket.url,
     POLYMARKET_CLOB_URL: polymarket.url,
+    PREDICTIONS_TRADING: "on",
+    POLYMARKET_POOL_KEY: `0x${"1".repeat(64)}`,
+    POLYMARKET_BUILDER_API_KEY: "e2e",
+    POLYMARKET_BUILDER_API_SECRET: "e2e",
+    POLYMARKET_BUILDER_API_PASSPHRASE: "e2e",
 });
+const trader = fakePoolTrader(polymarket, 1_000_000n * 1_000_000n);
 const bridge = new FakeBridge({ arcRpcUrl: emulator.url, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
 const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
     sources: createSourceClients({ ethereum: [ethereum.url], bnb: [bnb.url] }),
     solana: createSolanaRpc([solanaRpc.url]),
     prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
     bridges: [bridge],
+    trader,
 });
 const { services } = server;
 await services.markets.tick();
+await services.predictions.refreshFloat();
 const chain = chainHelpers(anvil.url);
 const sources = { 1: sourceChain(ethereum.url, 1), 56: sourceChain(bnb.url, 56) };
 const rpcUrls: Record<number, string> = { 1: ethereum.url, 56: bnb.url, [ARC_CHAIN_ID]: emulator.url };
@@ -224,6 +233,32 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
         const from = privateKeyToAddress(generatePrivateKey());
         await chain.fund(from, String(Number(usdc) + 1));
         return { txHash: await chain.send(from, getAddress(String(to)), String(usdc)) };
+    },
+    /** The next order on a token behaves this way; "hold" keeps the exchange from answering until released. */
+    "/polymarket/next": async ({ tokenId, behavior }) => {
+        trader.onNext(String(tokenId), behavior as Behavior);
+        return {};
+    },
+    /** Answers the order held on a token: "fill" or "reject:price_moved", "reject:market_closed", "reject:rejected". */
+    "/polymarket/release": async ({ tokenId, behavior }) => {
+        trader.release(String(tokenId), behavior as Parameters<typeof trader.release>[1]);
+        return {};
+    },
+    /** The pool's pUSD, in whole dollars. */
+    "/polymarket/balance": async ({ usd }) => {
+        trader.setBalance(BigInt(Math.floor(Number(usd))) * 1_000_000n);
+        await services.predictions.refreshFloat();
+        return {};
+    },
+    /** Resolves the newest delayed order on a token: "fill" or "cancel". */
+    "/polymarket/settle-delayed": async ({ tokenId, outcome }) => {
+        const order = await services.database.collections.predictionOrders.findOne(
+            { tokenId: String(tokenId), state: "posted" },
+            { sort: { _id: -1 } },
+        );
+        if (!order?.orderHash) throw new Error("No posted order");
+        trader.settleDelayed(order.orderHash, outcome as "fill" | "cancel");
+        return {};
     },
     "/account": async ({ address }) => {
         const account = await services.accounts.find(userIdOf(normalize(address)));

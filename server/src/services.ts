@@ -9,6 +9,7 @@ import type { DepositWatcher } from "./deposits/watcher.ts";
 import type { DepositOrders } from "./crosschain/orders.ts";
 import type { Bus } from "./events.ts";
 import type { MarketService } from "./markets/markets.ts";
+import type { PredictionService } from "./predictions/predictions.ts";
 import type { Sessions } from "./sessions.ts";
 
 /** Everything the HTTP and socket layers call into. */
@@ -25,4 +26,5 @@ export type Services = {
     balances: WalletBalances;
     orders: DepositOrders;
     markets: MarketService;
+    predictions: PredictionService;
 };

@@ -174,6 +174,16 @@ export type ClientToServerEvents = {
         payload: { orderId: string; txHashes: string[] },
         ack: (result: Ack<DepositOrderView>) => void,
     ) => void;
+    /** What a prediction buy would cost and return right now. */
+    "prediction:quote": (
+        payload: { eventId: string; tokenId: string; amountUSD: string },
+        ack: (result: Ack<QuoteView>) => void,
+    ) => void;
+    /** Places a buy; the outcome follows as a `prediction:update`. A repeated `requestId` is the same order. */
+    "prediction:order": (
+        payload: { requestId: string; eventId: string; tokenId: string; amountUSD: string; quotedPrice: number },
+        ack: (result: Ack<PredictionOrderView>) => void,
+    ) => void;
 };
 
 export type ServerToClientEvents = {
@@ -184,6 +194,10 @@ export type ServerToClientEvents = {
     "deposit:progress": (payload: { order: DepositOrderView }) => void;
     /** The access token expired; the server disconnects next, and the client reconnects with a fresh one. */
     "session:expired": () => void;
+    /** A prediction order settled or failed; carries the account's new balance. */
+    "prediction:update": (payload: PredictionUpdate) => void;
+    /** The account's positions and in-flight orders, pushed after `account:open`. */
+    positions: (payload: PositionsView) => void;
 };
 
 /** What the socket handshake carries in `auth`. */

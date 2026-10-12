@@ -24,11 +24,17 @@ import { DepositRegistry } from "./deposits/registry.ts";
 import { DepositWatcher } from "./deposits/watcher.ts";
 import { Bus } from "./events.ts";
 import { MarketService } from "./markets/markets.ts";
+import { PredictionService } from "./predictions/predictions.ts";
+import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
+import { PredictionTracker } from "./predictions/tracker.ts";
+import type { PoolTrader } from "./predictions/trader.ts";
 import { createPolymarketData } from "./markets/polymarket-data.ts";
 import { createApp } from "./http/app.ts";
 import type { Services } from "./services.ts";
 import { Sessions } from "./sessions.ts";
 import { attachSockets } from "./socket/sockets.ts";
+
+const TRADER_RETRY_MS = 60_000;
 
 export type RunningServer = {
     /** Where it's listening, e.g. http://127.0.0.1:4000. */
@@ -46,6 +52,8 @@ type Overrides = {
     prices?: PriceFeed;
     /** The bridges that quote deposits; Relay and Across by default. */
     bridges?: BridgeProvider[];
+    /** Stands in for the pool's Polymarket trader. */
+    trader?: PoolTrader;
     /** The clock the balance refresh limit runs on. */
     now?: () => number;
 };
@@ -136,6 +144,9 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             now: overrides.now,
         });
         const marketLogger = logger.child({ component: "markets" });
+        const predictionLogger = logger.child({ component: "predictions" });
+        let trader: PoolTrader | null = overrides.trader ?? null;
+        let predictions: PredictionService | undefined;
         const markets = new MarketService({
             data: createPolymarketData({
                 gammaUrl: config.POLYMARKET_GAMMA_URL,
@@ -144,7 +155,43 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             }),
             logger: marketLogger,
             syncMs: config.MARKETS_SYNC_MS,
+            maxOrderUSD: () => predictions?.maxOrderUSD() ?? null,
         });
+        const service = new PredictionService({
+            collections,
+            ledger,
+            markets,
+            trader: () => trader,
+            bus,
+            logger: predictionLogger,
+            config,
+        });
+        predictions = service;
+        const predictionTracker = new PredictionTracker({
+            collections,
+            service,
+            trader: () => trader,
+            logger: predictionLogger,
+            pollMs: config.PREDICTIONS_POLL_MS,
+        });
+        // Orders a restart left placing never reached Polymarket; refund them before anyone can order
+        await service.recover();
+        let connecting: NodeJS.Timeout | null = null;
+        let closed = false;
+        const connectTrader = () => {
+            createPolymarketTrader(config, predictionLogger).then(
+                (created) => {
+                    trader = created;
+                    void service.refreshFloat().catch((error: unknown) => {
+                        predictionLogger.warn({ err: error }, "Couldn't read the pool's float");
+                    });
+                },
+                (error: unknown) => {
+                    predictionLogger.error({ err: error }, "Couldn't connect to Polymarket, retrying in a minute");
+                    if (!closed) connecting = setTimeout(connectTrader, TRADER_RETRY_MS);
+                },
+            );
+        };
         const services: Services = {
             config,
             logger,
@@ -158,6 +205,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             balances,
             orders,
             markets,
+            predictions: service,
         };
 
         const httpServer = createServer(createApp(services));
@@ -167,6 +215,8 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         watcher.start();
         tracker.start();
         markets.start();
+        predictionTracker.start();
+        if (config.PREDICTIONS_TRADING === "on" && !trader) connectTrader();
         // A bad secret is logged loudly, but the server keeps serving: wallets already connected carry on.
         void identity.checkApi();
 
@@ -176,6 +226,9 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             url: `http://${host === "0.0.0.0" || host === "[::]" ? "127.0.0.1" : host}:${port}`,
             services,
             async close() {
+                closed = true;
+                if (connecting) clearTimeout(connecting);
+                await predictionTracker.stop();
                 await markets.stop();
                 await tracker.stop();
                 await watcher.stop();

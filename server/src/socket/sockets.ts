@@ -5,11 +5,20 @@ import { RateLimiterMemory } from "rate-limiter-flexible";
 import { Server, type Socket } from "socket.io";
 import type { Identity } from "../auth/identity.ts";
 import { orderView, sourceTxView } from "../crosschain/views.ts";
+import { predictionUpdate } from "../predictions/views.ts";
 import { accountView, depositView } from "../deposits/views.ts";
 import { AppError, isAppError, toApiError } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
 import type { Services } from "../services.ts";
-import { coinWalletAmount, depositPage, depositReport, parse, sourceReport } from "../validation.ts";
+import {
+    coinWalletAmount,
+    depositPage,
+    depositReport,
+    parse,
+    predictionOrder,
+    predictionQuote,
+    sourceReport,
+} from "../validation.ts";
 
 type SocketData = {
     identity: Identity;
@@ -53,6 +62,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     // Quotes ask outside providers, so they get a limit of their own.
     const quotes = new RateLimiterMemory({ keyPrefix: "quote", points: 30, duration: 60 });
     const orders = new RateLimiterMemory({ keyPrefix: "order", points: 10, duration: 60 });
+    const predictionQuotes = new RateLimiterMemory({ keyPrefix: "prediction-quote", points: 60, duration: 60 });
+    const predictionOrders = new RateLimiterMemory({ keyPrefix: "prediction", points: 10, duration: 60 });
 
     io.use(async (socket, next) => {
         try {
@@ -114,6 +125,12 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     .catch((error: unknown) => {
                         logger.warn({ err: error }, "Couldn't read balances at sign-in");
                     });
+                services.predictions
+                    .positions(account)
+                    .then((view) => socket.emit("positions", view))
+                    .catch((error: unknown) => {
+                        logger.warn({ err: error }, "Couldn't read positions at sign-in");
+                    });
                 return session;
             }),
         );
@@ -174,6 +191,27 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 return orderView(order);
             }),
         );
+
+        socket.on("prediction:quote", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(predictionQuote, payload);
+                await predictionQuotes.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many quotes. Try again shortly.");
+                });
+                await boundAccount(socket);
+                return services.predictions.quote(input);
+            }),
+        );
+
+        socket.on("prediction:order", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(predictionOrder, payload);
+                await predictionOrders.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many predictions. Try again shortly.");
+                });
+                return services.predictions.place(await boundAccount(socket), input);
+            }),
+        );
     });
 
     bus.on("deposit:credited", ({ deposit, account }) => {
@@ -217,6 +255,25 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push an order update");
+            }
+        });
+        pushing.set(key, next);
+        void next.then(() => pushing.get(key) === next && pushing.delete(key));
+    });
+
+    bus.on("prediction:updated", (update) => {
+        const key = update.account._id.toHexString();
+        const next = (pushing.get(key) ?? Promise.resolve()).then(async () => {
+            try {
+                const room = roomOf(update.account._id);
+                const payload = predictionUpdate(update);
+                for (const socket of await io.in(room).fetchSockets()) {
+                    if (socket.data.identity.userId === update.account.privyUserId)
+                        socket.emit("prediction:update", payload);
+                    else socket.leave(room);
+                }
+            } catch (error) {
+                logger.warn({ err: error }, "Couldn't push a prediction update");
             }
         });
         pushing.set(key, next);

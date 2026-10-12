@@ -40,7 +40,13 @@ type Deps = {
     now?: () => number;
 };
 
-export type PlaceInput = { requestId: string; eventId: string; tokenId: string; amountUSD: string };
+export type PlaceInput = {
+    requestId: string;
+    eventId: string;
+    tokenId: string;
+    amountUSD: string;
+    quotedPrice?: number;
+};
 
 /** Places buys against the pool's Polymarket account and settles each exactly once; the person's balance holds the money meanwhile. */
 export class PredictionService {
@@ -132,7 +138,7 @@ export class PredictionService {
             outcome: offered.outcome.label,
             amount: toDecimal(amount),
             shares: null,
-            quotedPrice: offered.outcome.buyPrice,
+            quotedPrice: input.quotedPrice ?? offered.outcome.buyPrice,
             limitPrice: 0,
             positionId: null,
             orderHash: null,

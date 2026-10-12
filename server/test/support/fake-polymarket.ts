@@ -16,6 +16,10 @@ export type FakePolymarket = {
     fixtures: Fixtures;
     /** Every request served, as "METHOD /path?query". */
     requests: string[];
+    /** The book as /books serves it, or null for an unknown token. */
+    book(
+        tokenId: string,
+    ): { bids: { price: string }[]; asks: { price: string }[]; min_order_size: string; tick_size: string } | null;
     setBook(tokenId: string, book: { bid: number | null; ask: number | null }): void;
     /** Gone from the top list, from search and from /events/:id (404). */
     hide(eventId: string): void;
@@ -130,6 +134,7 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
         url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
         fixtures,
         requests: [],
+        book: (tokenId) => bookOf(tokenId),
         setBook: (tokenId, book) => overrides.set(tokenId, book),
         hide: (eventId) => hidden.add(eventId),
         failNext: (path) => failing.add(path),
