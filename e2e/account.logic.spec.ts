@@ -9,6 +9,7 @@ import {
     type AccountAction,
     type AccountState,
     type AccountView,
+    type DepositOrderView,
     type DepositReceipt,
     type DepositView,
     type Hex,
@@ -45,9 +46,24 @@ function session(
     version: number,
     items: DepositView[] = [],
     next: string | null = null,
+    orders: DepositOrderView[] = [],
 ): WalletSession {
-    return { account: account(balance, version), deposits: { items, next }, rules: RULES };
+    return { account: account(balance, version), deposits: { items, next }, rules: RULES, orders };
 }
+
+const order = (n: number, state: DepositOrderView["state"] = "sent"): DepositOrderView => ({
+    id: oid(n),
+    coin: "ethereum:ETH",
+    amount: "0.1",
+    wallet: "0x00000000000000000000000000000000000000c3",
+    usdcOut: "300000000000000000000",
+    etaSeconds: 60,
+    state,
+    sourceTxHashes: [],
+    depositId: null,
+    createdAt: new Date(Date.UTC(2026, 8, n)).toISOString(),
+    updatedAt: new Date(Date.UTC(2026, 8, n)).toISOString(),
+});
 
 const receipt = (txHash: Hex, deposits: DepositView[], acct: AccountView): DepositReceipt => ({
     txHash,
@@ -412,5 +428,44 @@ test.describe("derived values", () => {
         expect(toUsdc(toWei("12480.52"))).toBe(12480.52);
         expect(toUsdc(BigInt(0))).toBe(0);
         expect(toUsdc(toWei("0.5"))).toBe(0.5);
+    });
+});
+
+test.describe("bridged deposits", () => {
+    test("an order upserts by id, newest first", () => {
+        const state = run(
+            [
+                { type: "order", order: order(1) },
+                { type: "order", order: order(2) },
+                { type: "order", order: order(1, "bridging") },
+            ],
+            open(),
+        );
+        expect(ready(state).orders.map((o) => [o.id, o.state])).toEqual([
+            [oid(2), "sent"],
+            [oid(1), "bridging"],
+        ]);
+    });
+
+    test("an expired order leaves the list", () => {
+        const state = run(
+            [
+                { type: "order", order: order(1) },
+                { type: "order", order: order(1, "expired") },
+            ],
+            open(),
+        );
+        expect(ready(state).orders).toEqual([]);
+    });
+
+    test("the session restores open orders", () => {
+        const state = run([{ type: "session", session: session("1", 1, [], null, [order(1), order(2)]) }]);
+        expect(ready(state).orders.map((o) => o.id)).toEqual([oid(2), oid(1)]);
+    });
+
+    test("a bridged deposit's history row keeps its origin", () => {
+        const origin = { coin: "ethereum:ETH", amount: "0.1", txHash: hash(7) };
+        const rows = historyRows(open("300", 1, [deposit(2, "5"), deposit(1, "300", { origin })]));
+        expect(rows.map((r) => r.origin)).toEqual([undefined, origin]);
     });
 });

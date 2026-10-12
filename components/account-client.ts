@@ -7,6 +7,7 @@ import {
     type AccountAction,
     type AccountState,
     type ApiError,
+    type DepositQuoteView,
     type Hex,
 } from "@/lib/account/state";
 import { dropAfterSend, loadCachedBalances, needsRefresh, saveCachedBalances } from "@/lib/account/balances";
@@ -28,6 +29,13 @@ export type DepositNotice =
 /** How the wallet took a deposit: turned down, failed to send, or sent (and now being confirmed). */
 export type DepositResult = "cancelled" | "failed" | "sent" | "switch_failed" | "wrong_network";
 
+/** What a bridged deposit needs from the wallet: its provider, its address, and a move to the source chain. */
+export type BridgeWallet = {
+    provider: WalletProvider;
+    from: string;
+    ensure(chainId: number): Promise<"ready" | "declined" | "switch_failed" | "wrong_network">;
+};
+
 export type AccountSnapshot = { state: AccountState; notice: DepositNotice | null; balances: BalancesView | null };
 
 /** EIP-1193's code for a request the user turned down in their wallet. */
@@ -38,6 +46,8 @@ const PRIORITY_FEE_PER_GAS = parseGwei("1");
 /** The server waits up to 30s for a transaction to land; this covers that and the round trip. */
 const REPORT_TIMEOUT_MS = 45_000;
 const CONNECT_TIMEOUT_MS = 15_000;
+const RECEIPT_POLL_MS = 1_000;
+const RECEIPT_TIMEOUT_MS = 120_000;
 const CREDITED_NOTICE_MS = 5_000;
 const MAX_RETRY_MS = 30_000;
 
@@ -106,6 +116,9 @@ export class AccountClient {
         });
         socket.on("deposit:credited", ({ deposit, account }) => {
             this.#dispatch({ type: "credited", deposit, account });
+        });
+        socket.on("deposit:progress", ({ order }) => {
+            this.#dispatch({ type: "order", order });
         });
         socket.on("balances", (view) => {
             if (this.#userId) saveCachedBalances(this.#userId, view);
@@ -206,6 +219,76 @@ export class AccountClient {
         this.#dropBalance("arc:USDC", wallet.from, amount);
         void this.#confirm(socket, txHash, value);
         return "sent";
+    }
+
+    /** What `amount` of `coin` in `wallet` would pay out in USDC on Arc. */
+    async quote(coin: string, amount: string, wallet: string): Promise<DepositQuoteView | ApiError> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        const result = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("deposit:quote", { coin, amount, wallet })
+            .catch(() => null);
+        if (!result) return UNREACHABLE;
+        return result.ok ? result.data : result.error;
+    }
+
+    /**
+     * Opens a bridge order and has the wallet sign its transactions one by one, each
+     * once the one before has landed. The server follows the order from the hashes on.
+     */
+    async bridgeDeposit(coin: string, amount: string, wallet: BridgeWallet): Promise<DepositResult> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket) return "failed";
+        try {
+            const opened = await socket
+                .timeout(CONNECT_TIMEOUT_MS)
+                .emitWithAck("deposit:order", { coin, amount, wallet: wallet.from })
+                .catch(() => null);
+            if (!opened?.ok || this.#socket !== socket) return "failed";
+            const { order, txs } = opened.data;
+            this.#dispatch({ type: "order", order });
+
+            const hashes: Hex[] = [];
+            for (const [i, tx] of txs.entries()) {
+                const network = await wallet.ensure(tx.chainId);
+                if (network === "declined") return "cancelled";
+                if (network !== "ready") return network;
+                const hash = (await wallet.provider.request({
+                    method: "eth_sendTransaction",
+                    params: [
+                        { from: wallet.from, to: tx.to, data: tx.data, value: tx.value, chainId: toHex(tx.chainId) },
+                    ],
+                })) as Hex;
+                if (typeof hash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(hash)) return "failed";
+                hashes.push(hash);
+                if (i < txs.length - 1 && !(await this.#landed(wallet.provider, hash))) return "failed";
+            }
+            if (this.#socket !== socket) return "sent";
+
+            const reported = await socket
+                .timeout(CONNECT_TIMEOUT_MS)
+                .emitWithAck("deposit:source", { orderId: order.id, txHashes: hashes })
+                .catch(() => null);
+            if (reported?.ok) this.#dispatch({ type: "order", order: reported.data });
+            this.#dropBalance(coin, wallet.from, amount);
+            return "sent";
+        } catch (error) {
+            return (error as { code?: unknown }).code === USER_REJECTED ? "cancelled" : "failed";
+        }
+    }
+
+    /** Whether a transaction succeeded in a block within 120 s, asking the wallet every second. */
+    async #landed(provider: WalletProvider, hash: Hex) {
+        const deadline = Date.now() + RECEIPT_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+            const receipt = (await provider.request({ method: "eth_getTransactionReceipt", params: [hash] })) as {
+                status?: string;
+            } | null;
+            if (receipt) return receipt.status !== "0x0";
+            await pause(RECEIPT_POLL_MS);
+        }
+        return false;
     }
 
     /**

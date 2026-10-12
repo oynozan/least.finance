@@ -11,9 +11,16 @@ import {
     type ReactNode,
 } from "react";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
-import { historyRows, optimisticBalance, toUsdc, type AccountState, type HistoryRow } from "@/lib/account/state";
+import {
+    historyRows,
+    optimisticBalance,
+    toUsdc,
+    type AccountState,
+    type ApiError,
+    type HistoryRow,
+} from "@/lib/account/state";
 import { ensureNetwork } from "@/lib/wallet/network";
-import type { CoinBalance } from "@/server/src/protocol";
+import type { CoinBalance, DepositOrderView, DepositQuoteView } from "@/server/src/protocol";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
 import { depositWalletAddress, linkedWallets, useActiveWallet } from "./arc-wallet";
@@ -32,12 +39,20 @@ export type Account = {
     balances: CoinBalance[] | null;
     /** Reads fresh balances silently; does nothing within 30 s of the last read unless a linked wallet is new. */
     refreshBalances: () => void;
+    /** Bridge orders still open, newest first. */
+    orders: DepositOrderView[];
+    /** What `amount` of `coin` would pay out on Arc, from the wallet the deposit uses. */
+    quote: (coin: string, amount: string) => Promise<DepositQuoteView | ApiError>;
+    /** Bridges `amount` of `coin` into the account from the wallet the deposit uses. */
+    depositCoin: (coin: string, amount: string) => Promise<DepositResult>;
     /** Sends a deposit of `amount` USDC (a decimal string) from the signed-in wallet. */
     deposit: (amount: string) => Promise<DepositResult>;
     dismissNotice: () => void;
 };
 
 const IDLE: AccountSnapshot = { state: { status: "idle" }, notice: null, balances: null };
+
+const NO_WALLET: ApiError = { code: "bad_request", message: "Connect a wallet to deposit." };
 
 const AccountContext = createContext<Account | null>(null);
 
@@ -106,10 +121,30 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         }
     };
 
+    const quote = (coin: string, amount: string) =>
+        address ? client.quote(coin, amount, address) : Promise.resolve(NO_WALLET);
+
+    const depositCoin = async (coin: string, amount: string): Promise<DepositResult> => {
+        const wallet = wallets.find((w) => address && w.address.toLowerCase() === address.toLowerCase());
+        if (!wallet) return "failed";
+        try {
+            const provider = await wallet.getEthereumProvider();
+            return await client.bridgeDeposit(coin, amount, {
+                provider,
+                from: wallet.address,
+                ensure: (id) => ensureNetwork(wallet, id),
+            });
+        } catch (error) {
+            return (error as { code?: unknown }).code === 4001 ? "cancelled" : "failed";
+        }
+    };
+
     return (
         <Provide
             snapshot={snapshot}
             deposit={deposit}
+            quote={quote}
+            depositCoin={depositCoin}
             refreshBalances={refreshBalances}
             dismissNotice={() => client.dismissNotice()}
         >
@@ -121,12 +156,16 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
 function Provide({
     snapshot,
     deposit = async () => "failed",
+    quote = async () => NO_WALLET,
+    depositCoin = async () => "failed",
     dismissNotice = () => undefined,
     refreshBalances = () => undefined,
     children,
 }: {
     snapshot: AccountSnapshot;
     deposit?: Account["deposit"];
+    quote?: Account["quote"];
+    depositCoin?: Account["depositCoin"];
     dismissNotice?: () => void;
     refreshBalances?: () => void;
     children: ReactNode;
@@ -141,6 +180,9 @@ function Provide({
         notice,
         balances: snapshot.balances?.rows ?? null,
         refreshBalances,
+        orders: state.status === "ready" ? state.orders : [],
+        quote,
+        depositCoin,
         deposit,
         dismissNotice,
     };

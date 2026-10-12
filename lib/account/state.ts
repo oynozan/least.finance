@@ -2,14 +2,30 @@ import { formatUnits, parseUnits } from "viem";
 import type {
     AccountView,
     ApiError,
+    DepositOrderView,
+    DepositOrigin,
+    DepositQuoteView,
     DepositReceipt,
     DepositRules,
     DepositView,
     Hex,
+    SourceTxView,
     WalletSession,
 } from "@/server/src/protocol";
 
-export type { AccountView, ApiError, DepositReceipt, DepositRules, DepositView, Hex, WalletSession };
+export type {
+    AccountView,
+    ApiError,
+    DepositOrderView,
+    DepositOrigin,
+    DepositQuoteView,
+    DepositReceipt,
+    DepositRules,
+    DepositView,
+    Hex,
+    SourceTxView,
+    WalletSession,
+};
 
 /** Arc's native USDC, which the server's amounts keep in full. */
 export const USDC_DECIMALS = 18;
@@ -39,6 +55,8 @@ export type AccountState =
           rules: DepositRules;
           /** Newest first; shown and counted until the server settles them. */
           pending: PendingDeposit[];
+          /** Bridge orders still open, newest first. */
+          orders: DepositOrderView[];
       };
 
 export type AccountAction =
@@ -46,6 +64,8 @@ export type AccountAction =
     | { type: "connecting" }
     | { type: "failed"; error: ApiError }
     | { type: "session"; session: WalletSession }
+    /** A bridge order opened or moved on; an expired one leaves the list. */
+    | { type: "order"; order: DepositOrderView }
     | { type: "credited"; deposit: DepositView; account: AccountView }
     | { type: "older"; deposits: DepositView[]; next: string | null }
     | { type: "sent"; txHash: Hex; amount: bigint; sentAt: number }
@@ -79,7 +99,13 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 next: deposits.next,
                 rules,
                 pending,
+                orders: sortOrders(action.session.orders),
             });
+        }
+        case "order": {
+            if (state.status !== "ready") return state;
+            const rest = state.orders.filter((o) => o.id !== action.order.id);
+            return { ...state, orders: sortOrders(action.order.state === "expired" ? rest : [action.order, ...rest]) };
         }
         case "credited":
             if (state.status !== "ready") return state;
@@ -105,6 +131,11 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
 }
 
 type Ready = Extract<AccountState, { status: "ready" }>;
+
+const sortOrders = (orders: DepositOrderView[]) =>
+    orders
+        .filter((o) => o.state !== "expired")
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
 
 /** Takes the server's account unless a newer version is already showing; pushes can arrive out of order. */
 function withAccount(state: Ready, account: AccountView): Ready {
@@ -144,6 +175,8 @@ export type HistoryRow = {
     amount: bigint;
     at: Date;
     pending: boolean;
+    /** The coin a bridged deposit came from. */
+    origin?: DepositOrigin;
 };
 
 /** Pending deposits on top, then credited ones, newest first. */
@@ -158,6 +191,7 @@ export function historyRows(state: AccountState): HistoryRow[] {
             amount: toWei(d.amount),
             at: new Date(d.creditedAt),
             pending: false,
+            origin: d.origin,
         })),
     ];
 }
