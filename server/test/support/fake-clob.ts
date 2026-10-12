@@ -27,6 +27,8 @@ export type FakeClob = {
     setBalance(e6: bigint): void;
     /** Answers GET /data/order/:id; `null` answers 404. */
     setOrder(id: string, order: Json | null): void;
+    /** Answers GET /data/trades?id=:id with this trade. */
+    setTrade(id: string, trade: Json): void;
     /** Answers the next POST /order; "hold" never answers. */
     nextPost(response: NextPost): void;
     /** Drops every open connection, as a network failure mid-request. */
@@ -48,6 +50,7 @@ const readBody = async (request: IncomingMessage): Promise<string> => {
 export async function startFakeClob(): Promise<FakeClob> {
     const books = new Map<string, FakeBook>();
     const orders = new Map<string, Json | null>();
+    const trades = new Map<string, Json>();
     const requests: string[] = [];
     const posted: Json[] = [];
     let balance = 0n;
@@ -135,6 +138,11 @@ export async function startFakeClob(): Promise<FakeClob> {
                 },
             );
         }
+        if (path === "/data/trades") {
+            const trade = trades.get(url.searchParams.get("id") ?? "");
+            const data = trade ? [trade] : [];
+            return send(response, 200, { limit: 100, count: data.length, next_cursor: "LTE=", data });
+        }
         if (path.startsWith("/data/order/")) {
             const order = orders.get(decodeURIComponent(path.slice("/data/order/".length)));
             if (!order) return send(response, 404, { error: "Order not found" });
@@ -153,6 +161,7 @@ export async function startFakeClob(): Promise<FakeClob> {
         setBook: (tokenId, book) => void books.set(tokenId, book),
         setBalance: (e6) => void (balance = e6),
         setOrder: (id, order) => void orders.set(id, order),
+        setTrade: (id, trade) => void trades.set(id, trade),
         nextPost: (response) => void (next = response),
         dropConnections: () => server.closeAllConnections(),
         postArrived: () => new Promise<void>((resolve) => (arrived = resolve)),

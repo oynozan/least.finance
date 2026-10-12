@@ -166,6 +166,67 @@ describe("the Polymarket trader", () => {
         expect(await ask(null)).toEqual({ kind: "open" });
     });
 
+    it("lookup prices a fill from the trades, not the order's limit price", async () => {
+        const makerOrder = (price: string, matched: string) => ({
+            order_id: `0x${"1".repeat(64)}`,
+            maker_address: "0x0",
+            owner: "o",
+            matched_amount: matched,
+            price,
+            asset_id: TOKEN,
+            outcome: "Yes",
+            side: "SELL",
+            fee_rate_bps: "0",
+        });
+        const trade = {
+            id: "trade-1",
+            taker_order_id: HASH,
+            market: `0x${"c".repeat(64)}`,
+            asset_id: TOKEN,
+            side: "BUY",
+            size: "10",
+            fee_rate_bps: "0",
+            price: "0.508",
+            status: "CONFIRMED",
+            match_time: "1760000000",
+            last_update: "1760000000",
+            outcome: "Yes",
+            bucket_index: 0,
+            owner: "o",
+            maker_address: "0x0",
+            transaction_hash: `0x${"d".repeat(64)}`,
+            trader_side: "TAKER",
+            maker_orders: [makerOrder("0.50", "6"), makerOrder("0.52", "4")],
+        };
+        const order = (side: string) => ({
+            id: HASH,
+            status: "MATCHED",
+            owner: "o",
+            maker_address: "0x0",
+            market: `0x${"c".repeat(64)}`,
+            asset_id: TOKEN,
+            side,
+            original_size: "10",
+            size_matched: "10",
+            price: "0.60",
+            outcome: "Yes",
+            expiration: "0",
+            order_type: "FOK",
+            associate_trades: ["trade-1"],
+            created_at: 1_760_000_000,
+        });
+        fake.setTrade("trade-1", trade);
+        const ask = () => trader.lookup({ orderHash: "0xhash", clobOrderId: HASH, tokenId: TOKEN });
+        fake.setOrder(HASH, order("BUY"));
+        expect(await ask()).toEqual({ kind: "filled", makingE6: 5_080_000n, takingE6: 10_000_000n });
+        fake.setOrder(HASH, order("SELL"));
+        expect(await ask()).toEqual({ kind: "filled", makingE6: 10_000_000n, takingE6: 5_080_000n });
+        // With no trade to price it, the limit price is the bound that keeps the pool whole
+        fake.setTrade("trade-1", { ...trade, id: "other" });
+        fake.setOrder(HASH, order("BUY"));
+        expect(await ask()).toEqual({ kind: "filled", makingE6: 6_000_000n, takingE6: 10_000_000n });
+    });
+
     it("balanceE6 parses the e6 balance", async () => {
         fake.setBalance(123_456_789n);
         expect(await trader.balanceE6()).toBe(123_456_789n);

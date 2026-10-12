@@ -10,7 +10,12 @@ import {
     type SignedOrder,
     type Signer,
 } from "@polymarket/client";
-import { fetchBalanceAllowance, fetchMarketInfo, resolveConditionByToken } from "@polymarket/client/actions";
+import {
+    fetchBalanceAllowance,
+    fetchMarketInfo,
+    listAccountTrades,
+    resolveConditionByToken,
+} from "@polymarket/client/actions";
 import { builderApiKey } from "@polymarket/client/node";
 import { signerFrom } from "@polymarket/client/viem";
 import type { Logger } from "pino";
@@ -159,6 +164,24 @@ export async function createPolymarketTrader(
         return { kind: "unknown" };
     };
 
+    // Dollars x 1e6 (shares e6 x price e6) paid across the order's trades, or null when they don't cover the fill
+    const tradedDollars = async (tradeIds: string[], matchedE6: bigint): Promise<bigint | null> => {
+        let shares = 0n;
+        let dollars = 0n;
+        for (const id of tradeIds) {
+            const page = await listAccountTrades(client, { id }).firstPage();
+            for (const trade of page.items) {
+                if (trade.id !== id) continue;
+                for (const maker of trade.makerOrders) {
+                    const matched = decimalToE6(maker.matchedAmount);
+                    shares += matched;
+                    dollars += matched * decimalToE6(maker.price);
+                }
+            }
+        }
+        return shares === matchedE6 ? dollars : null;
+    };
+
     return {
         wallet: client.account.wallet,
 
@@ -242,8 +265,9 @@ export async function createPolymarketTrader(
             const matchedE6 = decimalToE6(order.sizeMatched);
             const originalE6 = decimalToE6(order.originalSize);
             if (status === "MATCHED" || (matchedE6 > 0n && matchedE6 === originalE6)) {
-                const priceE6 = decimalToE6(order.price);
-                const dollars = matchedE6 * priceE6;
+                // The order's own price is its limit, so the real cost comes from the trades when they add up
+                const dollars =
+                    (await tradedDollars(order.associateTrades, matchedE6)) ?? matchedE6 * decimalToE6(order.price);
                 if (order.side.toUpperCase() === "SELL") {
                     return { kind: "filled", makingE6: matchedE6, takingE6: dollars / E6 };
                 }
