@@ -9,7 +9,8 @@ import {
     type ApiError,
     type Hex,
 } from "@/lib/account/state";
-import type { ClientToServerEvents, ServerToClientEvents } from "@/server/src/protocol";
+import { dropAfterSend, loadCachedBalances, needsRefresh, saveCachedBalances } from "@/lib/account/balances";
+import type { BalancesView, ClientToServerEvents, ServerToClientEvents } from "@/server/src/protocol";
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -27,7 +28,7 @@ export type DepositNotice =
 /** How the wallet took a deposit: turned down, failed to send, or sent (and now being confirmed). */
 export type DepositResult = "cancelled" | "failed" | "sent" | "switch_failed" | "wrong_network";
 
-export type AccountSnapshot = { state: AccountState; notice: DepositNotice | null };
+export type AccountSnapshot = { state: AccountState; notice: DepositNotice | null; balances: BalancesView | null };
 
 /** EIP-1193's code for a request the user turned down in their wallet. */
 const USER_REJECTED = 4001;
@@ -53,7 +54,7 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export class AccountClient {
     readonly #url: string;
-    #snapshot: AccountSnapshot = { state: initialAccountState, notice: null };
+    #snapshot: AccountSnapshot = { state: initialAccountState, notice: null, balances: null };
     readonly #listeners = new Set<() => void>();
     #socket: AppSocket | null = null;
     #userId: string | null = null;
@@ -81,6 +82,9 @@ export class AccountClient {
         if (this.#socket && this.#userId === userId) return;
         this.disconnect();
         this.#userId = userId;
+        // The last snapshot shows at once; the server's push replaces it.
+        this.#snapshot = { ...this.#snapshot, balances: loadCachedBalances(userId) };
+        this.#emit();
         this.#dispatch({ type: "connecting" });
 
         const socket: AppSocket = io(this.#url, {
@@ -102,6 +106,11 @@ export class AccountClient {
         });
         socket.on("deposit:credited", ({ deposit, account }) => {
             this.#dispatch({ type: "credited", deposit, account });
+        });
+        socket.on("balances", (view) => {
+            if (this.#userId) saveCachedBalances(this.#userId, view);
+            this.#snapshot = { ...this.#snapshot, balances: view };
+            this.#emit();
         });
         socket.on("disconnect", (reason) => {
             // The server hung up (its token check expired); a fresh token brings it back.
@@ -151,8 +160,8 @@ export class AccountClient {
         this.#userId = null;
         this.#attempt = 0;
         this.#confirming.clear();
-        if (this.#snapshot.state.status !== "idle" || this.#snapshot.notice) {
-            this.#snapshot = { state: initialAccountState, notice: null };
+        if (this.#snapshot.state.status !== "idle" || this.#snapshot.notice || this.#snapshot.balances) {
+            this.#snapshot = { state: initialAccountState, notice: null, balances: null };
             this.#emit();
         }
     }
@@ -194,6 +203,7 @@ export class AccountClient {
 
         this.#dispatch({ type: "sent", txHash, amount: value, sentAt: Date.now() });
         this.#notify({ kind: "confirming", amount: value });
+        this.#dropBalance("arc:USDC", wallet.from, amount);
         void this.#confirm(socket, txHash, value);
         return "sent";
     }
@@ -226,6 +236,27 @@ export class AccountClient {
         }
         this.#dispatch({ type: "reverted", txHash });
         this.#notify({ kind: "reverted", message: result.error.message });
+    }
+
+    /**
+     * Asks the server for fresh balances, silently. Nothing is sent while the view is under 30 s old,
+     * unless one of `wallets` has no rows in it yet.
+     */
+    refreshBalances(wallets: string[] = []) {
+        const socket = this.#socket;
+        if (!socket || this.#snapshot.state.status !== "ready") return;
+        if (!needsRefresh(this.#snapshot.balances, wallets, Date.now())) return;
+        socket.emit("balances:refresh", {}, () => undefined);
+    }
+
+    /** Takes a sent amount out of the shown balance; the next read corrects it. */
+    #dropBalance(coin: string, wallet: string, amount: string) {
+        const { balances } = this.#snapshot;
+        if (!balances || !this.#userId) return;
+        const view = dropAfterSend(balances, coin, wallet, amount);
+        saveCachedBalances(this.#userId, view);
+        this.#snapshot = { ...this.#snapshot, balances: view };
+        this.#emit();
     }
 
     /** Older deposits, past the ones already loaded. */

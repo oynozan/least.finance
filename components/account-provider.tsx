@@ -1,12 +1,22 @@
 "use client";
 
-import { createContext, use, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+    createContext,
+    use,
+    useCallback,
+    useEffect,
+    useRef,
+    useState,
+    useSyncExternalStore,
+    type ReactNode,
+} from "react";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
 import { historyRows, optimisticBalance, toUsdc, type AccountState, type HistoryRow } from "@/lib/account/state";
 import { ensureNetwork } from "@/lib/wallet/network";
+import type { CoinBalance } from "@/server/src/protocol";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
-import { depositWalletAddress, useActiveWallet } from "./arc-wallet";
+import { depositWalletAddress, linkedWallets, useActiveWallet } from "./arc-wallet";
 import { walletEnabled } from "./wallet-provider";
 
 /** The deposit server. Unset in development, it's the local one. */
@@ -18,12 +28,16 @@ export type Account = {
     balance: number | null | undefined;
     history: HistoryRow[];
     notice: DepositNotice | null;
+    /** Every coin in every linked wallet; null until a snapshot (cached or pushed) is in. */
+    balances: CoinBalance[] | null;
+    /** Reads fresh balances silently; does nothing within 30 s of the last read unless a linked wallet is new. */
+    refreshBalances: () => void;
     /** Sends a deposit of `amount` USDC (a decimal string) from the signed-in wallet. */
     deposit: (amount: string) => Promise<DepositResult>;
     dismissNotice: () => void;
 };
 
-const IDLE: AccountSnapshot = { state: { status: "idle" }, notice: null };
+const IDLE: AccountSnapshot = { state: { status: "idle" }, notice: null, balances: null };
 
 const AccountContext = createContext<Account | null>(null);
 
@@ -61,6 +75,22 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     }, [client, ready, authenticated, userId]);
     useEffect(() => () => client.disconnect(), [client]);
 
+    // A key, so the effect runs when the linked wallets change and not on every render.
+    const walletKey = user
+        ? linkedWallets(user)
+              .map((w) => w.address)
+              .join(",")
+        : "";
+    const refreshBalances = useCallback(
+        () => client.refreshBalances(walletKey ? walletKey.split(",") : []),
+        [client, walletKey],
+    );
+    const accountReady = snapshot.state.status === "ready";
+    // A wallet linked from the sidebar or Deposit is read at once.
+    useEffect(() => {
+        if (accountReady) refreshBalances();
+    }, [accountReady, refreshBalances]);
+
     const deposit = async (amount: string): Promise<DepositResult> => {
         // After an account switch in the wallet app, its newest account is the one that will sign.
         const wallet = wallets.find((w) => address && w.address.toLowerCase() === address.toLowerCase()) ?? wallets[0];
@@ -77,7 +107,12 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     };
 
     return (
-        <Provide snapshot={snapshot} deposit={deposit} dismissNotice={() => client.dismissNotice()}>
+        <Provide
+            snapshot={snapshot}
+            deposit={deposit}
+            refreshBalances={refreshBalances}
+            dismissNotice={() => client.dismissNotice()}
+        >
             {children}
         </Provide>
     );
@@ -87,16 +122,27 @@ function Provide({
     snapshot,
     deposit = async () => "failed",
     dismissNotice = () => undefined,
+    refreshBalances = () => undefined,
     children,
 }: {
     snapshot: AccountSnapshot;
     deposit?: Account["deposit"];
     dismissNotice?: () => void;
+    refreshBalances?: () => void;
     children: ReactNode;
 }) {
     const { state, notice } = snapshot;
     const wei = optimisticBalance(state);
     const balance = wei !== null ? toUsdc(wei) : state.status === "failed" ? null : undefined;
-    const value: Account = { state, balance, history: historyRows(state), notice, deposit, dismissNotice };
+    const value: Account = {
+        state,
+        balance,
+        history: historyRows(state),
+        notice,
+        balances: snapshot.balances?.rows ?? null,
+        refreshBalances,
+        deposit,
+        dismissNotice,
+    };
     return <AccountContext value={value}>{children}</AccountContext>;
 }
