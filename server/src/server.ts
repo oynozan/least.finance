@@ -155,7 +155,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             logger: marketLogger,
             syncMs: config.MARKETS_SYNC_MS,
             // Read lazily: the service below needs the markets, so it's built after them
-            maxOrderUSD: () => service.maxOrderUSD(),
+            maxOrderUSD: (): number | null => service.maxOrderUSD(),
         });
         const service = new PredictionService({
             collections,
