@@ -139,6 +139,8 @@ export type ErrorCode =
     | "unavailable"
     | "insufficient_funds"
     | "market_closed"
+    /** The book moved past the price limit before the order could fill. */
+    | "price_moved"
     /** The pool can't cover an order this size right now. */
     | "float_short"
     | "trading_off"
@@ -212,3 +214,61 @@ export type MarketView = {
 
 export type TrendingView = { markets: MarketView[]; maxOrderUSD: number | null; readAt: string | null };
 export type MarketSearchView = { query: string; markets: MarketView[] };
+
+export type PredictionFailure = "price_moved" | "market_closed" | "unavailable" | "rejected";
+
+export type PredictionOrderView = {
+    id: string;
+    requestId: string;
+    side: "buy" | "sell";
+    state: "placing" | "posted" | "filled" | "failed";
+    reason: PredictionFailure | null;
+    eventId: string;
+    tokenId: string;
+    question: string;
+    outcome: string;
+    amountUSD: UsdcAmount | null;
+    shares: string | null;
+    positionId: string | null;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type PositionView = {
+    id: string;
+    eventId: string;
+    marketId: string;
+    tokenId: string;
+    question: string;
+    outcome: string;
+    shares: string;
+    costUSD: UsdcAmount;
+    state: "open" | "closing" | "closed" | "won" | "lost";
+    proceedsUSD: UsdcAmount | null;
+    payoutUSD: UsdcAmount | null;
+    openedAt: string;
+    settledAt: string | null;
+    updatedAt: string;
+};
+
+export type PositionsView = { positions: PositionView[]; orders: PredictionOrderView[] };
+
+export type QuoteView = {
+    eventId: string;
+    tokenId: string;
+    side: "buy";
+    amountUSD: UsdcAmount;
+    shares: string;
+    avgPrice: number;
+    worstPrice: number;
+    feeUSD: UsdcAmount;
+    payoutUSD: UsdcAmount;
+    minUSD: number;
+};
+
+export type PredictionUpdate = {
+    requestId: string;
+    order: PredictionOrderView;
+    position: PositionView | null;
+    account: AccountView;
+};

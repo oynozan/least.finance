@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
-import type { MarketSearchView, MarketView, TrendingView } from "../protocol.ts";
+import type { MarketOutcomeView, MarketSearchView, MarketView, TrendingView } from "../protocol.ts";
 import type { GammaEvent } from "./gamma.ts";
 import type { Book, PolymarketData } from "./polymarket-data.ts";
 import { shapeEvent } from "./shape.ts";
@@ -22,6 +22,8 @@ type Deps = {
     data: PolymarketData;
     logger: Logger;
     syncMs: number;
+    /** The largest order the pool can cover now; null when predictions aren't live. */
+    maxOrderUSD?: () => number | null;
     /** The clock, for tests. */
     now?: () => number;
 };
@@ -128,7 +130,7 @@ export class MarketService {
     trending(): TrendingView {
         return {
             markets: this.#trending?.value ?? [],
-            maxOrderUSD: null,
+            maxOrderUSD: this.#deps.maxOrderUSD?.() ?? null,
             readAt: this.#trending ? new Date(this.#trending.at).toISOString() : null,
         };
     }
@@ -162,6 +164,18 @@ export class MarketService {
         const pending = this.#reading.get(id) ?? this.#read(id).finally(() => this.#reading.delete(id));
         this.#reading.set(id, pending);
         return pending;
+    }
+
+    /** One offered outcome of an event, at most 5 s fresh; null when the event or the outcome is no longer offered. */
+    async outcome(
+        eventId: string,
+        tokenId: string,
+    ): Promise<{ outcome: MarketOutcomeView; marketId: string; question: string } | null> {
+        const view = await this.event(eventId);
+        const outcome = view?.outcomes.find((o) => o.tokenId === tokenId);
+        const market = this.#events.get(eventId)?.value.markets.find((m) => m.clobTokenIds.includes(tokenId));
+        if (!view || !outcome || !market) return null;
+        return { outcome, marketId: market.id, question: view.title };
     }
 
     async #read(id: string): Promise<MarketView | null> {

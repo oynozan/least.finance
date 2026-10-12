@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { ObjectId } from "mongodb";
-import type { AccountDoc, DepositDoc, DepositOrderDoc } from "./db/mongo.ts";
+import type { AccountDoc, DepositDoc, DepositOrderDoc, PositionDoc, PredictionOrderDoc } from "./db/mongo.ts";
 import type { BalancesView } from "./protocol.ts";
 
 type Events = {
@@ -10,6 +10,8 @@ type Events = {
     "order:updated": [{ order: DepositOrderDoc }];
     /** Fired after each read of an account's wallets. */
     "balances:updated": [{ accountId: ObjectId; privyUserId: string; view: BalancesView }];
+    /** Fired after a prediction order settles, once its transaction commits. */
+    "prediction:updated": [{ order: PredictionOrderDoc; position: PositionDoc | null; account: AccountDoc }];
 };
 
 /** In-process events between the ledger and the sockets. */

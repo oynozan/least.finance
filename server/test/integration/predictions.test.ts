@@ -1,0 +1,209 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, expect, test } from "vitest";
+import { fromDecimal } from "../../src/db/money.ts";
+import { isAppError } from "../../src/errors.ts";
+import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
+
+let h: Awaited<ReturnType<typeof predictionHarness>>;
+beforeAll(async () => {
+    h = await predictionHarness();
+    await h.service.refreshFloat();
+});
+afterAll(() => h.database.close());
+
+const input = (amountUSD: string, requestId = randomUUID()) => ({
+    requestId,
+    eventId: EVENT,
+    tokenId: TOKEN,
+    amountUSD,
+});
+const orderOf = (id: string) => h.database.collections.predictionOrders.findOne({ requestId: id });
+const settled = async (requestId: string) => {
+    await until(async () => {
+        const order = await orderOf(requestId);
+        return order !== null && order.state !== "placing" && order.state !== "posted";
+    });
+    return (await orderOf(requestId))!;
+};
+const kinds = (rows: { kind: string }[]) => rows.map((r) => r.kind).sort();
+
+test("a filled buy debits, records the shares, and refunds the unspent part", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "delay");
+    const view = await h.service.place(account, input("10"));
+    expect(view.state).toBe("placing");
+    await until(async () => (await orderOf(view.requestId))?.state === "posted");
+
+    const order = (await orderOf(view.requestId))!;
+    await h.service.settle(order, 9_000_000n, 18_000_000n);
+
+    const done = (await orderOf(view.requestId))!;
+    expect(done.state).toBe("filled");
+    expect(fromDecimal(done.cost!)).toBe(wei("9"));
+    const position = await h.database.collections.positions.findOne({ accountId: account._id });
+    expect(position).toMatchObject({ state: "open", tokenId: TOKEN, question: "Will it rain?", outcome: "YES" });
+    expect(fromDecimal(position!.shares)).toBe(18_000_000n);
+    expect(fromDecimal(position!.cost)).toBe(wei("9"));
+    expect(done.positionId).toEqual(position!._id);
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("91"));
+    expect(kinds(s.rows)).toEqual(["deposit", "prediction_buy", "prediction_refund"]);
+    expect(s.sum).toBe(s.balance);
+});
+
+test("a buy the trader fills in full keeps the position and balances", async () => {
+    const account = await h.seedAccount("100");
+    const view = await h.service.place(account, input("10"));
+    const order = await settled(view.requestId);
+    expect(order.state).toBe("filled");
+    const position = await h.database.collections.positions.findOne({ accountId: account._id });
+    expect(fromDecimal(position!.shares)).toBe(20_000_000n);
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("90"));
+    expect(s.sum).toBe(s.balance);
+});
+
+test("an unfilled buy refunds in full and fails with price_moved", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "reject:price_moved");
+    const view = await h.service.place(account, input("10"));
+    const order = await settled(view.requestId);
+    expect(order).toMatchObject({ state: "failed", reason: "price_moved" });
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("100"));
+    expect(kinds(s.rows)).toEqual(["deposit", "prediction_buy", "prediction_refund"]);
+    expect(s.sum).toBe(s.balance);
+    expect(await h.database.collections.positions.countDocuments({ accountId: account._id })).toBe(0);
+});
+
+test("the same requestId twice is one order and one debit", async () => {
+    const account = await h.seedAccount("100");
+    const requestId = randomUUID();
+    h.trader.onNext(TOKEN, "delay");
+    const [a, b] = await Promise.all([
+        h.service.place(account, input("10", requestId)),
+        h.service.place(account, input("10", requestId)),
+    ]);
+    const again = await h.service.place(account, input("10", requestId));
+    expect(new Set([a.id, b.id, again.id]).size).toBe(1);
+    expect(await h.database.collections.predictionOrders.countDocuments({ accountId: account._id })).toBe(1);
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("90"));
+    expect(kinds(s.rows)).toEqual(["deposit", "prediction_buy"]);
+});
+
+test("a balance that's too low is refused and nothing is written", async () => {
+    const account = await h.seedAccount("5");
+    const error = await h.service.place(account, input("10")).catch((e: unknown) => e);
+    expect(isAppError(error) && error.code).toBe("insufficient_funds");
+    expect(await h.database.collections.predictionOrders.countDocuments({ accountId: account._id })).toBe(0);
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("5"));
+    expect(s.rows).toHaveLength(1);
+});
+
+test("an amount over the free float is refused with float_short", async () => {
+    const own = await predictionHarness();
+    try {
+        const account = await own.seedAccount("5000");
+        own.trader.setBalance(50_000_000n);
+        await own.service.refreshFloat();
+        const error = await own.service.place(account, input("60")).catch((e: unknown) => e);
+        expect(isAppError(error) && error.code).toBe("float_short");
+        expect(isAppError(error) && error.message).toBe("Predictions are limited to $50 right now. Nothing was spent.");
+        expect((await own.state(account._id)).rows).toHaveLength(1);
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("two concurrent orders can't overdraw", async () => {
+    const account = await h.seedAccount("10");
+    h.trader.onNext(TOKEN, "delay");
+    const results = await Promise.allSettled([
+        h.service.place(account, input("6")),
+        h.service.place(account, input("6")),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("4"));
+    expect(s.sum).toBe(s.balance);
+});
+
+test("a sign failure fails with unavailable and refunds", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.failSign(TOKEN);
+    const view = await h.service.place(account, input("10"));
+    const order = await settled(view.requestId);
+    expect(order).toMatchObject({ state: "failed", reason: "unavailable" });
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("100"));
+    expect(s.sum).toBe(s.balance);
+});
+
+test("recover refunds placing orders once", async () => {
+    const account = await h.seedAccount("100");
+    // a crash left an order placing with its money held, so rewind one whose post never answers
+    h.trader.onNext(TOKEN, "hold");
+    const crashed = await h.service.place(account, input("20"));
+    await until(async () => (await orderOf(crashed.requestId))?.state === "posted");
+    await h.database.collections.predictionOrders.updateOne(
+        { requestId: crashed.requestId },
+        { $set: { state: "placing" } },
+    );
+    const before = await h.state(account._id);
+
+    await h.service.recover();
+    await h.service.recover();
+
+    const order = (await orderOf(crashed.requestId))!;
+    expect(order).toMatchObject({ state: "failed", reason: "unavailable" });
+    const after = await h.state(account._id);
+    expect(after.balance - before.balance).toBe(wei("20"));
+    expect(after.rows.filter((r) => r.refId.equals(order._id) && r.kind === "prediction_refund")).toHaveLength(1);
+    expect(after.sum).toBe(after.balance);
+});
+
+test("maxOrderUSD is null while trading is off and the free float when on", async () => {
+    const on = await predictionHarness();
+    const off = await predictionHarness({ trading: "off" });
+    try {
+        on.trader.setBalance(100_500_000n);
+        await on.service.refreshFloat();
+        expect(on.service.maxOrderUSD()).toBe(100);
+        await off.service.refreshFloat();
+        expect(off.service.maxOrderUSD()).toBeNull();
+        const account = await off.seedAccount("10");
+        const error = await off.service.place(account, input("5")).catch((e: unknown) => e);
+        expect(isAppError(error) && error.code).toBe("trading_off");
+    } finally {
+        await on.database.close();
+        await off.database.close();
+    }
+});
+
+test("below the minimum and a closed market are refused before any hold", async () => {
+    const account = await h.seedAccount("10");
+    const low = await h.service.place(account, input("0.5")).catch((e: unknown) => e);
+    expect(isAppError(low) && low.message).toBe("The minimum for this prediction is $1.");
+    const saved = h.offered.current;
+    h.offered.current = null;
+    const closed = await h.service.place(account, input("5")).catch((e: unknown) => e);
+    h.offered.current = saved;
+    expect(isAppError(closed) && closed.code).toBe("market_closed");
+    expect((await h.state(account._id)).rows).toHaveLength(1);
+});
+
+test("a quote prices the fill and refuses a book that can't fill", async () => {
+    const quote = await h.service.quote({ eventId: EVENT, tokenId: TOKEN, amountUSD: "10" });
+    expect(quote).toMatchObject({
+        shares: "20",
+        avgPrice: 0.5,
+        worstPrice: 0.5,
+        feeUSD: "0",
+        payoutUSD: "20",
+        minUSD: 1,
+    });
+    const error = await h.service.quote({ eventId: EVENT, tokenId: TOKEN, amountUSD: "900" }).catch((e: unknown) => e);
+    expect(isAppError(error) && error.code).toBe("price_moved");
+});

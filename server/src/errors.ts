@@ -14,6 +14,7 @@ const STATUS: Record<ErrorCode, number> = {
     unavailable: 503,
     insufficient_funds: 409,
     market_closed: 409,
+    price_moved: 409,
     float_short: 409,
     trading_off: 503,
     internal: 500,
