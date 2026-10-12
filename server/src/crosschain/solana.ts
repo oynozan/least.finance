@@ -78,7 +78,7 @@ export async function readSolanaBalances(
             decimals: coin.decimals,
             wallet: owner,
         };
-        const units = held[i];
+        const units = held[i]!;
         if (units === null) return { ...base, amount: null, spendable: null, usd: null };
         const price = usd.get(coin.key);
         const amount = formatCoinAmount(coin, units);
