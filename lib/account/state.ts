@@ -13,6 +13,7 @@ import type {
     PositionsView,
     PredictionFailure,
     PredictionOrderView,
+    PredictionPlaced,
     PredictionUpdate,
     QuoteView,
     SourceTxView,
@@ -33,6 +34,7 @@ export type {
     PositionsView,
     PredictionFailure,
     PredictionOrderView,
+    PredictionPlaced,
     PredictionUpdate,
     QuoteView,
     SourceTxView,
@@ -108,6 +110,7 @@ export type AccountAction =
     | { type: "predict"; trade: OptimisticTrade }
     /** The server turned the order down, or it never got there. */
     | { type: "predict-failed"; requestId: string }
+    | { type: "placed"; order: PredictionOrderView; account: AccountView }
     | { type: "prediction"; update: PredictionUpdate }
     | { type: "positions"; positions: PositionsView; connection: number };
 
@@ -179,6 +182,20 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
         case "predict-failed":
             if (state.status !== "ready") return state;
             return { ...state, optimistic: state.optimistic.filter((t) => t.requestId !== action.requestId) };
+        case "placed": {
+            if (state.status !== "ready") return state;
+            // The ack already has the amount taken, so the optimistic entry gives way to the account
+            const next = withAccount(state, action.account);
+            const trade = state.optimistic.find((t) => t.requestId === action.order.requestId);
+            // Still the estimate until the fill says how many shares
+            const order =
+                trade && action.order.shares === null ? { ...action.order, shares: trade.shares } : action.order;
+            return {
+                ...next,
+                predictions: { ...next.predictions, orders: keepNewer(next.predictions.orders, order) },
+                optimistic: next.optimistic.filter((t) => t.requestId !== action.order.requestId),
+            };
+        }
         case "prediction": {
             if (state.status !== "ready") return state;
             const { update } = action;
@@ -203,7 +220,7 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
             const known = new Set(action.positions.orders.map((o) => o.requestId));
             return {
                 ...state,
-                predictions: action.positions,
+                predictions: mergeSnapshot(state.predictions, action.positions),
                 optimistic: state.optimistic.filter(
                     (t) => !known.has(t.requestId) && t.connection >= action.connection,
                 ),
@@ -216,6 +233,34 @@ type Ready = Extract<AccountState, { status: "ready" }>;
 
 /** Replaces the entry with the same id, or adds it on top. */
 const upsert = <T extends { id: string }>(items: T[], item: T): T[] => [item, ...items.filter((i) => i.id !== item.id)];
+
+/** Adds the order, unless the one held is newer. */
+const keepNewer = (orders: PredictionOrderView[], order: PredictionOrderView): PredictionOrderView[] => {
+    const held = orders.find((o) => o.id === order.id);
+    return held && held.updatedAt > order.updatedAt ? orders : upsert(orders, order);
+};
+
+/** The snapshot, except where a push already showed something newer: an older read can't undo a settled order. */
+function mergeSnapshot(held: PositionsView, snapshot: PositionsView): PositionsView {
+    const heldOrders = new Map(held.orders.map((o) => [o.id, o]));
+    const orders = snapshot.orders.map((o) => {
+        const known = heldOrders.get(o.id);
+        return known && known.updatedAt > o.updatedAt ? known : o;
+    });
+    const kept = new Set(orders.map((o) => o.id));
+    // Settled orders aren't in a snapshot, so those a push brought stay
+    for (const o of held.orders) if (!kept.has(o.id) && (o.state === "filled" || o.state === "failed")) orders.push(o);
+
+    const heldPositions = new Map(held.positions.map((p) => [p.id, p]));
+    const positions = snapshot.positions.map((p) => {
+        const known = heldPositions.get(p.id);
+        return known && known.updatedAt > p.updatedAt ? known : p;
+    });
+    const shown = new Set(positions.map((p) => p.id));
+    const newer = new Set(orders.filter((o) => heldOrders.get(o.id) === o).map((o) => o.positionId));
+    for (const p of held.positions) if (!shown.has(p.id) && newer.has(p.id)) positions.push(p);
+    return { orders, positions };
+}
 
 const sortOrders = (orders: DepositOrderView[]) =>
     orders

@@ -60,15 +60,19 @@ async function predict(page: Page, { market, outcome }: Picked) {
     await expect(questionPill(page)).toHaveAccessibleName(market.title);
 }
 
+const reviewPanel = (page: Page) => page.getByRole("complementary", { name: "Review" });
+
+/** Confirms the review that is open and waits for its done step. */
+async function confirmReview(page: Page) {
+    await review(page).click();
+    await reviewPanel(page).getByRole("button", { name: "Confirm prediction" }).click();
+    await expect(reviewPanel(page).getByRole("button", { name: "Done" })).toBeVisible();
+}
+
 /** Confirms the review that is open, then folds it and opens the wallet. */
 async function confirm(page: Page) {
-    await review(page).click();
-    await page
-        .getByRole("complementary", { name: "Review" })
-        .getByRole("button", { name: "Confirm prediction" })
-        .click();
-    await expect(page.getByRole("complementary", { name: "Review" })).toContainText("Prediction placed.");
-    await page.getByRole("complementary", { name: "Review" }).getByRole("button", { name: "Done" }).click();
+    await confirmReview(page);
+    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
     await walletButton(page).click();
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
@@ -94,7 +98,12 @@ test("a prediction lowers the balance and adds a position at once, while the fak
     await page.goto("/");
     await connect(page);
     await predict(page, picked);
-    await confirm(page);
+    await confirmReview(page);
+    await expect(reviewPanel(page)).toContainText("Prediction placed.");
+    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+    await walletButton(page).click();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
 
     await expect(balanceButton(page)).toHaveAccessibleName(balanceName("490.00"));
     await expect(row(page, picked)).toHaveCount(1);
@@ -119,16 +128,39 @@ test("a prediction lowers the balance and adds a position at once, while the fak
     await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$49\d\.\d\d, show deposits$/);
 });
 
-test("a rejected prediction rolls back with the price-moved line", async ({ page }) => {
+test("a rejected prediction replaces the done line in the review, then rolls back", async ({ page }) => {
     const picked = await pickMarket(1);
     await nextOrder(picked.outcome.tokenId, "reject:price_moved");
     await page.goto("/");
     await connect(page);
     await predict(page, picked);
-    await confirm(page);
+    await confirmReview(page);
 
-    await expect(status(page)).toHaveText("The price moved, so your prediction didn't go through. Nothing was spent.");
+    const line = "The price moved, so your prediction didn't go through. Nothing was spent.";
+    await expect(reviewPanel(page)).toContainText(line);
+    await expect(reviewPanel(page).getByText("Prediction placed.")).toHaveCount(0);
+    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+    await walletButton(page).click();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
+    await expect(status(page)).toHaveText(line);
     await expect(row(page, picked)).toHaveCount(0);
+    await expect(balanceButton(page)).toHaveAccessibleName(balanceName("500.00"));
+});
+
+test("a refusal that comes after the review is closed opens the sidebar on it", async ({ page }) => {
+    const picked = await pickMarket(5);
+    await nextOrder(picked.outcome.tokenId, "hold");
+    await page.goto("/");
+    await connect(page);
+    await predict(page, picked);
+    await confirmReview(page);
+    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+
+    await releaseOrder(picked.outcome.tokenId, "reject:price_moved");
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
+    await expect(status(page)).toHaveText("The price moved, so your prediction didn't go through. Nothing was spent.");
     await expect(balanceButton(page)).toHaveAccessibleName(balanceName("500.00"));
 });
 

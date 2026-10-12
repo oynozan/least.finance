@@ -80,6 +80,10 @@ function ReviewBody({ onDone }: { onDone: () => void }) {
     const [sent, setSent] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
     const [placed, setPlaced] = useState(false);
+    // The server's refusal of the prediction just confirmed; the notice itself clears after a few seconds.
+    const [refusal, setRefusal] = useState<string | null>(null);
+    const refused = account.tradeNotice?.message ?? null;
+    if (placed && refused && refused !== refusal) setRefusal(refused);
     const [quoted, setQuoted] = useState<QuoteView | null>(null);
     const intentKey = JSON.stringify(view.intent);
     // A change to the sentence after confirming starts the review over.
@@ -134,7 +138,7 @@ function ReviewBody({ onDone }: { onDone: () => void }) {
         if (wallet.status === "disconnected") return wallet.connect();
         if (!view.intent || view.blocking) return;
         if (live && prediction && market && outcome) {
-            // Counted at once; a refusal lands in the sidebar's status line.
+            // Counted at once; a refusal replaces the done line here, or opens the sidebar if this is closed by then.
             const estimate = (Number(prediction.amountUSD) / outcome.price).toFixed(6).replace(/\.?0+$/, "");
             const result = account.placePrediction({
                 eventId: prediction.marketId,
@@ -188,7 +192,9 @@ function ReviewBody({ onDone }: { onDone: () => void }) {
                     role="status"
                     className="flex flex-col gap-3"
                 >
-                    {placed ? (
+                    {refusal ? (
+                        <p className="text-[17px] leading-snug text-loss">{refusal}</p>
+                    ) : placed ? (
                         <p className="text-[17px] leading-snug">Prediction placed.</p>
                     ) : live && prediction ? (
                         <p className="text-[17px] leading-snug">Nothing was sent.</p>

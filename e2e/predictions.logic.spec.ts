@@ -216,4 +216,66 @@ test.describe("optimistic predictions", () => {
         expect(ready(state).optimistic.map((t) => t.requestId)).toEqual([REQ_A]);
         expect(usdc(state)).toBe(toWei("90"));
     });
+
+    test("the ack takes the server's debit, so an earlier push doesn't leave it counted twice", () => {
+        const placing = order(REQ_A, { state: "placing", positionId: null, shares: null });
+        const state = run(
+            [
+                predict(REQ_A, "10"),
+                // a push that already carries the debit lands before the ack
+                { type: "session", session: session("90", 2) },
+                { type: "placed", order: placing, account: account("90", 2) },
+            ],
+            open("100"),
+        );
+        expect(usdc(state)).toBe(toWei("90"));
+        const r = ready(state);
+        expect(r.optimistic).toEqual([]);
+        expect(r.predictions.orders.map((o) => o.id)).toEqual([placing.id]);
+        expect(r.predictions.orders[0]!.shares).toBe("20");
+    });
+
+    test("an ack that follows the settling push doesn't bring the order back to placing", () => {
+        const filled = order(REQ_A, { updatedAt: at(5) });
+        const state = run(
+            [
+                predict(REQ_A, "10"),
+                {
+                    type: "prediction",
+                    update: { requestId: REQ_A, order: filled, position: position(), account: account("90", 3) },
+                },
+                {
+                    type: "placed",
+                    order: order(REQ_A, { state: "placing", positionId: null, updatedAt: at(1) }),
+                    account: account("90", 2),
+                },
+            ],
+            open("100"),
+        );
+        expect(ready(state).predictions.orders).toEqual([filled]);
+        expect(usdc(state)).toBe(toWei("90"));
+    });
+
+    test("a snapshot older than a settling push keeps the settled order and its position", () => {
+        const filled = order(REQ_A, { updatedAt: at(5) });
+        const stale = order(REQ_A, { state: "posted", positionId: null, shares: null, updatedAt: at(2) });
+        const state = run(
+            [
+                {
+                    type: "prediction",
+                    update: {
+                        requestId: REQ_A,
+                        order: filled,
+                        position: position({ updatedAt: at(5) }),
+                        account: account("90", 2),
+                    },
+                },
+                { type: "positions", connection: 1, positions: { positions: [], orders: [stale] } },
+            ],
+            open("100"),
+        );
+        const r = ready(state);
+        expect(r.predictions.orders).toEqual([filled]);
+        expect(r.predictions.positions.map((p) => p.id)).toEqual(["pos1"]);
+    });
 });

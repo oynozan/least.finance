@@ -327,7 +327,12 @@ export class AccountClient {
             .emitWithAck("prediction:order", { requestId, ...wire })
             .catch(() => null)
             .then((result) => {
-                if (this.#socket !== socket || !result || result.ok) return;
+                if (this.#socket !== socket || !result) return;
+                if (result.ok) {
+                    const { account, ...order } = result.data;
+                    this.#dispatch({ type: "placed", order, account });
+                    return;
+                }
                 this.#dispatch({ type: "predict-failed", requestId });
                 this.#tradeNotice(result.error.message);
             });
