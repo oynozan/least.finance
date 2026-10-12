@@ -44,7 +44,7 @@ export async function mergeAccountsByPerson(client: MongoClient, collections: Co
 /** Moves one account into another in a single transaction, so the ledger stays double-entry. */
 async function mergeInto(
     client: MongoClient,
-    { accounts, deposits, ledger }: Collections,
+    { accounts, deposits, ledger, depositOrders }: Collections,
     into: AccountDoc["_id"],
     from: AccountDoc["_id"],
 ) {
@@ -92,8 +92,9 @@ async function mergeInto(
                 entries.map((entry) => ({ _id: new ObjectId(), createdAt: now, ...entry })),
                 { session },
             );
-            // Only deposits move: the known-deposit path reads their account, and the ledger rows stay with the account they sum for.
+            // Deposits and their orders move: the known-deposit path and the order tracker read their account, and the ledger rows stay with the account they sum for.
             await deposits.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
+            await depositOrders.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
             return true;
         });
     } finally {

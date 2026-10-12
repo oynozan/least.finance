@@ -152,6 +152,25 @@ test("a person's two accounts merge into the older, through the ledger", async (
     expect(session.deposits.items).toHaveLength(2);
 });
 
+test("a merged account's deposit orders follow it to the survivor", async () => {
+    const did = newDid();
+    let a!: Seed;
+    const orderId = new ObjectId();
+    const running = await boot(async (db) => {
+        a = await seedAccount(db, did, "3");
+        const b = await seedAccount(db, did, "2");
+        await mongo.db(db).collection("deposit_orders").insertOne({
+            _id: orderId,
+            accountId: b.id,
+            state: "bridging",
+            recipient: b.address,
+        } as never);
+    });
+
+    const order = await collections(running).depositOrders.findOne({ _id: orderId });
+    expect(order?.accountId.equals(a.id)).toBe(true);
+});
+
 test("accounts without a Privy user aren't merged together", async () => {
     const did = newDid();
     let orphans!: Seed[];
