@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { ObjectId } from "mongodb";
 import type { Logger } from "pino";
 import { parseUnits } from "viem";
@@ -23,6 +24,8 @@ import { formatUsdShort, orderView, positionView } from "./views.ts";
 const SETTLED_KEEP_MS = 7 * 24 * 3_600_000;
 const FLOAT_LOW = 0.25;
 const FLOAT_HIGH = 2;
+const GIVE_UP_TRIES = 3;
+const GIVE_UP_RETRY_MS = 200;
 const AMOUNT = /^\d+(\.\d{1,6})?$/;
 
 export const NOTHING_SPENT = "Nothing was spent.";
@@ -57,10 +60,16 @@ export class PredictionService {
     /** Wei held by buys that haven't settled. */
     #heldE6 = 0n;
     #floatState: "low" | "high" | "ok" = "ok";
+    /** Orders this process is still sending, so the tracker doesn't judge a post that hasn't answered yet. */
+    readonly #submitting = new Set<string>();
 
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+    }
+
+    submitting(id: ObjectId): boolean {
+        return this.#submitting.has(id.toHexString());
     }
 
     /** The largest order the pool can cover now, in whole dollars; null while predictions aren't live. */
@@ -118,6 +127,12 @@ export class PredictionService {
     }
 
     async place(account: AccountDoc, input: PlaceInput): Promise<PredictionOrderView> {
+        // A retry is the same order whatever the checks below would say now
+        const known = await this.#deps.collections.predictionOrders.findOne({
+            accountId: account._id,
+            requestId: input.requestId,
+        });
+        if (known) return orderView(known);
         this.#trader();
         const offered = await this.#deps.markets.outcome(input.eventId, input.tokenId);
         if (!offered) throw marketClosed();
@@ -183,6 +198,31 @@ export class PredictionService {
     }
 
     async #submit(order: PredictionOrderDoc): Promise<void> {
+        const id = order._id.toHexString();
+        this.#submitting.add(id);
+        try {
+            await this.#send(order);
+        } catch (error) {
+            this.#deps.logger.error({ err: error, order: id }, "Couldn't submit a prediction");
+            await this.#giveUp(order);
+        } finally {
+            this.#submitting.delete(id);
+        }
+    }
+
+    /** Refunds an order that never reached the exchange; one that did is left posted, since this only moves a placing one. */
+    async #giveUp(order: PredictionOrderDoc): Promise<void> {
+        for (let attempt = 1; attempt <= GIVE_UP_TRIES; attempt++) {
+            try {
+                return await this.fail(order, "unavailable", "placing");
+            } catch (error) {
+                this.#deps.logger.warn({ err: error, order: order._id.toHexString() }, "Couldn't refund a prediction");
+                await sleep(GIVE_UP_RETRY_MS * attempt);
+            }
+        }
+    }
+
+    async #send(order: PredictionOrderDoc): Promise<void> {
         const { predictionOrders } = this.#deps.collections;
         const trader = this.#deps.trader();
         let signed;

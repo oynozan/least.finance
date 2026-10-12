@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { ObjectId } from "mongodb";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { fromDecimal } from "../../src/db/money.ts";
+import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { PredictionTracker } from "../../src/predictions/tracker.ts";
 import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
 
@@ -110,5 +111,73 @@ test("filled and refunded never both happen", async () => {
         expect(refunds).toBe(1);
         expect(s.balance).toBe(wei("100"));
     }
+    expect(s.sum).toBe(s.balance);
+});
+
+test("a post still in flight in this process is not given up on", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "hold");
+    const view = await h.service.place(account, input("10"));
+    await posted(view.requestId);
+
+    clock += 121_000;
+    await tracker.tick();
+    expect((await orderOf(view.requestId))!.state).toBe("posted");
+
+    h.trader.release(TOKEN, "fill");
+    await until(async () => (await orderOf(view.requestId))?.state === "filled");
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("90"));
+    expect(s.sum).toBe(s.balance);
+});
+
+test("a placing order nothing is submitting is refunded after a minute", async () => {
+    const account = await h.seedAccount("100");
+    const _id = new ObjectId();
+    const amount = wei("10");
+    await h.ledger.runInTransaction((session) =>
+        h.ledger.debitInSession(session, account._id, amount, "prediction_buy", _id),
+    );
+    const created = new Date(clock);
+    await h.database.collections.predictionOrders.insertOne({
+        _id,
+        accountId: account._id,
+        requestId: randomUUID(),
+        side: "buy",
+        eventId: EVENT,
+        marketId: "mkt-1",
+        tokenId: TOKEN,
+        conditionId: "",
+        question: "Will it rain?",
+        outcome: "YES",
+        amount: toDecimal(amount),
+        shares: null,
+        quotedPrice: 0.5,
+        limitPrice: 0,
+        positionId: null,
+        orderHash: null,
+        clobOrderId: null,
+        signed: null,
+        state: "placing",
+        reason: null,
+        filledShares: null,
+        cost: null,
+        postedAt: null,
+        createdAt: created,
+        updatedAt: created,
+    });
+
+    clock += 30_000;
+    await tracker.tick();
+    expect((await h.database.collections.predictionOrders.findOne({ _id }))!.state).toBe("placing");
+
+    clock += 31_000;
+    await tracker.tick();
+    expect(await h.database.collections.predictionOrders.findOne({ _id })).toMatchObject({
+        state: "failed",
+        reason: "unavailable",
+    });
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("100"));
     expect(s.sum).toBe(s.balance);
 });

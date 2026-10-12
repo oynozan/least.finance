@@ -28,7 +28,7 @@ export const BOOK: Book = {
 type Offered = Awaited<ReturnType<MarketService["outcome"]>>;
 
 /** The service, a fake trader and an offered outcome over a throwaway database. */
-export async function predictionHarness(o: { trading?: "on" | "off"; now?: () => number } = {}) {
+export async function predictionHarness(o: { trading?: "on" | "off"; now?: () => number; feeRate?: number } = {}) {
     const database: Database = await connectDatabase(inject("mongoUri"), `test_${randomUUID().replaceAll("-", "")}`);
     const logger = pino({ level: "silent" });
     const bus = new Bus();
@@ -39,7 +39,19 @@ export async function predictionHarness(o: { trading?: "on" | "off"; now?: () =>
         logger,
         minDeposit: 0n,
     });
-    const trader = new FakeTrader({ bookOf: () => BOOK, balanceE6: 1_000_000_000n });
+    const trader = new FakeTrader({
+        bookOf: () => BOOK,
+        balanceE6: 1_000_000_000n,
+        ...(o.feeRate && {
+            metaOf: (_t, book) => ({
+                conditionId: "0xcondition",
+                negRisk: book.negRisk,
+                tickSize: book.tickSize,
+                feeRate: o.feeRate!,
+                feeExponent: 1,
+            }),
+        }),
+    });
     const offered: { current: Offered } = {
         current: {
             outcome: {

@@ -6,6 +6,8 @@ import type { PoolTrader } from "./trader.ts";
 
 /** A post that never shows up at the exchange this long after it was sent didn't land. */
 const MISSING_GIVE_UP_MS = 120_000;
+/** A placing order older than this that nothing here is sending never reached the exchange. */
+const PLACING_GIVE_UP_MS = 60_000;
 const SLOW_AGE_MS = 600_000;
 const SLOW_POLL_MS = 60_000;
 const FLOAT_MS = 60_000;
@@ -71,21 +73,41 @@ export class PredictionTracker {
 
     /** One pass over the posted orders that are due; an error on one leaves it as it was. */
     async tick(): Promise<void> {
+        const now = this.#now();
+        await this.#sweepPlacing(now);
         const trader = this.#deps.trader();
         if (!trader) return;
-        const now = this.#now();
         const orders = await this.#deps.collections.predictionOrders.find({ state: "posted" }).toArray();
         const ids = new Set(orders.map((order) => order._id.toHexString()));
         for (const id of this.#polled.keys()) if (!ids.has(id)) this.#polled.delete(id);
 
         for (const order of orders) {
             const id = order._id.toHexString();
+            if (this.#deps.service.submitting(order._id)) continue;
             const wait = now - order.createdAt.getTime() > SLOW_AGE_MS ? SLOW_POLL_MS : this.#deps.pollMs;
             if (now - (this.#polled.get(id) ?? -Infinity) < wait) continue;
             this.#polled.set(id, now);
             await this.#step(trader, order).catch((error: unknown) =>
                 this.#deps.logger.warn({ err: error, order: id }, "Couldn't follow a prediction"),
             );
+        }
+    }
+
+    /** Refunds placing orders a failed submit left behind; no trader is needed, since they never left. */
+    async #sweepPlacing(now: number) {
+        const stale = await this.#deps.collections.predictionOrders
+            .find({ state: "placing", createdAt: { $lt: new Date(now - PLACING_GIVE_UP_MS) } })
+            .toArray();
+        for (const order of stale) {
+            if (this.#deps.service.submitting(order._id)) continue;
+            await this.#deps.service
+                .fail(order, "unavailable", "placing")
+                .catch((error: unknown) =>
+                    this.#deps.logger.warn(
+                        { err: error, order: order._id.toHexString() },
+                        "Couldn't refund a prediction",
+                    ),
+                );
         }
     }
 

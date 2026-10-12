@@ -86,6 +86,14 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         }
     });
 
+    // Pushes go one at a time per account, so a step never overtakes the one before it.
+    const pushing = new Map<string, Promise<void>>();
+    function enqueue(key: string, work: () => Promise<void>) {
+        const next = (pushing.get(key) ?? Promise.resolve()).then(work);
+        pushing.set(key, next);
+        void next.then(() => pushing.get(key) === next && pushing.delete(key));
+    }
+
     io.on("connection", (socket) => {
         // The access token lasts about an hour; the client reconnects with a fresh one.
         const expiry = setTimeout(
@@ -125,12 +133,14 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     .catch((error: unknown) => {
                         logger.warn({ err: error }, "Couldn't read balances at sign-in");
                     });
-                services.predictions
-                    .positions(account)
-                    .then((view) => socket.emit("positions", view))
-                    .catch((error: unknown) => {
+                // Read and sent in the account's push order, so a settling push can't be overwritten by an older snapshot
+                enqueue(account._id.toHexString(), async () => {
+                    try {
+                        socket.emit("positions", await services.predictions.positions(account));
+                    } catch (error) {
                         logger.warn({ err: error }, "Couldn't read positions at sign-in");
-                    });
+                    }
+                });
                 return session;
             }),
         );
@@ -209,7 +219,11 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 await predictionOrders.consume(socket.data.identity.userId).catch(() => {
                     throw new AppError("rate_limited", "Too many predictions. Try again shortly.");
                 });
-                return services.predictions.place(await boundAccount(socket), input);
+                const account = await boundAccount(socket);
+                const placed = await services.predictions.place(account, input);
+                // Read after the hold, so it already has the amount taken
+                const held = await services.accounts.findById(account._id);
+                return { ...placed, account: accountView(held ?? account) };
             }),
         );
     });
@@ -241,10 +255,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     });
 
     // Pushes go one at a time per account, so a step never overtakes the one before it.
-    const pushing = new Map<string, Promise<void>>();
     bus.on("order:updated", ({ order }) => {
-        const key = order.accountId.toHexString();
-        const next = (pushing.get(key) ?? Promise.resolve()).then(async () => {
+        enqueue(order.accountId.toHexString(), async () => {
             try {
                 const sockets = await io.in(roomOf(order.accountId)).fetchSockets();
                 const owner = await services.accounts.findById(order.accountId);
@@ -257,13 +269,10 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 logger.warn({ err: error }, "Couldn't push an order update");
             }
         });
-        pushing.set(key, next);
-        void next.then(() => pushing.get(key) === next && pushing.delete(key));
     });
 
     bus.on("prediction:updated", (update) => {
-        const key = update.account._id.toHexString();
-        const next = (pushing.get(key) ?? Promise.resolve()).then(async () => {
+        enqueue(update.account._id.toHexString(), async () => {
             try {
                 const room = roomOf(update.account._id);
                 const payload = predictionUpdate(update);
@@ -276,8 +285,6 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 logger.warn({ err: error }, "Couldn't push a prediction update");
             }
         });
-        pushing.set(key, next);
-        void next.then(() => pushing.get(key) === next && pushing.delete(key));
     });
 
     /** The wallet as the account knows it: Solana is turned away before Privy is asked, an EVM wallet must be linked. */

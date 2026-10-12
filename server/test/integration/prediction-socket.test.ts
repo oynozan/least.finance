@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { ObjectId } from "mongodb";
 import { parseUnits } from "viem";
-import { afterAll, beforeAll, describe, expect, inject, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, inject, test, vi } from "vitest";
 import { fromDecimal, toDecimal } from "../../src/db/money.ts";
-import type { Ack, PositionsView, PredictionOrderView, PredictionUpdate, WalletSession } from "../../src/protocol.ts";
+import type { Ack, PositionsView, PredictionPlaced, PredictionUpdate, WalletSession } from "../../src/protocol.ts";
 import { startStack, type AppSocket, type Stack, type User } from "../support/stack.ts";
 
 const TRADING_ENV = {
@@ -72,7 +72,7 @@ const order = async (socket: AppSocket, s: Stack, amountUSD = "10", extra: Recor
         amountUSD,
         quotedPrice: quote!.outcome.buyPrice,
         ...extra,
-    }) as Promise<Ack<PredictionOrderView>>;
+    }) as Promise<Ack<PredictionPlaced>>;
 };
 
 describe("prediction events", () => {
@@ -83,9 +83,32 @@ describe("prediction events", () => {
         await expect.poll(() => updates.length).toBe(1);
         const update = updates[0]!;
         expect(update.order.state).toBe("filled");
-        expect(update.requestId).toBe((acked as { data: PredictionOrderView }).data.requestId);
+        expect(update.requestId).toBe((acked as { data: PredictionPlaced }).data.requestId);
         expect(update.position).toMatchObject({ state: "open" });
         expect(update.account.balance).toBe("90");
+    });
+
+    test("the ack carries the account with the amount already taken", async () => {
+        const { socket } = await person(stack);
+        const acked = await order(socket, stack, "10");
+        expect(acked).toMatchObject({ ok: true, data: { state: "placing", account: { balance: "90" } } });
+        await expect.poll(() => stack.trader.posts.length).toBeGreaterThan(0);
+    });
+
+    test("two concurrent orders can't overdraw: one is placed, one told the balance is short", async () => {
+        const { socket, accountId } = await person(stack, "10");
+        const results = await Promise.all([order(socket, stack, "6"), order(socket, stack, "6")]);
+        expect(results.filter((r) => r.ok)).toHaveLength(1);
+        const refused = results.find((r) => !r.ok);
+        expect(refused).toMatchObject({
+            ok: false,
+            error: { code: "insufficient_funds", message: "You don't have enough USDC for this. Nothing was spent." },
+        });
+        const { accounts, ledger } = stack.server.services.database.collections;
+        const account = (await accounts.findOne({ _id: accountId }))!;
+        const rows = await ledger.find({ accountId }).toArray();
+        expect(fromDecimal(account.balance)).toBe(wei("4"));
+        expect(rows.reduce((total, row) => total + fromDecimal(row.amount), 0n)).toBe(wei("4"));
     });
 
     test("a rejected order pushes failed with price_moved and the balance comes back", async () => {
@@ -138,7 +161,7 @@ describe("prediction events", () => {
 
     test("the 11th order in a minute is rate_limited", async () => {
         const { socket } = await person(stack, "100");
-        const results: Ack<PredictionOrderView>[] = [];
+        const results: Ack<PredictionPlaced>[] = [];
         for (let i = 0; i < 11; i++) results.push(await order(socket, stack, "1"));
         expect(results.slice(0, 10).every((r) => r.ok)).toBe(true);
         expect(results[10]).toMatchObject({ ok: false, error: { code: "rate_limited" } });
@@ -163,6 +186,50 @@ describe("prediction events", () => {
         stack.trader.release(tokenId, "fill");
     });
 
+    test("the sign-in snapshot is pushed in order with updates that settle meanwhile", async () => {
+        const { user, socket } = await person(stack);
+        const { tokenId } = await outcome(stack);
+        stack.trader.onNext(tokenId, "hold");
+        const posted = stack.trader.posts.length;
+        const acked = await order(socket, stack, "10");
+        expect(acked.ok).toBe(true);
+        await expect.poll(() => stack.trader.posts.length).toBeGreaterThan(posted);
+
+        const service = stack.server.services.predictions;
+        const original = service.positions.bind(service);
+        let open!: () => void;
+        const gate = new Promise<void>((resolve) => (open = resolve));
+        // The snapshot is read while the order is in flight, then delayed past its settling
+        const spy = vi.spyOn(service, "positions").mockImplementationOnce(async (account) => {
+            const view = await original(account);
+            await gate;
+            return view;
+        });
+        const second = await stack.socket(user);
+        const seen: string[] = [];
+        second.on("positions", () => seen.push("positions"));
+        second.on("prediction:update", () => seen.push("prediction:update"));
+        expect((await second.timeout(5000).emitWithAck("account:open", {})).ok).toBe(true);
+        await expect.poll(() => spy.mock.calls.length).toBe(1);
+
+        stack.trader.release(tokenId, "fill");
+        const { predictionOrders } = stack.server.services.database.collections;
+        await expect
+            .poll(
+                async () =>
+                    (
+                        await predictionOrders.findOne({
+                            requestId: (acked as { data: { requestId: string } }).data.requestId,
+                        })
+                    )?.state,
+            )
+            .toBe("filled");
+        open();
+        await expect.poll(() => seen.length).toBe(2);
+        expect(seen).toEqual(["positions", "prediction:update"]);
+        spy.mockRestore();
+    });
+
     test("pushes for one account arrive in bus order", async () => {
         const { socket, updates } = await person(stack);
         const { tokenId } = await outcome(stack);
@@ -173,7 +240,7 @@ describe("prediction events", () => {
         await expect.poll(() => updates.length).toBe(1);
         stack.trader.release(tokenId, "fill");
         await expect.poll(() => updates.length).toBe(2);
-        const ids = [first, second].map((r) => (r as { data: PredictionOrderView }).data.requestId);
+        const ids = [first, second].map((r) => (r as { data: PredictionPlaced }).data.requestId);
         expect(updates.map((u) => u.requestId)).toEqual([ids[1], ids[0]]);
     });
 

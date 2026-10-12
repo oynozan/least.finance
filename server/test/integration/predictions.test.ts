@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { fromDecimal } from "../../src/db/money.ts";
 import { isAppError } from "../../src/errors.ts";
 import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
@@ -206,4 +206,100 @@ test("a quote prices the fill and refuses a book that can't fill", async () => {
     });
     const error = await h.service.quote({ eventId: EVENT, tokenId: TOKEN, amountUSD: "900" }).catch((e: unknown) => e);
     expect(isAppError(error) && error.code).toBe("price_moved");
+});
+
+test("a retried requestId returns the same view even when the checks would now refuse", async () => {
+    const own = await predictionHarness();
+    try {
+        await own.service.refreshFloat();
+        const account = await own.seedAccount("100");
+        const requestId = randomUUID();
+        own.trader.onNext(TOKEN, "hold");
+        const first = await own.service.place(account, input("10", requestId));
+
+        const saved = own.offered.current;
+        own.offered.current = null;
+        const closed = await own.service.place(account, input("10", requestId));
+        own.offered.current = saved;
+        own.trader.setBalance(1_000_000n);
+        await own.service.refreshFloat();
+        const short = await own.service.place(account, input("10", requestId));
+        own.config.PREDICTIONS_TRADING = "off";
+        const off = await own.service.place(account, input("10", requestId));
+
+        expect([closed.id, short.id, off.id]).toEqual([first.id, first.id, first.id]);
+        expect((await own.state(account._id)).balance).toBe(wei("90"));
+        await until(async () => own.trader.posts.length === 1);
+        own.trader.release(TOKEN, "fill");
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("a posted write that fails refunds the order instead of leaving it placing", async () => {
+    const own = await predictionHarness();
+    try {
+        await own.service.refreshFloat();
+        const account = await own.seedAccount("100");
+        const orders = own.database.collections.predictionOrders;
+        vi.spyOn(orders, "findOneAndUpdate").mockRejectedValueOnce(new Error("mongo blip"));
+        const view = await own.service.place(account, input("10"));
+        await until(async () => (await orders.findOne({ requestId: view.requestId }))?.state === "failed");
+        expect(await orders.findOne({ requestId: view.requestId })).toMatchObject({ reason: "unavailable" });
+        const s = await own.state(account._id);
+        expect(s.balance).toBe(wei("100"));
+        expect(s.sum).toBe(s.balance);
+    } finally {
+        vi.restoreAllMocks();
+        await own.database.close();
+    }
+});
+
+test("a fill that costs more than the amount is clamped to it with no refund", async () => {
+    const own = await predictionHarness({ feeRate: 0.05 });
+    try {
+        await own.service.refreshFloat();
+        const account = await own.seedAccount("100");
+        own.trader.onNext(TOKEN, "delay");
+        const view = await own.service.place(account, input("10"));
+        const orders = own.database.collections.predictionOrders;
+        await until(async () => (await orders.findOne({ requestId: view.requestId }))?.state === "posted");
+        const order = (await orders.findOne({ requestId: view.requestId }))!;
+
+        // 20 shares at 0.50 plus the 0.25 fee comes to 10.25
+        await own.service.settle(order, 10_000_000n, 20_000_000n);
+
+        const done = (await orders.findOne({ requestId: view.requestId }))!;
+        expect(done.state).toBe("filled");
+        expect(fromDecimal(done.cost!)).toBe(wei("10"));
+        const s = await own.state(account._id);
+        expect(s.balance).toBe(wei("90"));
+        expect(kinds(s.rows)).toEqual(["deposit", "prediction_buy"]);
+        expect(s.sum).toBe(s.balance);
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("a fee-bearing fill through the trader refunds only what it left unspent", async () => {
+    const own = await predictionHarness({ feeRate: 0.05 });
+    try {
+        await own.service.refreshFloat();
+        const account = await own.seedAccount("100");
+        const view = await own.service.place(account, input("10"));
+        const orders = own.database.collections.predictionOrders;
+        await until(async () => (await orders.findOne({ requestId: view.requestId }))?.state === "filled");
+        const done = (await orders.findOne({ requestId: view.requestId }))!;
+        const cost = fromDecimal(done.cost!);
+        expect(cost).toBeLessThanOrEqual(wei("10"));
+        expect(cost).toBeGreaterThan(wei("9.99"));
+        const s = await own.state(account._id);
+        expect(s.balance).toBe(wei("100") - cost);
+        expect(kinds(s.rows)).toEqual(
+            cost < wei("10") ? ["deposit", "prediction_buy", "prediction_refund"] : ["deposit", "prediction_buy"],
+        );
+        expect(s.sum).toBe(s.balance);
+    } finally {
+        await own.database.close();
+    }
 });

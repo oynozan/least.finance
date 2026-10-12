@@ -27,7 +27,7 @@ import { MarketService } from "./markets/markets.ts";
 import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
 import { PredictionTracker } from "./predictions/tracker.ts";
-import type { PoolTrader } from "./predictions/trader.ts";
+import { traderNeeded, withTimeouts, type PoolTrader } from "./predictions/trader.ts";
 import { createPolymarketData } from "./markets/polymarket-data.ts";
 import { createApp } from "./http/app.ts";
 import type { Services } from "./services.ts";
@@ -35,6 +35,8 @@ import { Sessions } from "./sessions.ts";
 import { attachSockets } from "./socket/sockets.ts";
 
 const TRADER_RETRY_MS = 60_000;
+/** Short of the tracker giving up on a missing post, so a hung post is still followed up. */
+const TRADER_CALL_MS = 30_000;
 
 export type RunningServer = {
     /** Where it's listening, e.g. http://127.0.0.1:4000. */
@@ -180,7 +182,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         const connectTrader = () => {
             createPolymarketTrader(config, predictionLogger).then(
                 (created) => {
-                    trader = created;
+                    trader = withTimeouts(created, TRADER_CALL_MS);
                     void service.refreshFloat().catch((error: unknown) => {
                         predictionLogger.warn({ err: error }, "Couldn't read the pool's float");
                     });
@@ -215,7 +217,9 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         tracker.start();
         markets.start();
         predictionTracker.start();
-        if (config.PREDICTIONS_TRADING === "on" && !trader) connectTrader();
+        // Posted orders need the trader to settle even once trading is switched off
+        const posted = await collections.predictionOrders.countDocuments({ state: "posted" });
+        if (traderNeeded(config, posted) && !trader) connectTrader();
         // A bad secret is logged loudly, but the server keeps serving: wallets already connected carry on.
         void identity.checkApi();
 

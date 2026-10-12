@@ -182,7 +182,7 @@ export type ClientToServerEvents = {
     /** Places a buy; the outcome follows as a `prediction:update`. A repeated `requestId` is the same order. */
     "prediction:order": (
         payload: { requestId: string; eventId: string; tokenId: string; amountUSD: string; quotedPrice: number },
-        ack: (result: Ack<PredictionOrderView>) => void,
+        ack: (result: Ack<PredictionPlaced>) => void,
     ) => void;
 };
 
@@ -247,6 +247,9 @@ export type PredictionOrderView = {
     createdAt: string;
     updatedAt: string;
 };
+
+/** The order as accepted, with the account as it stands once the amount is taken. */
+export type PredictionPlaced = PredictionOrderView & { account: AccountView };
 
 export type PositionView = {
     id: string;
