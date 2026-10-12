@@ -20,7 +20,6 @@ import type { CoinBalance, DepositOrderView } from "@/server/src/protocol";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
 import {
-    depositWalletAddress,
     linkedWallets,
     useActiveWallet,
     useLinkOtherWallet,
@@ -33,7 +32,7 @@ import { DepositButton } from "./deposit-button";
 import { DepositCoins } from "./deposit-coins";
 import { coinLabel } from "./deposit-coins-catalog";
 import { DepositForm } from "./deposit-form";
-import { DepositProgress, isRunning, shownOrder } from "./deposit-progress";
+import { DepositProgress, isOutcome, isRunning, shownOrder } from "./deposit-progress";
 import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { NetworkLogo } from "./network-icons";
 import { canHover } from "./pointer";
@@ -129,9 +128,6 @@ function SignedInWallet() {
     }, [ready, authenticated, setOpen]);
 
     const account = useAccount();
-    // The wallet's own USDC, which a deposit draws on.
-    // Read again whenever a deposit moves on, so Max doesn't offer what has already been sent.
-    const walletBalance = useUsdcBalance(user ? depositWalletAddress(user, active) : undefined, open, account.notice);
     const evmNetwork = useWalletNetwork(address);
     const network = active.kind === "solana" ? "solana" : evmNetwork;
 
@@ -175,7 +171,6 @@ function SignedInWallet() {
             <WalletSection
                 key={`wallet-${openings}`}
                 balance={account.balance}
-                walletBalance={walletBalance}
                 history={account.history}
                 minDeposit={account.state.status === "ready" ? Number(account.state.rules.minDeposit) : null}
                 accountProblem={account.state.status === "failed" ? account.state.error.message : null}
@@ -240,15 +235,13 @@ function SignedInWallet() {
 type WalletSectionProps = {
     /** The account's USDC, deposits on their way included; undefined while loading and null when it couldn't be read. */
     balance: number | null | undefined;
-    /** The wallet's own USDC on Arc, likewise. */
-    walletBalance: number | null | undefined;
     history: HistoryRow[];
     /** Null until the account has loaded, and deposits can't start before then. */
     minDeposit: number | null;
     /** Why the account couldn't be loaded. */
     accountProblem: string | null;
     notice: DepositNotice | null;
-    onDeposit: (amount: string) => Promise<DepositResult>;
+    onDeposit: (amount: string, wallet: string) => Promise<DepositResult>;
     /** Bridges `amount` of a coin on another chain into the account. */
     onDepositCoin: (coin: string, amount: string, wallet: string) => Promise<DepositResult>;
     quote: (coin: string, amount: string, wallet: string) => Promise<DepositQuoteView | ApiError>;
@@ -268,7 +261,6 @@ type WalletSectionProps = {
 /** Balance and the deposit button; hovering it deals out past deposits. */
 function WalletSection({
     balance,
-    walletBalance,
     history,
     minDeposit,
     accountProblem,
@@ -318,6 +310,10 @@ function WalletSection({
     // The row as the latest read has it, so a deposit just sent shows in what's left.
     const coin =
         picked && (balances?.find((r) => r.coin === picked.coin && sameAddress(r.wallet, picked.wallet)) ?? picked);
+    // The picked wallet's own USDC on Arc, which a deposit draws on.
+    // Read again whenever a deposit moves on, so Max doesn't offer what has already been sent.
+    const arcWallet = stage === "amount" && coin?.coin === "arc:USDC" ? coin.wallet : undefined;
+    const walletBalance = useUsdcBalance(arcWallet, arcWallet !== undefined, notice);
 
     return (
         <section
@@ -353,8 +349,14 @@ function WalletSection({
                     coin={coin!}
                     walletBalance={walletBalance}
                     minDeposit={minDeposit}
-                    onSubmit={coin!.coin === "arc:USDC" ? onDeposit : (amount) => onDepositCoin(coin!.coin, amount, coin!.wallet)}
-                    preview={coin!.coin === "arc:USDC" ? undefined : (amount) => quote(coin!.coin, amount, coin!.wallet)}
+                    onSubmit={(amount) =>
+                        coin!.coin === "arc:USDC"
+                            ? onDeposit(amount, coin!.wallet)
+                            : onDepositCoin(coin!.coin, amount, coin!.wallet)
+                    }
+                    preview={
+                        coin!.coin === "arc:USDC" ? undefined : (amount) => quote(coin!.coin, amount, coin!.wallet)
+                    }
                     onClose={() => {
                         setStage("closed");
                         setRefocus(true);
@@ -377,13 +379,13 @@ function WalletSection({
             )}
 
             {/* Always mounted, so screen readers announce what appears in it. */}
-            {order ? (
-                <DepositProgress order={order} />
-            ) : (
-                <p role="status" className={styles.status} data-tone={statusTone(notice, status)}>
-                    {status ?? (notice && <NoticeText notice={notice} />)}
-                </p>
-            )}
+            <div
+                role="status"
+                className={`${styles.status} ${order ? styles.progress : ""}`}
+                data-tone={order ? (isOutcome(order) ? "loss" : undefined) : statusTone(notice, status)}
+            >
+                {order ? <DepositProgress order={order} /> : (status ?? (notice && <NoticeText notice={notice} />))}
+            </div>
 
             {/* Floats over the positions instead of pushing them down. */}
             <AnimatePresence>

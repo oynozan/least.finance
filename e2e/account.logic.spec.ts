@@ -447,6 +447,19 @@ test.describe("bridged deposits", () => {
         ]);
     });
 
+    test("an older version of an order does not move it back", () => {
+        const late = { ...order(1, "sent"), updatedAt: new Date(Date.UTC(2026, 8, 1, 0, 0, 1)).toISOString() };
+        const newer = { ...order(1, "bridging"), updatedAt: new Date(Date.UTC(2026, 8, 1, 0, 0, 5)).toISOString() };
+        const state = run(
+            [
+                { type: "order", order: newer },
+                { type: "order", order: late },
+            ],
+            open(),
+        );
+        expect(ready(state).orders.map((o) => o.state)).toEqual(["bridging"]);
+    });
+
     test("an expired order leaves the list", () => {
         const state = run(
             [

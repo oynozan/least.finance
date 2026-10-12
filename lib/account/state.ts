@@ -104,6 +104,9 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
         }
         case "order": {
             if (state.status !== "ready") return state;
+            // An older version of an order that is already showing, such as a late acknowledgement, is dropped.
+            const held = state.orders.find((o) => o.id === action.order.id);
+            if (held && held.updatedAt > action.order.updatedAt) return state;
             const rest = state.orders.filter((o) => o.id !== action.order.id);
             const orders = sortOrders(action.order.state === "expired" ? rest : [action.order, ...rest]);
             return { ...state, orders, deposits: withOrigins(state.deposits, orders) };

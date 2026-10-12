@@ -1,6 +1,14 @@
 import { expect, test, type Page } from "@playwright/test";
-import { randomAddress, randomSolanaAddress, sendFromOutside } from "./backend";
-import { addressOf, installSolanaWallet, installWallet, mockArcRpc, mockPrivy, useWallet } from "./privy-mock";
+import { randomAddress, randomSolanaAddress, sendFromOutside, signUp } from "./backend";
+import {
+    addressOf,
+    installSolanaWallet,
+    installWallet,
+    mockArcRpc,
+    mockPrivy,
+    useWallet,
+    walletRequests,
+} from "./privy-mock";
 
 const sidebarOf = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
 const modalOf = (page: Page) => page.locator("#privy-modal-content");
@@ -190,4 +198,45 @@ test("two EVM wallets show the short address on their rows", async ({ page }) =>
     await depositOf(page).click();
     await coins.getByRole("button", { name: new RegExp(`^USDC on Arc.*${short(first)}$`, "i") }).click();
     await expect(sidebarOf(page).locator("#deposit-wallet")).toHaveText("In your wallet: $100.00", { timeout: 15_000 });
+});
+
+test("with storage blocked, a USDC on Arc row shows and deposits from its own wallet", async ({ page }) => {
+    test.setTimeout(90_000);
+    const second = randomAddress();
+    // The active wallet and the balance cache can't be kept, as in a private window.
+    await page.addInitScript(() => {
+        for (const method of ["getItem", "setItem"] as const) {
+            const original = Storage.prototype[method] as (this: Storage, ...args: string[]) => string | null | void;
+            Storage.prototype[method] = function (this: Storage, ...args: string[]) {
+                if (args[0]?.startsWith("active-wallet:") || args[0]?.startsWith("balances:")) {
+                    throw new DOMException("Storage is blocked.", "SecurityError");
+                }
+                return original.apply(this, args);
+            } as typeof Storage.prototype.getItem;
+        }
+    });
+    await mockPrivy(page, [second]);
+    // The browser wallet is the second one; the account's first wallet is the default.
+    await installWallet(page, second);
+    const first = addressOf(page);
+    await mockArcRpc(page, 100, first, { [second]: 250 });
+    // Funds the second wallet on the test chain, where the browser wallet sends from it.
+    await signUp(second, "300");
+    await page.goto("/");
+    await page.getByRole("button", { name: "Connect wallet" }).click();
+    await modalOf(page).getByRole("button", { name: "MetaMask" }).click();
+    await waitForAccount(page);
+
+    await depositOf(page).click();
+    await coinsOf(page)
+        .getByRole("button", { name: new RegExp(`^USDC on Arc.*${short(second)}$`, "i") })
+        .click();
+    await expect(sidebarOf(page).locator("#deposit-wallet")).toHaveText("In your wallet: $250.00", { timeout: 15_000 });
+
+    await sidebarOf(page).getByRole("textbox", { name: "Deposit amount" }).fill("1");
+    await depositOf(page).click();
+    await expect(sidebarOf(page).getByRole("textbox", { name: "Deposit amount" })).toHaveCount(0, { timeout: 20_000 });
+    const sent = (await walletRequests(page)).filter((r) => r.method === "eth_sendTransaction");
+    expect(sent).toHaveLength(1);
+    expect((sent[0]!.params?.[0] as { from: string }).from.toLowerCase()).toBe(second.toLowerCase());
 });

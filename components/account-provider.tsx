@@ -23,7 +23,7 @@ import { ensureNetwork } from "@/lib/wallet/network";
 import type { CoinBalance, DepositOrderView, DepositQuoteView } from "@/server/src/protocol";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
-import { depositWalletAddress, linkedWallets, useActiveWallet } from "./arc-wallet";
+import { linkedWallets } from "./arc-wallet";
 import { walletEnabled } from "./wallet-provider";
 
 /** The deposit server. Unset in development, it's the local one. */
@@ -45,8 +45,8 @@ export type Account = {
     quote: (coin: string, amount: string, wallet: string) => Promise<DepositQuoteView | ApiError>;
     /** Bridges `amount` of `coin` into the account from the wallet the deposit uses. */
     depositCoin: (coin: string, amount: string, wallet: string) => Promise<DepositResult>;
-    /** Sends a deposit of `amount` USDC (a decimal string) from the signed-in wallet. */
-    deposit: (amount: string) => Promise<DepositResult>;
+    /** Sends a deposit of `amount` USDC (a decimal string) on Arc from the wallet `from`. */
+    deposit: (amount: string, from: string) => Promise<DepositResult>;
     dismissNotice: () => void;
 };
 
@@ -74,9 +74,6 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     const [client] = useState(() => new AccountClient(API_URL));
     const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot, () => IDLE);
     const userId = user?.id;
-    // Deposits come from the person's EVM wallet, whichever wallet they're using.
-    const active = useActiveWallet();
-    const address = user && depositWalletAddress(user, active);
 
     // The latest token getter, without reconnecting whenever its identity changes.
     const accessToken = useRef(getAccessToken);
@@ -106,9 +103,8 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         if (accountReady) refreshBalances();
     }, [accountReady, refreshBalances]);
 
-    const deposit = async (amount: string): Promise<DepositResult> => {
-        // After an account switch in the wallet app, its newest account is the one that will sign.
-        const wallet = wallets.find((w) => address && w.address.toLowerCase() === address.toLowerCase()) ?? wallets[0];
+    const deposit = async (amount: string, from: string): Promise<DepositResult> => {
+        const wallet = wallets.find((w) => w.address.toLowerCase() === from.toLowerCase());
         if (!wallet) return "failed";
         try {
             const network = await ensureNetwork(wallet, arc.id);
@@ -121,7 +117,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         }
     };
 
-    // Both act for the wallet of the row picked, not the active one.
+    // All three act for the wallet of the row picked, not the active one.
     const quote = (coin: string, amount: string, from: string) =>
         wallets.some((w) => w.address.toLowerCase() === from.toLowerCase())
             ? client.quote(coin, amount, from)

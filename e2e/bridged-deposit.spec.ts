@@ -76,6 +76,8 @@ test("a bridged deposit shows each step and lands in the balance", async ({ page
     await fill(page, /^ETH on Ethereum/, "0.1");
     await expect(hintOf(page)).toHaveText("≈ $300.00 in about 2 s");
 
+    // The status line is one element throughout, so a screen reader announces what changes in it.
+    const region = await statusOf(page).elementHandle();
     await depositOf(page).click();
     await expect
         .poll(async () => (await walletRequests(page)).some((r) => r.method === "wallet_switchEthereumChain"))
@@ -84,6 +86,11 @@ test("a bridged deposit shows each step and lands in the balance", async ({ page
     expect((switches.at(-1)?.params?.[0] as { chainId: string }).chainId).toBe("0x1");
     await expect(stepOf(page, "In a block")).toHaveAttribute("data-step", "done", { timeout: 20_000 });
     await expect(depositOf(page)).toHaveAttribute("data-phase", "running");
+    await expect(statusOf(page).getByText(/^Step \d of 4: /)).toHaveText("Step 3 of 4: Bridging to Arc");
+    await expect(stepOf(page, "In a block")).toHaveText("In a block, done");
+    await expect(stepOf(page, "Bridging to Arc")).toHaveAttribute("aria-current", "step");
+    await expect(stepOf(page, "Bridging to Arc")).toContainText("in progress");
+    await expect(stepOf(page, "Added")).toHaveText("Added, waiting");
 
     await advanceBridge(addressOf(page), "pending");
     await expect(stepOf(page, "Bridging to Arc")).toHaveAttribute("data-step", "active", { timeout: 20_000 });
@@ -91,6 +98,9 @@ test("a bridged deposit shows each step and lands in the balance", async ({ page
 
     await advanceBridge(addressOf(page), "filled");
     await expect(stepOf(page, "Added")).toHaveAttribute("data-step", "done", { timeout: 20_000 });
+    await expect(statusOf(page).getByText(/^Step \d of 4: /)).toHaveText("Step 4 of 4: Added");
+    await expect(stepOf(page, "Added")).toHaveText("Added, done");
+    expect(await region!.evaluate((node) => node.isConnected && node.getAttribute("role"))).toBe("status");
     await expect(depositOf(page)).toHaveAttribute("data-phase", "done");
     await expect(balanceOf(page)).toHaveAccessibleName("Balance $300.00, show deposits", { timeout: 20_000 });
 

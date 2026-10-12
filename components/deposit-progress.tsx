@@ -35,40 +35,61 @@ export function shownOrder(orders: DepositOrderView[], dismissed: string | null,
     );
 }
 
-/** A bridged deposit's steps, each done, active or waiting; an outcome replaces them. */
+/** Whether the order ended badly, which the status line shows in the loss tone. */
+export const isOutcome = (order: DepositOrderView) => order.state in OUTCOMES;
+
+const STATE_TEXT = { done: "done", active: "in progress", waiting: "waiting" } as const;
+
+/**
+ * A bridged deposit's steps, each done, active or waiting; an outcome replaces them. It fills the
+ * status line, which stays mounted so a change in it is announced.
+ */
 export function DepositProgress({ order }: { order: DepositOrderView }) {
     const outcome = OUTCOMES[order.state];
+    if (outcome) {
+        return (
+            <span className={styles.outcome}>
+                <CloseIcon className={styles.stepMark} />
+                {outcome}
+            </span>
+        );
+    }
     const done = DONE[order.state] ?? 0;
+    const current = Math.min(done, STEPS.length - 1);
     return (
-        <div role="status" className={`${styles.status} ${styles.progress}`} data-tone={outcome ? "loss" : undefined}>
-            {outcome ? (
-                <span className={styles.outcome}>
-                    <CloseIcon className={styles.stepMark} />
-                    {outcome}
-                </span>
-            ) : (
-                <ol className={styles.steps} aria-label="Deposit progress">
-                    {STEPS.map((name, i) => {
-                        const step = i < done ? "done" : i === done ? "active" : "waiting";
-                        return (
-                            <li key={name} className={styles.step} data-step={step}>
-                                <span className={styles.stepMark} aria-hidden="true">
-                                    {step === "done" ? (
-                                        <Tick />
-                                    ) : step === "active" ? (
-                                        <span className={styles.pendingDot} />
-                                    ) : null}
-                                </span>
-                                {name}
-                                {step === "active" && i === 2 && (
-                                    <span className={styles.stepEta}>about {eta(order.etaSeconds)}</span>
-                                )}
-                            </li>
-                        );
-                    })}
-                </ol>
-            )}
-        </div>
+        <>
+            {/* The one line that changes with the step, read out as it does. */}
+            <span className="sr-only">
+                Step {current + 1} of {STEPS.length}: {STEPS[current]}
+            </span>
+            {/* Browsed, not announced: each step says where it stands. */}
+            <ol className={styles.steps} aria-label="Deposit progress" aria-live="off">
+                {STEPS.map((name, i) => {
+                    const step = i < done ? "done" : i === done ? "active" : "waiting";
+                    return (
+                        <li
+                            key={name}
+                            className={styles.step}
+                            data-step={step}
+                            aria-current={step === "active" ? "step" : undefined}
+                        >
+                            <span className={styles.stepMark} aria-hidden="true">
+                                {step === "done" ? (
+                                    <Tick />
+                                ) : step === "active" ? (
+                                    <span className={styles.pendingDot} />
+                                ) : null}
+                            </span>
+                            {name}
+                            <span className="sr-only">, {STATE_TEXT[step]}</span>
+                            {step === "active" && i === 2 && (
+                                <span className={styles.stepEta}>about {eta(order.etaSeconds)}</span>
+                            )}
+                        </li>
+                    );
+                })}
+            </ol>
+        </>
     );
 }
 
