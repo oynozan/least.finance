@@ -91,3 +91,15 @@ test("fixed prices are keyed by symbol and cover every chain's coin of that symb
         ]),
     );
 });
+
+test("Solana coins are priced on LI.FI's Solana chain, by mint or the system program for SOL", async () => {
+    const fetch = vi.fn(async (_input: FetchInput) => priceResponse("1"));
+
+    await lifiPrices({ fetch }).usd([coinByKey("solana:USDC"), coinByKey("solana:SOL")]);
+
+    const urls = fetch.mock.calls.map(([input]) => new URL(String(input)).searchParams);
+    expect(urls.map((q) => [q.get("chain"), q.get("token")])).toEqual([
+        ["1151111081099710", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"],
+        ["1151111081099710", "11111111111111111111111111111111"],
+    ]);
+});

@@ -74,6 +74,8 @@ const schema = z.object({
     /** RPCs for the chains deposits are bridged from, tried in order. */
     ETHEREUM_RPC_URLS: list(["https://ethereum-rpc.publicnode.com"]),
     BNB_RPC_URLS: list(["https://bsc-dataseed.bnbchain.org"]),
+    /** RPCs for reading Solana wallets' balances, tried in order. */
+    SOLANA_RPC_URLS: list(["https://api.mainnet-beta.solana.com"]),
     RELAY_API_KEY: optionalKey,
     ACROSS_INTEGRATOR_ID: optionalKey,
     /** How often a bridge order's status is checked. */

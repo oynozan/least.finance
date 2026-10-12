@@ -7,6 +7,8 @@ export interface PriceFeed {
 }
 
 const LOOKUP_TIMEOUT_MS = 5_000;
+const LIFI_SOLANA_CHAIN = "1151111081099710";
+const SOLANA_NATIVE_TOKEN = "11111111111111111111111111111111";
 
 /** LI.FI's token prices, one request per coin, each kept for `ttlMs`. */
 export function lifiPrices(options: { fetch?: typeof fetch; ttlMs?: number } = {}): PriceFeed {
@@ -17,7 +19,10 @@ export function lifiPrices(options: { fetch?: typeof fetch; ttlMs?: number } = {
         const cached = cache.get(coin.key);
         if (cached && cached.expires > Date.now()) return cached.price;
         try {
-            const query = new URLSearchParams({ chain: String(coin.chainId), token: coin.token ?? zeroAddress });
+            const query =
+                coin.chain === "solana"
+                    ? new URLSearchParams({ chain: LIFI_SOLANA_CHAIN, token: coin.mint ?? SOLANA_NATIVE_TOKEN })
+                    : new URLSearchParams({ chain: String(coin.chainId), token: coin.token ?? zeroAddress });
             const response = await fetchPrice(`https://li.quest/v1/token?${query}`, {
                 signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
             });

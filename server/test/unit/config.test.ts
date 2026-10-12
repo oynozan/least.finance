@@ -90,6 +90,14 @@ describe("loadConfig", () => {
         expect(config.BNB_RPC_URLS).toEqual(["https://bnb-a.example"]);
     });
 
+    it("defaults the Solana RPC to the public one, and parses an override", () => {
+        expect(load().SOLANA_RPC_URLS).toEqual(["https://api.mainnet-beta.solana.com"]);
+        expect(load({ SOLANA_RPC_URLS: " https://sol-a.example ,https://sol-b.example," }).SOLANA_RPC_URLS).toEqual([
+            "https://sol-a.example",
+            "https://sol-b.example",
+        ]);
+    });
+
     it("leaves the bridge provider keys unset until given", () => {
         const config = load();
         expect(config.RELAY_API_KEY).toBeUndefined();
