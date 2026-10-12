@@ -298,13 +298,13 @@ export class AccountClient {
         question: string;
         outcome: string;
         shares: string;
-    }): { requestId: string } {
+    }): { requestId: string; sent: boolean } {
         const requestId = crypto.randomUUID();
         const socket = this.#socket;
         this.#tradeNotice(null);
         if (this.#snapshot.state.status !== "ready" || !socket?.connected) {
             this.#tradeNotice(OFFLINE_COPY);
-            return { requestId };
+            return { requestId, sent: false };
         }
         const { question, outcome, shares, ...wire } = input;
         this.#dispatch({
@@ -331,7 +331,7 @@ export class AccountClient {
                 this.#dispatch({ type: "predict-failed", requestId });
                 this.#tradeNotice(result.error.message);
             });
-        return { requestId };
+        return { requestId, sent: true };
     }
 
     dismissTradeNotice() {

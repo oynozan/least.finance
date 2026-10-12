@@ -136,7 +136,7 @@ function ReviewBody({ onDone }: { onDone: () => void }) {
         if (live && prediction && market && outcome) {
             // Counted at once; a refusal lands in the sidebar's status line.
             const estimate = (Number(prediction.amountUSD) / outcome.price).toFixed(6).replace(/\.?0+$/, "");
-            account.placePrediction({
+            const result = account.placePrediction({
                 eventId: prediction.marketId,
                 tokenId: prediction.outcomeId,
                 amountUSD: prediction.amountUSD,
@@ -145,7 +145,7 @@ function ReviewBody({ onDone }: { onDone: () => void }) {
                 outcome: outcome.label,
                 shares: quote?.shares ?? estimate,
             });
-            setPlaced(true);
+            setPlaced(result.sent);
             setSent(intentKey);
             return;
         }
@@ -190,6 +190,8 @@ function ReviewBody({ onDone }: { onDone: () => void }) {
                 >
                     {placed ? (
                         <p className="text-[17px] leading-snug">Prediction placed.</p>
+                    ) : live && prediction ? (
+                        <p className="text-[17px] leading-snug">Nothing was sent.</p>
                     ) : (
                         <>
                             <p className="text-[17px] leading-snug">

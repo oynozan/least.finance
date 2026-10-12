@@ -55,7 +55,7 @@ export type Account = {
     /** What a prediction buy would cost and return right now. */
     quotePrediction: (input: { eventId: string; tokenId: string; amountUSD: string }) => Promise<QuoteView | ApiError>;
     /** Places a prediction buy, counted at once; the outcome arrives as a push. */
-    placePrediction: (input: PlaceInput) => { requestId: string };
+    placePrediction: (input: PlaceInput) => { requestId: string; sent: boolean };
     dismissTradeNotice: () => void;
 };
 
@@ -177,7 +177,7 @@ function Provide({
     dismissNotice = () => undefined,
     refreshBalances = () => undefined,
     quotePrediction = async () => UNAVAILABLE,
-    placePrediction = () => ({ requestId: "" }),
+    placePrediction = () => ({ requestId: "", sent: false }),
     dismissTradeNotice = () => undefined,
     children,
 }: {
