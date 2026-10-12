@@ -76,6 +76,7 @@ const config = loadConfig({
     POLYMARKET_GAMMA_URL: polymarket.url,
     POLYMARKET_CLOB_URL: polymarket.url,
     PREDICTIONS_TRADING: "on",
+    PREDICTIONS_RESOLVE_MS: "300",
     POLYMARKET_POOL_KEY: `0x${"1".repeat(64)}`,
     POLYMARKET_BUILDER_API_KEY: "e2e",
     POLYMARKET_BUILDER_API_SECRET: "e2e",
@@ -258,6 +259,11 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
         );
         if (!order?.orderHash) throw new Error("No posted order");
         trader.settleDelayed(order.orderHash, outcome as "fill" | "cancel");
+        return {};
+    },
+    /** Closes a market with its result: `prices` such as ["1", "0"], or ["0.5", "0.5"] for a 50/50. */
+    "/polymarket/resolve": async ({ marketId, prices }) => {
+        polymarket.resolve(String(marketId), prices as string[]);
         return {};
     },
     "/account": async ({ address }) => {

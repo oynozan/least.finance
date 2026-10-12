@@ -19,7 +19,7 @@ const decimal = z.coerce.number().finite();
 // An empty string would coerce to 0, which reads as a price of nothing rather than no price
 const price = z.preprocess((value) => (value === "" ? null : value), decimal.nullish());
 
-const gammaMarket = z.object({
+export const gammaMarket = z.object({
     id: z.string(),
     active: z.boolean(),
     closed: z.boolean(),
@@ -34,6 +34,8 @@ const gammaMarket = z.object({
     outcomePrices: jsonList(decimal),
     clobTokenIds: jsonList(z.string()),
     groupItemTitle: z.string().nullish(),
+    conditionId: z.string().nullish(),
+    umaResolutionStatus: z.string().nullish(),
     sportsMarketType: z.string().nullish(),
     image: z.string().nullish(),
 });

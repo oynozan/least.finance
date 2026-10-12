@@ -12,6 +12,8 @@ type Events = {
     "balances:updated": [{ accountId: ObjectId; privyUserId: string; view: BalancesView }];
     /** Fired after a prediction order settles, once its transaction commits. */
     "prediction:updated": [{ order: PredictionOrderDoc; position: PositionDoc | null; account: AccountDoc }];
+    /** Fired after a position is paid or lost at its market's resolution, once its transaction commits. */
+    "position:settled": [{ position: PositionDoc; account: AccountDoc }];
 };
 
 /** In-process events between the ledger and the sockets. */

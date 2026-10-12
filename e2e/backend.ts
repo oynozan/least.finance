@@ -61,6 +61,10 @@ export const nextOrder = (tokenId: string, behavior: string) =>
 export const releaseOrder = (tokenId: string, behavior: string) =>
     call<object>("/polymarket/release", { tokenId, behavior }).then(() => undefined);
 
+/** Closes a market with its result: prices such as ["1", "0"], or ["0.5", "0.5"] for a 50/50. */
+export const resolveMarket = (marketId: string, prices: string[]) =>
+    call<object>("/polymarket/resolve", { marketId, prices }).then(() => undefined);
+
 /** Sets the pool's pUSD in whole dollars. */
 export const setPoolBalance = (usd: number) => call<object>("/polymarket/balance", { usd }).then(() => undefined);
 

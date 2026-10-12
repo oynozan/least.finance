@@ -152,6 +152,22 @@ export type PositionDoc = {
     updatedAt: Date;
 };
 
+export type PredictionRedemptionState = "pending" | "submitted" | "confirmed" | "failed";
+
+/** The pool's redemption of a resolved condition's tokens; one per condition. */
+export type PredictionRedemptionDoc = {
+    _id: ObjectId;
+    conditionId: string;
+    marketId: string;
+    state: PredictionRedemptionState;
+    transactionId: string | null;
+    attempts: number;
+    nextAt: Date;
+    lastError: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+};
+
 /** How far a chain scan has got. */
 export type CursorDoc = { _id: string; block: number; updatedAt: Date };
 
@@ -164,6 +180,7 @@ export type Collections = {
     depositOrders: Collection<DepositOrderDoc>;
     predictionOrders: Collection<PredictionOrderDoc>;
     positions: Collection<PositionDoc>;
+    predictionRedemptions: Collection<PredictionRedemptionDoc>;
     cursors: Collection<CursorDoc>;
     counters: Collection<CounterDoc>;
 };
@@ -193,6 +210,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             depositOrders: db.collection("deposit_orders"),
             predictionOrders: db.collection("prediction_orders"),
             positions: db.collection("positions"),
+            predictionRedemptions: db.collection("prediction_redemptions"),
             cursors: db.collection("cursors"),
             counters: db.collection("counters"),
         };
@@ -214,7 +232,15 @@ async function assertTransactions(db: Db) {
     );
 }
 
-async function ensureIndexes({ accounts, deposits, ledger, depositOrders, predictionOrders, positions }: Collections) {
+async function ensureIndexes({
+    accounts,
+    deposits,
+    ledger,
+    depositOrders,
+    predictionOrders,
+    positions,
+    predictionRedemptions,
+}: Collections) {
     await Promise.all([
         accounts.createIndexes([
             { key: { depositAddress: 1 }, name: "deposit_address_unique", unique: true },
@@ -260,6 +286,10 @@ async function ensureIndexes({ accounts, deposits, ledger, depositOrders, predic
             },
             { key: { accountId: 1, _id: -1 }, name: "account_positions" },
             { key: { state: 1, marketId: 1 }, name: "state_market" },
+        ]),
+        predictionRedemptions.createIndexes([
+            { key: { conditionId: 1 }, name: "condition_unique", unique: true },
+            { key: { state: 1, nextAt: 1 }, name: "state_next" },
         ]),
     ]);
 }

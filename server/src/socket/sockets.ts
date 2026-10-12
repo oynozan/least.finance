@@ -5,7 +5,7 @@ import { RateLimiterMemory } from "rate-limiter-flexible";
 import { Server, type Socket } from "socket.io";
 import type { Identity } from "../auth/identity.ts";
 import { orderView, sourceTxView } from "../crosschain/views.ts";
-import { predictionUpdate } from "../predictions/views.ts";
+import { positionView, predictionUpdate } from "../predictions/views.ts";
 import { accountView, depositView } from "../deposits/views.ts";
 import { AppError, isAppError, toApiError } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
@@ -298,6 +298,21 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push a prediction update");
+            }
+        });
+    });
+
+    bus.on("position:settled", ({ position, account }) => {
+        enqueue(account._id.toHexString(), async () => {
+            try {
+                const room = roomOf(account._id);
+                const payload = { position: positionView(position), account: accountView(account) };
+                for (const socket of await io.in(room).fetchSockets()) {
+                    if (socket.data.identity.userId === account.privyUserId) socket.emit("position:settled", payload);
+                    else socket.leave(room);
+                }
+            } catch (error) {
+                logger.warn({ err: error }, "Couldn't push a settled position");
             }
         });
     });

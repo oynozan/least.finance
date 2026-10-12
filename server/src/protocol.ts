@@ -203,6 +203,8 @@ export type ServerToClientEvents = {
     "session:expired": () => void;
     /** A prediction order settled or failed; carries the account's new balance. */
     "prediction:update": (payload: PredictionUpdate) => void;
+    /** A position was paid or lost when its market resolved; carries the account's new balance. */
+    "position:settled": (payload: PositionSettled) => void;
     /** The account's positions and in-flight orders, pushed after `account:open`. */
     positions: (payload: PositionsView) => void;
 };
@@ -302,6 +304,8 @@ export type SellQuoteView = {
     /** The smallest sale the book takes, in shares. */
     minShares: number;
 };
+
+export type PositionSettled = { position: PositionView; account: AccountView };
 
 export type PredictionUpdate = {
     requestId: string;

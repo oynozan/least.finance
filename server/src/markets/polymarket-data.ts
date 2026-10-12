@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 import { z } from "zod";
-import { gammaEvent, type GammaEvent } from "./gamma.ts";
+import { gammaEvent, gammaMarket, type GammaEvent, type GammaMarket } from "./gamma.ts";
 
 const TIMEOUT_MS = 5_000;
 
@@ -11,6 +11,8 @@ export interface PolymarketData {
     search(query: string): Promise<GammaEvent[]>;
     /** Null when Polymarket has no such event. */
     event(id: string): Promise<GammaEvent | null>;
+    /** One market by ID, open or closed; null when Polymarket has no such market. */
+    market(id: string): Promise<GammaMarket | null>;
     books(tokenIds: string[]): Promise<Map<string, Book>>;
 }
 
@@ -69,6 +71,11 @@ export function createPolymarketData(options: {
         async event(id) {
             const body = await send(gammaUrl, `/events/${encodeURIComponent(id)}`, {}, true);
             return body === null ? null : gammaEvent.parse(body);
+        },
+
+        async market(id) {
+            const body = await send(gammaUrl, `/markets/${encodeURIComponent(id)}`, {}, true);
+            return body === null ? null : gammaMarket.parse(body);
         },
 
         async books(tokenIds) {

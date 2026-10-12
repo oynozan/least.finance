@@ -21,10 +21,12 @@ export type FakePolymarket = {
         tokenId: string,
     ): { bids: { price: string }[]; asks: { price: string }[]; min_order_size: string; tick_size: string } | null;
     setBook(tokenId: string, book: { bid: number | null; ask: number | null }): void;
+    /** Closes the market and sets its result; `uma` is the resolution status it shows (default "resolved"). */
+    resolve(marketId: string, outcomePrices: string[], options?: { uma?: string | null }): void;
     /** Gone from the top list, from search and from /events/:id (404). */
     hide(eventId: string): void;
     /** Answers the next request to this path with a 500. */
-    failNext(path: "/events" | "/events/:id" | "/public-search" | "/books"): void;
+    failNext(path: "/events" | "/events/:id" | "/markets/:id" | "/public-search" | "/books"): void;
     /** Makes the top list answer events that fail any schema. */
     malformed(): void;
     stop(): Promise<void>;
@@ -44,6 +46,7 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
     const hidden = new Set<string>();
     const overrides = new Map<string, { bid: number | null; ask: number | null }>();
     const failing = new Set<string>();
+    const resolved = new Map<string, Raw>();
     let broken = false;
 
     // Every token and the first-outcome book its market recorded
@@ -93,6 +96,14 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
         const url = new URL(req.url ?? "/", "http://localhost");
         fake.requests.push(`${req.method} ${req.url}`);
 
+        const market = /^\/markets\/([^/]+)$/.exec(url.pathname);
+        if (failing.delete(market ? "/markets/:id" : url.pathname)) return send(500, { error: "Unavailable" });
+        if (req.method === "GET" && market) {
+            const id = decodeURIComponent(market[1]!);
+            const raw = [...fixtures.top, ...fixtures.extra].flatMap((e) => e.markets).find((m) => m.id === id);
+            return raw ? send(200, { ...raw, ...resolved.get(id) }) : send(404, { error: "not found" });
+        }
+
         const one = /^\/events\/([^/]+)$/.exec(url.pathname);
         if (failing.delete(one ? "/events/:id" : url.pathname)) return send(500, { error: "Unavailable" });
 
@@ -136,6 +147,14 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
         requests: [],
         book: (tokenId) => bookOf(tokenId),
         setBook: (tokenId, book) => overrides.set(tokenId, book),
+        resolve: (marketId, outcomePrices, { uma = "resolved" } = {}) =>
+            resolved.set(marketId, {
+                closed: true,
+                acceptingOrders: false,
+                umaResolutionStatus: uma,
+                outcomePrices: JSON.stringify(outcomePrices),
+                conditionId: `0xcondition-${marketId}`,
+            }),
         hide: (eventId) => hidden.add(eventId),
         failNext: (path) => failing.add(path),
         malformed: () => {

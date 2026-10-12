@@ -108,6 +108,8 @@ const fields = z.object({
     POLYMARKET_FLOAT_USD: z.coerce.number().positive().default(100),
     /** How often unsettled prediction orders are checked. */
     PREDICTIONS_POLL_MS: z.coerce.number().int().min(100).default(2_000),
+    /** How often open positions' markets are checked for a resolution. */
+    PREDICTIONS_RESOLVE_MS: z.coerce.number().int().min(100).default(60_000),
 });
 
 const TRADING_SECRETS = [

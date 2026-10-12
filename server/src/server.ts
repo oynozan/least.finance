@@ -26,6 +26,7 @@ import { Bus } from "./events.ts";
 import { MarketService } from "./markets/markets.ts";
 import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
+import { PredictionResolver } from "./predictions/resolver.ts";
 import { PredictionTracker } from "./predictions/tracker.ts";
 import { traderNeeded, withTimeouts, type PoolTrader } from "./predictions/trader.ts";
 import { createPolymarketData } from "./markets/polymarket-data.ts";
@@ -148,12 +149,13 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         const marketLogger = logger.child({ component: "markets" });
         const predictionLogger = logger.child({ component: "predictions" });
         let trader: PoolTrader | null = overrides.trader ?? null;
+        const polymarket = createPolymarketData({
+            gammaUrl: config.POLYMARKET_GAMMA_URL,
+            clobUrl: config.POLYMARKET_CLOB_URL,
+            logger: marketLogger,
+        });
         const markets = new MarketService({
-            data: createPolymarketData({
-                gammaUrl: config.POLYMARKET_GAMMA_URL,
-                clobUrl: config.POLYMARKET_CLOB_URL,
-                logger: marketLogger,
-            }),
+            data: polymarket,
             logger: marketLogger,
             syncMs: config.MARKETS_SYNC_MS,
             // Read lazily: the service below needs the markets, so it's built after them
@@ -174,6 +176,14 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             trader: () => trader,
             logger: predictionLogger,
             pollMs: config.PREDICTIONS_POLL_MS,
+        });
+        const predictionResolver = new PredictionResolver({
+            collections,
+            ledger,
+            data: polymarket,
+            bus,
+            logger: predictionLogger,
+            resolveMs: config.PREDICTIONS_RESOLVE_MS,
         });
         // Orders a restart left placing never reached Polymarket; refund them before anyone can order
         await service.recover();
@@ -217,6 +227,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         tracker.start();
         markets.start();
         predictionTracker.start();
+        predictionResolver.start();
         // Posted orders need the trader to settle even once trading is switched off
         const posted = await collections.predictionOrders.countDocuments({ state: "posted" });
         if (traderNeeded(config, posted) && !trader) connectTrader();
@@ -231,6 +242,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             async close() {
                 closed = true;
                 if (connecting) clearTimeout(connecting);
+                await predictionResolver.stop();
                 await predictionTracker.stop();
                 await markets.stop();
                 await tracker.stop();
