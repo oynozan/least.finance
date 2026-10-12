@@ -19,6 +19,7 @@
         "test:e2e-backend": "node test/e2e/serve.ts"
     },
     "dependencies": {
+        "@polymarket/client": "0.13.0",
         "@privy-io/node": "0.35.0",
         "@scure/bip39": "1.6.0",
         "cors": "2.8.6",

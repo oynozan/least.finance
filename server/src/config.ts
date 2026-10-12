@@ -22,12 +22,15 @@ const optionalKey = z
     .optional()
     .transform((value) => value?.trim() || undefined);
 
+const hex = (digits: number, what: string) =>
+    optionalKey.refine((value) => value === undefined || new RegExp(`^0x[0-9a-fA-F]{${digits}}$`).test(value), what);
+
 const usdc = z
     .string()
     .regex(/^\d+(\.\d{1,18})?$/, "a USDC amount such as 0.01")
     .transform((value) => parseUnits(value, NATIVE_DECIMALS));
 
-const schema = z.object({
+const fields = z.object({
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
     /** Unset, it listens on every interface, IPv6 included (so `localhost` reaches it on macOS too). */
     HOST: z.string().min(1).optional(),
@@ -86,6 +89,40 @@ const schema = z.object({
     POLYMARKET_CLOB_URL: z.url().default("https://clob.polymarket.com"),
     /** How often the top Polymarket events are re-read. */
     MARKETS_SYNC_MS: z.coerce.number().int().min(1_000).default(60_000),
+
+    /** Real orders go to Polymarket only while this is on. */
+    PREDICTIONS_TRADING: z.enum(["on", "off"]).default("off"),
+    /** Owner key of the pool's Polymarket deposit wallet. */
+    POLYMARKET_POOL_KEY: hex(64, "0x followed by 64 hex digits"),
+    POLYMARKET_BUILDER_API_KEY: optionalKey,
+    POLYMARKET_BUILDER_API_SECRET: optionalKey,
+    POLYMARKET_BUILDER_API_PASSPHRASE: optionalKey,
+    /** Attributes the pool's orders to our builder profile. */
+    POLYMARKET_BUILDER_CODE: hex(64, "0x followed by 64 hex digits"),
+    /** Pins the deposit wallet; otherwise it's derived from the pool key. */
+    POLYMARKET_DEPOSIT_WALLET: hex(40, "an address"),
+    POLYGON_RPC_URL: z.url().default("https://polygon.drpc.org"),
+    POLYMARKET_RELAYER_URL: z.url().default("https://relayer-v2.polymarket.com"),
+    POLYMARKET_DATA_URL: z.url().default("https://data-api.polymarket.com"),
+    /** The pool's pUSD float; warnings fire well under and over it. */
+    POLYMARKET_FLOAT_USD: z.coerce.number().positive().default(100),
+    /** How often unsettled prediction orders are checked. */
+    PREDICTIONS_POLL_MS: z.coerce.number().int().min(100).default(2_000),
+});
+
+const TRADING_SECRETS = [
+    "POLYMARKET_POOL_KEY",
+    "POLYMARKET_BUILDER_API_KEY",
+    "POLYMARKET_BUILDER_API_SECRET",
+    "POLYMARKET_BUILDER_API_PASSPHRASE",
+] as const;
+
+const schema = fields.superRefine((config, context) => {
+    if (config.PREDICTIONS_TRADING !== "on") return;
+    for (const name of TRADING_SECRETS) {
+        if (!config[name])
+            context.addIssue({ code: "custom", path: [name], message: "required when PREDICTIONS_TRADING=on" });
+    }
 });
 
 export type Config = z.output<typeof schema>;

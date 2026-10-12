@@ -30,6 +30,41 @@ describe("loadConfig", () => {
         expect(config.MARKETS_SYNC_MS).toBe(60_000);
     });
 
+    it("trading defaults to off", () => {
+        const config = load();
+        expect(config.PREDICTIONS_TRADING).toBe("off");
+        expect(config.POLYMARKET_FLOAT_USD).toBe(100);
+        expect(config.PREDICTIONS_POLL_MS).toBe(2_000);
+        expect(config.POLYGON_RPC_URL).toBe("https://polygon.drpc.org");
+        expect(config.POLYMARKET_POOL_KEY).toBeUndefined();
+    });
+
+    it("trading on without the pool key or builder secrets names each missing one", () => {
+        let message = "";
+        try {
+            load({ PREDICTIONS_TRADING: "on" });
+        } catch (error) {
+            message = (error as Error).message;
+        }
+        for (const name of [
+            "POLYMARKET_POOL_KEY",
+            "POLYMARKET_BUILDER_API_KEY",
+            "POLYMARKET_BUILDER_API_SECRET",
+            "POLYMARKET_BUILDER_API_PASSPHRASE",
+        ]) {
+            expect(message).toContain(name);
+        }
+        const key = `0x${"1".repeat(64)}`;
+        const config = load({
+            PREDICTIONS_TRADING: "on",
+            POLYMARKET_POOL_KEY: key,
+            POLYMARKET_BUILDER_API_KEY: "k",
+            POLYMARKET_BUILDER_API_SECRET: "s",
+            POLYMARKET_BUILDER_API_PASSPHRASE: "p",
+        });
+        expect(config.POLYMARKET_POOL_KEY).toBe(key);
+    });
+
     it("fills in defaults", () => {
         const config = load();
         expect(config.PORT).toBe(4500);
