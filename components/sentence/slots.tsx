@@ -38,7 +38,7 @@ function Chevron({ open }: { open: boolean }) {
 }
 
 type ChoiceSlotProps = {
-    view: Pick<ChoiceSlotView, "prompt" | "hint" | "value" | "selected" | "choices" | "issue" | "custom" | "wide">;
+    view: Pick<ChoiceSlotView, "prompt" | "hint" | "value" | "selected" | "choices" | "issue" | "custom" | "wide" | "empty">;
     /** The pill's accessible name when nothing is selected. */
     placeholder?: string;
     onChange: (value: string) => void;
@@ -88,6 +88,7 @@ export function ChoiceSlot({ view, placeholder = "pick one", onChange }: ChoiceS
                 selected={selected?.value}
                 custom={view.custom}
                 wide={view.wide}
+                empty={view.empty}
                 anchor={button}
                 onSelect={(value) => {
                     onChange(value);

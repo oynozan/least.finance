@@ -22,6 +22,8 @@ type PickerProps = {
     };
     /** Room for long labels: the panel widens and details go under the label. */
     wide?: boolean;
+    /** Said under the title when there are no choices. */
+    empty?: string;
     /** The pill it drops down from. */
     anchor?: RefObject<HTMLElement | null>;
     onSelect: (value: string) => void;
@@ -64,7 +66,7 @@ export function Picker(props: PickerProps) {
     );
 }
 
-function Options({ title, titleId, choices, selected, custom, wide, onSelect }: PickerProps & { titleId: string }) {
+function Options({ title, titleId, choices, selected, custom, wide, empty, onSelect }: PickerProps & { titleId: string }) {
     const isPresent = useIsPresent();
     const base = useId();
     const listed = choices.findIndex((c) => c.value === selected);
@@ -152,6 +154,9 @@ function Options({ title, titleId, choices, selected, custom, wide, onSelect }: 
             <p id={titleId} className="px-[18px] pt-2.5 pb-2 text-base font-medium tracking-[-0.01em] text-muted">
                 {title}
             </p>
+            {empty && choices.length === 0 && (
+                <p className="px-[18px] pb-3 text-base tracking-[-0.01em] text-muted">{empty}</p>
+            )}
             {custom && (
                 <form
                     className="mb-1.5 flex items-center gap-2 rounded-full bg-pill py-1.5 pr-1.5 pl-[18px]"

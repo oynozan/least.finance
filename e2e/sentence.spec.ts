@@ -1,6 +1,8 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { seedDeposits } from "./backend";
+import { toPredictionMarket } from "@/lib/trade/markets";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
+import { sampleView, samples, trendingView } from "./polymarket";
 
 const trade = (page: Page) => page.getByRole("region", { name: "Trade" });
 const pill = (page: Page, name: string | RegExp) =>
@@ -136,7 +138,9 @@ test("the first pill restructures the sentence for each verb", async ({ page }) 
     await shoot(page, "3-long");
 
     await pick(page, "Long", /^Predict/);
-    expect(await text(page)).toMatch(/^I want to Predict YES on Will BTC reach \$150K\? with 10 USD\.$|BTC \$150K\?/);
+    const [first] = (await trendingView()).markets;
+    expect(await text(page)).toMatch(/^I want to Predict .+ on /);
+    expect(await text(page)).toContain(` on ${first.title} with 10 USD.`);
     await shoot(page, "4-predict");
 
     // Back to Swap: it remembers its own coins, and the amount follows along.
@@ -305,6 +309,11 @@ test("leverage follows the market's cap, and any allowed value can be typed", as
 
 test("the outcome pill reads green for YES and red for NO", async ({ page }) => {
     await pick(page, "Swap", /^Predict/);
+    const yesNo = await sampleView(samples.yesNo);
+    await trade(page).locator('[data-slot="marketId"] button').click();
+    await picker(page).getByRole("option", { name: yesNo.title, exact: true }).click();
+    await trade(page).locator('[data-slot="outcomeId"] button').click();
+    await picker(page).getByRole("option", { name: /^YES/ }).click();
     await expect(pill(page, "YES")).toHaveCSS("color", "rgb(104, 214, 112)");
     await pick(page, "YES", /^NO/);
     await expect(pill(page, "NO")).toHaveCSS("color", "rgb(255, 107, 91)");
@@ -318,19 +327,23 @@ test("the question picker is wide enough for whole questions", async ({ page, is
     const width = await picker(page).evaluate((el) => el.getBoundingClientRect().width);
     if (!isMobile) {
         expect(width).toBeGreaterThanOrEqual(600);
-        // Each question stays on one line, with its odds underneath.
+        // A question of ordinary length stays on one line, with its odds underneath.
         const lines = await picker(page)
             .locator('[role="option"] span[id$="-label"]')
             .evaluateAll((els) =>
-                els.map((el) =>
-                    Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
-                ),
+                els
+                    .filter((el) => (el.textContent?.length ?? 0) <= 30)
+                    .map((el) =>
+                        Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+                    ),
             );
+        expect(lines.length).toBeGreaterThan(0);
         expect(lines.every((n) => n === 1)).toBe(true);
     }
-    await expect(
-        picker(page).getByRole("option", { name: "Will SOL set a new all-time high?" }),
-    ).toHaveAccessibleDescription("44% YES · ends Nov 30");
+    const [first] = (await trendingView()).markets;
+    await expect(picker(page).getByRole("option", { name: first.title })).toHaveAccessibleDescription(
+        /^\d+% .+ · ends [A-Z][a-z]{2} \d{1,2}(, \d{4})?$/,
+    );
     await shoot(page, "markets");
 });
 
@@ -483,7 +496,8 @@ test("phones wrap the sentence without overflowing", async ({ page, isMobile }) 
         expect(overflow).toBeLessThanOrEqual(0);
     }
     // The long market question gets its short form on a phone.
-    await expect(trade(page).getByText("BTC $150K?")).toBeVisible();
+    const [first] = (await trendingView()).markets;
+    await expect(trade(page).getByText(toPredictionMarket(first, new Date()).short, { exact: true })).toBeVisible();
     await shoot(page, "4-predict");
 });
 

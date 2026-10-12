@@ -10,7 +10,9 @@ import {
     type SentenceAction,
     type SentenceState,
 } from "@/lib/sentence";
-import { CATALOG, MOCK_HOLDINGS } from "@/lib/trade/catalog";
+import { CATALOG, MOCK_HOLDINGS, type Catalog } from "@/lib/trade/catalog";
+import { toPredictionMarket } from "@/lib/trade/markets";
+import type { MarketView } from "@/server/src/protocol";
 import type { TradeCtx, TradeTerms } from "@/lib/trade/context";
 import { TRADE } from "@/lib/trade/registry";
 import { balanceHistory, confirmedActivity, daysSince, depositActivity, mockTrades } from "@/lib/trade/activity";
@@ -151,6 +153,74 @@ test.describe("preventing invalid sentences", () => {
     test("a new question keeps your side", () => {
         const { view } = run("predict", [slot("outcomeId", "no"), slot("marketId", "eth-5k-2026")]);
         expect(view.intent).toMatchObject({ marketId: "eth-5k-2026", outcomeId: "no" });
+    });
+});
+
+test.describe("live prediction markets", () => {
+    const outcome = (tokenId: string, label: string, buyPrice: number, chance: number, minUSD = 1) => ({
+        tokenId,
+        label,
+        buyPrice,
+        chance,
+        tone: "neutral" as const,
+        minUSD,
+        image: null,
+    });
+    const fed: MarketView = {
+        id: "900",
+        title: "Fed Decision in October?",
+        image: null,
+        endDate: "2026-10-29T18:00:00Z",
+        volume24hUSD: 5,
+        outcomes: [outcome("fed-nochange", "No change", 0.9, 0.89), outcome("fed-cut", "25 bps decrease", 0.08, 0.07)],
+    };
+    const rain: MarketView = {
+        id: "901",
+        title: "Will it rain?",
+        image: null,
+        endDate: "2026-10-30T18:00:00Z",
+        volume24hUSD: 4,
+        outcomes: [
+            { ...outcome("rain-yes", "YES", 0.3, 0.3, 4.2), tone: "gain" },
+            { ...outcome("rain-no", "NO", 0.71, 0.7), tone: "loss" },
+        ],
+    };
+    const now = new Date(2026, 9, 12);
+    const known = new Map([fed, rain].map((m) => [m.id, toPredictionMarket(m, now)]));
+    const live = (listed: MarketView[]): TradeCtx => ({
+        catalog: {
+            ...CATALOG,
+            markets: listed.map((m) => known.get(m.id)!),
+            findMarket: (id) => known.get(id),
+        } satisfies Catalog,
+        holdings: MOCK_HOLDINGS,
+    });
+
+    test("a multi-outcome event reads Predict [top option] on [title]", () => {
+        expect(run("predict", [], live([fed, rain])).view.text).toBe(
+            "I want to Predict No change on Fed Decision in October? with 10 USD.",
+        );
+    });
+
+    test("a new question keeps YES, and asks for an outcome when it has none", () => {
+        const ctx = live([rain, fed]);
+        expect(run("predict", [slot("marketId", "901")], ctx).view.intent).toMatchObject({ outcomeId: "rain-yes" });
+        const moved = run("predict", [slot("marketId", "900")], ctx).view;
+        expect(moved.intent).toBeNull();
+        expect(moved.blocking).toMatchObject({ message: "Pick an outcome for this question.", cta: "Pick an outcome" });
+    });
+
+    test("the amount's minimum is the outcome's minUSD", () => {
+        const view = run("predict", [slot("amountUSD", "3")], live([rain, fed])).view;
+        expect(view.blocking).toMatchObject({ message: "The minimum is $4.20." });
+    });
+
+    test("a picked question that isn't listed still resolves", () => {
+        const { state } = run("predict", [slot("marketId", "900"), slot("outcomeId", "fed-cut")], live([rain, fed]));
+        // The list moves on without it.
+        const view = resolve(TRADE, state, live([rain]));
+        expect(view.text).toBe("I want to Predict 25 bps decrease on Fed Decision in October? with 10 USD.");
+        expect(view.intent).toMatchObject({ marketId: "900", outcomeId: "fed-cut" });
     });
 });
 

@@ -1,12 +1,15 @@
 "use client";
 
-import { createContext, use, type ReactNode } from "react";
+import { createContext, use, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useLogin, usePrivy } from "@privy-io/react-auth";
 import type { SentenceAction, SentenceView } from "@/lib/sentence";
-import { MOCK_HOLDINGS, QUOTE } from "@/lib/trade/catalog";
+import { API_URL } from "@/lib/api";
+import { CATALOG, MOCK_HOLDINGS, QUOTE, type Catalog } from "@/lib/trade/catalog";
 import type { TransactionIntent } from "@/lib/trade/intent";
+import { toPredictionMarket } from "@/lib/trade/markets";
 import { useAccount } from "@/components/account-provider";
 import { walletEnabled } from "@/components/wallet-provider";
+import { createMarketsStore, type MarketsStore } from "./markets-store";
 import { useTradeSentence } from "./use-trade-sentence";
 
 export type WalletStatus =
@@ -35,7 +38,7 @@ export function useTrade() {
 export function TradeProvider({ children }: { children: ReactNode }) {
     if (!walletEnabled) {
         return (
-            <Provide wallet={{ status: "demo" }} holdings={MOCK_HOLDINGS}>
+            <Provide wallet={{ status: "demo" }} holdings={MOCK_HOLDINGS} catalog={CATALOG}>
                 {children}
             </Provide>
         );
@@ -47,10 +50,11 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
     const { ready, authenticated } = usePrivy();
     const { login } = useLogin();
     const { balance } = useAccount();
+    const { catalog, store } = useLiveCatalog();
     // The same element type in every branch, so the sentence survives connecting.
     if (!ready) {
         return (
-            <Provide wallet={{ status: "loading" }} holdings={null}>
+            <Provide wallet={{ status: "loading" }} holdings={null} catalog={catalog} store={store}>
                 {children}
             </Provide>
         );
@@ -60,6 +64,8 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             <Provide
                 wallet={{ status: "disconnected", connect: () => login({ loginMethods: ["wallet"] }) }}
                 holdings={null}
+                catalog={catalog}
+                store={store}
             >
                 {children}
             </Provide>
@@ -69,21 +75,53 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
     // Until the account loads, nothing is capped rather than everything.
     const holdings = balance == null ? null : { ...MOCK_HOLDINGS, [QUOTE]: balance };
     return (
-        <Provide wallet={{ status: "connected" }} holdings={holdings}>
+        <Provide wallet={{ status: "connected" }} holdings={holdings} catalog={catalog} store={store}>
             {children}
         </Provide>
     );
 }
 
+/** Polymarket's questions in place of the mock ones, whoever is (or isn't) signed in. */
+function useLiveCatalog(): { catalog: Catalog; store: MarketsStore } {
+    const [store] = useState(() => createMarketsStore({ apiUrl: API_URL }));
+    useEffect(() => {
+        store.start();
+        return () => store.stop();
+    }, [store]);
+    const { trending, results, known } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+    const catalog = useMemo<Catalog>(() => {
+        const view = (id: string) => {
+            const found = known.get(id);
+            return found && toPredictionMarket(found, new Date());
+        };
+        return {
+            ...CATALOG,
+            markets: (results ?? trending).map((m) => toPredictionMarket(m, new Date())),
+            findMarket: view,
+        };
+    }, [trending, results, known]);
+    return { catalog, store };
+}
+
 function Provide({
     wallet,
     holdings,
+    catalog,
+    store,
     children,
 }: {
     wallet: WalletStatus;
     holdings: Record<string, number> | null;
+    catalog: Catalog;
+    store?: MarketsStore;
     children: ReactNode;
 }) {
-    const { view, dispatch } = useTradeSentence(holdings);
+    const { view, dispatch } = useTradeSentence(holdings, catalog);
+    const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;
+    const marketId = watched?.kind === "choice" && watched.value ? watched.value : null;
+    useEffect(() => {
+        store?.watch(marketId);
+        return () => store?.watch(null);
+    }, [store, marketId]);
     return <TradeContext value={{ view, dispatch, wallet }}>{children}</TradeContext>;
 }

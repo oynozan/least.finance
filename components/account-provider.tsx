@@ -19,15 +19,13 @@ import {
     type ApiError,
     type HistoryRow,
 } from "@/lib/account/state";
+import { API_URL } from "@/lib/api";
 import { ensureNetwork } from "@/lib/wallet/network";
 import type { CoinBalance, DepositOrderView, DepositQuoteView } from "@/server/src/protocol";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
 import { linkedWallets } from "./arc-wallet";
 import { walletEnabled } from "./wallet-provider";
-
-/** The deposit server. Unset in development, it's the local one. */
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4500";
 
 export type Account = {
     state: AccountState;

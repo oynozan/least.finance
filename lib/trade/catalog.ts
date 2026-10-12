@@ -59,7 +59,12 @@ export type Outcome = {
     label: string;
     /** Price of one share in USD (0-1); a winning share pays $1. */
     price: number;
-    tone: "gain" | "loss";
+    /** What the market thinks the odds are (0-1); the price is what buying costs. */
+    chance: number;
+    tone: "gain" | "loss" | "neutral";
+    /** The least a buy can be, in USD. */
+    minUSD: number;
+    image?: string;
 };
 
 export type PredictionMarket = {
@@ -70,12 +75,15 @@ export type PredictionMarket = {
     /** Underlying token, for the market's icon. */
     symbol: string;
     closes: string;
+    image?: string;
     outcomes: Outcome[];
 };
 
+const no = (yes: number) => Math.round((1 - yes) * 100) / 100;
+
 const yesNo = (yes: number): Outcome[] => [
-    { id: "yes", label: "YES", price: yes, tone: "gain" },
-    { id: "no", label: "NO", price: Math.round((1 - yes) * 100) / 100, tone: "loss" },
+    { id: "yes", label: "YES", price: yes, chance: yes, tone: "gain", minUSD: 1 },
+    { id: "no", label: "NO", price: no(yes), chance: no(yes), tone: "loss", minUSD: 1 },
 ];
 
 export const PREDICTION_MARKETS: PredictionMarket[] = [
@@ -117,10 +125,13 @@ export type Catalog = {
     tokens: Token[];
     perps: PerpMarket[];
     markets: PredictionMarket[];
+    /** A question by ID, listed or not: one picked earlier may have dropped off the list. */
+    findMarket(id: string): PredictionMarket | undefined;
 };
 
 export const CATALOG: Catalog = {
     tokens: TOKENS,
     perps: PERP_MARKETS,
     markets: PREDICTION_MARKETS,
+    findMarket: (id) => PREDICTION_MARKETS.find((m) => m.id === id),
 };

@@ -71,6 +71,10 @@ export type ChoiceSpec<V, Ctx, T extends string, Term extends string> = SlotBase
     custom?: CustomChoice<V, Ctx, T>;
     /** The picker needs room for long labels (e.g. market questions). */
     wide?: boolean;
+    /** What the picker says when `choices` is empty. */
+    empty?: string;
+    /** The slot whose value this one's choices come from; while that one is missing, this one stays quiet. */
+    needs?: string;
 };
 
 export type NumberSpec<V, Ctx, Term extends string> = SlotBase<Term> & {

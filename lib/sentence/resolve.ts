@@ -36,6 +36,7 @@ export type ChoiceSlotView = SlotViewBase & {
         parse: (text: string) => string | null;
     };
     wide?: boolean;
+    empty?: string;
 };
 
 export type NumberSlotView = SlotViewBase & {
@@ -174,6 +175,7 @@ export function resolve<I, T extends Str, C>(
                 selected,
                 choices,
                 wide: spec.wide,
+                empty: spec.empty,
                 custom: custom && {
                     placeholder: custom.placeholder(values, ctx),
                     suffix: custom.suffix,
@@ -183,6 +185,13 @@ export function resolve<I, T extends Str, C>(
         }
         issues.push(...slotIssues);
     }
+
+    const quiet = (issue: Issue) => {
+        const spec = issue.slot ? op.slots[issue.slot] : undefined;
+        const needs = spec?.kind === "choice" ? spec.needs : undefined;
+        return issue.code === "missing" && !!needs && issues.some((i) => i.slot === needs && i.code === "missing");
+    };
+    issues.splice(0, issues.length, ...issues.filter((issue) => !quiet(issue)));
 
     for (const issue of op.check?.(values, ctx) ?? []) {
         if (!issue.slot || slots[issue.slot]) issues.push(issue);

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { IconRef } from "@/lib/sentence";
 import { CoinIcon } from "@/components/coin-icons";
+import { MarketImage } from "./market-image";
 
 // Flat marks with a white sticker ring, matching the original pill icons.
 const RING = "rounded-full shadow-[0_0_0_0.07em_#fff]";
@@ -47,6 +48,8 @@ export function renderTradeIcon(icon: IconRef): ReactNode {
         }
         case "outcome":
             return <Glyph fill={icon.tone === "loss" ? LOSS : GAIN}>{OUTCOMES[icon.id]}</Glyph>;
+        case "image":
+            return <MarketImage src={icon.id} />;
         default:
             return null;
     }
