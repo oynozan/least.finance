@@ -14,7 +14,7 @@ export function isOffered(market: GammaMarket, eventEndDate: string | null | und
     if (!market.active || market.closed || !market.acceptingOrders || !market.enableOrderBook) return false;
     if (market.bestBid == null || market.bestAsk == null) return false;
     if (market.outcomes.length !== 2 || market.clobTokenIds.length !== 2) return false;
-    if (market.bestAsk - market.bestBid > MAX_SPREAD) return false;
+    if (round4(market.bestAsk - market.bestBid) > MAX_SPREAD) return false;
     const end = Date.parse(market.endDate ?? eventEndDate ?? "");
     return end - now.getTime() > MIN_TIME_LEFT_MS;
 }

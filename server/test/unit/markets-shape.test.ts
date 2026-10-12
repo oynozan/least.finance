@@ -89,6 +89,8 @@ test("prices: YES buys at the ask, NO at 1 − bid, chance is the midpoint", () 
 
 test("a market with a spread over 10¢, or closing within the hour, isn't offered", () => {
     expect(edited({ bestBid: 0.5, bestAsk: 0.65 })).toBeNull();
+    expect(edited({ bestBid: 0.3, bestAsk: 0.4 })).not.toBeNull();
+    expect(edited({ bestBid: 0.18, bestAsk: 0.28 })).not.toBeNull();
     expect(edited({ bestBid: 0.5, bestAsk: 0.6 })).not.toBeNull();
     expect(edited({ endDate: new Date(now.getTime() + 30 * 60_000).toISOString() })).toBeNull();
     expect(edited({ endDate: new Date(now.getTime() + 90 * 60_000).toISOString() })).not.toBeNull();
