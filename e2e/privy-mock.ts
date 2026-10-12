@@ -40,7 +40,7 @@ export const MOCK_APP_ID = "cmtestapp0000000000000000";
 
 const appConfig = {
     id: MOCK_APP_ID,
-    name: "Trade Everything",
+    name: "Least Finance",
     logo_url: null,
     accent_color: "#68d670",
     show_wallet_login_first: true,

@@ -16,9 +16,24 @@ const inter = Inter({
     subsets: ["latin"],
 });
 
+const description = "Trade with one sentence: swap, buy, sell, go long or short, or predict.";
+
 export const metadata: Metadata = {
-    title: "Trade Everything",
-    description: "Trade with one sentence: swap, buy, sell, go long or short, or predict.",
+    metadataBase: new URL("https://least.finance"),
+    title: { default: "Least Finance", template: "%s · Least Finance" },
+    applicationName: "Least Finance",
+    description,
+    icons: {
+        icon: [{ url: "/logo.svg", type: "image/svg+xml" }],
+        apple: "/apple-touch-icon.png",
+    },
+    openGraph: {
+        type: "website",
+        url: "/",
+        siteName: "Least Finance",
+        title: "Least Finance",
+        description,
+    },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

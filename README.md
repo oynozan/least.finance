@@ -1,4 +1,6 @@
-# Trade Everything
+# Least Finance
+
+[least.finance](https://least.finance)
 
 Trade with one sentence on Arc Mainnet. A Next.js 16 web app, and a deposit server (`server/`) that gives every connected wallet an account of its own, so trades can run without a signature each time.
 

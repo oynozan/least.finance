@@ -5,7 +5,7 @@ export function createLogger(config: Pick<Config, "LOG_LEVEL" | "NODE_ENV">): Lo
     const pretty = config.NODE_ENV === "development" && process.stdout.isTTY;
     return pino({
         level: config.LOG_LEVEL,
-        base: { service: "trade-everything-server" },
+        base: { service: "least-finance-server" },
         redact: {
             paths: ["req.headers.authorization", "req.headers.cookie", "*.token", "*.mnemonic"],
             censor: "[redacted]",

@@ -74,7 +74,7 @@ export type Database = {
 
 export async function connectDatabase(uri: string, dbName: string): Promise<Database> {
     const client = new MongoClient(uri, {
-        appName: "trade-everything-server",
+        appName: "least-finance-server",
         retryWrites: true,
         serverSelectionTimeoutMS: 10_000,
     });
