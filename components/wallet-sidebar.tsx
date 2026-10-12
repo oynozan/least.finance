@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import {
     AnimatePresence,
@@ -250,8 +250,8 @@ type WalletSectionProps = {
     notice: DepositNotice | null;
     onDeposit: (amount: string) => Promise<DepositResult>;
     /** Bridges `amount` of a coin on another chain into the account. */
-    onDepositCoin: (coin: string, amount: string) => Promise<DepositResult>;
-    quote: (coin: string, amount: string) => Promise<DepositQuoteView | ApiError>;
+    onDepositCoin: (coin: string, amount: string, wallet: string) => Promise<DepositResult>;
+    quote: (coin: string, amount: string, wallet: string) => Promise<DepositQuoteView | ApiError>;
     /** Bridge orders still open, newest first. */
     orders: DepositOrderView[];
     onStartDeposit: () => void;
@@ -291,6 +291,14 @@ function WalletSection({
     const [stage, setStage] = useState<"closed" | "coins" | "amount">("closed");
     // The coin row picked, whose wallet the deposit is sent from.
     const [picked, setPicked] = useState<CoinBalance | null>(null);
+    // The form closed: the Deposit button that takes its place gets focus.
+    const [refocus, setRefocus] = useState(false);
+    const section = useRef<HTMLElement>(null);
+    useEffect(() => {
+        if (!refocus || stage !== "closed") return;
+        setRefocus(false);
+        section.current?.querySelector<HTMLElement>("button[data-phase]")?.focus();
+    }, [refocus, stage]);
     const depositing = stage === "amount" && minDeposit !== null && picked !== null;
     const choosing = stage === "coins" && minDeposit !== null;
     // The history would cover the positions while a coin or an amount is chosen.
@@ -313,6 +321,7 @@ function WalletSection({
 
     return (
         <section
+            ref={section}
             className={styles.wallet}
             aria-label="Balance"
             data-history={showHistory || choosing ? "open" : "closed"}
@@ -344,9 +353,12 @@ function WalletSection({
                     coin={coin!}
                     walletBalance={walletBalance}
                     minDeposit={minDeposit}
-                    onSubmit={coin!.coin === "arc:USDC" ? onDeposit : (amount) => onDepositCoin(coin!.coin, amount)}
-                    preview={coin!.coin === "arc:USDC" ? undefined : (amount) => quote(coin!.coin, amount)}
-                    onClose={() => setStage("closed")}
+                    onSubmit={coin!.coin === "arc:USDC" ? onDeposit : (amount) => onDepositCoin(coin!.coin, amount, coin!.wallet)}
+                    preview={coin!.coin === "arc:USDC" ? undefined : (amount) => quote(coin!.coin, amount, coin!.wallet)}
+                    onClose={() => {
+                        setStage("closed");
+                        setRefocus(true);
+                    }}
                 />
             ) : (
                 // Not `disabled` while the account loads, which would drop keyboard focus.

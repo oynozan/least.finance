@@ -42,9 +42,9 @@ export type Account = {
     /** Bridge orders still open, newest first. */
     orders: DepositOrderView[];
     /** What `amount` of `coin` would pay out on Arc, from the wallet the deposit uses. */
-    quote: (coin: string, amount: string) => Promise<DepositQuoteView | ApiError>;
+    quote: (coin: string, amount: string, wallet: string) => Promise<DepositQuoteView | ApiError>;
     /** Bridges `amount` of `coin` into the account from the wallet the deposit uses. */
-    depositCoin: (coin: string, amount: string) => Promise<DepositResult>;
+    depositCoin: (coin: string, amount: string, wallet: string) => Promise<DepositResult>;
     /** Sends a deposit of `amount` USDC (a decimal string) from the signed-in wallet. */
     deposit: (amount: string) => Promise<DepositResult>;
     dismissNotice: () => void;
@@ -121,11 +121,14 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         }
     };
 
-    const quote = (coin: string, amount: string) =>
-        address ? client.quote(coin, amount, address) : Promise.resolve(NO_WALLET);
+    // Both act for the wallet of the row picked, not the active one.
+    const quote = (coin: string, amount: string, from: string) =>
+        wallets.some((w) => w.address.toLowerCase() === from.toLowerCase())
+            ? client.quote(coin, amount, from)
+            : Promise.resolve(NO_WALLET);
 
-    const depositCoin = async (coin: string, amount: string): Promise<DepositResult> => {
-        const wallet = wallets.find((w) => address && w.address.toLowerCase() === address.toLowerCase());
+    const depositCoin = async (coin: string, amount: string, from: string): Promise<DepositResult> => {
+        const wallet = wallets.find((w) => w.address.toLowerCase() === from.toLowerCase());
         if (!wallet) return "failed";
         try {
             const provider = await wallet.getEthereumProvider();
