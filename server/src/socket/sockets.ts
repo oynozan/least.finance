@@ -101,7 +101,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 socket.data.account = { id: account._id, room };
                 const session = await services.sessions.describe(account);
                 // Pushed once the ack is on its way; a failed read is logged, never the sign-in's problem.
-                services.balances.refresh(account, socket.data.identity, "bind").catch((error: unknown) => {
+                services.balances.refresh(account, socket.data.identity, "bind", (view) => socket.emit("balances", view)).catch((error: unknown) => {
                     logger.warn({ err: error }, "Couldn't read balances at sign-in");
                 });
                 return session;

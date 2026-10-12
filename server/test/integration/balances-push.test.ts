@@ -159,3 +159,65 @@ test("a wallet unlinked from the person drops out on the next click read", async
     expect(pushes[1]!.rows).toHaveLength(7);
     expect(solanaRows(pushes[1]!)).toEqual([]);
 });
+
+test("two binds inside 30 s read once, and both sockets end up holding the view", async () => {
+    const user = await person();
+    const first = await bind(user);
+    const reads = stack.solanaRpc.requests();
+
+    clock += 5_000;
+    const second = await bind(user);
+
+    expect(second.pushes[0]!.readAt).toBe(first.pushes[0]!.readAt);
+    expect(second.pushes[0]!.rows).toHaveLength(9);
+    expect(stack.solanaRpc.requests()).toBe(reads);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(first.pushes).toHaveLength(1);
+});
+
+test("a bind that joins a click run that reads nothing still gets a push", async () => {
+    const user = await person();
+    const first = await bind(user);
+
+    clock += 6_000;
+    const socket = await stack.socket(user);
+    const pushes = listen(socket);
+    const clicking = click(first.socket);
+    const opened = await socket.timeout(5000).emitWithAck("account:open", {});
+    expect(opened.ok).toBe(true);
+    await clicking;
+
+    await expect.poll(() => pushes.length).toBe(1);
+    expect(pushes[0]!.rows).toHaveLength(9);
+});
+
+test("a due click while Privy fails still reads the last-known wallets", async () => {
+    const { socket, pushes } = await bind(await person());
+
+    clock += 31_000;
+    stack.privy.failLookups(100, 500);
+    try {
+        expect(await click(socket)).toEqual({ read: true });
+    } finally {
+        stack.privy.failLookups(0, 500);
+    }
+    await expect.poll(() => pushes.length).toBe(2);
+    expect(pushes[1]!.rows).toHaveLength(9);
+});
+
+test("with Privy failing, repeated clicks inside 5 s make one Privy call", async () => {
+    const { socket } = await bind(await person());
+
+    clock += 6_000;
+    const before = stack.privy.userLookups;
+    stack.privy.failLookups(100, 500);
+    try {
+        await click(socket);
+        const afterFirst = stack.privy.userLookups;
+        expect(afterFirst).toBeGreaterThan(before);
+        for (let i = 0; i < 4; i++) await click(socket);
+        expect(stack.privy.userLookups).toBe(afterFirst);
+    } finally {
+        stack.privy.failLookups(0, 500);
+    }
+});
