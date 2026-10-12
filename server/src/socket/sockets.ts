@@ -202,19 +202,25 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             });
     });
 
+    // Pushes go one at a time per account, so a step never overtakes the one before it.
+    const pushing = new Map<string, Promise<void>>();
     bus.on("order:updated", ({ order }) => {
-        const payload = { order: orderView(order) };
-        void io
-            .in(roomOf(order.accountId))
-            .fetchSockets()
-            .then(async (sockets) => {
+        const key = order.accountId.toHexString();
+        const next = (pushing.get(key) ?? Promise.resolve()).then(async () => {
+            try {
+                const sockets = await io.in(roomOf(order.accountId)).fetchSockets();
                 const owner = await services.accounts.findById(order.accountId);
+                const payload = { order: orderView(order) };
                 for (const socket of sockets) {
                     if (socket.data.identity.userId === owner?.privyUserId) socket.emit("deposit:progress", payload);
                     else socket.leave(roomOf(order.accountId));
                 }
-            })
-            .catch((error: unknown) => logger.warn({ err: error }, "Couldn't push an order update"));
+            } catch (error) {
+                logger.warn({ err: error }, "Couldn't push an order update");
+            }
+        });
+        pushing.set(key, next);
+        void next.then(() => pushing.get(key) === next && pushing.delete(key));
     });
 
     /** The wallet as the account knows it: Solana is turned away before Privy is asked, an EVM wallet must be linked. */

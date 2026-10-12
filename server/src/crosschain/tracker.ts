@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import type { ObjectId } from "mongodb";
 import type { Logger } from "pino";
 import { TransactionReceiptNotFoundError, type Hex } from "viem";
 import type { Collections, DepositOrderDoc } from "../db/mongo.ts";
@@ -6,10 +7,18 @@ import type { Bus } from "../events.ts";
 import type { OrderState } from "../protocol.ts";
 import { coinByKey } from "./catalog.ts";
 import type { SourceClients } from "./chains.ts";
+import { GIVE_UP_MS } from "./orders.ts";
 import type { BridgeProvider } from "./providers/types.ts";
 
 const DEFAULT_EXPIRY_MS = 600_000;
 const OPEN: OrderState[] = ["created", "sent", "in_block", "bridging"];
+/** Polled on every pass for the first minute, every 15 s up to 10 minutes, then every minute. */
+const FAST_AGE_MS = 60_000;
+const SLOW_AGE_MS = 600_000;
+const SLOW_POLL_MS = 15_000;
+const SLOWEST_POLL_MS = 60_000;
+/** Status requests in flight at once. */
+const CONCURRENCY = 8;
 
 type Deps = {
     collections: Collections;
@@ -19,18 +28,30 @@ type Deps = {
     logger: Logger;
     pollMs: number;
     expiryMs?: number;
+    /** Resolves once the order's last report has been announced. */
+    announced?: (orderId: ObjectId) => Promise<void>;
+    /** The clock, for tests. */
+    now?: () => number;
 };
+
+/** How long to leave an order of this age between status requests. */
+const pollInterval = (ageMs: number) =>
+    ageMs < FAST_AGE_MS ? 0 : ageMs < SLOW_AGE_MS ? SLOW_POLL_MS : SLOWEST_POLL_MS;
 
 /** Follows each open deposit order from the source chain across the bridge, and announces every step. */
 export class OrderTracker {
     readonly #deps: Deps;
     readonly #expiryMs: number;
+    readonly #now: () => number;
+    /** When each open order was last followed. */
+    readonly #polled = new Map<string, number>();
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#expiryMs = deps.expiryMs ?? DEFAULT_EXPIRY_MS;
+        this.#now = deps.now ?? Date.now;
     }
 
     start() {
@@ -57,16 +78,33 @@ export class OrderTracker {
         }
     }
 
-    /** One pass over the open orders; an error on one leaves it as it was and doesn't stop the others. */
+    /** One pass over the open orders that are due; an error on one leaves it as it was and doesn't stop the others. */
     async tick(): Promise<void> {
-        const orders = await this.#deps.collections.depositOrders.find({ state: { $in: OPEN } }).toArray();
-        await Promise.all(
-            orders.map((order) =>
-                this.#step(order).catch((error: unknown) =>
+        const now = this.#now();
+        const orders = await this.#deps.collections.depositOrders
+            .find({
+                state: { $in: OPEN },
+                $or: [{ state: { $in: ["created", "sent"] } }, { updatedAt: { $gt: new Date(now - GIVE_UP_MS) } }],
+            })
+            .toArray();
+        const ids = new Set(orders.map((order) => order._id.toHexString()));
+        for (const id of this.#polled.keys()) if (!ids.has(id)) this.#polled.delete(id);
+
+        const due = orders.filter((order) => {
+            const id = order._id.toHexString();
+            if (now - (this.#polled.get(id) ?? -Infinity) < pollInterval(now - order.createdAt.getTime())) return false;
+            this.#polled.set(id, now);
+            return true;
+        });
+        let next = 0;
+        const worker = async () => {
+            for (let order = due[next++]; order; order = due[next++]) {
+                await this.#step(order).catch((error: unknown) =>
                     this.#deps.logger.warn({ err: error, order: order._id.toHexString() }, "Couldn't follow an order"),
-                ),
-            ),
-        );
+                );
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, due.length) }, worker));
     }
 
     async #step(order: DepositOrderDoc) {
@@ -84,7 +122,7 @@ export class OrderTracker {
             throw error;
         });
         if (receipt) await this.#move(order, receipt.status === "success" ? "in_block" : "failed");
-        else if (Date.now() - order.updatedAt.getTime() > this.#expiryMs) await this.#move(order, "failed");
+        else if (this.#now() - order.updatedAt.getTime() > this.#expiryMs) await this.#move(order, "failed");
     }
 
     async #checkBridge(order: DepositOrderDoc) {
@@ -95,7 +133,7 @@ export class OrderTracker {
 
         if (order.state === "created") {
             if (status.stage !== "waiting") await this.#move(order, "bridging");
-            else if (Date.now() - order.createdAt.getTime() > this.#expiryMs) await this.#move(order, "expired");
+            else if (this.#now() - order.createdAt.getTime() > this.#expiryMs) await this.#move(order, "expired");
             return;
         }
         if (status.stage === "pending") {
@@ -134,6 +172,9 @@ export class OrderTracker {
             { $set: { ...set, state, updatedAt: new Date() } },
             { returnDocument: "after" },
         );
-        if (moved) this.#deps.bus.emit("order:updated", { order: moved });
+        if (!moved) return;
+        // A step the wallet's report started is announced first, whichever write returned first.
+        await this.#deps.announced?.(order._id);
+        this.#deps.bus.emit("order:updated", { order: moved });
     }
 }

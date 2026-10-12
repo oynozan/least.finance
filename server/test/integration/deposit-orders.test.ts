@@ -173,13 +173,40 @@ test("the session hands back open orders", async () => {
     expect(session.orders.map((order) => order.id)).toEqual([second.data.order.id, first.data.order.id]);
 });
 
+/** Ends the account's orders, so the cap on waiting ones doesn't stand in the way. */
+const settleAll = (user: User) =>
+    stack.server.services.database.collections.depositOrders.updateMany(
+        { wallet: getAddress(user.wallet) },
+        { $set: { state: "expired" } },
+    );
+
 test("orders are rate limited per person", async () => {
     const user = await stack.user();
     const { socket } = await bind(user);
     const acks: Ack<unknown>[] = [];
-    for (let i = 0; i < 12; i++) acks.push(await ask(socket, "ethereum:USDC", "1", user.wallet));
+    for (let i = 0; i < 12; i++) {
+        acks.push(await ask(socket, "ethereum:USDC", "1", user.wallet));
+        await settleAll(user);
+    }
     expect(acks.filter((a) => a.ok)).toHaveLength(10);
     const refused = acks.filter((a) => !a.ok);
     expect(refused).toHaveLength(2);
     expect(refused.every((a) => !a.ok && a.error.code === "rate_limited")).toBe(true);
+});
+
+test("an account can have only five orders waiting to be sent", async () => {
+    const user = await stack.user();
+    const { socket } = await bind(user);
+    const acks: Ack<{ order: DepositOrderView; txs: SourceTxView[] }>[] = [];
+    for (let i = 0; i < 6; i++) acks.push(await ask(socket, "ethereum:USDC", "1", user.wallet));
+    expect(acks.slice(0, 5).every((a) => a.ok)).toBe(true);
+    expect(acks[5]).toMatchObject({ ok: false, error: { code: "rate_limited" } });
+
+    // One that has gone on to its block no longer waits on the wallet.
+    await stack.server.services.database.collections.depositOrders.updateOne(
+        { _id: new ObjectId((acks[0] as { ok: true; data: { order: DepositOrderView } }).data.order.id) },
+        { $set: { state: "in_block" } },
+    );
+    expect((await ask(socket, "ethereum:USDC", "1", user.wallet)).ok).toBe(true);
+    await settleAll(user);
 });

@@ -121,6 +121,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             bus,
             logger: logger.child({ component: "order-tracker" }),
             pollMs: config.ORDER_POLL_MS,
+            announced: (orderId) => orders.announced(orderId),
         });
         const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
         const prices = overrides.prices ?? lifiPrices();

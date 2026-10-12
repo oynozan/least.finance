@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { ObjectId } from "mongodb";
 import { pino } from "pino";
 import { afterAll, beforeAll, expect, inject, test, vi } from "vitest";
@@ -166,14 +167,18 @@ test("an order nobody reported still completes when the provider knows it", asyn
 });
 
 test("an unreported order expires", async () => {
-    const user = await stack.user();
-    const placed = await place(user, stack, "ethereum:ETH", "0.1");
-    await db().depositOrders.updateOne(
-        { _id: new ObjectId(placed.order.id) },
-        { $set: { createdAt: new Date(Date.now() - DAY_MS) } },
-    );
-    await expect.poll(inState(placed, "expired")).toBe(true);
-    await expect.poll(() => placed.pushes.at(-1)).toBe("expired");
+    // A day on, by a clock of the test's own: an order's age sets how often it is looked at.
+    const { slow, tracker, at } = await steppedTracker();
+    try {
+        const user = await slow.user();
+        const placed = await place(user, slow, "ethereum:ETH", "0.1");
+        at(DAY_MS);
+        await tracker.tick();
+        expect((await placed.state()).state).toBe("expired");
+        await expect.poll(() => placed.pushes.at(-1)).toBe("expired");
+    } finally {
+        await slow.stop();
+    }
 });
 
 test("a source transaction that never lands fails the order", async () => {
@@ -219,6 +224,174 @@ test("a failing status call leaves the order as it was", async () => {
         await tracker.tick();
         expect((await read())!.state).toBe("bridging");
         await expect.poll(() => placed.pushes).toEqual(["created", "bridging"]);
+    } finally {
+        await slow.stop();
+    }
+});
+
+/** A server whose own tracker sleeps, and a tracker of ours that runs on a clock the test sets. */
+async function steppedTracker() {
+    const slow = await startStack({
+        mongoUri: inject("mongoUri"),
+        anvilUrl: inject("anvilUrl"),
+        env: { ORDER_POLL_MS: "600000" },
+    });
+    const base = Date.now();
+    let offset = 0;
+    const tracker = new OrderTracker({
+        collections: slow.server.services.database.collections,
+        providers: [slow.bridge],
+        sources: createSourceClients({ ethereum: [inject("ethereumUrl")], bnb: [inject("bnbUrl")] }),
+        bus: slow.server.services.bus,
+        logger: pino({ level: "silent" }),
+        pollMs: 100,
+        now: () => base + offset,
+    });
+    return {
+        slow,
+        tracker,
+        base,
+        at: (ms: number) => {
+            offset = ms;
+        },
+    };
+}
+
+test("pushes reach the socket in the order the steps happened, however slow a lookup is", async () => {
+    const user = await stack.user();
+    const placed = await place(user, stack, "ethereum:ETH", "0.1");
+    await expect.poll(() => placed.pushes).toEqual(["created"]);
+    const order = await placed.state();
+    const { accounts, bus } = stack.server.services;
+    const find = accounts.findById.bind(accounts);
+    let slow = true;
+    const lookup = vi.spyOn(accounts, "findById").mockImplementation(async (id) => {
+        // Only the first lookup lags.
+        if (slow) {
+            slow = false;
+            await sleep(300);
+        }
+        return find(id);
+    });
+    try {
+        bus.emit("order:updated", { order: { ...order, state: "in_block" } });
+        bus.emit("order:updated", { order: { ...order, state: "bridging" } });
+        await expect.poll(() => placed.pushes).toEqual(["created", "in_block", "bridging"]);
+    } finally {
+        lookup.mockRestore();
+    }
+});
+
+test("a step the tracker sees is announced after the report that led to it", async () => {
+    const user = await stack.user();
+    const placed = await place(user, stack, "ethereum:ETH", "0.1");
+    await ethereum.fund(user.wallet, "5");
+    const hashes = await ethereum.sendTxs(
+        user.wallet,
+        placed.txs.map((tx) => ({ to: tx.to, data: tx.data, value: BigInt(tx.value) })),
+    );
+    // The report is written at once, but its answer is slow: the tracker sees it and moves on first.
+    const { depositOrders } = db();
+    const write = depositOrders.findOneAndUpdate.bind(depositOrders) as (...args: unknown[]) => Promise<unknown>;
+    const slowReport = vi.spyOn(depositOrders, "findOneAndUpdate").mockImplementation((async (...args: unknown[]) => {
+        const result = await write(...args);
+        if ((args[1] as { $set?: { state?: string } }).$set?.state === "sent") await sleep(500);
+        return result;
+    }) as never);
+    try {
+        await placed.report(hashes);
+    } finally {
+        slowReport.mockRestore();
+    }
+    await expect.poll(() => placed.pushes, { timeout: 5000 }).toEqual(["created", "sent", "in_block"]);
+});
+
+test("an older order is asked about less often, and a stale one not at all", async () => {
+    const { slow, tracker, base, at } = await steppedTracker();
+    try {
+        const user = await slow.user();
+        const placed = await place(user, slow, "ethereum:ETH", "0.1");
+        const calls = () => status.mock.calls.filter(([quote]) => quote.ref === placed.ref).length;
+        const status = vi.spyOn(slow.bridge, "status");
+        const { depositOrders } = slow.server.services.database.collections;
+        // Waiting in a bridge, so nothing expires it.
+        await depositOrders.updateOne({ _id: new ObjectId(placed.order.id) }, { $set: { state: "bridging" } });
+        const poll = async (ms: number) => {
+            at(ms);
+            await tracker.tick();
+            return calls();
+        };
+
+        // The first minute: every pass.
+        expect(await poll(0)).toBe(1);
+        expect(await poll(1_000)).toBe(2);
+        // Up to 10 minutes: every 15 s.
+        await depositOrders.updateOne(
+            { _id: new ObjectId(placed.order.id) },
+            { $set: { createdAt: new Date(base - 120_000) } },
+        );
+        expect(await poll(1_500)).toBe(2);
+        expect(await poll(16_000)).toBe(3);
+        expect(await poll(20_000)).toBe(3);
+        expect(await poll(31_500)).toBe(4);
+        // After that: every minute.
+        await depositOrders.updateOne(
+            { _id: new ObjectId(placed.order.id) },
+            { $set: { createdAt: new Date(base - 700_000) } },
+        );
+        expect(await poll(40_000)).toBe(4);
+        expect(await poll(92_000)).toBe(5);
+        expect(await poll(100_000)).toBe(5);
+
+        // A day without a change: left alone, and no longer listed.
+        const accountId = placed.accountId;
+        expect((await slow.server.services.orders.open(accountId)).map((o) => o._id.toHexString())).toEqual([
+            placed.order.id,
+        ]);
+        await depositOrders.updateOne(
+            { _id: new ObjectId(placed.order.id) },
+            { $set: { updatedAt: new Date(base - DAY_MS - 1_000) } },
+        );
+        expect(await poll(200_000)).toBe(5);
+        expect(await slow.server.services.orders.open(accountId)).toEqual([]);
+    } finally {
+        await slow.stop();
+    }
+});
+
+test("a pass asks about at most eight orders at once", async () => {
+    const { slow, tracker } = await steppedTracker();
+    try {
+        const user = await slow.user();
+        const placed = await place(user, slow, "ethereum:ETH", "0.1");
+        const { depositOrders } = slow.server.services.database.collections;
+        const template = (await placed.state())!;
+        await depositOrders.insertMany(
+            Array.from({ length: 20 }, (_, i) => ({
+                ...template,
+                _id: new ObjectId(),
+                ref: `load-${i}`,
+                state: "bridging" as const,
+            })),
+        );
+        let inFlight = 0;
+        let most = 0;
+        let asked = 0;
+        const status = vi.spyOn(slow.bridge, "status").mockImplementation(async ({ ref }) => {
+            if (!ref.startsWith("load-")) return { stage: "waiting" };
+            asked++;
+            most = Math.max(most, ++inFlight);
+            await sleep(25);
+            inFlight--;
+            return { stage: "waiting" };
+        });
+        try {
+            await tracker.tick();
+        } finally {
+            status.mockRestore();
+        }
+        expect(asked).toBe(20);
+        expect(most).toBe(8);
     } finally {
         await slow.stop();
     }
