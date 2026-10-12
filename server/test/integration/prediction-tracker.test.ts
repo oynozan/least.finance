@@ -32,11 +32,15 @@ const posted = async (requestId: string) => {
     return order;
 };
 
+// Followed only once this process is done sending it
+const sent = async (order: { _id: ObjectId }) => until(async () => !h.service.submitting(order._id));
+
 test("a delayed order is settled by the tracker when it fills", async () => {
     const account = await h.seedAccount("100");
     h.trader.onNext(TOKEN, "delay");
     const view = await h.service.place(account, input("10"));
     const order = await posted(view.requestId);
+    await sent(order);
 
     await tracker.tick();
     expect((await orderOf(view.requestId))!.state).toBe("posted");
@@ -57,6 +61,7 @@ test("a delayed order the exchange cancels is refunded as price_moved", async ()
     h.trader.onNext(TOKEN, "delay");
     const view = await h.service.place(account, input("10"));
     const order = await posted(view.requestId);
+    await sent(order);
     h.trader.settleDelayed(order.orderHash!, "cancel");
     await tracker.tick();
     expect(await orderOf(view.requestId)).toMatchObject({ state: "failed", reason: "price_moved" });
@@ -69,7 +74,7 @@ test("an unknown post that turns up missing after 2 minutes is refunded", async 
     const account = await h.seedAccount("100");
     h.trader.onNext(TOKEN, "unknown");
     const view = await h.service.place(account, input("10"));
-    await posted(view.requestId);
+    await sent(await posted(view.requestId));
 
     await tracker.tick();
     expect((await orderOf(view.requestId))!.state).toBe("posted");
