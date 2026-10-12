@@ -211,3 +211,40 @@ test("the sent coin's balance drops at once", async ({ page }) => {
     await depositOf(page).click();
     await expect(coinsOf(page).getByRole("button", { name: /^ETH on Ethereum, 0\.9 ETH/ })).toBeVisible();
 });
+
+test("with two linked wallets the deposit is sent from the picked row's wallet", async ({ page }) => {
+    test.setTimeout(90_000);
+    const second = randomAddress();
+    // The account's first wallet is not the one the browser wallet signs with.
+    await mockPrivy(page, [second]);
+    await installWallet(page, second);
+    await mockArcRpc(page, 0);
+    await fundSource(addressOf(page), "ethereum:ETH", "1");
+    await fundSource(second, "ethereum:ETH", "1");
+    await page.goto("/");
+    await page.getByRole("button", { name: "Connect wallet" }).click();
+    await page.locator("#privy-modal-content").getByRole("button", { name: "MetaMask" }).click();
+    await expect(sidebarOf(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    await expect(balanceOf(page)).toHaveAccessibleName(/^Balance \$/, { timeout: 20_000 });
+
+    const short = `${second.slice(0, 6)}…${second.slice(-4)}`;
+    await depositOf(page).click();
+    await coinsOf(page)
+        .getByRole("button", { name: new RegExp(`^ETH on Ethereum.*${short}$`, "i") })
+        .click();
+    await amountOf(page).fill("0.1");
+    await depositOf(page).click();
+
+    await expect(stepOf(page, "In a block")).toHaveAttribute("data-step", "done", { timeout: 20_000 });
+    const sent = await sends(page);
+    expect(sent).toHaveLength(1);
+    expect((sent[0]!.params?.[0] as { from: string }).from.toLowerCase()).toBe(second.toLowerCase());
+});
+
+test("Escape in the amount field puts focus back on Deposit", async ({ page }) => {
+    await signIn(page);
+    await fill(page, /^ETH on Ethereum/, "0.1");
+    await amountOf(page).press("Escape");
+    await expect(amountOf(page)).toHaveCount(0);
+    await expect(depositOf(page)).toBeFocused();
+});
