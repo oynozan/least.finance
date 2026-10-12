@@ -35,6 +35,8 @@ export class FakeTrader implements PoolTrader {
     #counter = 0;
     #next = new Map<string, Behavior>();
     #held = new Map<string, (outcome: Outcome) => void>();
+    // A release can beat the post to the hold, so it waits here for the next held order on its token
+    #released = new Map<string, Outcome>();
     #failSign = new Set<string>();
     #fills = new Map<string, Fill>();
     #lookups = new Map<string, LookupResult>();
@@ -70,7 +72,10 @@ export class FakeTrader implements PoolTrader {
 
     release(tokenId: string, outcome: Outcome): void {
         const resolve = this.#held.get(tokenId);
-        if (!resolve) throw new Error(`nothing held for ${tokenId}`);
+        if (!resolve) {
+            this.#released.set(tokenId, outcome);
+            return;
+        }
         this.#held.delete(tokenId);
         resolve(outcome);
     }
@@ -140,7 +145,9 @@ export class FakeTrader implements PoolTrader {
         const behavior = this.#next.get(signed.tokenId) ?? "fill";
         this.#next.delete(signed.tokenId);
         if (behavior === "hold") {
-            const outcome = await new Promise<Outcome>((resolve) => this.#held.set(signed.tokenId, resolve));
+            const early = this.#released.get(signed.tokenId);
+            this.#released.delete(signed.tokenId);
+            const outcome = early ?? (await new Promise<Outcome>((resolve) => this.#held.set(signed.tokenId, resolve)));
             return this.#decide(record, signed, outcome);
         }
         if (behavior === "unknown") return { kind: "unknown" };
