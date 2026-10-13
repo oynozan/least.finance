@@ -19,6 +19,8 @@ const ARC = 5042;
 const ARROWS: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
 
 const OVER_MAX = "That's more than you can withdraw right now.";
+/** How long after a failed limits read the form asks again. */
+const LIMITS_RETRY_MS = 3_000;
 
 type WithdrawFormProps = {
     /** The linked EVM wallets a withdrawal can go to. */
@@ -41,18 +43,25 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
     const [field, animateField] = useAnimate<HTMLLabelElement>();
     const reduceMotion = useReducedMotion();
 
-    // What the server allows is read once, as the form opens.
+    // What the server allows is read as the form opens, and again every few seconds while that read fails.
     const ask = useRef(limits);
     useEffect(() => {
         ask.current = limits;
     });
+    const [attempt, setAttempt] = useState(0);
     useEffect(() => {
         let current = true;
-        void ask.current().then((result) => current && setRead(result));
+        let retry: ReturnType<typeof setTimeout> | undefined;
+        void ask.current().then((result) => {
+            if (!current) return;
+            setRead(result);
+            if ("code" in result) retry = setTimeout(() => setAttempt((n) => n + 1), LIMITS_RETRY_MS);
+        });
         return () => {
             current = false;
+            clearTimeout(retry);
         };
-    }, []);
+    }, [attempt]);
 
     const loaded = read !== null && !("code" in read) ? read : null;
     const readError = read !== null && "code" in read ? read.message : null;
@@ -72,7 +81,8 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
             : min !== null && value < min
               ? `The minimum withdrawal is ${formatUsd(min)}.`
               : null;
-    const canSend = amount !== null && value > 0 && !over && issue === null && loaded !== null && !!to && !sending;
+    // Limits only guide the field; the server checks them again, so a slow read never holds the button.
+    const canSend = amount !== null && value > 0 && !over && issue === null && !!to && !sending;
 
     const shake = () => {
         if (!reduceMotion)
