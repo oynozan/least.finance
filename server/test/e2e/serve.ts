@@ -9,8 +9,9 @@ import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { ObjectId } from "mongodb";
 import { pino } from "pino";
-import { formatUnits, getAddress, isAddress, parseUnits, type Address } from "viem";
+import { formatUnits, getAddress, isAddress, parseUnits, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
+import { createKeyring } from "../../src/accounts/keyring.ts";
 import { ARC_CHAIN_ID } from "../../src/chain/arc.ts";
 import { coinByKey, EVM_COINS, parseCoinAmount } from "../../src/crosschain/catalog.ts";
 import { createSourceClients } from "../../src/crosschain/chains.ts";
@@ -21,6 +22,7 @@ import type { DepositDoc } from "../../src/db/mongo.ts";
 import { formatUsdc, fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { startServer } from "../../src/server.ts";
 import { COINS, NETWORKS } from "../../src/swaps/coins.ts";
+import { TREASURY_GAS_RESERVE } from "../../src/withdrawals/withdrawals.ts";
 import { startAnvil } from "../support/anvil.ts";
 import { startArcEmulator } from "../support/arc-emulator.ts";
 import { FakeBridge } from "../support/fake-bridge.ts";
@@ -89,6 +91,22 @@ const config = loadConfig({
     POLYMARKET_BUILDER_API_SECRET: "e2e",
     POLYMARKET_BUILDER_API_PASSPHRASE: "e2e",
 });
+let failNextPayout = false;
+/** Sends a signed payout to the chain, unless a test asked for the next one to fail. */
+async function broadcastPayout(rawTx: Hex): Promise<Hex> {
+    if (failNextPayout) {
+        failNextPayout = false;
+        throw new Error("insufficient funds for gas * price + value");
+    }
+    const response = await fetch(emulator.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_sendRawTransaction", params: [rawTx] }),
+    });
+    const { result, error } = (await response.json()) as { result?: Hex; error?: { message: string } };
+    if (!result) throw new Error(error?.message ?? "Broadcast failed");
+    return result;
+}
 const trader = fakePoolTrader(polymarket, 1_000_000n * 1_000_000n);
 const bridge = new FakeBridge({ arcRpcUrl: emulator.url, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
 const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
@@ -97,12 +115,18 @@ const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
     prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
     bridges: [bridge],
     trader,
+    payoutBroadcast: broadcastPayout,
 });
 const { services } = server;
 await services.markets.tick();
 await services.swapCatalog.tick();
 await services.predictions.refreshFloat();
 const chain = chainHelpers(anvil.url);
+const treasuryAddress = createKeyring(config.DEPOSIT_MNEMONIC).operator().address;
+const fundTreasury = (usdc: string) =>
+    chain.client.setBalance({ address: treasuryAddress, value: parseUnits(usdc, 18) + TREASURY_GAS_RESERVE });
+// Withdrawals in the specs never meet a short treasury.
+await fundTreasury("100000");
 const sources = { 1: sourceChain(ethereum.url, 1), 56: sourceChain(bnb.url, 56) };
 const rpcUrls: Record<number, string> = { 1: ethereum.url, 56: bnb.url, [ARC_CHAIN_ID]: emulator.url };
 
@@ -340,6 +364,24 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
             { $set: { shares: toDecimal(parseUnits(String(shares), 6)), updatedAt: new Date() } },
         );
         if (moved.modifiedCount === 0) throw new Error("No open position");
+        return {};
+    },
+    /** Sets the treasury's balance so `usdc` can be withdrawn, its gas reserve on top. */
+    "/treasury/fund": async ({ usdc }) => {
+        await fundTreasury(String(usdc));
+        return {};
+    },
+    /** The treasury's address and what it holds above its gas reserve. */
+    "/treasury": async () => {
+        const wei = await chain.client.getBalance({ address: treasuryAddress });
+        return {
+            address: treasuryAddress,
+            balance: formatUnits(wei > TREASURY_GAS_RESERVE ? wei - TREASURY_GAS_RESERVE : 0n, 18),
+        };
+    },
+    /** Makes the next payout broadcast throw, as a treasury out of gas money would. */
+    "/withdrawals/fail-next": async () => {
+        failNextPayout = true;
         return {};
     },
     "/account": async ({ address }) => {

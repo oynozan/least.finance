@@ -93,3 +93,12 @@ export const nextSwapQuote = (patch: Record<string, unknown>, wallet?: string) =
 /** Answers the next LI.FI quote request (that `wallet` makes, when given) with no route. */
 export const noSwapRoute = (wallet?: string) =>
     call<object>("/lifi/no-route", { fromAddress: wallet }).then(() => undefined);
+
+/** Sets the treasury's Arc balance so that `usdc` can be withdrawn, with its gas reserve on top. */
+export const fundTreasury = (usdc: string) => call<object>("/treasury/fund", { usdc }).then(() => undefined);
+
+/** The treasury's address and what it holds above its gas reserve, in USDC. */
+export const treasury = () => call<{ address: string; balance: string }>("/treasury", {});
+
+/** Makes the next payout broadcast fail with an out-of-gas error, so the withdrawal fails and refunds. */
+export const failNextPayout = () => call<object>("/withdrawals/fail-next", {}).then(() => undefined);
