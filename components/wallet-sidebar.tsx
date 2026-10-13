@@ -40,14 +40,7 @@ import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
 import { useSidebar } from "./sidebar";
 import { useTrade } from "./trade/trade-provider";
-import {
-    MOCK_POSITIONS,
-    formatUsd,
-    formatWhen,
-    livePredictionRows,
-    shortenAddress,
-    type LivePredictionPosition,
-} from "./wallet-data";
+import { formatUsd, formatWhen, livePredictionRows, shortenAddress, type LivePredictionPosition } from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
 import styles from "./wallet-sidebar.module.css";
 
@@ -147,8 +140,7 @@ function SignedInWallet() {
     const evmNetwork = useWalletNetwork(address);
     const network = active.kind === "solana" ? "solana" : evmNetwork;
 
-    // Predictions are the account's own; perps stay mock until trading is live.
-    const [perps, setPerps] = useState(() => MOCK_POSITIONS.filter((p) => p.kind === "perp"));
+    // Predictions are the only positions that stay open: swaps settle at once, and perps have no venue yet.
     const { predictions, optimisticTrades } = account;
     const { known } = useTrade();
     // Moves on whenever the sidebar opens; a clock read while rendering can't be prerendered.
@@ -157,11 +149,10 @@ function SignedInWallet() {
         const timer = setTimeout(() => setClock(Date.now()));
         return () => clearTimeout(timer);
     }, [open]);
-    const real = useMemo(
+    const positions = useMemo(
         () => livePredictionRows(predictions, optimisticTrades, clock),
         [predictions, optimisticTrades, clock],
     );
-    const positions = useMemo(() => [...perps, ...real], [perps, real]);
 
     // Remount the animated parts on every open so they replay their entrance.
     const [openings, setOpenings] = useState(0);
@@ -172,10 +163,6 @@ function SignedInWallet() {
     }
 
     if (!ready || !authenticated) return null;
-
-    const closePosition = (id: string) => {
-        setPerps((list) => list.filter((p) => p.id !== id));
-    };
 
     return (
         <MotionConfig reducedMotion="user">
@@ -238,8 +225,7 @@ function SignedInWallet() {
                                     key={position.id}
                                     position={position}
                                     entranceDelay={entranceDelay(i, positions.length)}
-                                    onClose={closePosition}
-                                    market={position.kind === "prediction-live" ? marketOf(position, known) : undefined}
+                                    market={marketOf(position, known)}
                                     onSell={account.closePosition}
                                 />
                             ))}

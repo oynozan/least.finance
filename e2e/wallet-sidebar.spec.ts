@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
-import { MOCK_POSITIONS } from "../components/wallet-data";
 import { randomSolanaAddress, seedDeposits } from "./backend";
 import { HISTORY, HISTORY_TOTAL } from "./fixtures";
+import { buyPredictions, predictionsToBuy, type Bought } from "./positions";
 import {
     addressOf,
     ARC_PRIMARY_RPC,
@@ -19,8 +19,8 @@ import {
 const DEPOSITS = HISTORY.length;
 const usd = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
 const HISTORY_BALANCE = usd(HISTORY_TOTAL);
-// Predictions are the account's own, so only the mock perps are listed.
-const POSITIONS = MOCK_POSITIONS.filter((p) => p.kind === "perp").length;
+// Real predictions, enough that they overflow the sidebar.
+const POSITIONS = 10;
 
 const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
 const dock = (page: Page) => page.getByRole("button", { name: `Wallet ${addressOf(page)}` });
@@ -32,13 +32,13 @@ const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
 // Read out, not shown: the wallet's balance under the amount field.
 const walletLine = (page: Page) => sidebar(page).locator("#deposit-wallet");
 const showAgain = (page: Page) => page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-/** A position by its name: "Long BTC", or a prediction's question. */
-const position = (page: Page, name: string) =>
-    sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem").filter({ hasText: name });
+const rows = (page: Page) => sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem");
+/** A position by the question it bets on. */
+const position = (page: Page, bought: Bought) => rows(page).filter({ hasText: bought.market.title });
+const closeButton = (page: Page, bought: Bought) =>
+    position(page, bought).getByRole("button", { name: `Close ${bought.outcome.label} on ${bought.market.title}` });
 
-const GAIN = "rgb(104, 214, 112)";
-const LOSS = "rgb(255, 107, 91)";
-const FLAT = "rgb(143, 143, 138)";
+const TREND_COLOR = { gain: "rgb(104, 214, 112)", loss: "rgb(255, 107, 91)", flat: "rgb(143, 143, 138)" };
 
 /** Lets springs settle before a screenshot. */
 const settle = (page: Page) => page.waitForTimeout(900);
@@ -55,12 +55,22 @@ async function connect(page: Page) {
     await modal(page).getByRole("button", { name: "MetaMask" }).click();
 }
 
-/** Connects and waits for the sidebar and the account to load; `history` seeds the 20 deposits first. */
-async function openWallet(page: Page, { history = false } = {}) {
+/**
+ * Connects and waits for the sidebar and the account to load. `history` seeds the 20 deposits first, and
+ * `positions` buys that many predictions before signing in, oldest first.
+ */
+async function openWallet(page: Page, { history = false, positions = 0 } = {}) {
     if (history) await seedDeposits(addressOf(page), HISTORY);
+    else if (positions) await seedDeposits(addressOf(page), [{ amount: "500", daysAgo: 0 }]);
+    const bought = await predictionsToBuy(positions);
+    await buyPredictions(addressOf(page), bought);
     await connect(page);
     await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
     await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$/, { timeout: 20_000 });
+    await expect(rows(page)).toHaveCount(positions);
+    // Open rows, not buys still waiting: each has its shares.
+    for (const row of bought) await expect(position(page, row)).toContainText(/\d shares/);
+    return bought;
 }
 
 /** Opens the deposit form, which is where the wallet's own balance is shown. */
@@ -175,7 +185,7 @@ test("connecting leaves the wallet on its own network", async ({ page }) => {
     await expect(sidebar(page).locator("header").getByRole("img", { name: "Ethereum", exact: true })).toBeVisible();
     await expect(depositButton(page)).toBeVisible();
     await expect(page.getByRole("button", { name: `Wallet ${addressOf(page)}`, exact: true })).toBeVisible();
-    await expect(dock(page).locator('[aria-hidden="true"]')).toHaveCSS("background-color", GAIN);
+    await expect(dock(page).locator('[aria-hidden="true"]')).toHaveCSS("background-color", TREND_COLOR.gain);
 });
 
 test("the balance is the account's USDC on the server", async ({ page }) => {
@@ -450,8 +460,8 @@ test("a long deposit history stays inside the sidebar and scrolls", async ({ pag
 });
 
 test("many positions scroll inside the sidebar and enter quickly", async ({ page }) => {
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    test.setTimeout(60_000);
+    const bought = await openWallet(page, { positions: POSITIONS });
     await page.keyboard.press("Escape");
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
     await settle(page);
@@ -483,29 +493,31 @@ test("many positions scroll inside the sidebar and enter quickly", async ({ page
     console.log(`positions entrance settled in ${Math.round(entranceMs)}ms`);
     expect(entranceMs, "the positions in view land soon after opening").toBeLessThan(850);
 
-    const rows = sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem");
-    await expect(rows).toHaveCount(POSITIONS);
-    const scroller = await rows.first().evaluate((row) => {
-        const list = row.closest("ul")!.parentElement!;
-        return {
-            overflows: list.scrollHeight > list.clientHeight,
-            bottom: list.getBoundingClientRect().bottom,
-            panelBottom: list.closest("aside")!.getBoundingClientRect().bottom,
-        };
-    });
+    await expect(rows(page)).toHaveCount(POSITIONS);
+    const scroller = await rows(page)
+        .first()
+        .evaluate((row) => {
+            const list = row.closest("ul")!.parentElement!;
+            return {
+                overflows: list.scrollHeight > list.clientHeight,
+                bottom: list.getBoundingClientRect().bottom,
+                panelBottom: list.closest("aside")!.getBoundingClientRect().bottom,
+            };
+        });
     expect(scroller.overflows, `${POSITIONS} positions don't fit, so they scroll`).toBe(true);
     expect(scroller.bottom).toBeLessThanOrEqual(scroller.panelBottom + 0.5);
 
     // The oldest position sits at the bottom of the scroll range.
-    await expect(position(page, "Long BTC")).toBeAttached();
-    await position(page, "Long BTC").scrollIntoViewIfNeeded();
-    await expect(position(page, "Long BTC")).toBeInViewport();
+    await expect(position(page, bought[0]!)).toBeAttached();
+    await position(page, bought[0]!).scrollIntoViewIfNeeded();
+    await expect(position(page, bought[0]!)).toBeInViewport();
     await shoot(page, "8-many-positions");
 });
 
 test("scrollable lists blur only the edges that hide more content", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover and wheel");
-    await openWallet(page, { history: true });
+    test.setTimeout(60_000);
+    await openWallet(page, { history: true, positions: POSITIONS });
     await settle(page);
 
     // Each scroller fades its content out over the band an overlay blurs.
@@ -591,72 +603,57 @@ test("depositing adds to the history", async ({ page, isMobile }) => {
 
 test("hovering a position reveals a close button in the PnL's color", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    const bought = await openWallet(page, { positions: 3 });
     await settle(page);
 
-    const rows = sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem");
-    await expect(rows).toHaveCount(POSITIONS);
-
-    // Bottom to top: the first position sits lowest.
-    const tops = await rows.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
+    // Bottom to top: the oldest position sits lowest.
+    const tops = await Promise.all(
+        bought.map((b) => position(page, b).evaluate((el) => el.getBoundingClientRect().top)),
+    );
     expect(tops).toEqual([...tops].sort((a, b) => b - a));
 
-    // Each row names the position, then its leverage with its size, and its PnL.
-    await expect(position(page, "Long BTC")).toContainText("10x · $4,200");
-    await expect(position(page, "Long BTC")).toContainText("+$312.40");
-    await expect(position(page, "Long BTC")).not.toContainText(/size|pnl|cost/i);
+    for (const b of bought) {
+        const row = position(page, b);
+        // Each row names the question, then its outcome with its shares and PnL, and what it's worth.
+        const label = b.outcome.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        await expect(row).toContainText(
+            new RegExp(`${label} · [\\d.]+ shares · [+−]?\\$[\\d,]+\\.\\d\\d\\$[\\d,]+\\.\\d\\d`),
+        );
 
-    for (const [name, label, color] of [
-        ["Long BTC", "Close Long BTC 10x", GAIN],
-        ["Short ETH", "Close Short ETH 5x", LOSS],
-        ["Long SOL", "Close Long SOL 3x", FLAT],
-    ] as const) {
-        const row = position(page, name);
-        const close = row.getByRole("button", { name: label });
+        const close = closeButton(page, b);
         await expect.poll(() => close.evaluate((el) => el.parentElement!.getBoundingClientRect().width)).toBe(0);
-
         await row.hover();
         await expect
             .poll(() => close.evaluate((el) => el.parentElement!.getBoundingClientRect().width))
             .toBeGreaterThan(50);
-        await expect(close).toHaveCSS("color", color);
-        await shoot(
-            page,
-            `4-hover-${name
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, "-")
-                .replace(/-$/, "")}`,
-        );
+        const trend = (await row.getAttribute("data-trend")) as keyof typeof TREND_COLOR;
+        await expect(close).toHaveCSS("color", TREND_COLOR[trend]);
     }
+    await shoot(page, "4-hover-position");
 });
 
 test("closing a position removes it", async ({ page, isMobile }) => {
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    const [kept, sold] = await openWallet(page, { positions: 2 });
     await settle(page);
 
-    const row = position(page, "Short ETH");
-    if (isMobile) await row.tap();
-    else await row.hover();
-    await row.getByRole("button", { name: "Close Short ETH 5x" }).click();
+    if (isMobile) await position(page, sold!).tap();
+    else await position(page, sold!).hover();
+    await closeButton(page, sold!).click();
 
-    await expect(position(page, "Short ETH")).toHaveCount(0);
-    await expect(sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem")).toHaveCount(
-        POSITIONS - 1,
-    );
+    await expect(position(page, sold!)).toHaveCount(0);
+    await expect(position(page, kept!)).toHaveCount(1);
+    await expect(rows(page)).toHaveCount(1);
     await shoot(page, "5-after-close");
 });
 
 test("the close button is reachable by keyboard", async ({ page, isMobile }) => {
     test.skip(isMobile, "keyboard flow is a desktop concern");
-    await connect(page);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true", { timeout: 10_000 });
+    const [only] = await openWallet(page, { positions: 1 });
     // Privy hands focus back to the dock button just after its modal closes, so wait for that first.
     await expect(dock(page)).toBeFocused();
 
-    // The first position's close button follows the deposit button in tab order.
-    const close = position(page, "Long BTC").getByRole("button", { name: "Close Long BTC 10x" });
+    // The position's close button follows the deposit button in tab order.
+    const close = closeButton(page, only!);
     await depositButton(page).focus();
     await page.keyboard.press("Tab");
     await expect(close).toBeFocused();
@@ -664,7 +661,13 @@ test("the close button is reachable by keyboard", async ({ page, isMobile }) => 
         .poll(() => close.evaluate((el) => el.parentElement!.getBoundingClientRect().width))
         .toBeGreaterThan(50);
     await page.keyboard.press("Enter");
-    await expect(position(page, "Long BTC")).toHaveCount(0);
+    await expect(position(page, only!)).toHaveCount(0);
+});
+
+test("a fresh account has no open positions", async ({ page }) => {
+    await openWallet(page);
+    await expect(rows(page)).toHaveCount(0);
+    await expect(sidebar(page).getByText("No open positions")).toBeVisible();
 });
 
 test("disconnecting signs out and folds the sidebar away", async ({ page }) => {
@@ -678,7 +681,7 @@ test("disconnecting signs out and folds the sidebar away", async ({ page }) => {
 
 test("on touch, taps stand in for hover", async ({ page, isMobile }) => {
     test.skip(!isMobile, "touch only");
-    await openWallet(page, { history: true });
+    const [only] = await openWallet(page, { history: true, positions: 1 });
     await settle(page);
 
     await sidebar(page)
@@ -691,12 +694,10 @@ test("on touch, taps stand in for hover", async ({ page, isMobile }) => {
         .tap();
     await expect(sidebar(page).getByRole("list", { name: "Deposits" })).toHaveCount(0);
 
-    await position(page, "Long BTC").tap();
-    await expect(position(page, "Long BTC").getByRole("button", { name: "Close Long BTC 10x" })).toHaveCSS(
-        "color",
-        GAIN,
-    );
-    await shoot(page, "4-tap-btc");
+    await position(page, only!).tap();
+    const trend = (await position(page, only!).getAttribute("data-trend")) as keyof typeof TREND_COLOR;
+    await expect(closeButton(page, only!)).toHaveCSS("color", TREND_COLOR[trend]);
+    await shoot(page, "4-tap-position");
 });
 
 test("an EVM-first user connects a Solana wallet from the sidebar", async ({ page }) => {
