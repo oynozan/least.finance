@@ -35,7 +35,8 @@ export type LifiQuote = {
     approvalAddress: string | null;
     skipApproval: boolean;
     etaSeconds: number;
-    fees: { name: string; amountUSD: number; included: boolean }[];
+    /** `amount` is the fee in the smallest units of the token at `token`; both are empty when LI.FI sent none. */
+    fees: { name: string; amountUSD: number; included: boolean; amount: string; token: string }[];
     gasUSD: number;
     tx: EvmTxRequest | SolanaTxRequest;
 };
@@ -105,7 +106,13 @@ const rawQuote = z.object({
         executionDuration: z.number().optional(),
         feeCosts: z
             .array(
-                z.object({ name: z.string().optional(), amountUSD: usd.optional(), included: z.boolean().optional() }),
+                z.object({
+                    name: z.string().optional(),
+                    amount: amount.optional(),
+                    amountUSD: usd.optional(),
+                    included: z.boolean().optional(),
+                    token: z.object({ address: z.string() }).optional(),
+                }),
             )
             .optional(),
         gasCosts: z.array(z.object({ amountUSD: usd.optional() })).optional(),
@@ -304,6 +311,8 @@ export function createLifi(options: {
                     name: fee.name ?? "Fee",
                     amountUSD: fee.amountUSD ?? 0,
                     included: fee.included ?? false,
+                    amount: fee.amount ?? "0",
+                    token: fee.token?.address ?? "",
                 })),
                 gasUSD: (estimate.gasCosts ?? []).reduce((sum, gas) => sum + (gas.amountUSD ?? 0), 0),
                 tx,

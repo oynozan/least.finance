@@ -208,6 +208,62 @@ test("Arc USDC's 18-decimal value is compared in 6 decimals", async () => {
     refuses({ ...quote, tx: { ...tx, value: String(50_000_000n * 10n ** 13n) } }, want);
 });
 
+const feeOf = (amount: string, patch: Partial<LifiQuote["fees"][number]> = {}): LifiQuote["fees"][number] => ({
+    name: "Bridge fee",
+    amountUSD: 1,
+    included: false,
+    amount,
+    token: NATIVE_EVM,
+    ...patch,
+});
+const withValue = (quote: LifiQuote, value: string, fees: LifiQuote["fees"]): LifiQuote => ({
+    ...quote,
+    fees,
+    tx: { ...evmTx(quote), value },
+});
+
+test("a token input may carry the native fee a bridge charges on top, and not a wei more", async () => {
+    const { quote, want } = await evm();
+    const fees = [feeOf("500000"), feeOf("100", { included: true }), feeOf("7", { token: want.from.address })];
+
+    expect(() => checkQuote(withValue(quote, "500000", fees), want)).not.toThrow();
+    refuses(withValue(quote, "500001", fees), want);
+    // A fee that is included, or paid in a token, adds nothing
+    refuses(withValue(quote, "1", [feeOf("100", { included: true })]), want);
+    refuses(withValue(quote, "1", [feeOf("100", { token: want.from.address })]), want);
+});
+
+test("a native input may carry its amount plus the native fee", async () => {
+    const { quote, want } = await quoted({
+        from: ["ETH", "base"],
+        to: ["USDC", "base"],
+        units: 10_000_000_000_000_000n,
+    });
+    const fees = [feeOf("500"), feeOf("20")];
+
+    expect(() => checkQuote(withValue(quote, "10000000000000520", fees), want)).not.toThrow();
+    refuses(withValue(quote, "10000000000000521", fees), want);
+});
+
+test("Arc USDC never carries the input as value and as an approval", async () => {
+    const { quote, want } = await quoted({ from: ["USDC", "arc"], to: ["ETH", "arc"], units: 50_000_000n });
+    const amount = "50000000000000000000";
+
+    // The value carries the input, so an approval for it would charge it twice
+    refuses({ ...withValue(quote, amount, []), skipApproval: false }, want);
+    expect(() => checkQuote({ ...withValue(quote, amount, []), skipApproval: true }, want)).not.toThrow();
+    // With no value the input travels by approval
+    expect(() => checkQuote({ ...withValue(quote, "0", []), skipApproval: false }, want)).not.toThrow();
+    // Under the input, only a native fee fits beside the approval
+    refuses({ ...withValue(quote, "1", []), skipApproval: false }, want);
+    expect(() => checkQuote({ ...withValue(quote, "1", [feeOf("1")]), skipApproval: false }, want)).not.toThrow();
+    // On top of the input, the fee fits and nothing more
+    expect(() =>
+        checkQuote({ ...withValue(quote, "50000000000000000009", [feeOf("9")]), skipApproval: true }, want),
+    ).not.toThrow();
+    refuses({ ...withValue(quote, "50000000000000000010", [feeOf("9")]), skipApproval: true }, want);
+});
+
 test("a Solana quote paid by the wallet passes", async () => {
     const { quote, want } = await quoted({
         from: ["SOL", "solana"],

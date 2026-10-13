@@ -137,7 +137,7 @@ test("a quote parses into LifiQuote", async () => {
         approvalAddress: BASE_DIAMOND,
         skipApproval: false,
         etaSeconds: expect.any(Number),
-        fees: [{ name: expect.any(String), amountUSD: 0.125, included: true }],
+        fees: [{ name: expect.any(String), amountUSD: 0.125, included: true, amount: "0", token: "" }],
         gasUSD: expect.any(Number),
         tx: {
             kind: "evm",

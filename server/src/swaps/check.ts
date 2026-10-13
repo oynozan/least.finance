@@ -1,5 +1,5 @@
 import { AppError } from "../errors.ts";
-import { NETWORKS, type CoinEntry, type NetworkId } from "./coins.ts";
+import { COINS, NATIVE_EVM, NETWORKS, type CoinEntry, type NetworkId } from "./coins.ts";
 import type { LifiQuote } from "./lifi.ts";
 import { solanaFeePayer } from "./solana-tx.ts";
 
@@ -55,10 +55,34 @@ function brokenRule(quote: LifiQuote, want: QuoteWant): string | null {
     if (!same(want.fromNetwork, tx.from, want.fromAddress)) return "transaction sender";
     if (want.diamond === null || !same(want.fromNetwork, tx.to, want.diamond)) return "diamond";
     if (!/^\d+$/.test(tx.value)) return "value";
-    // Only a native coin travels as the value; only native gas coins in the table have a reserve
-    const scale = 10n ** BigInt(NATIVE_DECIMALS - want.from.decimals);
-    const allowed = want.from.reserve === undefined ? 0n : want.fromUnits * scale;
-    return BigInt(tx.value) <= allowed ? null : "value";
+    return valueRule(quote, tx.value, want);
+}
+
+// The native coin a bridge charges on top of the amount, which the transaction may carry as value
+function nativeExtra(quote: LifiQuote, network: NetworkId): bigint {
+    const coin = COINS.flatMap((candidate) => candidate.entries).find(
+        (entry) => entry.network === network && entry.reserve !== undefined,
+    );
+    return quote.fees
+        .filter((fee) => !fee.included && /^\d+$/.test(fee.amount))
+        .filter((fee) => same(network, fee.token, NATIVE_EVM) || (coin && same(network, fee.token, coin.address)))
+        .reduce((sum, fee) => sum + BigInt(fee.amount), 0n);
+}
+
+// What the transaction may move as value: a token input only the native fee, a native input also its amount
+function valueRule(quote: LifiQuote, value: string, want: QuoteWant): string | null {
+    const sent = BigInt(value);
+    const extra = nativeExtra(quote, want.fromNetwork);
+    if (want.from.address === NATIVE_EVM) {
+        const scale = 10n ** BigInt(NATIVE_DECIMALS - want.from.decimals);
+        return sent <= want.fromUnits * scale + extra ? null : "value";
+    }
+    if (want.from.reserve !== undefined) {
+        // Arc's USDC is both a token and the gas coin: its value (18 decimals) carries the input or the approval does, never both
+        const input = want.fromUnits * 10n ** BigInt(NATIVE_DECIMALS - want.from.decimals);
+        if (sent >= input) return quote.skipApproval && sent <= input + extra ? null : "value";
+    }
+    return sent <= extra ? null : "value";
 }
 
 /** Throws "unavailable" unless the transaction LI.FI built is the swap the person asked for, from their wallet to theirs. */

@@ -20,6 +20,7 @@ const address = (symbol: string, network: NetworkId) =>
         .address as Address;
 const USDC = address("USDC", "ethereum");
 const USDT = address("USDT", "ethereum");
+const NATIVE = "0x0000000000000000000000000000000000000000";
 
 let stack: Stack;
 beforeAll(async () => {
@@ -261,6 +262,22 @@ describe("opening orders", () => {
                 value: parseUnits("0.1", 18).toString(),
             },
         ]);
+    });
+
+    test("a bridge's native fee rides in the swap's value, and no more than the fee", async () => {
+        const user = await holder();
+        const { socket } = await bind(user);
+        const req = request(user);
+        const fee = (amount: string) => ({
+            feeCosts: [{ name: "Bridge fee", amountUSD: "1", included: false, amount, token: { address: NATIVE } }],
+        });
+
+        stack.lifi.nextQuote({ transactionRequest: { value: "0x3e8" }, estimate: fee("1000") }, user.wallet);
+        const { txs } = await opened(socket, req);
+        expect(txs.at(-1)).toMatchObject({ purpose: "swap", value: "1000" });
+
+        stack.lifi.nextQuote({ transactionRequest: { value: "0x3e9" }, estimate: fee("1000") }, user.wallet);
+        expect(await order(socket, req)).toMatchObject({ ok: false, error: { code: "unavailable" } });
     });
 
     test("an amount over the wallet's balance is cut to what it holds", async () => {
