@@ -124,7 +124,7 @@ deploy/deploy.sh root@HOST
 
 The script refuses to deploy while the working tree has uncommitted changes (outside `.superpowers/` and `.impeccable/`) and lists the files that block it; `--allow-dirty` deploys anyway and marks the revision `-dirty`. It copies the repo to `/opt/least-finance` on the VPS (leaving out `.git`, `node_modules`, `.next`, `.env*`, test output, `.superpowers`, `.claude` and `.impeccable`), backs up a running stack (`--skip-backup` skips this; a failed backup stops the deploy), runs `docker compose --env-file /etc/least-finance/server.env up -d --build` there, then waits up to five minutes for `https://api.least.finance/ready` to answer 200. It then records the commit in `/opt/least-finance/REVISION` (the one it replaces goes to `REVISION.previous`) and prints both. The first build takes several minutes. If it never gets there it prints the logs of every service that is not healthy and exits non-zero. The SSH user needs to read the env file and use Docker, which in practice means `root`, so pass `root@HOST`, not a bare address.
 
-The stack is not running yet, so take the first backup by hand and check the file exists. On the VPS:
+Nothing was running before this first deploy, so it skipped the pre-deploy backup. Take the first backup by hand now and check the file exists. On the VPS:
 
 ```bash
 cd /opt/least-finance/deploy
