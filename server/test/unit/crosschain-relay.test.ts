@@ -3,7 +3,7 @@ import { zeroAddress } from "viem";
 import { expect, test } from "vitest";
 import { coinByKey } from "../../src/crosschain/catalog.ts";
 import { createRelay } from "../../src/crosschain/providers/relay.ts";
-import type { QuoteRequest } from "../../src/crosschain/providers/types.ts";
+import type { QuoteRequest, SourceTx } from "../../src/crosschain/providers/types.ts";
 import { checkQuote } from "../../src/crosschain/quotes.ts";
 
 const ARC_USDC_VIEW = "0x3600000000000000000000000000000000000000";
@@ -15,6 +15,20 @@ const DEPOSIT_ADDRESS = "0x00000000000000000000000000000000000de905";
 
 const ETH = coinByKey("ethereum:ETH");
 const BNB_USDT = coinByKey("bnb:USDT");
+const SOL = coinByKey("solana:SOL");
+const SOL_USDC = coinByKey("solana:USDC");
+
+const SOLANA_WALLET = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+const DEPOSITORY = "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2";
+const SOLANA_USDC_REQUEST: QuoteRequest = {
+    coin: SOL_USDC,
+    amount: 10_000_000n,
+    sender: SOLANA_WALLET,
+    recipient: DEPOSIT_ADDRESS,
+    refundTo: SOLANA_WALLET,
+};
+const SOL_REQUEST: QuoteRequest = { ...SOLANA_USDC_REQUEST, coin: SOL, amount: 100_000_000n };
+const ALLOWED = [DEPOSITORY, "11111111111111111111111111111111", "ComputeBudget111111111111111111111111111111"];
 
 const ETH_REQUEST: QuoteRequest = {
     coin: ETH,
@@ -24,6 +38,13 @@ const ETH_REQUEST: QuoteRequest = {
     refundTo: WALLET,
 };
 const USDT_REQUEST: QuoteRequest = { ...ETH_REQUEST, coin: BNB_USDT, amount: 10n * 10n ** 18n };
+
+// The quote's transactions, each narrowed to an EVM one
+const evmTxs = (quote: { txs: SourceTx[] }) =>
+    quote.txs.map((tx) => {
+        if (tx.kind !== "evm") throw new Error("expected an EVM transaction");
+        return tx;
+    });
 
 const fixture = (name: string) =>
     JSON.parse(readFileSync(new URL(`../fixtures/relay/${name}.json`, import.meta.url), "utf8"));
@@ -97,8 +118,8 @@ test("the quote is in Arc wei, with transactions in signing order", async () => 
     expect(quote.usdcOut % 10n ** 12n).toBe(0n);
     expect(quote.etaSeconds).toBeGreaterThan(0);
 
-    expect(quote.txs.map((tx) => tx.chainId)).toEqual([56, 56]);
-    const [approval, deposit] = quote.txs;
+    expect(evmTxs(quote).map((tx) => tx.chainId)).toEqual([56, 56]);
+    const [approval, deposit] = evmTxs(quote);
     expect(approval!.to.toLowerCase()).toBe(BNB_USDT.token!.toLowerCase());
     expect(approval!.data.startsWith("0x095ea7b3")).toBe(true);
     expect(deposit!.to.toLowerCase()).not.toBe(BNB_USDT.token!.toLowerCase());
@@ -125,12 +146,12 @@ test("the quote says what Relay will do, so the checks can hold it to the reques
         refundTo: WALLET,
         destinationToken: ARC_USDC_VIEW,
     });
-    expect(checkQuote(quote, USDT_REQUEST)).toBe(true);
+    expect(checkQuote(quote, USDT_REQUEST, [])).toBe(true);
 
     const elsewhere = fixture("quote-bnb-usdt");
     elsewhere.details.recipient = "0x0000000000000000000000000000000000000bad";
     const tampered = await createRelay({ fetch: serving(elsewhere).fetch }).quote(USDT_REQUEST, signal());
-    expect(checkQuote(tampered, USDT_REQUEST)).toBe(false);
+    expect(checkQuote(tampered, USDT_REQUEST, [])).toBe(false);
 });
 
 test("a quote Relay can't give, or can't be signed as transactions, is an error", async () => {
@@ -143,14 +164,14 @@ test("a quote Relay can't give, or can't be signed as transactions, is an error"
     await expect(createRelay({ fetch: serving(signing).fetch }).quote(ETH_REQUEST, signal())).rejects.toThrow();
 });
 
-test("it supports the Ethereum and BNB Chain coins only", () => {
+test("it supports the Ethereum, BNB Chain and Solana coins, not Arc", () => {
     const relay = createRelay({});
 
     expect(relay.name).toBe("relay");
     expect(relay.supports(coinByKey("ethereum:USDC"))).toBe(true);
     expect(relay.supports(coinByKey("bnb:BNB"))).toBe(true);
     expect(relay.supports(coinByKey("arc:USDC"))).toBe(false);
-    expect(relay.supports(coinByKey("solana:SOL"))).toBe(false);
+    expect(relay.supports(coinByKey("solana:SOL"))).toBe(true);
 });
 
 test("each status maps to a stage", async () => {
@@ -181,4 +202,83 @@ test("a status Relay doesn't know, or can't answer, is an error rather than a gu
 
     await expect(ask({ status: "unknown" })).rejects.toThrow();
     await expect(ask({ message: "down" }, 503)).rejects.toThrow(/503/);
+});
+
+test("a Solana USDC request uses chain 792703809, the USDC mint, includeComputeUnitLimit true and the wallet as user and refundTo", async () => {
+    const { fetch, calls } = serving(fixture("quote-solana-usdc"));
+
+    await createRelay({ fetch }).quote(SOLANA_USDC_REQUEST, signal());
+
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+        user: SOLANA_WALLET,
+        recipient: DEPOSIT_ADDRESS,
+        refundTo: SOLANA_WALLET,
+        originChainId: 792703809,
+        destinationChainId: 5042,
+        originCurrency: SOL_USDC.mint,
+        destinationCurrency: ARC_USDC_VIEW,
+        amount: "10000000",
+        tradeType: "EXACT_INPUT",
+        includeComputeUnitLimit: true,
+    });
+});
+
+test("a SOL request uses 11111111111111111111111111111111 as originCurrency", async () => {
+    const { fetch, calls } = serving(fixture("quote-solana-sol"));
+
+    const quote = await createRelay({ fetch }).quote(SOL_REQUEST, signal());
+
+    expect(JSON.parse(String(calls[0]!.init.body)).originCurrency).toBe("11111111111111111111111111111111");
+    expect(quote.coin).toBe("solana:SOL");
+    expect(checkQuote(quote, SOL_REQUEST, ALLOWED)).toBe(true);
+});
+
+test("the Solana fixture parses into one kind: solana transaction with its instructions and lookup tables", async () => {
+    const { fetch } = serving(fixture("quote-solana-usdc"));
+
+    const quote = await createRelay({ fetch }).quote(SOLANA_USDC_REQUEST, signal());
+
+    expect(quote.refundTo).toBe(SOLANA_WALLET);
+    expect(quote.coin).toBe("solana:USDC");
+    expect(quote.usdcOut).toBe(9_980_000n * 10n ** 12n);
+    expect(quote.txs).toHaveLength(1);
+    const [tx] = quote.txs;
+    expect(tx).toMatchObject({ kind: "solana", lookupTables: ["4sKLJ1Qoudh8PJyqBeuKocYdsZvxTcRShUt9aKqwhgvC"] });
+    if (tx?.kind !== "solana") throw new Error("not a Solana transaction");
+    expect(tx.instructions.map((ix) => ix.programId)).toEqual([
+        "ComputeBudget111111111111111111111111111111",
+        DEPOSITORY,
+    ]);
+    expect(tx.instructions[1]).toMatchObject({
+        keys: [{ pubkey: SOLANA_WALLET, isSigner: true, isWritable: true }, expect.anything()],
+        data: "0xa1b2c3d40000000000000000",
+    });
+    expect(checkQuote(quote, SOLANA_USDC_REQUEST, ALLOWED)).toBe(true);
+});
+
+test("supports accepts solana:SOL and solana:USDC", () => {
+    const relay = createRelay({});
+
+    expect(relay.supports(SOL)).toBe(true);
+    expect(relay.supports(SOL_USDC)).toBe(true);
+});
+
+test("SOLANA_TX_TOO_LARGE becomes unavailable with the 'Try a smaller route' message", async () => {
+    const body = { message: "Transaction too large", errorCode: "SOLANA_TX_TOO_LARGE" };
+
+    await expect(
+        createRelay({ fetch: serving(body, 400).fetch }).quote(SOLANA_USDC_REQUEST, signal()),
+    ).rejects.toMatchObject({
+        code: "unavailable",
+        message: "This deposit can't be sent from Solana right now. Try a smaller route.",
+    });
+});
+
+test("status needs only the requestId for a Solana order", async () => {
+    const { fetch, calls } = serving({ status: "pending" });
+
+    const status = await createRelay({ fetch }).status({ ref: "0xab" }, null, SOL_USDC);
+
+    expect(status).toEqual({ stage: "pending" });
+    expect(calls[0]!.url.search).toBe("?requestId=0xab");
 });

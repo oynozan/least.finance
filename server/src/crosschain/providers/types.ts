@@ -5,14 +5,23 @@ export type QuoteRequest = {
     coin: Coin;
     /** In the coin's smallest unit. */
     amount: bigint;
-    sender: Address;
+    /** The wallet's address on the coin's chain: 0x… on EVM, base58 on Solana. */
+    sender: string;
     /** Where the USDC lands on Arc: the account's deposit address. */
     recipient: Address;
     /** Where a failed bridge pays back on the source chain: the account's wallet. */
-    refundTo: Address;
+    refundTo: string;
 };
 
-export type SourceTx = { chainId: number; to: Address; data: Hex; value: bigint };
+export type SolanaInstruction = {
+    programId: string;
+    keys: { pubkey: string; isSigner: boolean; isWritable: boolean }[];
+    data: Hex;
+};
+
+export type SourceTx =
+    | { kind: "evm"; chainId: number; to: Address; data: Hex; value: bigint }
+    | { kind: "solana"; instructions: SolanaInstruction[]; lookupTables: string[] };
 
 export type Quote = {
     provider: string;
@@ -26,7 +35,7 @@ export type Quote = {
     etaSeconds: number;
     destinationToken: Address;
     recipient: Address;
-    refundTo: Address;
+    refundTo: string;
     /** In signing order: an approval first. */
     txs: SourceTx[];
 };

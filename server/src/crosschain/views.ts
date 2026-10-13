@@ -18,9 +18,7 @@ export const orderView = (order: DepositOrderDoc): DepositOrderView => ({
     updatedAt: order.updatedAt.toISOString(),
 });
 
-export const sourceTxView = (tx: SourceTx): SourceTxView => ({
-    chainId: tx.chainId,
-    to: getAddress(tx.to) as Hex,
-    data: tx.data,
-    value: `0x${tx.value.toString(16)}`,
-});
+export function sourceTxView(tx: SourceTx): SourceTxView {
+    if (tx.kind !== "evm") throw new Error("A Solana transaction has no EVM view");
+    return { chainId: tx.chainId, to: getAddress(tx.to) as Hex, data: tx.data, value: `0x${tx.value.toString(16)}` };
+}

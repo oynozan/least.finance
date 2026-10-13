@@ -80,6 +80,7 @@ export function createAcross(
             }
 
             const toSourceTx = ({ chainId, to, data, value }: z.output<typeof transaction>): SourceTx => ({
+                kind: "evm",
                 chainId,
                 to,
                 data,

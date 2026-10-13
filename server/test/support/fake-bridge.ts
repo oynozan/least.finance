@@ -16,6 +16,9 @@ import type {
 /** Where the fake bridge's source transactions go: an address with no code, so they succeed. */
 export const FAKE_BRIDGE_ADDRESS = "0x000000000000000000000000000000000000bEEF";
 
+/** The depository program the fake bridge's Solana transactions go to, as on the server's allowlist. */
+export const FAKE_SOLANA_PROGRAM = "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2";
+
 const ETA_SECONDS = 2;
 /** Rates are cut to millionths of a dollar, so a bigint can carry them. */
 const RATE_SCALE = 1_000_000;
@@ -53,26 +56,44 @@ export class FakeBridge implements BridgeProvider {
     }
 
     supports(coin: Coin): boolean {
-        return (coin.chain === "ethereum" || coin.chain === "bnb") && this.#rates[coin.symbol] !== undefined;
+        return (
+            (coin.chain === "ethereum" || coin.chain === "bnb" || coin.chain === "solana") &&
+            this.#rates[coin.symbol] !== undefined
+        );
     }
 
     async quote(request: QuoteRequest, _signal?: AbortSignal): Promise<Quote> {
         const { coin, amount } = request;
         const rate = this.#rates[coin.symbol];
-        if (coin.chainId === null || coin.chain === "arc" || rate === undefined)
-            throw new Error(`The fake bridge has no route for ${coin.key}`);
+        if (coin.chain === "arc" || rate === undefined) throw new Error(`The fake bridge has no route for ${coin.key}`);
 
         const ref: Hex = `0x${randomBytes(16).toString("hex")}`;
-        const deposit: SourceTx = {
-            chainId: coin.chainId,
-            to: FAKE_BRIDGE_ADDRESS,
-            data: ref,
-            value: coin.token ? 0n : amount,
-        };
+        const chainId = coin.chainId;
+        const solana = coin.chain === "solana";
+        const deposit: SourceTx = solana
+            ? {
+                  kind: "solana",
+                  instructions: [
+                      {
+                          programId: FAKE_SOLANA_PROGRAM,
+                          keys: [{ pubkey: request.sender, isSigner: true, isWritable: true }],
+                          data: ref,
+                      },
+                  ],
+                  lookupTables: [],
+              }
+            : {
+                  kind: "evm",
+                  chainId: chainId!,
+                  to: FAKE_BRIDGE_ADDRESS,
+                  data: ref,
+                  value: coin.token ? 0n : amount,
+              };
         const approval: SourceTx[] = coin.token
             ? [
                   {
-                      chainId: coin.chainId,
+                      kind: "evm",
+                      chainId: chainId!,
                       to: coin.token,
                       data: encodeFunctionData({
                           abi: erc20Abi,

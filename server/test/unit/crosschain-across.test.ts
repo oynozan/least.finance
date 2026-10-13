@@ -3,7 +3,7 @@ import { zeroAddress } from "viem";
 import { expect, test } from "vitest";
 import { coinByKey } from "../../src/crosschain/catalog.ts";
 import { createAcross } from "../../src/crosschain/providers/across.ts";
-import type { QuoteRequest } from "../../src/crosschain/providers/types.ts";
+import type { QuoteRequest, SourceTx } from "../../src/crosschain/providers/types.ts";
 import { checkQuote } from "../../src/crosschain/quotes.ts";
 
 const ARC_USDC_VIEW = "0x3600000000000000000000000000000000000000";
@@ -24,6 +24,13 @@ const ETH_REQUEST: QuoteRequest = {
     refundTo: WALLET,
 };
 const USDT_REQUEST: QuoteRequest = { ...ETH_REQUEST, coin: BNB_USDT, amount: 10n * 10n ** 18n };
+
+// The quote's transactions, each narrowed to an EVM one
+const evmTxs = (quote: { txs: SourceTx[] }) =>
+    quote.txs.map((tx) => {
+        if (tx.kind !== "evm") throw new Error("expected an EVM transaction");
+        return tx;
+    });
 
 const fixture = (name: string) =>
     JSON.parse(readFileSync(new URL(`../fixtures/across/${name}.json`, import.meta.url), "utf8"));
@@ -113,8 +120,8 @@ test("the quote is in Arc wei, with transactions in signing order", async () => 
     expect(quote.usdcOut % 10n ** 12n).toBe(0n);
     expect(quote.etaSeconds).toBeGreaterThan(0);
 
-    expect(quote.txs.map((tx) => tx.chainId)).toEqual([56, 56]);
-    const [approval, swap] = quote.txs;
+    expect(evmTxs(quote).map((tx) => tx.chainId)).toEqual([56, 56]);
+    const [approval, swap] = evmTxs(quote);
     expect(approval!.to.toLowerCase()).toBe(BNB_USDT.token!.toLowerCase());
     expect(approval!.data.startsWith("0x095ea7b3")).toBe(true);
     expect(swap!.data).toBe(fixture("quote-bnb-usdt").swapTx.data);
@@ -141,12 +148,12 @@ test("the quote says what Across will do, so the checks can hold it to the reque
         refundTo: WALLET,
         destinationToken: ARC_USDC_VIEW,
     });
-    expect(checkQuote(quote, USDT_REQUEST)).toBe(true);
+    expect(checkQuote(quote, USDT_REQUEST, [])).toBe(true);
 
     const other = fixture("quote-bnb-usdt");
     other.inputAmount = "1";
     const tampered = await createAcross({ fetch: serving(other).fetch }).quote(USDT_REQUEST, signal());
-    expect(checkQuote(tampered, USDT_REQUEST)).toBe(false);
+    expect(checkQuote(tampered, USDT_REQUEST, [])).toBe(false);
 });
 
 test("a quote whose transaction doesn't carry the account's address as the recipient is an error", async () => {

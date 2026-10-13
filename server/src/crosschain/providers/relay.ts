@@ -1,11 +1,14 @@
 import { isAddress, isHex, zeroAddress, type Address, type Hex } from "viem";
 import { z } from "zod";
 import { ARC_CHAIN_ID } from "../../chain/arc.ts";
+import { AppError } from "../../errors.ts";
 import { COINS, toArcWei, type Coin } from "../catalog.ts";
 import type { BridgeProvider, BridgeStage, BridgeStatus, Quote, QuoteRequest, SourceTx } from "./types.ts";
 
 const ARC_USDC_ERC20 = "0x3600000000000000000000000000000000000000";
 const STATUS_TIMEOUT_MS = 10_000;
+const SOLANA_CHAIN_ID = 792703809;
+const SYSTEM_PROGRAM = "11111111111111111111111111111111";
 
 const address = z.custom<Address>((value) => typeof value === "string" && isAddress(value, { strict: false }));
 const hex = z.custom<Hex>((value) => typeof value === "string" && isHex(value));
@@ -17,7 +20,21 @@ const transactionStep = z.object({
     requestId: z.string(),
     items: z.array(
         z.object({
-            data: z.object({ chainId: z.number().int(), to: address, data: hex, value: units.optional() }),
+            data: z.union([
+                z.object({ chainId: z.number().int(), to: address, data: hex, value: units.optional() }),
+                z.object({
+                    instructions: z.array(
+                        z.object({
+                            programId: z.string(),
+                            keys: z.array(
+                                z.object({ pubkey: z.string(), isSigner: z.boolean(), isWritable: z.boolean() }),
+                            ),
+                            data: z.string().regex(/^(0x)?([0-9a-fA-F]{2})*$/),
+                        }),
+                    ),
+                    addressLookupTableAddresses: z.array(z.string()).default([]),
+                }),
+            ]),
         }),
     ),
 });
@@ -27,7 +44,7 @@ const quoteResponse = z.object({
     details: z.object({
         recipient: address,
         timeEstimate: z.number(),
-        currencyIn: z.object({ currency: z.object({ chainId: z.number().int(), address }), amount: units }),
+        currencyIn: z.object({ currency: z.object({ chainId: z.number().int(), address: z.string() }), amount: units }),
         currencyOut: z.object({ currency: z.object({ address, decimals: z.number().int() }), amount: units }),
     }),
 });
@@ -48,6 +65,8 @@ const STAGES = new Map<string, BridgeStage>([
 
 const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
+const errorBody = z.object({ errorCode: z.string().optional() });
+
 export function createRelay(options: { apiKey?: string; fetch?: typeof fetch; baseUrl?: string } = {}): BridgeProvider {
     const { apiKey, fetch: call = fetch, baseUrl = "https://api.relay.link" } = options;
     const keyHeader: Record<string, string> = apiKey ? { "x-api-key": apiKey } : {};
@@ -55,10 +74,11 @@ export function createRelay(options: { apiKey?: string; fetch?: typeof fetch; ba
     return {
         name: "relay",
 
-        supports: (coin: Coin) => coin.chain === "ethereum" || coin.chain === "bnb",
+        supports: (coin: Coin) => coin.chain === "ethereum" || coin.chain === "bnb" || coin.chain === "solana",
 
         async quote(request: QuoteRequest, signal: AbortSignal): Promise<Quote> {
             const { coin, amount, sender, recipient, refundTo } = request;
+            const solana = coin.chain === "solana";
             const response = await call(`${baseUrl}/quote/v2`, {
                 method: "POST",
                 headers: { "content-type": "application/json", ...keyHeader },
@@ -66,33 +86,51 @@ export function createRelay(options: { apiKey?: string; fetch?: typeof fetch; ba
                     user: sender,
                     recipient,
                     refundTo,
-                    originChainId: coin.chainId,
+                    originChainId: solana ? SOLANA_CHAIN_ID : coin.chainId,
                     destinationChainId: ARC_CHAIN_ID,
-                    originCurrency: coin.token ?? zeroAddress,
+                    originCurrency: solana ? (coin.mint ?? SYSTEM_PROGRAM) : (coin.token ?? zeroAddress),
                     destinationCurrency: ARC_USDC_ERC20,
                     amount: String(amount),
                     tradeType: "EXACT_INPUT",
+                    ...(solana ? { includeComputeUnitLimit: true } : {}),
                 }),
                 signal,
             });
-            if (!response.ok) throw new Error(`Relay answered ${response.status} to a quote`);
+            if (!response.ok) {
+                const failure = errorBody.safeParse(await response.json().catch(() => null));
+                if (failure.success && failure.data.errorCode === "SOLANA_TX_TOO_LARGE") {
+                    throw new AppError(
+                        "unavailable",
+                        "This deposit can't be sent from Solana right now. Try a smaller route.",
+                    );
+                }
+                throw new Error(`Relay answered ${response.status} to a quote`);
+            }
             const { steps, details } = quoteResponse.parse(await response.json());
 
             const { currencyIn, currencyOut } = details;
-            const quoted = COINS.find(
-                (candidate) =>
-                    candidate.chainId === currencyIn.currency.chainId &&
-                    sameAddress(candidate.token ?? zeroAddress, currencyIn.currency.address),
+            const quoted = COINS.find((candidate) =>
+                candidate.chain === "solana"
+                    ? currencyIn.currency.chainId === SOLANA_CHAIN_ID &&
+                      (candidate.mint ?? SYSTEM_PROGRAM) === currencyIn.currency.address
+                    : candidate.chainId === currencyIn.currency.chainId &&
+                      sameAddress(candidate.token ?? zeroAddress, currencyIn.currency.address),
             );
             if (!quoted) throw new Error(`Relay quoted a coin the app doesn't carry: ${currencyIn.currency.address}`);
 
             const txs: SourceTx[] = steps.flatMap((step) =>
-                step.items.map(({ data }) => ({
-                    chainId: data.chainId,
-                    to: data.to,
-                    data: data.data,
-                    value: data.value ?? 0n,
-                })),
+                step.items.map(({ data }): SourceTx =>
+                    "instructions" in data
+                        ? {
+                              kind: "solana",
+                              instructions: data.instructions.map((ix) => ({
+                                  ...ix,
+                                  data: (ix.data.startsWith("0x") ? ix.data : `0x${ix.data}`) as Hex,
+                              })),
+                              lookupTables: data.addressLookupTableAddresses,
+                          }
+                        : { kind: "evm", chainId: data.chainId, to: data.to, data: data.data, value: data.value ?? 0n },
+                ),
             );
             return {
                 provider: "relay",

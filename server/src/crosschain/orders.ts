@@ -146,13 +146,17 @@ export class DepositOrders {
             throw new AppError("bad_request", "USDC on Arc goes straight to your deposit address.");
         }
         if (source.chain === "solana") throw new AppError("bad_request", "Deposits from Solana aren't open yet.");
-        const quote = await bestQuote(this.#deps.providers, {
-            coin: source,
-            amount: parseCoinAmount(source, amount),
-            sender: wallet,
-            recipient: getAddress(account.depositAddress),
-            refundTo: wallet,
-        });
+        const quote = await bestQuote(
+            this.#deps.providers,
+            {
+                coin: source,
+                amount: parseCoinAmount(source, amount),
+                sender: wallet,
+                recipient: getAddress(account.depositAddress),
+                refundTo: wallet,
+            },
+            { allowedPrograms: [] },
+        );
         return { quote, source };
     }
 }

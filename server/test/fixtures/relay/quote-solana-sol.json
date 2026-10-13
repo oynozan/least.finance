@@ -1,0 +1,71 @@
+{
+    "steps": [
+        {
+            "id": "deposit",
+            "action": "Confirm transaction in your wallet",
+            "description": "Depositing funds to the relayer to execute the swap for USDC",
+            "kind": "transaction",
+            "requestId": "0x6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+            "items": [
+                {
+                    "status": "incomplete",
+                    "data": {
+                        "instructions": [
+                            {
+                                "keys": [],
+                                "programId": "ComputeBudget111111111111111111111111111111",
+                                "data": "02c0270900"
+                            },
+                            {
+                                "keys": [
+                                    {
+                                        "pubkey": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+                                        "isSigner": true,
+                                        "isWritable": true
+                                    },
+                                    {
+                                        "pubkey": "DepositVault1111111111111111111111111111111",
+                                        "isSigner": false,
+                                        "isWritable": true
+                                    }
+                                ],
+                                "programId": "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2",
+                                "data": "e5f6a7b80000000000000000"
+                            }
+                        ],
+                        "addressLookupTableAddresses": [
+                            "4sKLJ1Qoudh8PJyqBeuKocYdsZvxTcRShUt9aKqwhgvC"
+                        ]
+                    },
+                    "check": {
+                        "endpoint": "/intents/status/v3?requestId=0x6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+                        "method": "GET"
+                    }
+                }
+            ],
+            "depositAddress": ""
+        }
+    ],
+    "details": {
+        "recipient": "0x00000000000000000000000000000000000de905",
+        "timeEstimate": 4,
+        "currencyIn": {
+            "currency": {
+                "chainId": 792703809,
+                "address": "11111111111111111111111111111111",
+                "symbol": "X",
+                "decimals": 6
+            },
+            "amount": "100000000"
+        },
+        "currencyOut": {
+            "currency": {
+                "chainId": 5042,
+                "address": "0x3600000000000000000000000000000000000000",
+                "symbol": "USDC",
+                "decimals": 6
+            },
+            "amount": "14500000"
+        }
+    }
+}
