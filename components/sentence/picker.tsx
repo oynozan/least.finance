@@ -83,6 +83,9 @@ const iconVariants: Variants = {
 
 const TONE = { gain: "text-gain", loss: "text-loss", neutral: "" } as const;
 
+/** Rows sit 10px inside the panel's 34px corners (dialog.tsx), so their corners follow it at 34 - 10. */
+const ROW_RADIUS = "rounded-[24px]";
+
 /** The skeleton's label widths, so its rows don't read as one block. */
 const SKELETON_WIDTHS = [72, 54, 66, 48, 60];
 
@@ -402,7 +405,7 @@ function Options({
                         <motion.span
                             aria-hidden="true"
                             data-highlight=""
-                            className={`pointer-events-none absolute inset-x-0 top-0 -z-10 bg-pill-hover ${wide ? "rounded-[26px]" : "rounded-full"}`}
+                            className={`pointer-events-none absolute inset-x-0 top-0 -z-10 bg-pill-hover ${ROW_RADIUS}`}
                             initial={{ opacity: 0, y: box.top, height: box.height }}
                             animate={{ opacity: 1, y: box.top, height: box.height }}
                             transition={{ ...panelSpring, opacity: { duration: 0.2, delay: 0.12 } }}
@@ -453,9 +456,7 @@ function Options({
                                                     .join(" ") || undefined
                                             }
                                             tabIndex={isActive ? 0 : -1}
-                                            className={`relative z-10 flex w-full cursor-pointer items-center gap-[0.45em] px-[18px] py-[0.32em] text-left font-medium tracking-[-0.02em] outline-2 -outline-offset-2 outline-transparent focus-visible:outline-solid aria-disabled:cursor-default ${
-                                                wide ? "rounded-[26px]" : "rounded-full"
-                                            }`}
+                                            className={`relative z-10 flex w-full cursor-pointer items-center gap-[0.45em] px-[18px] py-[0.32em] text-left font-medium tracking-[-0.02em] outline-2 -outline-offset-2 outline-transparent focus-visible:outline-solid aria-disabled:cursor-default ${ROW_RADIUS}`}
                                             variants={itemVariants}
                                             whileTap={choice.disabled ? undefined : { scale: 0.96 }}
                                             // Only a real pointer move picks a row: the panel springs in
@@ -533,7 +534,8 @@ function Options({
                                                     )}
                                                 </span>
                                             )}
-                                            {choice.value === shownSelected && (
+                                            {/* The check's room is kept on every row, so picking one never reflows its label. */}
+                                            {choice.value === shownSelected ? (
                                                 <motion.span
                                                     className="relative z-10 flex size-[0.9em] shrink-0"
                                                     initial={{ scale: 0, rotate: -45 }}
@@ -542,6 +544,8 @@ function Options({
                                                 >
                                                     <CheckIcon />
                                                 </motion.span>
+                                            ) : (
+                                                <span aria-hidden="true" className="size-[0.9em] shrink-0" />
                                             )}
                                         </motion.button>
                                     );

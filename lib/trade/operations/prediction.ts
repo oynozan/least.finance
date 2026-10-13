@@ -58,7 +58,7 @@ export const prediction = operation({
                 (marketOf(ctx, v.marketId)?.outcomes ?? []).map((o): Choice => ({
                     value: o.id,
                     label: o.label,
-                    detail: `${formatCents(o.price)}, ${pct(o.chance)}% chance`,
+                    detail: formatCents(o.price),
                     tone: o.tone,
                     icon: isYesNo(o)
                         ? { set: "outcome", id: o.label.toLowerCase(), tone: o.tone }
