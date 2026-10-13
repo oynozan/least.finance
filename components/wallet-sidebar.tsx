@@ -14,12 +14,13 @@ import {
     type Variants,
 } from "motion/react";
 import { sameWallet as sameAddress } from "@/lib/account/balances";
-import { toUsdc, type HistoryRow } from "@/lib/account/state";
+import { toUsdc, type HistoryRow, type PendingWithdrawal } from "@/lib/account/state";
 import type { ApiError, DepositQuoteView } from "@/lib/account/state";
-import type { CoinBalance, DepositOrderView, MarketView } from "@/server/src/protocol";
+import type { CoinBalance, DepositOrderView, MarketView, WithdrawLimits, WithdrawalView } from "@/server/src/protocol";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
 import {
+    depositWalletAddress,
     linkedWallets,
     useActiveWallet,
     useLinkOtherWallet,
@@ -32,6 +33,7 @@ import { DepositButton } from "./deposit-button";
 import { DepositCoins } from "./deposit-coins";
 import { coinLabel } from "./deposit-coins-catalog";
 import { DepositForm } from "./deposit-form";
+import { mergeEntries, withdrawalEntries, type DepositEntry, type WithdrawalEntry } from "./history-entries";
 import { DepositProgress, isOutcome, isRunning, shownOrder } from "./deposit-progress";
 import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { NetworkLogo } from "./network-icons";
@@ -42,6 +44,7 @@ import { useSidebar } from "./sidebar";
 import { useTrade } from "./trade/trade-provider";
 import { formatUsd, formatWhen, livePredictionRows, shortenAddress, type LivePredictionPosition } from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
+import { WithdrawForm } from "./withdraw-form";
 import styles from "./wallet-sidebar.module.css";
 
 const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 };
@@ -208,6 +211,13 @@ function SignedInWallet() {
                     linkOther(kind);
                     account.refreshBalances();
                 }}
+                withdrawals={account.withdrawals}
+                pendingWithdrawals={account.pendingWithdrawals}
+                evmWallets={linked.filter((w) => w.kind === "evm").map((w) => w.address)}
+                withdrawTo={user ? depositWalletAddress(user, active) : undefined}
+                withdrawLimits={account.withdrawLimits}
+                onWithdraw={account.withdraw}
+                onStartWithdraw={account.dismissNotice}
             />
 
             <div className={styles.positionsFrame}>
@@ -276,6 +286,15 @@ type WalletSectionProps = {
     /** A coin row was picked: its wallet becomes the one to deposit from. */
     onPick: (row: CoinBalance) => void;
     onConnect: (kind: Wallet["kind"]) => void;
+    /** The account's recent withdrawals, newest first, and the ones not answered yet. */
+    withdrawals: WithdrawalView[];
+    pendingWithdrawals: PendingWithdrawal[];
+    /** The linked EVM wallets, and the one a withdrawal goes to unless another is picked. */
+    evmWallets: string[];
+    withdrawTo: string | undefined;
+    withdrawLimits: () => Promise<WithdrawLimits | ApiError>;
+    onWithdraw: (amount: string, to: string) => Promise<"sent" | "refused" | "failed">;
+    onStartWithdraw: () => void;
 };
 
 /** Balance and the deposit button; hovering it deals out past deposits. */
@@ -296,26 +315,39 @@ function WalletSection({
     onOpenCoins,
     onPick,
     onConnect,
+    withdrawals,
+    pendingWithdrawals,
+    evmWallets,
+    withdrawTo,
+    withdrawLimits,
+    onWithdraw,
+    onStartWithdraw,
 }: WalletSectionProps) {
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
     const [pinned, setPinned] = useState(false);
-    // Deposit opens the coin list; picking a coin opens the amount field.
-    const [stage, setStage] = useState<"closed" | "coins" | "amount">("closed");
+    // Deposit opens the coin list; picking a coin opens the amount field. Withdraw opens its own form.
+    const [stage, setStage] = useState<"closed" | "coins" | "amount" | "withdraw">("closed");
     // The coin row picked, whose wallet the deposit is sent from.
     const [picked, setPicked] = useState<CoinBalance | null>(null);
-    // The form closed: the Deposit button that takes its place gets focus.
-    const refocus = useRef(false);
+    // The form closed: the button that opened it gets focus again.
+    const refocus = useRef<"deposit" | "withdraw" | null>(null);
     const section = useRef<HTMLElement>(null);
     useEffect(() => {
         if (!refocus.current || stage !== "closed") return;
-        refocus.current = false;
-        section.current?.querySelector<HTMLElement>("button[data-phase]")?.focus();
+        const selector = refocus.current === "deposit" ? "button[data-phase]" : "button[data-withdraw]";
+        refocus.current = null;
+        section.current?.querySelector<HTMLElement>(selector)?.focus();
     }, [stage]);
     const depositing = stage === "amount" && minDeposit !== null && picked !== null;
     const choosing = stage === "coins" && minDeposit !== null;
+    const withdrawing = stage === "withdraw" && minDeposit !== null;
     // The history would cover the positions while a coin or an amount is chosen.
-    const showHistory = (hovered || focused || pinned) && !depositing && !choosing;
+    const showHistory = (hovered || focused || pinned) && !depositing && !choosing && !withdrawing;
+    const entries = useMemo(
+        () => mergeEntries(history, withdrawalEntries(withdrawals, pendingWithdrawals)),
+        [history, withdrawals, pendingWithdrawals],
+    );
     const status = notice ? null : accountProblem;
 
     // A bridged deposit's progress, until it has ended for a while or the next deposit starts.
@@ -380,23 +412,53 @@ function WalletSection({
                     }
                     onClose={() => {
                         setStage("closed");
-                        refocus.current = true;
+                        refocus.current = "deposit";
+                    }}
+                />
+            ) : withdrawing ? (
+                <WithdrawForm
+                    wallets={evmWallets}
+                    defaultTo={withdrawTo}
+                    limits={withdrawLimits}
+                    onSubmit={onWithdraw}
+                    onConnect={() => onConnect("evm")}
+                    onClose={() => {
+                        setStage("closed");
+                        refocus.current = "withdraw";
                     }}
                 />
             ) : (
-                // Not `disabled` while the account loads, which would drop keyboard focus.
-                <DepositButton
-                    notice={notice}
-                    order={order}
-                    disabled={minDeposit === null}
-                    onClick={() => {
-                        if (minDeposit === null) return;
-                        if (endedId) setDismissed(endedId);
-                        onStartDeposit();
-                        onOpenCoins();
-                        setStage("coins");
-                    }}
-                />
+                <div className={styles.actions}>
+                    {/* Not `disabled` while the account loads, which would drop keyboard focus. */}
+                    <DepositButton
+                        notice={notice}
+                        order={order}
+                        disabled={minDeposit === null}
+                        onClick={() => {
+                            if (minDeposit === null) return;
+                            if (endedId) setDismissed(endedId);
+                            onStartDeposit();
+                            onOpenCoins();
+                            setStage("coins");
+                        }}
+                    />
+                    <motion.button
+                        type="button"
+                        className={`${styles.deposit} ${styles.withdrawButton}`}
+                        data-withdraw=""
+                        aria-disabled={minDeposit === null || undefined}
+                        whileHover={minDeposit === null ? undefined : { scale: 1.04 }}
+                        whileTap={minDeposit === null ? undefined : { scale: 0.94 }}
+                        transition={spring}
+                        onClick={() => {
+                            if (minDeposit === null) return;
+                            onStartWithdraw();
+                            setStage("withdraw");
+                        }}
+                    >
+                        Withdraw
+                    </motion.button>
+                </div>
             )}
 
             {/* Always mounted, so screen readers announce what appears in it. */}
@@ -434,7 +496,7 @@ function WalletSection({
                 )}
             </AnimatePresence>
             <AnimatePresence>
-                {showHistory && history.length > 0 && (
+                {showHistory && entries.length > 0 && (
                     <motion.div
                         key="history"
                         className={styles.historyFrame}
@@ -444,36 +506,23 @@ function WalletSection({
                     >
                         <ol ref={historyRef} className={styles.history} aria-label="Deposits">
                             <AnimatePresence>
-                                {history.map((row, i) => (
+                                {entries.map((row, i) => (
                                     <motion.li
-                                        key={row.key}
+                                        key={row.kind === "deposit" ? row.key : `withdrawal:${row.key}`}
                                         layout
                                         custom={i}
                                         variants={depositRow}
                                         className={styles.depositRow}
-                                        data-pending={row.pending || undefined}
-                                        style={{ zIndex: history.length - i }}
+                                        data-pending={
+                                            (row.kind === "deposit" ? row.pending : row.state === "sending") ||
+                                            undefined
+                                        }
+                                        style={{ zIndex: entries.length - i }}
                                     >
-                                        <CoinIcon
-                                            symbol={row.origin ? row.origin.coin.split(":")[1]! : "USDC"}
-                                            className={styles.depositCoin}
-                                        />
-                                        <span className={styles.depositAmount}>
-                                            +{formatUsd(toUsdc(row.amount))}
-                                            {row.origin && (
-                                                <span className={styles.depositOrigin}>
-                                                    {" · "}
-                                                    {row.origin.amount} {coinLabel(row.origin.coin)}
-                                                </span>
-                                            )}
-                                        </span>
-                                        {row.pending ? (
-                                            <span className={`${styles.depositWhen} ${styles.depositPending}`}>
-                                                <span className={styles.pendingDot} aria-hidden="true" />
-                                                Pending
-                                            </span>
+                                        {row.kind === "deposit" ? (
+                                            <DepositEntryRow row={row} />
                                         ) : (
-                                            <span className={styles.depositWhen}>{formatWhen(row.at)}</span>
+                                            <WithdrawalEntryRow row={row} />
                                         )}
                                     </motion.li>
                                 ))}
@@ -484,6 +533,54 @@ function WalletSection({
                 )}
             </AnimatePresence>
         </section>
+    );
+}
+
+function DepositEntryRow({ row }: { row: DepositEntry }) {
+    return (
+        <>
+            <CoinIcon symbol={row.origin ? row.origin.coin.split(":")[1]! : "USDC"} className={styles.depositCoin} />
+            <span className={styles.depositAmount}>
+                +{formatUsd(toUsdc(row.amount))}
+                {row.origin && (
+                    <span className={styles.depositOrigin}>
+                        {" · "}
+                        {row.origin.amount} {coinLabel(row.origin.coin)}
+                    </span>
+                )}
+            </span>
+            {row.pending ? (
+                <span className={`${styles.depositWhen} ${styles.depositPending}`}>
+                    <span className={styles.pendingDot} aria-hidden="true" />
+                    Pending
+                </span>
+            ) : (
+                <span className={styles.depositWhen}>{formatWhen(row.at)}</span>
+            )}
+        </>
+    );
+}
+
+function WithdrawalEntryRow({ row }: { row: WithdrawalEntry }) {
+    return (
+        <>
+            <CoinIcon symbol="USDC" className={styles.depositCoin} />
+            <span className={styles.depositAmount}>
+                −{formatUsd(toUsdc(row.amount))}
+                <span className={styles.depositOrigin}>
+                    {" · to "}
+                    {shortenAddress(row.to)}
+                </span>
+            </span>
+            {row.state === "sending" ? (
+                <span className={`${styles.depositWhen} ${styles.depositPending}`}>
+                    <span className={styles.pendingDot} aria-hidden="true" />
+                    Sending
+                </span>
+            ) : (
+                <span className={styles.depositWhen}>{row.state === "sent" ? "Sent" : "Didn't go through"}</span>
+            )}
+        </>
     );
 }
 

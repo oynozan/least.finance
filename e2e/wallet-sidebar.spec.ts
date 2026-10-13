@@ -652,9 +652,9 @@ test("the close button is reachable by keyboard", async ({ page, isMobile }) => 
     // Privy hands focus back to the dock button just after its modal closes, so wait for that first.
     await expect(dock(page)).toBeFocused();
 
-    // The position's close button follows the deposit button in tab order.
+    // The position's close button follows the Withdraw button, which follows Deposit, in tab order.
     const close = closeButton(page, only!);
-    await depositButton(page).focus();
+    await sidebar(page).getByRole("button", { name: "Withdraw", exact: true }).focus();
     await page.keyboard.press("Tab");
     await expect(close).toBeFocused();
     await expect

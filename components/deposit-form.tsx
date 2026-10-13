@@ -14,7 +14,7 @@ const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 }
 /** Left in the wallet for gas: a transfer costs about 0.0005 USDC on Arc. */
 const GAS_RESERVE = 0.01;
 /** USDC's usual precision; Arc's 18 native decimals are more than anyone types. */
-const MAX_DECIMALS = 6;
+export const MAX_DECIMALS = 6;
 
 const OVER_WALLET = "That's more than your wallet holds, after gas.";
 /** How long the amount rests before the quote is asked for. */
@@ -24,7 +24,7 @@ const QUOTE_DELAY_MS = 400;
 export const maxDeposit = (walletBalance: number) => Math.max(0, Math.floor((walletBalance - GAS_RESERVE) * 100) / 100);
 
 /** Keeps digits and one decimal point, with at most `decimals` decimals. */
-function cleanAmount(text: string, decimals: number) {
+export function cleanAmount(text: string, decimals: number) {
     const [whole = "", ...rest] = text
         .replace(/,/g, ".")
         .replace(/[^\d.]/g, "")
@@ -34,7 +34,7 @@ function cleanAmount(text: string, decimals: number) {
 }
 
 /** "25." → "25", ".5" → "0.5"; null when there's no number yet. */
-function normalizeAmount(text: string) {
+export function normalizeAmount(text: string) {
     const [whole = "", fraction = ""] = text.split(".");
     if (whole === "" && fraction === "") return null;
     return fraction ? `${whole || "0"}.${fraction}` : whole;

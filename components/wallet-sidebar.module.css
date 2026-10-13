@@ -134,6 +134,19 @@
     cursor: default;
 }
 
+/* Deposit and Withdraw sit side by side; the buttons keep their own top margin. */
+.actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.withdrawButton {
+    padding: 0 20px;
+    background: var(--pill);
+    color: var(--foreground);
+}
+
 /* What's happening with a deposit, or why the account or network isn't ready. */
 .status {
     display: flex;
@@ -278,6 +291,66 @@
     flex-shrink: 0;
     margin-top: 0;
     padding: 0 20px;
+}
+
+/* Where a withdrawal goes: one row per linked EVM wallet, or the row that links one. */
+.recipients {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.recipient {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 40px;
+    margin-top: 10px;
+    padding: 0 16px 0 10px;
+    border-radius: 999px;
+    background: var(--pill);
+    box-shadow: inset 0 0 0 1px transparent;
+    color: var(--foreground);
+    font-size: 14px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    outline: none;
+    transition:
+        background-color 160ms ease,
+        box-shadow 160ms ease;
+}
+
+.recipients .recipient {
+    margin-top: 0;
+}
+
+.recipient[aria-checked="true"] {
+    background: var(--pill-hover);
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.22);
+}
+
+.recipient:focus-visible {
+    box-shadow: 0 0 0 3px rgb(255 255 255 / 0.3);
+}
+
+@media (hover: hover) {
+    .recipient:hover {
+        background: var(--pill-hover);
+    }
+}
+
+.recipientMark {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+}
+
+.recipientMark svg {
+    width: 14px;
+    height: 14px;
 }
 
 .depositHint {
