@@ -21,6 +21,7 @@ import {
     dropHolding,
     keepUnreported,
     reportUnreported,
+    settlesReport,
     settleHoldings,
     trackOrder,
     type Tracking,
@@ -153,6 +154,8 @@ export class AccountClient {
     readonly #confirming = new Set<string>();
     /** Swap orders whose hashes are being reported right now. */
     readonly #reporting = new Set<string>();
+    /** The socket whose `account:open` has succeeded; swap hashes are reported only on it. */
+    #bound: AppSocket | null = null;
     /** The rows lowered for swaps still open, so a settled order puts back only its own. */
     #tracking: Tracking = {};
 
@@ -199,6 +202,7 @@ export class AccountClient {
         socket.on("connect", () => {
             this.#attempt = 0;
             this.#connection++;
+            this.#bound = null;
             void this.#bind(socket);
         });
         socket.on("deposit:credited", ({ deposit, account }) => {
@@ -243,6 +247,7 @@ export class AccountClient {
         });
         socket.on("swap:update", ({ order }) => this.#swapUpdated(order));
         socket.on("disconnect", (reason) => {
+            this.#bound = null;
             // The server hung up (its token check expired); a fresh token brings it back.
             if (reason === "io server disconnect") socket.connect();
         });
@@ -266,6 +271,7 @@ export class AccountClient {
             if (this.#socket !== socket || !socket.connected) return;
             if (result?.ok) {
                 this.#dispatch({ type: "session", session: result.data });
+                this.#bound = socket;
                 // Deposits still pending from before a reconnect are reported again.
                 const { state } = this.#snapshot;
                 if (state.status === "ready") {
@@ -294,6 +300,7 @@ export class AccountClient {
         this.#attempt = 0;
         this.#confirming.clear();
         this.#reporting.clear();
+        this.#bound = null;
         this.#tracking = {};
         const { state, notice, balances, swapHoldings, swaps, tradeNotice } = this.#snapshot;
         if (state.status !== "idle" || notice || balances || swapHoldings || swaps.length || tradeNotice) {
@@ -749,22 +756,28 @@ export class AccountClient {
         return rejected ? { status: "cancelled" } : { status: "failed", message: SWAPS_UNAVAILABLE };
     }
 
-    /** Reports the kept swap hashes; one the server answers for, either way, is no longer kept. */
+    /** Reports the kept swap hashes once bound; only a settled answer about an order stops keeping its hashes. */
     async #reportSwapHashes(socket: AppSocket) {
         const userId = this.#userId;
         if (!userId) return;
-        await reportUnreported(userId, this.#reporting, async ({ orderId, txHashes }) => {
-            const result = await socket
-                .timeout(REPORT_TIMEOUT_MS)
-                .emitWithAck("swap:sent", { orderId, txHashes })
-                .catch(() => null);
-            if (this.#socket !== socket || !result) return false;
-            if (result.ok) {
-                this.#swapUpdated(result.data);
-                return true;
-            }
-            return !RETRYABLE.has(result.error.code);
-        });
+        const bound = this.#bound === socket;
+        await reportUnreported(
+            userId,
+            this.#reporting,
+            async ({ orderId, txHashes }) => {
+                const result = await socket
+                    .timeout(REPORT_TIMEOUT_MS)
+                    .emitWithAck("swap:sent", { orderId, txHashes })
+                    .catch(() => null);
+                if (this.#socket !== socket || !result) return false;
+                if (result.ok) {
+                    this.#swapUpdated(result.data);
+                    return true;
+                }
+                return settlesReport(result);
+            },
+            bound,
+        );
     }
 
     /** Puts an order into the list and settles the holdings rows this client changed for it. */

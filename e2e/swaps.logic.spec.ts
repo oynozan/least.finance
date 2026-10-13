@@ -6,6 +6,7 @@ import {
     loadUnreported,
     reportUnreported,
     settleHoldings,
+    settlesReport,
     trackOrder,
     type Tracking,
 } from "@/lib/account/swaps";
@@ -254,4 +255,57 @@ test("a swap is an activity with the networks and the state, and no change to th
     });
     expect(swapActivity(order("b", "done")).pending).toBeUndefined();
     expect(swapActivity(order("b", "done")).amountUSD).toBeNull();
+});
+
+const answer = (code: string) => ({ ok: false as const, error: { code, message: "" } });
+
+test("a report attempted before the bind waits, then is sent once bound", async () => {
+    fakeStorage({});
+    keepUnreported("w1", { orderId: "b1", txHashes: ["0xaa"] });
+    const sent: string[] = [];
+    const send = async (entry: { orderId: string }) => {
+        sent.push(entry.orderId);
+        return true;
+    };
+    const inFlight = new Set<string>();
+    await reportUnreported("w1", inFlight, send, false);
+    expect(sent).toEqual([]);
+    expect(loadUnreported("w1")).toHaveLength(1);
+    await reportUnreported("w1", inFlight, send, true);
+    expect(sent).toEqual(["b1"]);
+    expect(loadUnreported("w1")).toEqual([]);
+});
+
+test("only a definitive answer about the order clears its kept hashes", async () => {
+    fakeStorage({});
+    const outcomes: [string, boolean][] = [
+        ["wallet_not_connected", false],
+        ["rate_limited", false],
+        ["unavailable", false],
+        ["internal", false],
+        ["not_found", true],
+        ["forbidden", true],
+    ];
+    for (const [code, settles] of outcomes) expect(settlesReport(answer(code)), code).toBe(settles);
+    expect(settlesReport({ ok: true })).toBe(true);
+    keepUnreported("w2", { orderId: "b2", txHashes: ["0xaa"] });
+    // A timeout or a disconnect is a send that says no.
+    await reportUnreported("w2", new Set(), async () => false);
+    expect(loadUnreported("w2")).toHaveLength(1);
+    await reportUnreported("w2", new Set(), async () => settlesReport({ ok: true }));
+    expect(loadUnreported("w2")).toEqual([]);
+});
+
+test("with storage throwing, the hashes are still reported once bound", async () => {
+    const blocked = () => {
+        throw new Error("blocked");
+    };
+    setStorage({ getItem: blocked, setItem: blocked, removeItem: blocked });
+    keepUnreported("w3", { orderId: "b3", txHashes: ["0xaa"] });
+    expect(loadUnreported("w3").map((e) => e.orderId)).toEqual(["b3"]);
+    const sent: string[] = [];
+    await reportUnreported("w3", new Set(), async (e) => (sent.push(e.orderId), true), false);
+    await reportUnreported("w3", new Set(), async (e) => (sent.push(e.orderId), true), true);
+    expect(sent).toEqual(["b3"]);
+    expect(loadUnreported("w3")).toEqual([]);
 });

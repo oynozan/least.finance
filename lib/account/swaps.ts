@@ -87,8 +87,10 @@ export type Unreported = { orderId: string; txHashes: string[] };
 
 const unreportedKey = (userId: string) => `swap-sent:${userId}`;
 
-/** The hash lists kept for this person that the server hasn't acknowledged. */
-export function loadUnreported(userId: string): Unreported[] {
+/** The lists kept in this page's memory, so blocked storage still reports them while the page stays open. */
+const kept = new Map<string, Unreported[]>();
+
+function stored(userId: string): Unreported[] {
     try {
         const raw = localStorage.getItem(unreportedKey(userId));
         const list: unknown = raw ? JSON.parse(raw) : [];
@@ -105,12 +107,19 @@ export function loadUnreported(userId: string): Unreported[] {
     }
 }
 
+/** The hash lists kept for this person that the server hasn't acknowledged, from storage and memory. */
+export function loadUnreported(userId: string): Unreported[] {
+    const list = stored(userId);
+    return [...list, ...(kept.get(userId) ?? []).filter((m) => !list.some((e) => e.orderId === m.orderId))];
+}
+
 function save(userId: string, list: Unreported[]) {
+    kept.set(userId, list);
     try {
         if (list.length) localStorage.setItem(unreportedKey(userId), JSON.stringify(list));
         else localStorage.removeItem(unreportedKey(userId));
     } catch {
-        // Storage is blocked; the hashes are reported from memory while the page stays open.
+        // Storage is blocked; the memory copy is reported while the page stays open.
     }
 }
 
@@ -125,12 +134,21 @@ export function clearUnreported(userId: string, orderId: string): void {
     );
 }
 
-/** Reports each kept entry that isn't already being reported; `send` says whether the server took it, which clears it. */
+/** Whether an answer settles the order for good: it was taken, or the server says it isn't this person's. */
+export const settlesReport = (result: { ok: true } | { ok: false; error: { code: string } }): boolean =>
+    result.ok || result.error.code === "not_found" || result.error.code === "forbidden";
+
+/**
+ * Reports each kept entry that isn't already being reported, once the socket is bound; `send` says
+ * whether the server settled it, which clears it. Entries wait for the bind otherwise.
+ */
 export async function reportUnreported(
     userId: string,
     inFlight: Set<string>,
     send: (entry: Unreported) => Promise<boolean>,
+    bound = true,
 ): Promise<void> {
+    if (!bound) return;
     await Promise.all(
         loadUnreported(userId).map(async (entry) => {
             if (inFlight.has(entry.orderId)) return;
