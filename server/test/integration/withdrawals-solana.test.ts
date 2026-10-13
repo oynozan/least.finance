@@ -14,7 +14,6 @@ import { connectDatabase, type Database } from "../../src/db/mongo.ts";
 import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { Ledger } from "../../src/deposits/ledger.ts";
 import { Bus } from "../../src/events.ts";
-import { Payouts } from "../../src/withdrawals/payouts.ts";
 import { usdcAccountOf } from "../../src/withdrawals/solana-recipient.ts";
 import { Withdrawals, TREASURY_GAS_RESERVE } from "../../src/withdrawals/withdrawals.ts";
 import { startFakeIris, type FakeIris } from "../support/fake-iris.ts";
@@ -25,7 +24,6 @@ const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
 let database: Database;
 let withdrawals: Withdrawals;
-let payouts: Payouts;
 let iris: FakeIris;
 let rpc: FakeSolanaRpc;
 let treasury: Address;
@@ -76,7 +74,6 @@ beforeAll(async () => {
             tolerance: wei("0.05"),
         },
     });
-    payouts = new Payouts({ collections: database.collections, ledger, client: chain, signer, bus, logger });
 });
 afterAll(async () => {
     await database.close();
@@ -287,18 +284,4 @@ test("switch off is 'Solana isn't open yet.'", async () => {
         switches.SOLANA_WITHDRAWALS = "on";
     }
     expect(await balanceOf(account._id)).toBe(wei("100"));
-});
-
-test("Payouts leaves a Solana sending withdrawal alone", async () => {
-    const account = await seedAccount("100");
-    await fundTreasury("500");
-    const withdrawal = await withdrawals.create(account, request(newWallet(), "10"));
-    const before = await chain.getTransactionCount({ address: treasury });
-
-    await payouts.tick();
-
-    const after = await database.collections.withdrawals.findOne({ _id: withdrawal._id });
-    expect(after).toMatchObject({ state: "sending", rawTx: null, txHash: null, nonce: null });
-    expect(await chain.getTransactionCount({ address: treasury })).toBe(before);
-    expect(await balanceOf(account._id)).toBe(wei("90"));
 });

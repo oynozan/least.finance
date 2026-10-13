@@ -138,6 +138,8 @@ export type WithdrawalView = {
     /** The Arc hash: the payout, or the burn of a Solana withdrawal. */
     txHash: Hex | null;
     forwardTxHash: string | null;
+    /** True once a Solana withdrawal has been forwarding for 15 minutes. */
+    delayed: boolean;
     createdAt: string;
     updatedAt: string;
 };

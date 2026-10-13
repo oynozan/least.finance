@@ -2,7 +2,10 @@ import type { WithdrawalDoc } from "../db/mongo.ts";
 import { formatUsdc, fromDecimal } from "../db/money.ts";
 import type { WithdrawalView } from "../protocol.ts";
 
-export function withdrawalView(doc: WithdrawalDoc): WithdrawalView {
+/** Time in `forwarding` after which the view says it is taking longer than expected. */
+export const FORWARDING_DELAYED_MS = 15 * 60_000;
+
+export function withdrawalView(doc: WithdrawalDoc, now = Date.now()): WithdrawalView {
     const solana = doc.network === "solana" ? doc.solana : undefined;
     const fee = solana ? fromDecimal(solana.fee) : null;
     return {
@@ -16,6 +19,7 @@ export function withdrawalView(doc: WithdrawalDoc): WithdrawalView {
         state: doc.state,
         txHash: solana ? solana.burnTxHash : doc.txHash,
         forwardTxHash: solana?.forwardTxHash ?? null,
+        delayed: doc.state === "forwarding" && now - doc.updatedAt.getTime() >= FORWARDING_DELAYED_MS,
         createdAt: doc.createdAt.toISOString(),
         updatedAt: doc.updatedAt.toISOString(),
     };

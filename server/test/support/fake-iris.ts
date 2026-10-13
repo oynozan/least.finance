@@ -51,6 +51,14 @@ export async function startFakeIris() {
             fees.setup = setup;
         },
         setMessage: (burnTxHash: string, message: Record<string, unknown>) => void messages.set(burnTxHash, message),
+        /** The message of a burn Circle has seen but not yet forwarded. */
+        setPending: (burnTxHash: string) => void messages.set(burnTxHash, { status: "pending_confirmations" }),
+        /** The message of a burn whose mint landed on Solana as `forwardTxHash`. */
+        setForwarded: (burnTxHash: string, forwardTxHash: string) =>
+            void messages.set(burnTxHash, { status: "complete", forwardState: "CONFIRMED", forwardTxHash }),
+        /** The message of a burn whose forward failed. */
+        setForwardFailed: (burnTxHash: string) =>
+            void messages.set(burnTxHash, { status: "complete", forwardState: "FAILED" }),
         /** Every request line received so far. */
         requests: () => urls,
         failWith: (status: number | null) => void (failure = status),

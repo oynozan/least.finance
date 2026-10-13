@@ -529,6 +529,7 @@ const withdrawal = (n: number, over: Partial<WithdrawalView> = {}): WithdrawalVi
     state: "sending",
     txHash: null,
     forwardTxHash: null,
+    delayed: false,
     createdAt: new Date(Date.UTC(2026, 8, n)).toISOString(),
     updatedAt: new Date(Date.UTC(2026, 8, n)).toISOString(),
     ...over,

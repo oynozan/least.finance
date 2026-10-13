@@ -146,6 +146,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             allowedPrograms: config.SOLANA_ALLOWED_PROGRAMS,
             logger: logger.child({ component: "deposit-orders" }),
         });
+        const iris = overrides.iris ?? createIris({ baseUrl: config.CIRCLE_IRIS_URL });
         const withdrawals = new Withdrawals({
             collections,
             ledger,
@@ -156,7 +157,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             minWithdraw: config.WITHDRAW_MIN_USDC,
             solana: {
                 rpc: solana,
-                iris: overrides.iris ?? createIris({ baseUrl: config.CIRCLE_IRIS_URL }),
+                iris,
                 switches: config,
                 min: config.SOLANA_WITHDRAW_MIN_USDC,
                 tolerance: config.SOLANA_WITHDRAW_FEE_TOLERANCE,
@@ -170,6 +171,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             bus,
             logger: logger.child({ component: "payouts" }),
             broadcast: overrides.payoutBroadcast,
+            iris,
         });
         const sessions = new Sessions({
             accounts,

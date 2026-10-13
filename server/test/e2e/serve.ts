@@ -31,7 +31,11 @@ import { startFakeDefiLlama } from "../support/fake-defillama.ts";
 import { startFakeLifi } from "../support/fake-lifi.ts";
 import { startFakePolymarket } from "../support/fake-polymarket.ts";
 import { startFakePrivy } from "../support/fake-privy.ts";
+import { startFakeIris } from "../support/fake-iris.ts";
 import { startFakeSolanaRpc } from "../support/fake-solana-rpc.ts";
+import { installStub } from "../support/stub-token-messenger.ts";
+import { createIris } from "../../src/crosschain/iris.ts";
+import { ARC_USDC_ERC20, TOKEN_MESSENGER_V2 } from "../../src/withdrawals/cctp-burn.ts";
 import { startMongo } from "../support/mongo.ts";
 import { installMulticall3, sourceChain } from "../support/source-chains.ts";
 import { chainHelpers, SWAP_PRICES, swapRpcEnv } from "../support/stack.ts";
@@ -57,6 +61,10 @@ for (const { chain, token } of EVM_COINS) {
 // The swap holdings read through Multicall3, which the fresh anvils lack.
 for (const url of [ethereum.url, bnb.url, anvil.url]) await installMulticall3(url);
 const solanaRpc = await startFakeSolanaRpc();
+const iris = await startFakeIris();
+// Burns for Solana withdrawals land on stand-ins at the real TokenMessengerV2 and USDC addresses.
+await installStub(anvil.url, TOKEN_MESSENGER_V2);
+await installStub(anvil.url, ARC_USDC_ERC20);
 const emulator = await startArcEmulator(anvil.url);
 const polymarket = await startFakePolymarket();
 const lifi = await startFakeLifi({ prices: SWAP_PRICES });
@@ -119,6 +127,7 @@ const solanaBridge = new FakeBridge({ arcRpcUrl: emulator.url, rates, name: "rel
 const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
     sources: createSourceClients({ ethereum: [ethereum.url], bnb: [bnb.url] }),
     solana: createSolanaRpc([solanaRpc.url]),
+    iris: createIris({ baseUrl: iris.url }),
     prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
     bridges: [bridge, solanaBridge],
     trader,
@@ -488,6 +497,7 @@ async function stop() {
         ethereum.stop(),
         bnb.stop(),
         solanaRpc.stop(),
+        iris.stop(),
         polymarket.stop(),
         lifi.stop(),
         llama.stop(),
