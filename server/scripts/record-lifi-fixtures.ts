@@ -1,5 +1,6 @@
-// Records LI.FI's token list for the swap networks, with look-alike tokens as decoys; --check-quotes also records which entries LI.FI quotes.
+// Records LI.FI's token list for the swap networks (with look-alike tokens as decoys), its chains and a Solana swap transaction; --check-quotes also records which entries LI.FI quotes.
 // Run from server/: node --env-file=.env scripts/record-lifi-fixtures.ts --check-quotes, then npx prettier --write server/test/fixtures from the root.
+// --execution records only chains.json and solana-tx.txt, and needs no key.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { COINS, NETWORKS, type CoinEntry, type NetworkId, type SwapCoin } from "../src/swaps/coins.ts";
 
@@ -15,7 +16,8 @@ const SOLANA_WALLET = "11111111111111111111111111111112";
 type RawToken = { address: string; symbol: string; priceUSD?: unknown } & Record<string, unknown>;
 
 const checkQuotes = process.argv.includes("--check-quotes");
-const apiKey = process.env.LIFI_API_KEY;
+const executionOnly = process.argv.includes("--execution");
+const apiKey = executionOnly ? undefined : process.env.LIFI_API_KEY;
 const headers: Record<string, string> = apiKey ? { "x-lifi-api-key": apiKey } : {};
 
 const networkOf = (id: NetworkId) => NETWORKS.find((network) => network.id === id)!;
@@ -28,12 +30,14 @@ async function answer(response: Response): Promise<unknown> {
     return response.json();
 }
 
-function save(file: string, body: unknown) {
+function saveText(file: string, text: string) {
     const directory = new URL("../test/fixtures/lifi/", import.meta.url);
     mkdirSync(directory, { recursive: true });
-    writeFileSync(new URL(file, directory), `${JSON.stringify(body, null, 4)}\n`);
+    writeFileSync(new URL(file, directory), text);
     console.log(`recorded lifi/${file}`);
 }
+
+const save = (file: string, body: unknown) => saveText(file, `${JSON.stringify(body, null, 4)}\n`);
 
 const chainIds = NETWORKS.map((network) => network.chainId);
 const list = (await answer(
@@ -74,7 +78,42 @@ for (const network of NETWORKS) {
     recorded[String(network.chainId)] = kept;
 }
 if (missing.length) throw new Error(`LI.FI's list lacks ${missing.join(", ")}`);
-save("tokens.json", { recordedAt: new Date().toISOString(), tokens: recorded });
+if (!executionOnly) save("tokens.json", { recordedAt: new Date().toISOString(), tokens: recorded });
+
+// The chains the swaps run on, with the LI.FI diamond each transaction must call (Solana has none)
+const chainList = (await answer(await fetch(`${LIFI_URL}/v1/chains?chainTypes=EVM,SVM`, { headers }))) as {
+    chains: { id: number; key: string; diamondAddress?: string }[];
+};
+save("chains.json", {
+    recordedAt: new Date().toISOString(),
+    chains: NETWORKS.map((network) => {
+        const chain = chainList.chains.find((candidate) => candidate.id === network.chainId);
+        if (!chain) throw new Error(`LI.FI's chains lack ${network.id}`);
+        return { id: chain.id, key: chain.key, diamondAddress: chain.diamondAddress ?? null };
+    }),
+});
+
+// One real keyless $10 SOL to USDC quote on Solana; its transaction is the base64 the fake serves with the fee payer swapped in
+const sol = COINS.find((coin) => coin.symbol === "SOL")!.entries.find((entry) => entry.network === "solana")!;
+const usdc = COINS.find((coin) => coin.symbol === "USDC")!.entries.find((entry) => entry.network === "solana")!;
+const solPrice = Number(tokenOf("solana", sol)?.priceUSD);
+if (!(solPrice > 0)) throw new Error("LI.FI lists no SOL price");
+const solanaQuote = (await answer(
+    await fetch(
+        `${LIFI_URL}/v1/quote?${new URLSearchParams({
+            fromChain: String(networkOf("solana").chainId),
+            toChain: String(networkOf("solana").chainId),
+            fromToken: sol.address,
+            toToken: usdc.address,
+            fromAmount: String(Math.round((QUOTE_USD / solPrice) * 10 ** sol.decimals)),
+            fromAddress: SOLANA_WALLET,
+            toAddress: SOLANA_WALLET,
+            integrator: "least-finance",
+        })}`,
+    ),
+)) as { transactionRequest?: { data?: string } };
+if (!solanaQuote.transactionRequest?.data) throw new Error("LI.FI's Solana quote carries no transaction");
+saveText("solana-tx.txt", `${solanaQuote.transactionRequest.data}\n`);
 
 // A quote answers 200 with a transaction to sign, and waits out a rate limit rather than record a false negative
 async function quoteWorks(query: URLSearchParams): Promise<{ status: number; ok: boolean }> {

@@ -1,0 +1,50 @@
+{
+    "recordedAt": "2026-10-13T00:25:24.671Z",
+    "chains": [
+        {
+            "id": 1,
+            "key": "eth",
+            "diamondAddress": "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"
+        },
+        {
+            "id": 42161,
+            "key": "arb",
+            "diamondAddress": "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"
+        },
+        {
+            "id": 8453,
+            "key": "bas",
+            "diamondAddress": "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"
+        },
+        {
+            "id": 10,
+            "key": "opt",
+            "diamondAddress": "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"
+        },
+        {
+            "id": 137,
+            "key": "pol",
+            "diamondAddress": "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"
+        },
+        {
+            "id": 56,
+            "key": "bsc",
+            "diamondAddress": "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"
+        },
+        {
+            "id": 43114,
+            "key": "ava",
+            "diamondAddress": "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE"
+        },
+        {
+            "id": 5042,
+            "key": "arc",
+            "diamondAddress": "0xA4072583658Fae592A3506A42431cb6316a8d40b"
+        },
+        {
+            "id": 1151111081099710,
+            "key": "sol",
+            "diamondAddress": null
+        }
+    ]
+}

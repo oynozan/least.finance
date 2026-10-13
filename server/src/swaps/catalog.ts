@@ -5,7 +5,7 @@ import { COINS, NETWORKS } from "./coins.ts";
 import type { Lifi } from "./lifi.ts";
 
 type Deps = {
-    lifi: Lifi;
+    lifi: Pick<Lifi, "tokens">;
     logger: Logger;
     syncMs: number;
     /** The clock, for tests. */

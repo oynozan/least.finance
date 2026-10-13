@@ -51,7 +51,7 @@ describe("swap catalog", () => {
     test("a look-alike's price never prices a coin", async () => {
         const real = createLifi({ url: stack.lifi.url });
         let decoys = 0;
-        const withDecoys: Lifi = {
+        const withDecoys: Pick<Lifi, "tokens"> = {
             async tokens(chainIds) {
                 return (await real.tokens(chainIds)).map((token) => {
                     if (tabled.has(keyOf(token.chainId, token.address))) return token;
@@ -112,7 +112,7 @@ describe("swap catalog", () => {
     });
 
     test("a refresh with nothing in it keeps the last list", async () => {
-        let answering: Lifi = createLifi({ url: stack.lifi.url });
+        let answering: Pick<Lifi, "tokens"> = createLifi({ url: stack.lifi.url });
         const swapCatalog = new SwapCatalog({
             lifi: { tokens: (ids) => answering.tokens(ids) },
             logger,
