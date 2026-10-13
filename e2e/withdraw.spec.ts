@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
     chainRpc,
     failNextPayout,
@@ -24,8 +24,28 @@ const withdrawButton = (page: Page) => sidebar(page).getByRole("button", { name:
 const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "Withdraw amount" });
 const LOSS = "rgb(255, 107, 91)";
 const status = (page: Page) => sidebar(page).getByRole("status");
-const history = (page: Page) => sidebar(page).getByRole("list", { name: "Deposits" });
+const history = (page: Page) => sidebar(page).getByRole("list", { name: "History" });
 const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
+
+/** Whether the $ sign, the digits and Max sit side by side inside the field, each in view and apart. */
+const fieldFits = (input: Locator) =>
+    input.evaluate((el) => {
+        const field = el.closest("label")!;
+        const box = (node: Element) => node.getBoundingClientRect();
+        const prefix = box(field.querySelector('[aria-hidden="true"]')!);
+        const max = box(field.querySelector("button")!);
+        const [f, i] = [box(field), box(el)];
+        const tol = 1;
+        // Scrolled digits stop short of the $ sign and of Max.
+        const style = getComputedStyle(el);
+        if (parseFloat(style.paddingLeft) < 6 || parseFloat(style.paddingRight) < 6) return false;
+        return (
+            prefix.left >= f.left - tol &&
+            prefix.right <= i.left + tol &&
+            i.right <= max.left + tol &&
+            max.right <= f.right + tol
+        );
+    });
 
 test.beforeEach(async () => {
     test.setTimeout(60_000);
@@ -252,9 +272,18 @@ test("a failed payout puts the balance back and says so", async ({ page }) => {
     await failNextPayout(addressOf(page));
     await withdraw(page, "50");
     await expect(status(page)).toHaveText("Didn't go through. Your balance is back.", { timeout: 20_000 });
+    // The Deposit button isn't told a deposit failed.
+    const depositButton = sidebar(page).getByRole("button", { name: "Deposit", exact: true });
+    await expect(depositButton).toHaveAttribute("data-phase", "idle");
+    await expect(depositButton).not.toHaveAttribute("aria-busy", "true");
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $200.00, show deposits");
     await showHistory(page);
-    await expect(history(page).getByRole("listitem").filter({ hasText: "−$50.00" })).toContainText("Didn't go through");
+    const failed = history(page).getByRole("listitem").filter({ hasText: "−$50.00" });
+    await expect(failed).toContainText("Didn't go through");
+    // The recipient reads whole: the status gives way, not the address.
+    await expect(failed).toContainText(`to ${short(addressOf(page))}`);
+    const amount = failed.locator("span").first();
+    expect(await amount.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
 });
 
 test("Escape closes the form and returns focus to Withdraw", async ({ page }) => {
@@ -265,6 +294,66 @@ test("Escape closes the form and returns focus to Withdraw", async ({ page }) =>
     await expect(amountField(page)).toHaveCount(0);
     await expect(withdrawButton(page)).toBeFocused();
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
+});
+
+test("Escape on a recipient row closes only the form", async ({ page }) => {
+    await signIn(page, [randomAddress()]);
+    await withdrawButton(page).click();
+    const picker = sidebar(page).getByRole("radiogroup", { name: "Withdraw to" });
+    await picker.getByRole("radio", { name: short(addressOf(page)) }).focus();
+    await page.keyboard.press("Escape");
+    await expect(amountField(page)).toHaveCount(0);
+    await expect(withdrawButton(page)).toBeFocused();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
+});
+
+test("Escape on the Connect an EVM wallet row closes only the form", async ({ page }) => {
+    await signInWithSolana(page);
+    await withdrawButton(page).click();
+    await sidebar(page).getByRole("button", { name: "Connect an EVM wallet" }).focus();
+    await page.keyboard.press("Escape");
+    await expect(sidebar(page).getByRole("button", { name: "Connect an EVM wallet" })).toHaveCount(0);
+    await expect(withdrawButton(page)).toBeFocused();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
+});
+
+test("arrow keys move the picked recipient", async ({ page }) => {
+    const second = randomAddress();
+    const third = randomAddress();
+    await signIn(page, [second, third]);
+    const first = addressOf(page);
+    await withdrawButton(page).click();
+    const picker = sidebar(page).getByRole("radiogroup", { name: "Withdraw to" });
+    const radio = (address: string) => picker.getByRole("radio", { name: short(address) });
+    // Only the picked row is a tab stop.
+    await expect(radio(first)).toHaveAttribute("tabindex", "0");
+    await expect(radio(second)).toHaveAttribute("tabindex", "-1");
+    await radio(first).focus();
+
+    await page.keyboard.press("ArrowDown");
+    await expect(radio(second)).toBeChecked();
+    await expect(radio(second)).toBeFocused();
+    await expect(radio(second)).toHaveAttribute("tabindex", "0");
+    await expect(radio(first)).toHaveAttribute("tabindex", "-1");
+    await page.keyboard.press("ArrowRight");
+    await expect(radio(third)).toBeChecked();
+    // It wraps at the end, and goes back with Up and Left.
+    await page.keyboard.press("ArrowDown");
+    await expect(radio(first)).toBeChecked();
+    await page.keyboard.press("ArrowUp");
+    await expect(radio(third)).toBeChecked();
+    await page.keyboard.press("ArrowLeft");
+    await expect(radio(second)).toBeChecked();
+    await expect(radio(second)).toBeFocused();
+});
+
+test("a long amount stays inside the field, between the $ sign and Max", async ({ page }) => {
+    await signIn(page);
+    await withdrawButton(page).click();
+    // The server's maximum is read as the form opens, which is when Max appears.
+    await expect(sidebar(page).getByRole("button", { name: "Max" })).toBeVisible();
+    await amountField(page).fill("99999999.123456");
+    expect(await fieldFits(amountField(page))).toBe(true);
 });
 
 // The PnL page's own pieces: the wallet button up top comes after the page's content, which may have a Connect button.
@@ -299,6 +388,16 @@ test("the PnL feed lists a withdrawal under Deposits, and the chart drops by it"
     await expect(row).toHaveCount(1);
     await expect(row).toContainText("USDC to 0x");
     await expect(row).toContainText("−$50.00");
+    // Money moved, not a loss.
+    await expect(row.locator("span", { hasText: "−$50.00" })).not.toHaveCSS("color", LOSS);
+    // The day it happened reads as a withdrawal, not a negative deposit.
+    await chart(page).focus();
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowRight");
+    await expect(chart(page)).toHaveAttribute("aria-valuenow", "30");
+    await expect(page.getByRole("main").getByRole("region", { name: /^Balance/ })).toContainText(
+        "PnL that day, and $50.00 withdrawn",
+    );
     await activity(page).getByRole("radio", { name: "Deposits" }).click();
     await expect(rows(page)).toHaveCount(2);
     await activity(page).getByRole("radio", { name: "Trades" }).click();

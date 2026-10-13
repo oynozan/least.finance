@@ -15,6 +15,9 @@ const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 }
 // Withdrawals always pay out on Arc.
 const ARC = 5042;
 
+// Arrow keys move the picked recipient, wrapping at the ends.
+const ARROWS: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
+
 const OVER_MAX = "That's more than you can withdraw right now.";
 
 type WithdrawFormProps = {
@@ -100,17 +103,15 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
             initial={{ opacity: 0, y: -6, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={spring}
+            // Escape anywhere in the panel closes only the form, not the sidebar.
+            onKeyDown={(event) => {
+                if (event.key === "Escape" && !sending) {
+                    event.stopPropagation();
+                    onClose();
+                }
+            }}
         >
-            <form
-                className={styles.depositForm}
-                onSubmit={submit}
-                onKeyDown={(event) => {
-                    if (event.key === "Escape" && !sending) {
-                        event.stopPropagation();
-                        onClose();
-                    }
-                }}
-            >
+            <form className={styles.depositForm} onSubmit={submit}>
                 <label
                     ref={field}
                     className={styles.amountField}
@@ -186,16 +187,27 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
             ) : (
                 wallets.length > 1 && (
                     <div role="radiogroup" aria-label="Withdraw to" className={styles.recipients}>
-                        {wallets.map((wallet) => (
+                        {wallets.map((wallet, index) => (
                             <button
                                 key={wallet}
                                 type="button"
                                 role="radio"
                                 aria-checked={wallet === to}
                                 aria-label={shortenAddress(wallet)}
+                                // Roving tabindex: only the picked row is a tab stop.
+                                tabIndex={wallet === to ? 0 : -1}
                                 className={styles.recipient}
                                 disabled={sending}
                                 onClick={() => setChosen(wallet)}
+                                onKeyDown={(event) => {
+                                    const step = ARROWS[event.key];
+                                    if (!step) return;
+                                    event.preventDefault();
+                                    const next = wallets[(index + step + wallets.length) % wallets.length]!;
+                                    setChosen(next);
+                                    const rows = event.currentTarget.parentElement?.children;
+                                    (rows?.[wallets.indexOf(next)] as HTMLElement | undefined)?.focus();
+                                }}
                             >
                                 <NetworkLogo network={ARC} className={styles.recipientMark} />
                                 {shortenAddress(wallet)}

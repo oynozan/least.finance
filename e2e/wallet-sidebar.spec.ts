@@ -205,7 +205,7 @@ test("a fresh account has a zero balance and no deposits to show", async ({ page
     else await balanceButton(page).hover();
     await expect(balanceButton(page)).toHaveAttribute("aria-expanded", "true");
     await page.waitForTimeout(500);
-    await expect(sidebar(page).getByRole("list", { name: "Deposits" })).toHaveCount(0);
+    await expect(sidebar(page).getByRole("list", { name: "History" })).toHaveCount(0);
 });
 
 test("the deposit form reads out the wallet's balance without writing it under the field", async ({ page }) => {
@@ -325,7 +325,7 @@ test("hovering the balance deals out past deposits", async ({ page, isMobile }) 
     await openWallet(page, { history: true });
     await settle(page);
 
-    const deposits = sidebar(page).getByRole("list", { name: "Deposits" });
+    const deposits = sidebar(page).getByRole("list", { name: "History" });
     await expect(deposits).toHaveCount(0);
 
     await sidebar(page)
@@ -359,7 +359,7 @@ test("past deposits are dealt out on reveal, not shown instantly", async ({ page
         (window as unknown as { depositFrames: Frame[] }).depositFrames = frames;
         const start = performance.now();
         const tick = () => {
-            const rows = document.querySelectorAll('[aria-label="Deposits"] > li');
+            const rows = document.querySelectorAll('[aria-label="History"] > li');
             if (rows.length) {
                 frames.push({
                     t: performance.now(),
@@ -425,7 +425,7 @@ test("a long deposit history stays inside the sidebar and scrolls", async ({ pag
     await openWallet(page, { history: true });
     await settle(page);
 
-    const history = sidebar(page).getByRole("list", { name: "Deposits" });
+    const history = sidebar(page).getByRole("list", { name: "History" });
     await sidebar(page)
         .getByRole("button", { name: /^Balance/ })
         .hover();
@@ -557,7 +557,7 @@ test("scrollable lists blur only the edges that hide more content", async ({ pag
     await sidebar(page)
         .getByRole("button", { name: /^Balance/ })
         .hover();
-    const history = sidebar(page).getByRole("list", { name: "Deposits" });
+    const history = sidebar(page).getByRole("list", { name: "History" });
     await expect(history.getByRole("listitem")).toHaveCount(DEPOSITS);
     await expectEdges(history, 0, 1);
     await history.hover();
@@ -573,7 +573,7 @@ test("deposit rows cast only a light shadow", async ({ page, isMobile }) => {
         .getByRole("button", { name: /^Balance/ })
         .hover();
 
-    const rows = sidebar(page).getByRole("list", { name: "Deposits" }).getByRole("listitem");
+    const rows = sidebar(page).getByRole("list", { name: "History" }).getByRole("listitem");
     await expect(rows).toHaveCount(DEPOSITS);
     for (const shadow of await rows.evaluateAll((els) => els.map((el) => getComputedStyle(el).boxShadow))) {
         // e.g. "rgba(0, 0, 0, 0.2) 0px 4px 10px -6px"
@@ -593,7 +593,7 @@ test("depositing adds to the history", async ({ page, isMobile }) => {
     await depositButton(page).click();
 
     // The history reveals once the form closes, as the pointer is still over the section.
-    const rows = sidebar(page).getByRole("list", { name: "Deposits" }).getByRole("listitem");
+    const rows = sidebar(page).getByRole("list", { name: "History" }).getByRole("listitem");
     await expect(rows).toHaveCount(DEPOSITS + 1);
     await expect(rows.first()).toContainText("+$500.00");
     await expect(rows.first()).toContainText("today", { timeout: 15_000 });
@@ -687,12 +687,12 @@ test("on touch, taps stand in for hover", async ({ page, isMobile }) => {
     await sidebar(page)
         .getByRole("button", { name: /^Balance/ })
         .tap();
-    await expect(sidebar(page).getByRole("list", { name: "Deposits" }).getByRole("listitem")).toHaveCount(DEPOSITS);
+    await expect(sidebar(page).getByRole("list", { name: "History" }).getByRole("listitem")).toHaveCount(DEPOSITS);
     await shoot(page, "3-deposits");
     await sidebar(page)
         .getByRole("button", { name: /^Balance/ })
         .tap();
-    await expect(sidebar(page).getByRole("list", { name: "Deposits" })).toHaveCount(0);
+    await expect(sidebar(page).getByRole("list", { name: "History" })).toHaveCount(0);
 
     await position(page, only!).tap();
     const trend = (await position(page, only!).getAttribute("data-trend")) as keyof typeof TREND_COLOR;

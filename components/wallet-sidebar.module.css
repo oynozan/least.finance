@@ -237,7 +237,8 @@
     flex: 1;
     min-width: 0;
     height: 100%;
-    padding: 0;
+    /* Room either side, so a long amount scrolls under neither the $ nor Max. */
+    padding: 0 8px;
     border: 0;
     background: none;
     outline: none;
@@ -652,8 +653,16 @@
 }
 
 .depositWhen {
+    min-width: 0;
     font-size: 13px;
+    line-height: 1.2;
+    text-align: right;
     color: var(--muted);
+}
+
+/* A withdrawal's recipient stays whole; the status beside it shrinks and wraps. */
+.withdrawalAmount {
+    flex: 0 0 auto;
 }
 
 .depositPending {

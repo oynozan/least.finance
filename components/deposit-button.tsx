@@ -30,7 +30,7 @@ const phaseOf = (notice: DepositNotice | null): Phase =>
         ? "running"
         : notice?.kind === "credited"
           ? "done"
-          : notice?.kind === "reverted"
+          : notice?.kind === "reverted" && !notice.withdrawal
             ? "error"
             : "idle";
 

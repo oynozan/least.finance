@@ -97,7 +97,7 @@ export function BalanceCard({ activity, now }: { activity: readonly Activity[]; 
                         <span className="text-[15px] text-muted">
                             {day
                                 ? day.deposited
-                                    ? `PnL that day, and ${formatUsd(day.deposited)} deposited`
+                                    ? `PnL that day, and ${formatUsd(Math.abs(day.deposited))} ${day.deposited < 0 ? "withdrawn" : "deposited"}`
                                     : "PnL that day"
                                 : range === "All"
                                   ? "PnL so far"

@@ -126,8 +126,8 @@ function Result({ activity: a }: { activity: Activity }) {
     }
     const change = Math.round(a.change * 100) / 100;
     if (change === 0) return <span className="text-muted">—</span>;
-    // Gains and realized losses carry their tone; a fee alone stays quiet.
-    const tone = a.kind === "deposit" || a.kind === "withdrawal" || a.kind === "close" ? trendOf(change) : "flat";
+    // Gains and realized losses carry their tone; a fee or a withdrawal stays quiet.
+    const tone = a.kind === "deposit" || a.kind === "close" ? trendOf(change) : "flat";
     return <span className={RESULT_TONE[tone]}>{formatPnl(change)}</span>;
 }
 

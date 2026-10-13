@@ -51,7 +51,8 @@ export type DepositNotice =
     | { kind: "confirming"; amount: bigint }
     | { kind: "credited"; amount: bigint }
     /** The server couldn't confirm it, so it came back out of the balance. */
-    | { kind: "reverted"; message: string };
+    /** `withdrawal`: a failed withdrawal, which the deposit button ignores. */
+    | { kind: "reverted"; message: string; withdrawal?: true };
 
 /** How the wallet took a deposit: turned down, failed to send, or sent (and now being confirmed). */
 export type DepositResult = "cancelled" | "failed" | "sent" | "switch_failed" | "wrong_network";
@@ -219,7 +220,8 @@ export class AccountClient {
         });
         socket.on("withdrawal:update", ({ withdrawal, account }) => {
             this.#dispatch({ type: "withdrawal", withdrawal, account });
-            if (withdrawal.state === "failed") this.#notify({ kind: "reverted", message: WITHDRAW_FAILED_COPY });
+            if (withdrawal.state === "failed")
+                this.#notify({ kind: "reverted", message: WITHDRAW_FAILED_COPY, withdrawal: true });
         });
         socket.on("position:settled", ({ position, account }) => {
             this.#dispatch({ type: "position-settled", position, account });

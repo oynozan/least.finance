@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { parseGwei, parseUnits } from "viem";
 import { accountOf, sendFromOutside } from "./backend";
 import {
@@ -30,7 +30,27 @@ const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
 // Read out, not shown: the wallet's balance, or why the amount is too much.
 const wallet = (page: Page) => sidebar(page).locator("#deposit-wallet");
 const status = (page: Page) => sidebar(page).getByRole("status");
-const deposits = (page: Page) => sidebar(page).getByRole("list", { name: "Deposits" });
+const deposits = (page: Page) => sidebar(page).getByRole("list", { name: "History" });
+
+/** Whether the $ sign, the digits and Max sit side by side inside the field, each in view and apart. */
+const fieldFits = (input: Locator) =>
+    input.evaluate((el) => {
+        const field = el.closest("label")!;
+        const box = (node: Element) => node.getBoundingClientRect();
+        const prefix = box(field.querySelector('[aria-hidden="true"]')!);
+        const max = box(field.querySelector("button")!);
+        const [f, i] = [box(field), box(el)];
+        const tol = 1;
+        // Scrolled digits stop short of the $ sign and of Max.
+        const style = getComputedStyle(el);
+        if (parseFloat(style.paddingLeft) < 6 || parseFloat(style.paddingRight) < 6) return false;
+        return (
+            prefix.left >= f.left - tol &&
+            prefix.right <= i.left + tol &&
+            i.right <= max.left + tol &&
+            max.right <= f.right + tol
+        );
+    });
 
 const DROPPED = "hasn't shown up on Arc";
 const LOSS = "rgb(255, 107, 91)";
@@ -112,6 +132,14 @@ test("a deposit counts at once, then the server confirms it", async ({ page }) =
     expect(tx.to.toLowerCase()).toBe(account!.depositAddress.toLowerCase());
     expect(BigInt(tx.value)).toBe(parseUnits("25", 18));
     expect(BigInt(tx.maxFeePerGas)).toBeGreaterThanOrEqual(parseGwei("20"));
+});
+
+test("a long amount stays inside the field, between the $ sign and Max", async ({ page }) => {
+    await start(page, 100);
+    await openForm(page);
+    await expect(maxButton(page)).toBeVisible();
+    await amountField(page).fill("99999999.123456");
+    expect(await fieldFits(amountField(page))).toBe(true);
 });
 
 test("the form closes once the wallet sends, and the status clears after a few seconds", async ({ page }) => {

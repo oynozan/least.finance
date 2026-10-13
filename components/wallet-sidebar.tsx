@@ -504,7 +504,7 @@ function WalletSection({
                         animate="shown"
                         exit="hidden"
                     >
-                        <ol ref={historyRef} className={styles.history} aria-label="Deposits">
+                        <ol ref={historyRef} className={styles.history} aria-label="History">
                             <AnimatePresence>
                                 {entries.map((row, i) => (
                                     <motion.li
@@ -565,7 +565,7 @@ function WithdrawalEntryRow({ row }: { row: WithdrawalEntry }) {
     return (
         <>
             <CoinIcon symbol="USDC" className={styles.depositCoin} />
-            <span className={styles.depositAmount}>
+            <span className={`${styles.depositAmount} ${styles.withdrawalAmount}`}>
                 −{formatUsd(toUsdc(row.amount))}
                 <span className={styles.depositOrigin}>
                     {" · to "}
