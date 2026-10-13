@@ -497,6 +497,8 @@ test.describe("networks", () => {
                 USDC: { base: 500 },
                 LINK: { polygon: 4 },
             }),
+            withWallet({ USDC: { base: 500 } }),
+            withWallet({ SOL: { solana: 3 } }),
             // Gas money only on some networks
             withWallet({
                 ETH: { ethereum: 0.001, arbitrum: 0.0002, base: 1 },

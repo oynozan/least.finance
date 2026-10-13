@@ -299,6 +299,80 @@ test.describe("defaults follow the wallet", () => {
     });
 });
 
+test.describe("a wallet without ETH", () => {
+    const held = (units: WalletHoldings): TradeCtx => ({ catalog: CATALOG, holdings: null, wallet: units });
+    const slot = (slot: string, value: string) => ({ type: "slot", slot, value }) as const;
+    const none: TradeCtx = { catalog: CATALOG, holdings: null, wallet: null };
+
+    test("Swap pays with a coin the wallet holds", () => {
+        const ctx = held({ USDC: { base: 500 } });
+        const swap = resolve(TRADE, initialState(TRADE, "swap", ctx), ctx);
+        expect(swap.text).toBe("I want to Swap my USDC to SOL for 10 USD.");
+        expect(swap.intent).toMatchObject({
+            fromToken: "USDC",
+            fromNetwork: "base",
+            toToken: "SOL",
+            toNetwork: "solana",
+        });
+        expect(swap.blocking).toBeUndefined();
+        // The same when the coins load after the sentence
+        const late = refit(TRADE, initialState(TRADE, "swap", none), ctx);
+        expect(resolve(TRADE, late, ctx).intent).toMatchObject({ fromToken: "USDC", fromNetwork: "base" });
+        // A pay coin chosen before the coins loaded and not held now is replaced
+        const chosen = reduce(TRADE, initialState(TRADE, "swap", none), slot("fromToken", "BTC"), none);
+        expect(resolve(TRADE, refit(TRADE, chosen, ctx), ctx).intent).toMatchObject({ fromToken: "USDC" });
+    });
+
+    test("a wallet holding only the coin Swap receives pays with it and receives dollars", () => {
+        const ctx = held({ SOL: { solana: 3 } });
+        const swap = resolve(TRADE, initialState(TRADE, "swap", ctx), ctx);
+        expect(swap.text).toBe("I want to Swap my SOL to USDC for 10 USD.");
+        expect(swap.intent).toMatchObject({
+            fromToken: "SOL",
+            fromNetwork: "solana",
+            toToken: "USDC",
+            toNetwork: "solana",
+        });
+        const late = refit(TRADE, initialState(TRADE, "swap", none), ctx);
+        expect(resolve(TRADE, late, ctx).intent).toMatchObject({ fromToken: "SOL", toToken: "USDC" });
+    });
+
+    test("a wallet holding nothing blocks on the coin to pay with, not on an amount", () => {
+        const ctx = held({});
+        const swap = resolve(TRADE, initialState(TRADE, "swap", ctx), ctx);
+        expect(swap.blocking).toMatchObject({ message: "Pick a coin to swap from.", cta: "Pick a coin" });
+        expect(swap.issues.some((issue) => issue.code === "max")).toBe(false);
+        const typed = resolve(
+            TRADE,
+            reduce(TRADE, initialState(TRADE, "swap", ctx), slot("amountUSD", "5000"), ctx),
+            ctx,
+        );
+        expect(typed.blocking).toMatchObject({ message: "Pick a coin to swap from." });
+    });
+
+    test("Sell opens on the held coin worth the most, not on dollars", () => {
+        const ctx = held({ LINK: { arbitrum: 40 }, DOGE: { bnb: 100 }, USDC: { base: 9000 } });
+        expect(resolve(TRADE, initialState(TRADE, "sell", ctx), ctx).intent).toMatchObject({
+            type: "spot",
+            side: "sell",
+            token: "LINK",
+            network: "arbitrum",
+        });
+        const only = held({ LINK: { arbitrum: 40 } });
+        expect(resolve(TRADE, initialState(TRADE, "sell", only), only).intent).toMatchObject({
+            token: "LINK",
+            network: "arbitrum",
+        });
+        // The coins loading after the sentence
+        const late = refit(TRADE, initialState(TRADE, "sell", none), only);
+        expect(resolve(TRADE, late, only).intent).toMatchObject({ token: "LINK", network: "arbitrum" });
+        // Buy is not about what is held, and nothing held leaves Sell as it was
+        expect(resolve(TRADE, initialState(TRADE, "buy", only), only).text).toBe("I want to Buy 10 USD of SOL.");
+        const empty = held({});
+        expect(resolve(TRADE, initialState(TRADE, "sell", empty), empty).text).toBe("I want to Sell 10 USD of my SOL.");
+    });
+});
+
 const holdingsView = (...held: SwapHoldingRow[]): SwapHoldingsView => ({
     readAt: "2026-10-13T09:00:00.000Z",
     rows: held,

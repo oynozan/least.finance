@@ -122,6 +122,20 @@ export function coinChoice(ctx: TradeCtx, coin: Token, options: { disabled?: str
     };
 }
 
+/** The coin other than the stablecoin that the wallet holds the most dollars of, if it holds any */
+export function largestHolding(ctx: TradeCtx): string | undefined {
+    let best: string | undefined;
+    let most = 0;
+    for (const { symbol } of ctx.catalog.tokens) {
+        const value = symbol === QUOTE ? 0 : (heldTotal(ctx, symbol) ?? 0) * priceOf(ctx, symbol);
+        if (value > most) {
+            best = symbol;
+            most = value;
+        }
+    }
+    return best;
+}
+
 /** Disables coins the wallet doesn't hold, only once a wallet is connected */
 export const unheld = (ctx: TradeCtx, symbol: string) =>
     heldTotal(ctx, symbol) === 0 ? `You don't hold any ${symbol}` : undefined;

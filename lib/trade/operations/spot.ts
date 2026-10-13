@@ -10,6 +10,7 @@ import {
     defaultPayNetwork,
     defaultReceiveNetwork,
     holdingCapOn,
+    largestHolding,
     minimum,
     networkChoices,
     networkFits,
@@ -96,12 +97,18 @@ export const spot = operation({
         const side = fixed.side === "sell" ? "pay" : "receive";
         const entered = cause.type === "enter" ? cause.changed : [];
         const strayed = entered.includes("token") !== entered.includes("network");
+        // A coin the wallet doesn't hold is sold as the one it holds the most of
+        const token =
+            cause.type === "enter" && side === "pay" && unheld(ctx, next.token)
+                ? (largestHolding(ctx) ?? next.token)
+                : next.token;
         const keep =
+            token === next.token &&
             !(cause.type === "slot" && cause.slot === "token") &&
-            networkFits(ctx, next.token, next.network, side, strayed);
+            networkFits(ctx, token, next.network, side, strayed);
         if (keep) return next;
-        const network = side === "pay" ? defaultPayNetwork(ctx, next.token) : defaultReceiveNetwork(ctx, next.token);
-        return { ...next, network };
+        const network = side === "pay" ? defaultPayNetwork(ctx, token) : defaultReceiveNetwork(ctx, token);
+        return { ...next, token, network };
     },
     toIntent: (v): Extract<TransactionIntent, { type: "spot" }> => ({
         type: "spot",
