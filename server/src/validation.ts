@@ -36,6 +36,21 @@ export const marketSearch = z.object({ q: z.string().max(100) });
 
 export const marketId = z.string().regex(/^\d{1,12}$/, "a market id");
 
+export const marketHistoryQuery = z.object({
+    // Comma-separated outcome token ids, one to five, each once
+    outcomes: z
+        .string()
+        .max(500)
+        .transform((list, ctx) => {
+            const ids = list.split(",");
+            const valid =
+                ids.length <= 5 && ids.every((id) => /^\d{1,80}$/.test(id)) && new Set(ids).size === ids.length;
+            if (valid) return ids;
+            ctx.addIssue({ code: "custom", message: "one to five different outcome token ids, comma-separated" });
+            return z.NEVER;
+        }),
+});
+
 const SWAP_SYMBOLS = new Set(COINS.map((coin) => coin.symbol));
 
 export const priceHistory = z.object({

@@ -8,7 +8,15 @@ import type { Identity } from "../auth/identity.ts";
 import { AppError, toApiError } from "../errors.ts";
 import type { ApiError } from "../protocol.ts";
 import type { Services } from "../services.ts";
-import { depositPage, depositReport, marketId, marketSearch, parse, priceHistory } from "../validation.ts";
+import {
+    depositPage,
+    depositReport,
+    marketHistoryQuery,
+    marketId,
+    marketSearch,
+    parse,
+    priceHistory,
+} from "../validation.ts";
 
 const REQUEST_ID = /^[\w.:-]{1,64}$/;
 
@@ -117,6 +125,17 @@ export function createApp(services: Services): express.Express {
     });
 
     // Public: the swap coins and their prices are the same for everyone.
+    app.get("/markets/:eventId/history", noStore, limit(120, 60_000), async (req, res) => {
+        const id = parse(marketId, req.params.eventId);
+        const { outcomes } = parse(marketHistoryQuery, req.query);
+        const view = await services.marketHistory.view(id, outcomes).catch((error: unknown) => {
+            req.log.warn({ err: error }, "Market history read failed");
+            throw unavailable();
+        });
+        if (!view) throw new AppError("not_found", "That market isn't available.");
+        res.json(view);
+    });
+
     app.get("/swaps/catalog", noStore, limit(120, 60_000), (_req, res) => {
         res.json(services.swapCatalog.view());
     });

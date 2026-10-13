@@ -8,6 +8,7 @@ import type { DepositService } from "./deposits/deposits.ts";
 import type { DepositWatcher } from "./deposits/watcher.ts";
 import type { DepositOrders } from "./crosschain/orders.ts";
 import type { Bus } from "./events.ts";
+import type { MarketHistory } from "./markets/history.ts";
 import type { MarketService } from "./markets/markets.ts";
 import type { PredictionService } from "./predictions/predictions.ts";
 import type { PriceHistory } from "./prices/history.ts";
@@ -32,6 +33,7 @@ export type Services = {
     balances: WalletBalances;
     orders: DepositOrders;
     markets: MarketService;
+    marketHistory: MarketHistory;
     predictions: PredictionService;
     priceHistory: PriceHistory;
     swapCatalog: SwapCatalog;

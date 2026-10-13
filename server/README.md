@@ -50,6 +50,7 @@ Everything under `/v1` takes `Authorization: Bearer <Privy access token>`. Error
 | `GET /health`                             | Liveness.                                                                                                                            |
 | `GET /ready`                              | 200 once MongoDB answers and the deposit scan has run in the last minute; 503 otherwise. Reports how many blocks the scan is behind. |
 | `GET /prices/history?range=&coins=`       | Public. The swap coins' dollar price history from DefiLlama; see [Price history](#price-history).                                    |
+| `GET /markets/:eventId/history?outcomes=` | Public. One to five outcomes' chance over the market's life from Polymarket; see [Market history](#market-history).                  |
 | `POST /v1/account`                        | Opens the signed-in person's account on first use and returns the account, its latest deposits and the deposit rules.                |
 | `GET /v1/account`                         | The account.                                                                                                                         |
 | `GET /v1/account/deposits?before=&limit=` | Deposits, newest first, up to 100 a page.                                                                                            |
@@ -72,6 +73,21 @@ The last point is the latest price, so it isn't on a whole step. DefiLlama leave
 Prices come from DefiLlama's free coins API, `https://coins.llama.fi`, which needs no key (its docs name `api.llama.fi`, which answers 404 for prices). It caps a chart at 500 points across all its coins, so a range is read in batches under the cap, three requests at a time: 3 to 11 requests a range. A background loop reads every range at startup and each again once 80% of its time in the table is up, so requests are answered from memory and never wait on DefiLlama. That's about 80 requests an hour, however many people ask. If DefiLlama fails, the last read is served (its `readAt` says how old it is) and DefiLlama isn't asked again for 30 s, or for longer when a 429 says so. A range never read is a 503 until it can be.
 
 DefiLlama doesn't publish a firm free limit (its pricing page says 10 to 200 requests a minute), which this stays well under. With a Pro key, point `DEFILLAMA_COINS_URL` at `https://pro-api.llama.fi/<key>/coins`. The key is then part of the URL, so no error or log names the URL.
+
+### Market history
+
+`GET /markets/:eventId/history?outcomes=a,b` answers one to five outcomes' chance over the market's life, oldest first, as `[unix ms, chance 0 to 1]` pairs of at most 300 points (`MarketHistoryView` in [src/protocol.ts](src/protocol.ts)). `outcomes` holds distinct token ids, and they come back in the order asked. It needs no token, and a token the event doesn't offer is a 404. The web app reads it from here and never calls Polymarket itself.
+
+The market's age picks the resolution, so a line holds about 250 points however old the market is:
+
+| Age            | Polymarket query                | Points are about |
+| -------------- | ------------------------------- | ---------------- |
+| Under a day    | `interval=1d`, `fidelity=5`     | 5 minutes apart  |
+| Under 30 days  | `interval=max`, age / 250 min   | 10 min or more   |
+| Under 180 days | `interval=max`, `fidelity=720`  | 12 hours apart   |
+| Older          | `interval=max`, `fidelity=1440` | a day apart      |
+
+A market with no opening date is read at `interval=max`, `fidelity=60`. All the asked tokens go in one `batch-prices-history` call, and concurrent reads of the same token share a call. A token's line is fresh for 3 minutes. If Polymarket fails, a line read within the last 30 minutes is served (the view's `readAt` says how old it is); a token with nothing that recent is a 503. At most 1,000 tokens are kept, and Polymarket is given 8 seconds to answer.
 
 ### Socket.io
 

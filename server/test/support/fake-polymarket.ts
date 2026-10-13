@@ -25,8 +25,14 @@ export type FakePolymarket = {
     resolve(marketId: string, outcomePrices: string[], options?: { uma?: string | null }): void;
     /** Gone from the top list, from search and from /events/:id (404). */
     hide(eventId: string): void;
+    /** Sets when an event opened (shifted with the clock like endDate); null removes startDate and createdAt. Default: 20 days before now. */
+    setOpened(eventId: string, at: Date | null): void;
+    /** Serves these points for a token instead of the generated ones; null restores them. */
+    setHistory(tokenId: string, points: { t: number; p: number }[] | null): void;
     /** Answers the next request to this path with a 500. */
-    failNext(path: "/events" | "/events/:id" | "/markets/:id" | "/public-search" | "/books"): void;
+    failNext(
+        path: "/events" | "/events/:id" | "/markets/:id" | "/public-search" | "/books" | "/batch-prices-history",
+    ): void;
     /** Makes the top list answer events that fail any schema. */
     malformed(): void;
     stop(): Promise<void>;
@@ -48,6 +54,8 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
     const failing = new Set<string>();
     const resolved = new Map<string, Raw>();
     let broken = false;
+    const opened = new Map<string, Date | null>();
+    const histories = new Map<string, { t: number; p: number }[]>();
 
     // Every token and the first-outcome book its market recorded
     const tokens = new Map<string, { market: Raw; first: boolean }>();
@@ -58,12 +66,18 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
         }
     }
 
+    const DAY = 86_400_000;
+    const openedOf = (eventId: string) => (opened.has(eventId) ? opened.get(eventId)! : new Date(now() - 20 * DAY));
+
     const shifted = (event: Raw): Raw => {
         const move = (date: unknown) =>
             typeof date === "string" ? new Date(Date.parse(date) + (now() - recordedAt)).toISOString() : date;
         const copy = structuredClone(event);
         copy.endDate = move(copy.endDate);
         for (const market of copy.markets) market.endDate = move(market.endDate);
+        const at = openedOf(String(event.id));
+        copy.startDate = at?.toISOString() ?? null;
+        copy.createdAt = at?.toISOString() ?? null;
         return copy;
     };
     const visible = (events: Raw[]) => events.filter((event) => !hidden.has(event.id)).map(shifted);
@@ -88,6 +102,40 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
             min_order_size: String(token.market.orderMinSize),
             tick_size: "0.01",
         };
+    };
+
+    // The event each token belongs to
+    const eventOf = new Map<string, string>();
+    for (const event of [...fixtures.top, ...fixtures.extra]) {
+        for (const market of event.markets) {
+            for (const id of JSON.parse(market.clobTokenIds) as string[]) eventOf.set(id, String(event.id));
+        }
+    }
+
+    // A deterministic wave that ends at the token's current midpoint
+    const historyOf = (tokenId: string, interval: string, fidelity: number) => {
+        const set = histories.get(tokenId);
+        if (set) return set;
+        const book = bookOf(tokenId)!;
+        const bid = book.bids[0] ? Number(book.bids[0].price) : null;
+        const ask = book.asks[0] ? Number(book.asks[0].price) : null;
+        const mid = bid !== null && ask !== null ? (bid + ask) / 2 : (bid ?? ask ?? 0.5);
+        const openedAt = openedOf(eventOf.get(tokenId)!);
+        const end = now();
+        const window =
+            interval === "1d" ? end - DAY : interval === "max" && fidelity < 720 ? end - 30 * DAY : -Infinity;
+        const start = Math.max(window, openedAt?.getTime() ?? -Infinity);
+        const step = fidelity * 60_000;
+        const count = Math.min(5000, Math.max(1, Math.floor((end - start) / step)) + 1);
+        const seed = Number(BigInt(tokenId) % 97n);
+        return Array.from({ length: count }, (_, i) => {
+            const left = 1 - i / Math.max(1, count - 1);
+            const p = mid + 0.12 * left * Math.sin(i / 9 + seed);
+            return {
+                t: Math.floor((end - (count - 1 - i) * step) / 1000),
+                p: i === count - 1 ? mid : Math.round(Math.min(0.99, Math.max(0.01, p)) * 10_000) / 10_000,
+            };
+        });
     };
 
     const server = createServer((req, res) => {
@@ -137,6 +185,30 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
             });
             return;
         }
+
+        if (req.method === "POST" && url.pathname === "/batch-prices-history") {
+            let body = "";
+            const logged = fake.requests.length - 1;
+            req.on("data", (chunk) => (body += chunk));
+            req.on("end", () => {
+                // The request log keeps the body, so tests can see the interval asked
+                fake.requests[logged] += ` ${body}`;
+                const { markets, interval, fidelity } = JSON.parse(body) as {
+                    markets?: string[];
+                    interval?: string;
+                    fidelity?: number;
+                };
+                if (!Array.isArray(markets) || markets.length > 20 || !interval) {
+                    return send(400, { error: "Invalid request" });
+                }
+                const history: Record<string, { t: number; p: number }[]> = {};
+                for (const token of markets) {
+                    if (tokens.has(token)) history[token] = historyOf(token, interval, fidelity ?? 1);
+                }
+                send(200, { history });
+            });
+            return;
+        }
         send(404, { error: "Not found" });
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -155,6 +227,8 @@ export async function startFakePolymarket(options: { now?: () => number } = {}):
                 outcomePrices: JSON.stringify(outcomePrices),
                 conditionId: `0xcondition-${marketId}`,
             }),
+        setOpened: (eventId, at) => void opened.set(eventId, at),
+        setHistory: (tokenId, points) => void (points ? histories.set(tokenId, points) : histories.delete(tokenId)),
         hide: (eventId) => hidden.add(eventId),
         failNext: (path) => failing.add(path),
         malformed: () => {

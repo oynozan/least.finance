@@ -24,6 +24,7 @@ import { Ledger } from "./deposits/ledger.ts";
 import { DepositRegistry } from "./deposits/registry.ts";
 import { DepositWatcher } from "./deposits/watcher.ts";
 import { Bus } from "./events.ts";
+import { MarketHistory } from "./markets/history.ts";
 import { MarketService } from "./markets/markets.ts";
 import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
@@ -200,8 +201,16 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             data: polymarket,
             logger: marketLogger,
             syncMs: config.MARKETS_SYNC_MS,
+            // Read through Date so a test's fake clock moves the cache
+            now: () => Date.now(),
             // Read lazily: the service below needs the markets, so it's built after them
             maxOrderUSD: (): number | null => service.maxOrderUSD(),
+        });
+        const marketHistory = new MarketHistory({
+            data: polymarket,
+            markets,
+            logger: marketLogger,
+            now: () => Date.now(),
         });
         const lifi = createLifi({ url: config.LIFI_URL, apiKey: config.LIFI_API_KEY });
         const swapClients = createSwapClients({
@@ -330,6 +339,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             balances,
             orders,
             markets,
+            marketHistory,
             predictions: service,
             priceHistory,
             swapCatalog,
