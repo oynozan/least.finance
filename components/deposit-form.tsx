@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { motion, useAnimate, useReducedMotion, type Transition } from "motion/react";
 import type { ApiError, DepositQuoteView } from "@/lib/account/state";
 import type { CoinBalance } from "@/server/src/protocol";
-import type { DepositResult } from "./account-client";
+import { NEEDS_SOL, type DepositResult } from "./account-client";
 import { CloseIcon } from "./icons";
 import { formatUsd } from "./wallet-data";
 import styles from "./wallet-sidebar.module.css";
@@ -43,6 +43,22 @@ export function normalizeAmount(text: string) {
 /** "2 s", "3 min". */
 const etaText = (seconds: number) =>
     seconds < 60 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`;
+
+/** What a quote pays: "≈ $300.00 in about 2 s"; from Solana "You get about 9.97 USDC in about 5 s", with the fee when the amount sent is known in dollars. */
+function previewText(coin: CoinBalance, amount: string | null, payout: DepositQuoteView) {
+    const out = Number(payout.usdcOut);
+    const eta = etaText(payout.etaSeconds);
+    if (coin.chain !== "solana") return `≈ ${formatUsd(out)} in about ${eta}`;
+    const sent =
+        coin.symbol === "USDC"
+            ? Number(amount)
+            : coin.usd !== null && coin.amount !== null && Number(coin.amount) > 0
+              ? (Number(amount) * coin.usd) / Number(coin.amount)
+              : null;
+    const fee = sent === null ? 0 : sent - out;
+    const got = `You get about ${out.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDC in about ${eta}`;
+    return fee >= 0.005 ? `${got} · fee ${formatUsd(fee)}` : got;
+}
 
 type DepositFormProps = {
     /** The coin being deposited, in the wallet it was picked from. */
@@ -126,6 +142,7 @@ export function DepositForm({ coin, walletBalance, minDeposit, onSubmit, preview
         setSending(false);
         // Turned down in the wallet: the amount stays, ready to try again.
         if (result === "cancelled") return;
+        if (result === "needs_sol") return setWalletProblem(NEEDS_SOL);
         if (result === "failed") return setWalletProblem("Your wallet couldn't send the deposit. Try again.");
         if (result === "switch_failed")
             return setWalletProblem(
@@ -140,7 +157,7 @@ export function DepositForm({ coin, walletBalance, minDeposit, onSubmit, preview
     };
 
     // Only problems are written out; the wallet's balance is for screen readers.
-    const preText = payout ? `≈ ${formatUsd(Number(payout.usdcOut))} in about ${etaText(payout.etaSeconds)}` : null;
+    const preText = payout ? previewText(coin, amount, payout) : null;
     const hint =
         walletProblem ??
         issue ??

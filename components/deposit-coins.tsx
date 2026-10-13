@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { motion, type Transition, type Variants } from "motion/react";
-import { sameWallet } from "@/lib/account/balances";
+import { isDepositOpen, sameWallet } from "@/lib/account/balances";
 import type { CoinBalance } from "@/server/src/protocol";
 import { CoinIcon } from "./coin-icons";
 import { EVM_CATALOG, SOLANA_CATALOG } from "./deposit-coins-catalog";
@@ -17,6 +17,8 @@ type WalletRef = { kind: "evm" | "solana"; address: string };
 type DepositCoinsProps = {
     /** Null before any read: every catalog coin of every linked wallet, without amounts. */
     rows: CoinBalance[] | null;
+    /** Whether the server lets Solana coins be deposited. */
+    solanaOpen: boolean;
     wallets: WalletRef[];
     onPick: (row: CoinBalance) => void;
     onConnect: (kind: "evm" | "solana") => void;
@@ -39,9 +41,6 @@ const rowVariants: Variants = {
 
 /** Room kept under the list, inside the sidebar, for the frame's padding and shadow. */
 const BOTTOM_ROOM = 22;
-
-/** Arc, Ethereum and BNB Chain can be deposited from; Solana can't yet. */
-const isOpen = (row: CoinBalance) => row.chain !== "solana";
 
 const isZero = (row: CoinBalance) => row.amount !== null && Number(row.amount) === 0;
 
@@ -90,7 +89,7 @@ function listRef(list: HTMLUListElement | null) {
 }
 
 /** The list of every supported coin in the person's wallets, to pick what to deposit. */
-export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: DepositCoinsProps) {
+export function DepositCoins({ rows, solanaOpen, wallets, onPick, onConnect, onClose }: DepositCoinsProps) {
     const frame = useRef<HTMLDivElement>(null);
     // The row under the pointer or keyboard focus; one highlight for the whole list slides between them.
     const [active, setActive] = useState<string | null>(null);
@@ -113,6 +112,7 @@ export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: Depo
         if (opener.current instanceof HTMLElement) opener.current.focus();
     };
 
+    const isOpen = (row: CoinBalance) => isDepositOpen(row, solanaOpen);
     const all = wallets.flatMap((wallet) => rowsOf(wallet, rows));
     // What can be deposited first, then empty coins, then networks that aren't open yet.
     const groups = [

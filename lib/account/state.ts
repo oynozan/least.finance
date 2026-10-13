@@ -112,6 +112,8 @@ export type AccountState =
           /** Cursor for older deposits, null once they're all here. */
           next: string | null;
           rules: DepositRules;
+          /** Which Solana flows the server has switched on. */
+          solana: WalletSession["solana"];
           /** Newest first; shown and counted until the server settles them. */
           pending: PendingDeposit[];
           /** Bridge orders still open, newest first. */
@@ -178,6 +180,7 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 deposits: deposits.items,
                 next: deposits.next,
                 rules,
+                solana: action.session.solana,
                 pending,
                 orders: sortOrders(action.session.orders),
                 // Positions follow as their own push after the session.

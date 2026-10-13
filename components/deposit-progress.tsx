@@ -35,6 +35,12 @@ export function shownOrder(orders: DepositOrderView[], dismissed: string | null,
     );
 }
 
+/** Where the order's own transaction can be looked up; only Solana ones have a link. */
+export function explorerUrl(order: DepositOrderView): string | null {
+    const signature = order.sourceTxHashes[0];
+    return order.coin.startsWith("solana:") && signature ? `https://solscan.io/tx/${signature}` : null;
+}
+
 /** Whether the order ended badly, which the status line shows in the loss tone. */
 export const isOutcome = (order: DepositOrderView) => order.state in OUTCOMES;
 
@@ -56,6 +62,7 @@ export function DepositProgress({ order }: { order: DepositOrderView }) {
     }
     const done = DONE[order.state] ?? 0;
     const current = Math.min(done, STEPS.length - 1);
+    const explorer = explorerUrl(order);
     return (
         <>
             {/* The one line that changes with the step, read out as it does. */}
@@ -78,6 +85,17 @@ export function DepositProgress({ order }: { order: DepositOrderView }) {
                             </span>
                             {name}
                             <span className="sr-only">, {STATE_TEXT[step]}</span>
+                            {i === 0 && explorer && (
+                                <a
+                                    className={styles.stepLink}
+                                    href={explorer}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    aria-label="View the transaction on Solscan"
+                                >
+                                    Solscan
+                                </a>
+                            )}
                             {step === "active" && i === 2 && (
                                 <span className={styles.stepEta}>about {eta(order.etaSeconds)}</span>
                             )}

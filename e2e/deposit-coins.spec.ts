@@ -109,10 +109,8 @@ test("a Solana-only user sees SOL and USDC on Solana, plus Connect an EVM wallet
     const coins = coinsOf(page);
     await expect(coins.getByRole("button")).toHaveCount(3);
     await expect(coins.getByRole("button", { name: "SOL on Solana" })).toHaveAttribute("aria-disabled", "true");
-    await expect(coins.getByRole("button", { name: "USDC on Solana" })).toHaveAttribute(
-        "title",
-        "Deposits from Solana aren't open yet.",
-    );
+    // Solana is open, so an empty wallet's rows are empty, not closed.
+    await expect(coins.getByRole("button", { name: "USDC on Solana" })).toHaveAttribute("title", "Nothing to deposit");
     await expect(coins.getByRole("button", { name: "Connect an EVM wallet" })).toBeVisible();
     await expect(coins.getByRole("button", { name: "ETH on Ethereum" })).toHaveCount(0);
 });

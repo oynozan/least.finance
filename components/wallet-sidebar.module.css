@@ -934,6 +934,18 @@
     font-variant-numeric: tabular-nums;
 }
 
+.stepLink {
+    margin-left: auto;
+    font-weight: 400;
+    color: var(--muted);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.stepLink:hover {
+    color: var(--foreground);
+}
+
 .outcome {
     flex: 1;
     display: flex;

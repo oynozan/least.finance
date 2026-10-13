@@ -87,6 +87,8 @@ const config = loadConfig({
     POLYMARKET_CLOB_URL: polymarket.url,
     LIFI_URL: lifi.url,
     DEFILLAMA_COINS_URL: llama.url,
+    SOLANA_DEPOSITS: "on",
+    SOLANA_WITHDRAWALS: "on",
     PREDICTIONS_TRADING: "on",
     PREDICTIONS_RESOLVE_MS: "300",
     POLYMARKET_POOL_KEY: `0x${"1".repeat(64)}`,
@@ -110,12 +112,15 @@ async function broadcastPayout(rawTx: Hex): Promise<Hex> {
     return result;
 }
 const trader = fakePoolTrader(polymarket, 1_000_000n * 1_000_000n);
-const bridge = new FakeBridge({ arcRpcUrl: emulator.url, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
+const rates = { ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 };
+const bridge = new FakeBridge({ arcRpcUrl: emulator.url, rates, chains: ["ethereum", "bnb"] });
+// Solana deposits are asked of Relay by name.
+const solanaBridge = new FakeBridge({ arcRpcUrl: emulator.url, rates, name: "relay", chains: ["solana"] });
 const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
     sources: createSourceClients({ ethereum: [ethereum.url], bnb: [bnb.url] }),
     solana: createSolanaRpc([solanaRpc.url]),
     prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
-    bridges: [bridge],
+    bridges: [bridge, solanaBridge],
     trader,
     payoutBroadcast: broadcastPayout,
 });
@@ -260,7 +265,16 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
             { sort: { _id: -1 } },
         );
         if (!order) throw new Error("No order");
-        await bridge.advance(order.ref, stage as "pending" | "filled" | "refunded" | "failed");
+        const issuer = order.provider === solanaBridge.name ? solanaBridge : bridge;
+        await issuer.advance(order.ref, stage as "pending" | "filled" | "refunded" | "failed");
+        return {};
+    },
+    /** What the Solana RPC says of a signature: "confirmed" or "finalized", or `failed` for a transaction that errored. */
+    "/solana/signature": async ({ signature, status, failed }) => {
+        solanaRpc.setSignatureStatus(String(signature), {
+            confirmationStatus: String(status ?? "confirmed"),
+            err: failed ? { InstructionError: [0, "Custom"] } : null,
+        });
         return {};
     },
     /** A deposit sent from somewhere other than the app, like an exchange withdrawal. */

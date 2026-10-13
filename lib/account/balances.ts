@@ -10,6 +10,9 @@ const cacheKey = (userId: string) => `balances:${userId}`;
 export const sameWallet = (a: string, b: string) =>
     a === b || (/^0x/i.test(a) && /^0x/i.test(b) && a.toLowerCase() === b.toLowerCase());
 
+/** Whether a coin can be deposited from: Arc, Ethereum and BNB Chain always, Solana once the server has its deposits switched on. */
+export const isDepositOpen = (row: CoinBalance, solanaDeposits: boolean) => row.chain !== "solana" || solanaDeposits;
+
 /** The last snapshot kept for this person, or null when there is none or storage is unavailable. */
 export function loadCachedBalances(userId: string): BalancesView | null {
     try {

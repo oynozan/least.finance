@@ -201,6 +201,7 @@ function SignedInWallet() {
                 orders={account.orders}
                 onStartDeposit={account.dismissNotice}
                 balances={account.balances}
+                solanaOpen={account.state.status === "ready" && account.state.solana.deposits}
                 wallets={linked}
                 onOpenCoins={account.refreshBalances}
                 onPick={(row) => {
@@ -280,6 +281,8 @@ type WalletSectionProps = {
     onStartDeposit: () => void;
     /** Every coin in every linked wallet; null before any read. */
     balances: CoinBalance[] | null;
+    /** Whether the server lets Solana coins be deposited. */
+    solanaOpen: boolean;
     wallets: Wallet[];
     /** Deposit was clicked: read the balances again, silently. */
     onOpenCoins: () => void;
@@ -311,6 +314,7 @@ function WalletSection({
     orders,
     onStartDeposit,
     balances,
+    solanaOpen,
     wallets,
     onOpenCoins,
     onPick,
@@ -480,6 +484,7 @@ function WalletSection({
                     <DepositCoins
                         key="coins"
                         rows={balances}
+                        solanaOpen={solanaOpen}
                         wallets={wallets}
                         onPick={(row) => {
                             onPick(row);

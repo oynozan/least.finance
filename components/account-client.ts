@@ -38,6 +38,7 @@ import type {
     SwapRequest,
     SwapTxView,
 } from "@/server/src/protocol";
+import { buildDepositTransaction } from "@/lib/account/solana-tx";
 import { arc } from "./arc";
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
@@ -55,7 +56,10 @@ export type DepositNotice =
     | { kind: "reverted"; message: string; withdrawal?: true };
 
 /** How the wallet took a deposit: turned down, failed to send, or sent (and now being confirmed). */
-export type DepositResult = "cancelled" | "failed" | "sent" | "switch_failed" | "wrong_network";
+export type DepositResult = "cancelled" | "failed" | "sent" | "switch_failed" | "wrong_network" | "needs_sol";
+
+/** What a Solana wallet without SOL for the network fee is told before any order is opened. */
+export const NEEDS_SOL = "You need a little SOL to send from Solana.";
 
 /** What a bridged deposit needs from the wallet: its provider, its address, and a move to the source chain. */
 export type BridgeWallet = {
@@ -120,6 +124,8 @@ const MAX_RETRY_MS = 30_000;
 const SWAPS_UNAVAILABLE = "Swaps aren't available right now.";
 const MAX_SWAPS = 50;
 const REJECTED_WORDING = /reject|declin|denied|cancel/i;
+/** Lamports a Solana wallet needs to pay the network fee (about 0.00001 SOL is quoted). */
+const MIN_FEE_LAMPORTS = BigInt(10_000);
 
 const UNREACHABLE: ApiError = { code: "unavailable", message: "Couldn't reach the server. Retrying…" };
 /** Failures worth asking again about; the rest (a wallet that isn't the user's, say) won't change by retrying. */
@@ -575,6 +581,59 @@ export class AccountClient {
             return "sent";
         } catch (error) {
             return (error as { code?: unknown }).code === USER_REJECTED ? "cancelled" : "failed";
+        }
+    }
+
+    /**
+     * Opens a Solana deposit order, builds its transaction on a fresh blockhash and has the wallet
+     * sign and send it. The server follows the order from the signature on.
+     */
+    async solanaDeposit(
+        coin: string,
+        amount: string,
+        wallet: { address: string; signer: SwapSigner["solana"]; solBalance: bigint | null },
+    ): Promise<DepositResult> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket || !wallet.signer) return "failed";
+        if (wallet.solBalance !== null && wallet.solBalance < MIN_FEE_LAMPORTS) return "needs_sol";
+        try {
+            const opened = await socket
+                .timeout(CONNECT_TIMEOUT_MS)
+                .emitWithAck("deposit:order", { coin, amount, wallet: wallet.address })
+                .catch(() => null);
+            if (!opened?.ok || this.#socket !== socket) return "failed";
+            const { order, txs } = opened.data;
+            this.#dispatch({ type: "order", order });
+            const tx = txs[0];
+            if (txs.length !== 1 || tx?.kind !== "solana") return "failed";
+
+            // Fetched right before signing, so the blockhash is as fresh as the wallet prompt allows.
+            const recent = await socket
+                .timeout(CONNECT_TIMEOUT_MS)
+                .emitWithAck("solana:blockhash", {})
+                .catch(() => null);
+            if (!recent?.ok || this.#socket !== socket) return "failed";
+            const bytes = buildDepositTransaction({
+                payer: wallet.address,
+                blockhash: recent.data,
+                instructions: tx.instructions,
+                lookupTables: tx.lookupTables,
+            });
+            const signature = await wallet.signer.signAndSend(bytes);
+            if (typeof signature !== "string" || signature === "") return "failed";
+            if (this.#socket !== socket) return "sent";
+
+            const reported = await socket
+                .timeout(CONNECT_TIMEOUT_MS)
+                .emitWithAck("deposit:source", { orderId: order.id, txHashes: [signature] })
+                .catch(() => null);
+            if (reported?.ok) this.#dispatch({ type: "order", order: reported.data });
+            this.#dropBalance(coin, wallet.address, amount);
+            return "sent";
+        } catch (error) {
+            const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+            const rejected = code === USER_REJECTED || (typeof message === "string" && REJECTED_WORDING.test(message));
+            return rejected ? "cancelled" : "failed";
         }
     }
 

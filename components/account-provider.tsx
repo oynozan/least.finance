@@ -1,5 +1,6 @@
 "use client";
 
+import { parseUnits } from "viem";
 import {
     createContext,
     use,
@@ -212,11 +213,24 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
 
     // All three act for the wallet of the row picked, not the active one.
     const quote = (coin: string, amount: string, from: string) =>
-        wallets.some((w) => w.address.toLowerCase() === from.toLowerCase())
+        wallets.some((w) => w.address.toLowerCase() === from.toLowerCase()) || solanaSigner?.address === from
             ? client.quote(coin, amount, from)
             : Promise.resolve(NO_WALLET);
 
     const depositCoin = async (coin: string, amount: string, from: string): Promise<DepositResult> => {
+        if (coin.startsWith("solana:")) {
+            if (solanaSigner?.address !== from) return "failed";
+            const sol = snapshot.balances?.rows.find((r) => r.coin === "solana:SOL" && r.wallet === from)?.amount;
+            try {
+                return await client.solanaDeposit(coin, amount, {
+                    address: from,
+                    signer: solanaSigner,
+                    solBalance: sol == null ? null : parseUnits(sol, 9),
+                });
+            } catch {
+                return "failed";
+            }
+        }
         const wallet = wallets.find((w) => w.address.toLowerCase() === from.toLowerCase());
         if (!wallet) return "failed";
         try {

@@ -53,6 +53,10 @@ export const fundSource = (address: string, coin: string, amount: string) =>
 export const advanceBridge = (address: string, stage: "pending" | "filled" | "refunded" | "failed") =>
     call<object>("/bridge/advance", { address, stage }).then(() => undefined);
 
+/** Has the Solana RPC report the transaction with this base58 signature as landed, or as failed. */
+export const landSolanaSignature = (signature: string, failed = false) =>
+    call<object>("/solana/signature", { signature, status: "confirmed", failed }).then(() => undefined);
+
 /** What the pool's trader does with the next order on a token; "hold" keeps it unanswered until `releaseOrder`. */
 export const nextOrder = (tokenId: string, behavior: string) =>
     call<object>("/polymarket/next", { tokenId, behavior }).then(() => undefined);
