@@ -40,6 +40,7 @@ import { createSwapClients } from "./swaps/clients.ts";
 import { SwapHoldings, multicallReader, solanaReader } from "./swaps/holdings.ts";
 import { createLifi } from "./swaps/lifi.ts";
 import { attachSockets } from "./socket/sockets.ts";
+import { Sweeper } from "./withdrawals/sweeper.ts";
 
 const TRADER_RETRY_MS = 60_000;
 const REDEEM_MS = 60_000;
@@ -100,9 +101,10 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 apiUrl: config.PRIVY_API_URL,
                 logger,
             }));
+        const keyring = createKeyring(config.DEPOSIT_MNEMONIC);
         const accounts = new AccountService({
             collections,
-            keyring: createKeyring(config.DEPOSIT_MNEMONIC),
+            keyring,
             registry,
             headBlock: async () => Number(await client.getBlockNumber()),
         });
@@ -197,6 +199,13 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             readSolana: solanaReader(solana),
             now: overrides.now,
         });
+        const sweeper = new Sweeper({
+            client,
+            keyring,
+            collections,
+            bus,
+            logger: logger.child({ component: "sweeper" }),
+        });
         const service = new PredictionService({
             collections,
             ledger,
@@ -268,6 +277,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             predictions: service,
             swapCatalog,
             swapHoldings,
+            sweeper,
         };
 
         const httpServer = createServer(createApp(services));
@@ -275,6 +285,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         const io = attachSockets(httpServer, services);
         await listen(httpServer, config.PORT, config.HOST);
         watcher.start();
+        sweeper.start();
         tracker.start();
         markets.start();
         swapCatalog.start();
@@ -308,6 +319,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await markets.stop();
                 await tracker.stop();
                 await watcher.stop();
+                await sweeper.stop();
                 // Closes the HTTP server too; idle keep-alive connections would hold it open.
                 httpServer.closeIdleConnections();
                 const forced = setTimeout(() => httpServer.closeAllConnections(), 5_000).unref();
