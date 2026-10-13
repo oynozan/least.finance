@@ -109,11 +109,11 @@ Every line must start with `ok:`. A `FAIL:` line says what to fix; DNS changes c
 ## 6. The first deploy
 
 ```bash
-deploy/deploy.sh --dry-run HOST   # prints the rsync and compose commands without running them
-deploy/deploy.sh HOST
+deploy/deploy.sh --dry-run root@HOST   # prints the rsync and compose commands without running them
+deploy/deploy.sh root@HOST
 ```
 
-The script copies the repo to `/opt/least-finance` on the VPS (leaving out `.git`, `node_modules`, `.next`, `.env*`, test output and `.superpowers`), runs `docker compose --env-file /etc/least-finance/server.env up -d --build` there, then waits up to five minutes for `https://api.least.finance/ready` to answer 200. The first build takes several minutes. If it never gets there it prints the logs of every service that is not healthy and exits non-zero. The SSH user needs to read the env file and use Docker, which in practice means `root`.
+The script copies the repo to `/opt/least-finance` on the VPS (leaving out `.git`, `node_modules`, `.next`, `.env*`, test output and `.superpowers`), runs `docker compose --env-file /etc/least-finance/server.env up -d --build` there, then waits up to five minutes for `https://api.least.finance/ready` to answer 200. The first build takes several minutes. If it never gets there it prints the logs of every service that is not healthy and exits non-zero. The SSH user needs to read the env file and use Docker, which in practice means `root`, so pass `root@HOST`, not a bare address.
 
 Then check it from outside: open `https://least.finance`, sign in, and look at `ssh root@HOST 'cd /opt/least-finance/deploy && docker compose --env-file /etc/least-finance/server.env ps'`: every service should be `running`, and `server`, `web` and `mongo` `healthy`.
 
@@ -126,7 +126,7 @@ alias compose='docker compose --env-file /etc/least-finance/server.env'
 
 ## 7. Update
 
-Run `deploy/deploy.sh HOST` again from the commit you want live. Compose rebuilds only the images whose inputs changed and recreates only those containers. The database and the certificates stay on their volumes.
+Run `deploy/deploy.sh root@HOST` again from the commit you want live. Compose rebuilds only the images whose inputs changed and recreates only those containers. The database and the certificates stay on their volumes.
 
 Watch the logs after an update with `compose logs -f --tail 100 server` on the VPS.
 
@@ -136,7 +136,7 @@ Redeploy the previous commit. From a separate worktree, so your working copy sta
 
 ```bash
 git worktree add ../least-finance-rollback <previous-commit>
-../least-finance-rollback/deploy/deploy.sh HOST
+../least-finance-rollback/deploy/deploy.sh root@HOST
 git worktree remove ../least-finance-rollback
 ```
 
@@ -164,17 +164,18 @@ Keep that copy somewhere encrypted. It holds every account and balance.
 
 `deploy/restore.sh <archive>` replaces the collections in the running database with the ones in the archive, after you type `yes` (`--yes` skips the question). Anything written since the backup is lost, so stop the API first for a real restore: `compose stop server`, restore, then `compose start server`.
 
-Do a drill once after the first deploy and again from time to time, so you know the backups work. On the VPS, with the stack running:
+Do a drill once after the first deploy and again from time to time, so you know the backups work. The drill stops the API first so nothing is written between the backup and the restore. On the VPS, with the stack running:
 
 ```bash
 cd /opt/least-finance/deploy
 alias compose='docker compose --env-file /etc/least-finance/server.env'
 count='db.getCollectionNames().sort().forEach(c => print(c, db[c].countDocuments()))'
 
+compose stop server
+
 compose exec -T backup bash /lf-backup/backup.sh --now
 compose exec -T mongo bash -c "mongosh --quiet -u root -p \"\$MONGO_ROOT_PASSWORD\" --authenticationDatabase admin \"\$MONGODB_DB\" --eval '$count'" > /tmp/counts-before.txt
 
-compose stop server
 ./restore.sh "$(ls -1t /var/backups/least-finance/least-finance-*.archive.gz | head -n 1)"
 compose exec -T mongo bash -c "mongosh --quiet -u root -p \"\$MONGO_ROOT_PASSWORD\" --authenticationDatabase admin \"\$MONGODB_DB\" --eval '$count'" > /tmp/counts-after.txt
 compose start server
