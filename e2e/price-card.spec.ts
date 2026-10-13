@@ -151,6 +151,11 @@ test("pointing along the chart rolls the price to that moment and says when", as
     expect(Math.abs(box.x - cardBox.x)).toBeLessThan(1);
     expect(Math.abs(box.x + box.width - (cardBox.x + cardBox.width))).toBeLessThan(1);
     expect(Math.abs(box.y + box.height - (cardBox.y + cardBox.height))).toBeLessThan(1);
+    // And so does its line, from the first price at the left edge to the latest at the right
+    // (its box takes in the round caps, half the 2.5px stroke past each end)
+    const line = (await chart.locator("[data-line]").boundingBox())!;
+    expect(Math.abs(line.x - cardBox.x)).toBeLessThan(2);
+    expect(Math.abs(line.x + line.width - (cardBox.x + cardBox.width))).toBeLessThan(2);
 
     // Into the card, then to the chart's left edge: the week's first price
     await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + 30, { steps: 4 });

@@ -12,8 +12,6 @@ const HEIGHT = 120;
 /** Room above the line for the stroke, and below it for the fill, clear of the card's rounded corners. */
 const TOP = 10;
 const BOTTOM = 26;
-/** The line stops this short of the right edge, so the latest price's dot isn't cut in half; the fill runs on. */
-const END_ROOM = 10;
 /** A coin that barely moves (a stablecoin) is drawn on at least this share of its price, so noise stays flat. */
 const MIN_SPAN = 0.02;
 /** A change smaller than this reads as no change. */
@@ -90,7 +88,7 @@ type CoinPriceCardProps = {
 
 /**
  * A coin's dollar price over the range: where it is now, how far it moved,
- * and the line it took. Pointing along the line rolls the price to that
+ * and the line it took, from edge to edge of the card. Pointing along the line rolls the price to that
  * moment, and the ticker gives way to when it was.
  */
 export function CoinPriceCard({ symbol, name, points }: CoinPriceCardProps) {
@@ -116,14 +114,13 @@ export function CoinPriceCard({ symbol, name, points }: CoinPriceCardProps) {
         const xy = points.map(
             ([time, usd]) =>
                 [
-                    ((time - t0) / (t1 - t0 || 1)) * (WIDTH - END_ROOM),
+                    ((time - t0) / (t1 - t0 || 1)) * WIDTH,
                     TOP + (1 - (usd - floor) / span) * (HEIGHT - TOP - BOTTOM),
                 ] as const,
         );
         const line = smoothPath(xy);
-        const end = xy.at(-1)!;
-        // The fill carries on level from the latest price to the card's edge, and down to its bottom
-        const area = `${line}L${WIDTH},${round(end[1])}L${WIDTH},${HEIGHT}L0,${HEIGHT}Z`;
+        // The fill runs from the line down to the card's bottom edge
+        const area = `${line}L${WIDTH},${HEIGHT}L0,${HEIGHT}Z`;
         return { pct, trend, xy, line, area } as const;
     }, [points]);
     const tone = TONE[chart.trend];
@@ -207,6 +204,7 @@ export function CoinPriceCard({ symbol, name, points }: CoinPriceCardProps) {
                 />
                 <motion.path
                     d={chart.line}
+                    data-line=""
                     fill="none"
                     stroke={tone.line}
                     strokeWidth={2.5}
@@ -230,27 +228,23 @@ export function CoinPriceCard({ symbol, name, points }: CoinPriceCardProps) {
                         transition={follow}
                     />
                 )}
-                {active === null && !reduce && (
-                    <motion.circle
-                        cx={x}
-                        cy={y}
-                        r={9}
-                        fill={tone.line}
-                        initial={{ opacity: 0, scale: 0.4 }}
-                        animate={{ opacity: [0, 0.3, 0], scale: [0.4, 1, 1.3] }}
-                        transition={{ duration: 1.8, delay: 0.7, repeat: Infinity, ease: "easeOut" }}
-                        style={{ transformBox: "fill-box", transformOrigin: "center" }}
-                    />
-                )}
-                <motion.circle
-                    fill={tone.line}
-                    stroke="var(--panel)"
-                    strokeWidth={2.5}
-                    initial={reduce ? false : { scale: 0, cx: x, cy: y, r: 4.5 }}
-                    animate={{ scale: 1, cx: x, cy: y, r: active === null ? 4.5 : 5.5 }}
-                    transition={{ default: follow, scale: { ...pop, delay: reduce ? 0 : 0.6 } }}
-                    style={{ transformBox: "fill-box", transformOrigin: "center" }}
-                />
+                {/* The line runs to the card's edges, so the pointed-at price's dot shows only while pointing */}
+                <AnimatePresence>
+                    {active !== null && (
+                        <motion.circle
+                            key="dot"
+                            fill={tone.line}
+                            stroke="var(--panel)"
+                            strokeWidth={2.5}
+                            r={5.5}
+                            initial={{ scale: 0, cx: x, cy: y }}
+                            animate={{ scale: 1, cx: x, cy: y }}
+                            exit={{ scale: 0 }}
+                            transition={{ default: follow, scale: pop }}
+                            style={{ transformBox: "fill-box", transformOrigin: "center" }}
+                        />
+                    )}
+                </AnimatePresence>
             </svg>
         </div>
     );
