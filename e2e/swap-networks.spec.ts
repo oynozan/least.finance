@@ -316,8 +316,11 @@ test("the network step shows the wallet's amount on each network", async ({ page
     await expect(row(page, "Ethereum")).toContainText("1 ETH");
     await expect(row(page, "Ethereum")).toContainText("$3,210.40");
     await expect(row(page, "Ethereum")).not.toHaveAttribute("aria-disabled");
-    await expect(row(page, "Base")).toHaveAttribute("aria-disabled", "true");
-    await expect(row(page, "Base")).toContainText("Nothing here");
+    // BNB Chain answered with nothing; Base never answered, so it is neither empty nor out of reach.
+    await expect(row(page, "BNB Chain")).toHaveAttribute("aria-disabled", "true");
+    await expect(row(page, "BNB Chain")).toContainText("Nothing here");
+    await expect(row(page, "Base")).not.toHaveAttribute("aria-disabled");
+    await expect(row(page, "Base")).not.toContainText("Nothing here");
     // The paying side is the wallet's: a network with nothing stays out of reach.
     await expect(picker(page).locator("[data-highlight]")).toHaveCount(1);
 });

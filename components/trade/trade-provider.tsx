@@ -12,7 +12,7 @@ import { toTokens } from "@/lib/trade/live-coins";
 import { toPredictionMarket } from "@/lib/trade/markets";
 import { walletHoldings } from "@/lib/trade/wallet-holdings";
 import { useAccount } from "@/components/account-provider";
-import { depositWalletAddress, linkedWallets, useActiveWallet } from "@/components/arc-wallet";
+import { depositWalletAddress, solanaWalletAddress, useActiveWallet } from "@/components/arc-wallet";
 import { walletEnabled } from "@/components/wallet-provider";
 import { createCoinsStore } from "./coins-store";
 import { createMarketsStore, type MarketsStore } from "./markets-store";
@@ -69,11 +69,11 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
     const { balance, predictions, swapHoldings, refreshSwapHoldings } = useAccount();
     const { catalog, store, search, maxOrderUSD, known } = useLiveCatalog();
     const active = useActiveWallet();
-    // The wallets that will sign: the active EVM one for the eight EVM networks, the first linked Solana one for Solana.
+    // The wallets that will sign: the active EVM one for the eight EVM networks, the active Solana one (else the first linked) for Solana.
     const evm = user ? depositWalletAddress(user, active) : undefined;
-    const solana = user ? linkedWallets(user).find((wallet) => wallet.kind === "solana")?.address : undefined;
+    const solana = user ? solanaWalletAddress(user, active) : undefined;
     const wallet = useMemo<WalletHoldings | null>(
-        () => (swapHoldings ? walletHoldings(swapHoldings, { evm, solana }) : null),
+        () => (swapHoldings ? walletHoldings(swapHoldings.rows, swapHoldings.read, { evm, solana }) : null),
         [swapHoldings, evm, solana],
     );
     // USDC is what the account has deposited, and still pays for Predict, Long and Short. Until it loads, nothing is capped rather than everything.

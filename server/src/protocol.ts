@@ -350,5 +350,9 @@ export type SwapHoldingRow = {
     usd: number | null;
 };
 
-/** Only the non-zero holdings of the account's linked wallets, as of `readAt` (ISO 8601). */
-export type SwapHoldingsView = { readAt: string; rows: SwapHoldingRow[] };
+/** Only the non-zero holdings of the account's linked wallets, as of `readAt` (ISO 8601), and the wallet and network pairs read at least once: any other pair is unread, not empty. */
+export type SwapHoldingsView = {
+    readAt: string;
+    rows: SwapHoldingRow[];
+    read: { wallet: string; network: SwapNetworkId }[];
+};

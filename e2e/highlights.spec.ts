@@ -96,7 +96,7 @@ test("the network step's highlight stays under its rows and their amounts", asyn
     await expect(list.getByRole("option", { name: "Ethereum", exact: true })).toBeVisible();
     // The wallet's coins are in once the Ethereum row shows its amount.
     await expect(list.getByRole("option", { name: "Ethereum", exact: true })).toContainText("1 ETH");
-    await expect(list.getByRole("option", { name: "Base", exact: true })).toContainText("Nothing here");
+    await expect(list.getByRole("option", { name: "BNB Chain", exact: true })).toContainText("Nothing here");
     await expect(list.locator("[data-highlight]")).toHaveCount(1);
     expect(await textUnderHighlight(list)).toEqual([]);
     // Back and forth replays the list, still with one highlight.

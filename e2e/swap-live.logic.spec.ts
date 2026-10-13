@@ -2,12 +2,19 @@ import { expect, test } from "@playwright/test";
 import { createCoinsStore } from "@/components/trade/coins-store";
 import { initialState, reduce, refit, resolve } from "@/lib/sentence";
 import { CATALOG, TOKENS } from "@/lib/trade/catalog";
-import type { TradeCtx, WalletHoldings } from "@/lib/trade/context";
+import { heldOn, heldTotal, type CoinUnits, type TradeCtx } from "@/lib/trade/context";
 import { formatUsd } from "@/lib/trade/format";
 import { networkChoices } from "@/lib/trade/operations/shared";
 import { loadCachedCatalog, toTokens } from "@/lib/trade/live-coins";
 import { TRADE } from "@/lib/trade/registry";
-import { loadCachedSwapHoldings, saveCachedSwapHoldings, walletHoldings } from "@/lib/trade/wallet-holdings";
+import {
+    loadCachedSwapHoldings,
+    saveCachedSwapHoldings,
+    validHoldings,
+    walletHoldings,
+} from "@/lib/trade/wallet-holdings";
+import { solanaWalletAddress } from "@/components/arc-wallet";
+import { NETWORKS, type NetworkId } from "@/server/src/swaps/coins";
 import type { SwapCatalogView, SwapHoldingRow, SwapHoldingsView } from "@/server/src/protocol";
 
 const view = (patch: (coin: SwapCatalogView["coins"][number]) => unknown = (coin) => coin): SwapCatalogView =>
@@ -138,22 +145,28 @@ const rows: SwapHoldingRow[] = [
     row(T, "solana", "SOL", "100"),
 ];
 
+// Every wallet answered on every network
+const read = [A, B, S, T].flatMap((wallet) => NETWORKS.map((network) => ({ wallet, network: network.id })));
+
+/** What the signing wallets hold, with the listed networks never read */
+const wallet = (units: CoinUnits, unread: NetworkId[] = []) => ({ units, unread });
+
 test.describe("wallet holdings", () => {
     test("walletHoldings keeps only the signing wallets", () => {
         // An EVM address matches whatever its casing.
-        expect(walletHoldings(rows, { evm: A.toLowerCase(), solana: S })).toEqual({
+        expect(walletHoldings(rows, read, { evm: A.toLowerCase(), solana: S }).units).toEqual({
             ETH: { ethereum: 1.5, base: 0.25 },
             USDC: { arc: 12, solana: 4 },
             SOL: { solana: 3 },
         });
         // A Solana address is exact.
-        expect(walletHoldings(rows, { evm: A, solana: S.toLowerCase() })).toEqual({
+        expect(walletHoldings(rows, read, { evm: A, solana: S.toLowerCase() }).units).toEqual({
             ETH: { ethereum: 1.5, base: 0.25 },
             USDC: { arc: 12 },
         });
-        expect(walletHoldings(rows, { solana: T })).toEqual({ SOL: { solana: 100 } });
-        expect(walletHoldings(rows, {})).toEqual({});
-        expect(walletHoldings([], { evm: A })).toEqual({});
+        expect(walletHoldings(rows, read, { solana: T }).units).toEqual({ SOL: { solana: 100 } });
+        expect(walletHoldings(rows, read, {})).toEqual({ units: {}, unread: [] });
+        expect(walletHoldings([], read, { evm: A })).toEqual({ units: {}, unread: [] });
         // Rows a client can't read (a bad amount, an unknown network) are skipped, not summed in.
         expect(
             walletHoldings(
@@ -163,20 +176,25 @@ test.describe("wallet holdings", () => {
                     row(A, "zora" as never, "ETH", "5"),
                     row(A, "arbitrum", "ETH", "0.5"),
                 ],
+                read,
                 { evm: A },
-            ),
+            ).units,
         ).toEqual({ ETH: { arbitrum: 0.5 } });
     });
 
     test("switching the active EVM wallet switches the holdings", () => {
-        const first = walletHoldings(rows, { evm: A });
-        const second = walletHoldings(rows, { evm: B });
-        expect(first.ETH).toEqual({ ethereum: 1.5, base: 0.25 });
-        expect(second.ETH).toEqual({ base: 2, optimism: 7 });
+        const first = walletHoldings(rows, read, { evm: A });
+        const second = walletHoldings(rows, read, { evm: B });
+        expect(first.units.ETH).toEqual({ ethereum: 1.5, base: 0.25 });
+        expect(second.units.ETH).toEqual({ base: 2, optimism: 7 });
 
         // The cap is the signing wallet's, with the gas reserve held back.
         const eth = TOKENS.find((t) => t.symbol === "ETH")!.priceUSD;
-        const ctxFor = (wallet: WalletHoldings): TradeCtx => ({ catalog: CATALOG, holdings: null, wallet });
+        const ctxFor = (signing: ReturnType<typeof walletHoldings>): TradeCtx => ({
+            catalog: CATALOG,
+            holdings: null,
+            wallet: signing,
+        });
         const over = (state: ReturnType<typeof initialState>, ctx: TradeCtx) =>
             resolve(
                 TRADE,
@@ -201,7 +219,7 @@ test.describe("wallet holdings", () => {
         expect(resolve(TRADE, state, none).intent).toMatchObject({ fromNetwork: "ethereum", toNetwork: "solana" });
         expect(refit(TRADE, state, none)).toBe(state);
 
-        const base: TradeCtx = { catalog: CATALOG, holdings: null, wallet: { ETH: { base: 1 } } };
+        const base: TradeCtx = { catalog: CATALOG, holdings: null, wallet: wallet({ ETH: { base: 1 } }) };
         // Until it is re-fitted, the pay side sits on a row with nothing in it.
         expect(resolve(TRADE, state, base).intent).toBeNull();
         const fitted = refit(TRADE, state, base);
@@ -214,20 +232,113 @@ test.describe("wallet holdings", () => {
         expect(refit(TRADE, fitted, base)).toBe(fitted);
 
         // A network the wallet still holds stays where the user put it.
-        const both: TradeCtx = { ...base, wallet: { ETH: { base: 1, arbitrum: 2 } } };
+        const both: TradeCtx = { ...base, wallet: wallet({ ETH: { base: 1, arbitrum: 2 } }) };
         const picked = reduce(TRADE, fitted, { type: "slot", slot: "fromNetwork", value: "arbitrum" }, both);
         expect(resolve(TRADE, refit(TRADE, picked, both), both).intent).toMatchObject({ fromNetwork: "arbitrum" });
         // A wallet that holds ETH only on Ethereum takes it back there.
-        const other: TradeCtx = { ...base, wallet: { ETH: { ethereum: 3 } } };
+        const other: TradeCtx = { ...base, wallet: wallet({ ETH: { ethereum: 3 } }) };
         expect(resolve(TRADE, refit(TRADE, picked, other), other).intent).toMatchObject({ fromNetwork: "ethereum" });
     });
 });
 
-test.describe("defaults follow the wallet", () => {
-    const eth = (units: WalletHoldings["ETH"]): TradeCtx => ({
+test.describe("networks that were never read", () => {
+    const EVM = NETWORKS.filter((network) => network.kind === "evm").map((network) => network.id);
+    const only = (wallet: string, ...networks: NetworkId[]) => networks.map((network) => ({ wallet, network }));
+    const ctxOf = (units: CoinUnits, unread: NetworkId[]): TradeCtx => ({
         catalog: CATALOG,
         holdings: null,
-        wallet: { ETH: units },
+        wallet: wallet(units, unread),
+    });
+    const slot = (slot: string, value: string) => ({ type: "slot", slot, value }) as const;
+
+    test("walletHoldings marks the signers' networks that aren't in the pairs read", () => {
+        const eth = rows.filter((candidate) => candidate.wallet === A);
+        expect(walletHoldings(eth, only(A, "ethereum", "bnb"), { evm: A }).unread).toEqual(
+            EVM.filter((id) => id !== "ethereum" && id !== "bnb"),
+        );
+        // Another wallet's answer says nothing about the signer, whatever the casing
+        expect(walletHoldings(eth, only(B, ...EVM), { evm: A }).unread).toEqual(EVM);
+        expect(walletHoldings(eth, only(A.toLowerCase(), ...EVM), { evm: A }).unread).toEqual([]);
+        // Solana counts only with a Solana signer, and by its own pair
+        expect(walletHoldings(rows, only(A, ...EVM), { evm: A, solana: S }).unread).toEqual(["solana"]);
+        expect(walletHoldings(rows, [...only(A, ...EVM), ...only(S, "solana")], { evm: A, solana: S }).unread).toEqual(
+            [],
+        );
+        expect(walletHoldings(rows, only(A, ...EVM), { evm: A }).unread).toEqual([]);
+    });
+
+    test("holdings cached before the pairs read were kept count as unread", () => {
+        const old = validHoldings({ readAt: "2026-10-13T09:00:00.000Z", rows: [row(A, "ethereum", "ETH", "1")] });
+        expect(old?.read).toEqual([]);
+        expect(walletHoldings(old!.rows, old!.read, { evm: A }).unread).toEqual(EVM);
+        // Pairs of the wrong shape are dropped, the rest stay
+        const mixed = validHoldings({
+            readAt: "2026-10-13T09:00:00.000Z",
+            rows: [],
+            read: [{ wallet: A, network: "base" }, { wallet: A }, null, "x"],
+        });
+        expect(mixed?.read).toEqual([{ wallet: A, network: "base" }]);
+        expect(validHoldings({ readAt: "2026-10-13T09:00:00.000Z", rows: [], read: "yes" })?.read).toEqual([]);
+    });
+
+    test("an unread network has no cap and its row isn't disabled", () => {
+        const ctx = ctxOf({ ETH: { ethereum: 1 } }, ["arbitrum"]);
+        expect(heldOn(ctx, "ETH", "arbitrum")).toBeNull();
+        expect(heldOn(ctx, "ETH", "base")).toBe(0);
+        const rowsOf = networkChoices(ctx, "ETH", "pay");
+        expect(rowsOf.find((c) => c.value === "arbitrum")?.disabled).toBeUndefined();
+        expect(rowsOf.find((c) => c.value === "arbitrum")?.detail).toBeUndefined();
+        expect(rowsOf.find((c) => c.value === "base")).toMatchObject({ disabled: "Nothing here" });
+        const picked = reduce(TRADE, initialState(TRADE, "swap", ctx), slot("fromNetwork", "arbitrum"), ctx);
+        const big = reduce(TRADE, picked, slot("amountUSD", "50000"), ctx);
+        expect(resolve(TRADE, big, ctx).intent).toMatchObject({ fromNetwork: "arbitrum", amountUSD: "50000" });
+        expect(resolve(TRADE, big, ctx).blocking).toBeUndefined();
+    });
+
+    test("a coin with an unread network is neither disabled nor totalled", () => {
+        const ctx = ctxOf({ USDC: { base: 5 } }, ["arbitrum"]);
+        expect(heldTotal(ctx, "ETH")).toBeNull();
+        expect(heldTotal(ctx, "DOGE")).toBe(0);
+        const coins = resolve(TRADE, initialState(TRADE, "swap", ctx), ctx).slots.fromToken;
+        const choice = (symbol: string) => coins.kind === "choice" && coins.choices.find((c) => c.value === symbol);
+        expect(choice("ETH")).toMatchObject({ disabled: undefined, detail: "$3,210.40" });
+        expect(choice("DOGE")).toMatchObject({ disabled: "You don't hold any DOGE" });
+        // Swap keeps paying with ETH, from the network not read rather than one known to be empty
+        expect(resolve(TRADE, initialState(TRADE, "swap", ctx), ctx).intent).toMatchObject({
+            fromToken: "ETH",
+            fromNetwork: "arbitrum",
+        });
+        const allRead = ctxOf({ USDC: { base: 5 } }, []);
+        expect(heldTotal(allRead, "ETH")).toBe(0);
+    });
+
+    test("the active Solana wallet's rows are the ones used", () => {
+        const user = (...wallets: { chainType: string; address: string }[]) =>
+            ({ linkedAccounts: wallets.map((w) => ({ type: "wallet", ...w })) }) as never;
+        const linked = user(
+            { chainType: "ethereum", address: A },
+            { chainType: "solana", address: S },
+            { chainType: "solana", address: T },
+        );
+        // The active one if it is Solana, else the first linked
+        expect(solanaWalletAddress(linked, { kind: "solana", address: T })).toBe(T);
+        expect(solanaWalletAddress(linked, { kind: "evm", address: A })).toBe(S);
+        expect(solanaWalletAddress(linked, {})).toBe(S);
+        expect(
+            solanaWalletAddress(user({ chainType: "ethereum", address: A }), { kind: "evm", address: A }),
+        ).toBeUndefined();
+
+        const signer = solanaWalletAddress(linked, { kind: "solana", address: T });
+        expect(walletHoldings(rows, read, { evm: A, solana: signer }).units.SOL).toEqual({ solana: 100 });
+        expect(walletHoldings(rows, read, { evm: A, solana: S }).units.SOL).toEqual({ solana: 3 });
+    });
+});
+
+test.describe("defaults follow the wallet", () => {
+    const eth = (units: CoinUnits[string]): TradeCtx => ({
+        catalog: CATALOG,
+        holdings: null,
+        wallet: wallet({ ETH: units }),
     });
     const none: TradeCtx = { catalog: CATALOG, holdings: null, wallet: null };
     const act = (type: "slot", slot: string, value: string) => ({ type, slot, value }) as const;
@@ -285,22 +396,22 @@ test.describe("defaults follow the wallet", () => {
     });
 
     test("a row with only gas money says so, an empty one says nothing is there", () => {
-        const wallet = eth({ ethereum: 0.001, arbitrum: 0.0002, base: 1 });
-        const rows = networkChoices(wallet, "ETH", "pay");
+        const ctx = eth({ ethereum: 0.001, arbitrum: 0.0002, base: 1 });
+        const rows = networkChoices(ctx, "ETH", "pay");
         expect(rows.find((c) => c.value === "ethereum")).toMatchObject({ disabled: "Too little for gas" });
         // Exactly the reserve leaves nothing to spend
         expect(rows.find((c) => c.value === "arbitrum")).toMatchObject({ disabled: "Too little for gas" });
         expect(rows.find((c) => c.value === "optimism")).toMatchObject({ disabled: "Nothing here" });
         expect(rows.find((c) => c.value === "base")?.disabled).toBeUndefined();
         // Receiving is never blocked, and a coin with no gas reserve fits at any amount
-        expect(networkChoices(wallet, "ETH", "receive").every((c) => !c.disabled)).toBe(true);
-        const link = networkChoices({ ...none, wallet: { LINK: { ethereum: 0.0001 } } }, "LINK", "pay");
+        expect(networkChoices(ctx, "ETH", "receive").every((c) => !c.disabled)).toBe(true);
+        const link = networkChoices({ ...none, wallet: wallet({ LINK: { ethereum: 0.0001 } }) }, "LINK", "pay");
         expect(link.find((c) => c.value === "ethereum")?.disabled).toBeUndefined();
     });
 });
 
 test.describe("a wallet without ETH", () => {
-    const held = (units: WalletHoldings): TradeCtx => ({ catalog: CATALOG, holdings: null, wallet: units });
+    const held = (units: CoinUnits): TradeCtx => ({ catalog: CATALOG, holdings: null, wallet: wallet(units) });
     const slot = (slot: string, value: string) => ({ type: "slot", slot, value }) as const;
     const none: TradeCtx = { catalog: CATALOG, holdings: null, wallet: null };
 
@@ -376,6 +487,7 @@ test.describe("a wallet without ETH", () => {
 const holdingsView = (...held: SwapHoldingRow[]): SwapHoldingsView => ({
     readAt: "2026-10-13T09:00:00.000Z",
     rows: held,
+    read: held.map(({ wallet, network }) => ({ wallet, network })),
 });
 
 function withStorage(store: Map<string, string>) {

@@ -109,6 +109,15 @@ export function depositWalletAddress(
     return linkedWallets(user).find((wallet) => wallet.kind === "evm")?.address;
 }
 
+/** The Solana wallet a swap is signed with: the active one if it's Solana, else the first linked. */
+export function solanaWalletAddress(
+    user: NonNullable<ReturnType<typeof usePrivy>["user"]>,
+    active: Partial<Wallet>,
+): string | undefined {
+    if (active.kind === "solana") return active.address;
+    return linkedWallets(user).find((wallet) => wallet.kind === "solana")?.address;
+}
+
 /** The wallet this person is using: the one they chose last if it's still linked, else their first verified wallet. */
 export function useActiveWallet(): Partial<Wallet> & { setActive: (wallet: Wallet) => void } {
     const { user } = usePrivy();

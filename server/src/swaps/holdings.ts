@@ -14,6 +14,8 @@ export const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11" as const;
 
 /** An account's holdings are read at most this often, unless a swap just settled. */
 const REFRESH_INTERVAL_MS = 15_000;
+/** Inside that window a click asks Privy for new wallets at most this often. */
+const LINK_CHECK_MS = 5_000;
 
 /** The units held, in the order of `entries`: a null is a call that failed, and a failed request throws. */
 export type EvmReader = (
@@ -75,11 +77,17 @@ type Deps = {
 
 type Linked = { evm: Address[]; solana: string[] };
 
+type ReadPair = SwapHoldingsView["read"][number];
+
 type State = {
-    /** When the last run started, whether or not it read anything. */
+    /** When the last full run started, whether or not it read anything. */
     attemptedAt: number;
+    /** When linked wallets were last fetched fresh from Privy. */
+    checkedAt: number;
     /** The non-zero rows by wallet, network and symbol; a failed read leaves its entries as they were. */
     held: Map<string, SwapHoldingRow>;
+    /** The wallet and network pairs that answered at least once, which a later failure leaves in. */
+    read: Map<string, ReadPair>;
     linked: Linked;
     view: SwapHoldingsView;
 };
@@ -96,9 +104,11 @@ const LISTED = new Map<NetworkId, { symbol: string; entry: CoinEntry }[]>(
     ]),
 );
 
-const rowKey = (wallet: string, network: NetworkId, symbol: string) => `${wallet}|${network}|${symbol}`;
+const pairKey = (wallet: string, network: NetworkId) => `${wallet}|${network}`;
 
-/** Each account's coins on the nine swap networks, read when the socket binds and again on request, at most once per 15 s. */
+const rowKey = (wallet: string, network: NetworkId, symbol: string) => `${pairKey(wallet, network)}|${symbol}`;
+
+/** Each account's coins on the nine swap networks, read when the socket binds and again on request, at most once per 15 s, except for a wallet with nothing read yet. */
 export class SwapHoldings {
     readonly #deps: Deps;
     readonly #now: () => number;
@@ -110,10 +120,7 @@ export class SwapHoldings {
         this.#now = deps.now ?? Date.now;
     }
 
-    /**
-     * Reads past REFRESH_INTERVAL_MS, or at once when a swap settled. A "bind" that reads nothing
-     * still ends up holding the account's view: `push` is called with it.
-     */
+    /** Reads past REFRESH_INTERVAL_MS, at once on a settle, or on a click for a wallet with nothing read yet; a bind that reads nothing is pushed the last view. */
     async refresh(
         account: AccountDoc,
         identity: Identity,
@@ -142,25 +149,36 @@ export class SwapHoldings {
         const key = account._id.toHexString();
         const state = this.#states.get(key);
         const now = this.#now();
-        if (state && reason !== "settled" && now - state.attemptedAt < REFRESH_INTERVAL_MS) return { read: false };
+        const due = !state || reason === "settled" || now - state.attemptedAt >= REFRESH_INTERVAL_MS;
+        // Inside the window only a click looks further, for a wallet that has nothing read yet
+        if (!due && reason !== "click") return { read: false };
 
         let linked: Linked;
-        try {
-            linked = await this.#deps.identity.linkedWallets(identity, { fresh: reason !== "bind" });
-        } catch (error) {
-            if (!state) throw error;
-            this.#deps.logger.warn({ err: error }, "Couldn't check linked wallets for the swap holdings");
+        let checkedAt = state?.checkedAt ?? 0;
+        if (state && !due && now - state.checkedAt < LINK_CHECK_MS) {
             linked = state.linked;
+        } else {
+            try {
+                linked = await this.#deps.identity.linkedWallets(identity, { fresh: reason !== "bind" });
+                if (reason !== "bind") checkedAt = now;
+            } catch (error) {
+                if (!state) throw error;
+                this.#deps.logger.warn({ err: error }, "Couldn't check linked wallets for the swap holdings");
+                linked = state.linked;
+            }
         }
 
         const pairs = [
             ...linked.evm.flatMap((wallet) => EVM_NETWORKS.map((network) => ({ wallet: wallet as string, network }))),
             ...linked.solana.map((wallet) => ({ wallet, network: "solana" as NetworkId })),
         ];
+        const readWallets = new Set([...(state?.read.values() ?? [])].map((pair) => pair.wallet));
+        const toRead = due ? pairs : pairs.filter(({ wallet }) => !readWallets.has(wallet));
         const held = new Map(state?.held);
+        const readPairs = new Map(state?.read);
         let read = 0;
         await Promise.all(
-            pairs.map(async ({ wallet, network }) => {
+            toRead.map(async ({ wallet, network }) => {
                 const listed = LISTED.get(network)!;
                 const entries = listed.map(({ entry }) => entry);
                 try {
@@ -169,6 +187,7 @@ export class SwapHoldings {
                             ? await this.#deps.readSolana(wallet, entries)
                             : await this.#deps.readEvm(network as EvmNetworkId, wallet as Address, entries);
                     read += 1;
+                    readPairs.set(pairKey(wallet, network), { wallet, network });
                     for (const [i, { symbol, entry }] of listed.entries()) {
                         const amount = units[i];
                         // A call that failed leaves the last row as it was
@@ -187,20 +206,31 @@ export class SwapHoldings {
         );
 
         if (read === 0) {
-            if (state) state.attemptedAt = now;
+            if (state) Object.assign(state, { attemptedAt: due ? now : state.attemptedAt, checkedAt, linked });
             return { read: false };
         }
 
         const wallets = [...linked.evm, ...linked.solana];
         for (const [rowId, row] of held) if (!wallets.includes(row.wallet as Address)) held.delete(rowId);
+        for (const [pairId, pair] of readPairs) if (!wallets.includes(pair.wallet as Address)) readPairs.delete(pairId);
         // Rows follow the wallets' order, then the networks', then the picker's
         const rows = wallets.flatMap((wallet) =>
             NETWORKS.flatMap(({ id }) =>
                 (LISTED.get(id) ?? []).flatMap(({ symbol }) => held.get(rowKey(wallet, id, symbol)) ?? []),
             ),
         );
-        const view = { readAt: new Date(now).toISOString(), rows };
-        this.#states.set(key, { attemptedAt: now, held, linked, view });
+        const readList = wallets.flatMap((wallet) =>
+            NETWORKS.flatMap(({ id }) => readPairs.get(pairKey(wallet, id)) ?? []),
+        );
+        const view = { readAt: new Date(now).toISOString(), rows, read: readList };
+        this.#states.set(key, {
+            attemptedAt: state && !due ? state.attemptedAt : now,
+            checkedAt,
+            held,
+            read: readPairs,
+            linked,
+            view,
+        });
         this.#deps.bus.emit("swap:holdings", { accountId: account._id, privyUserId: account.privyUserId, view });
         return { read: true };
     }

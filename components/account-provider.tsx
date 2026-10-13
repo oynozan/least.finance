@@ -29,7 +29,7 @@ import type {
     PositionView,
     PositionsView,
     QuoteView,
-    SwapHoldingRow,
+    SwapHoldingsView,
 } from "@/server/src/protocol";
 import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
 import { arc } from "./arc";
@@ -46,8 +46,8 @@ export type Account = {
     balances: CoinBalance[] | null;
     /** Reads fresh balances silently; does nothing within 30 s of the last read unless a linked wallet is new. */
     refreshBalances: () => void;
-    /** The coins the account's wallets hold on the swap networks, one row per wallet, network and coin; null until a snapshot (cached or pushed) is in. */
-    swapHoldings: SwapHoldingRow[] | null;
+    /** The coins the account's wallets hold on the swap networks and which of them were read; null until a snapshot (cached or pushed) is in. */
+    swapHoldings: SwapHoldingsView | null;
     /** Asks the server to read those coins again; it skips a read within 15 s of the last. */
     refreshSwapHoldings: () => void;
     /** Bridge orders still open, newest first. */
@@ -233,7 +233,7 @@ function Provide({
         notice,
         balances: snapshot.balances?.rows ?? null,
         refreshBalances,
-        swapHoldings: snapshot.swapHoldings?.rows ?? null,
+        swapHoldings: snapshot.swapHoldings,
         refreshSwapHoldings,
         orders: state.status === "ready" ? state.orders : [],
         quote,

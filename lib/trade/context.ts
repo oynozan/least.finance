@@ -3,14 +3,17 @@ import { QUOTE, type Catalog } from "./catalog";
 import type { NetworkId } from "./networks";
 
 /** Coin units the signing wallets hold, by coin and then network */
-export type WalletHoldings = Readonly<Record<string, Readonly<Partial<Record<NetworkId, number>>>>>;
+export type CoinUnits = Readonly<Record<string, Readonly<Partial<Record<NetworkId, number>>>>>;
+
+/** What the signing wallets hold, and the networks of theirs that were never read, where nothing is known */
+export type WalletHoldings = { units: CoinUnits; unread: readonly NetworkId[] };
 
 /** What every trade operation can read. */
 export type TradeCtx = {
     catalog: Catalog;
     /** Coin units the connected wallet holds; null while no wallet is connected. */
     holdings: Readonly<Record<string, number>> | null;
-    /** The signing wallets' coins per network; null until they load, and absent in the demo */
+    /** The signing wallets' coins and unread networks; null until they load, and absent in the demo */
     wallet?: WalletHoldings | null;
     /** The most one prediction may spend; a number only while signed in with trading live. */
     maxOrderUSD?: number | null;
@@ -41,15 +44,19 @@ export const heldUSD = (ctx: TradeCtx, symbol: string) => {
 /** Coin units held on one network or null while unknown, with the demo's coins on their home networks */
 export function heldOn(ctx: TradeCtx, symbol: string, network: NetworkId): number | null {
     if (ctx.wallet === null) return null;
-    if (ctx.wallet) return ctx.wallet[symbol]?.[network] ?? 0;
+    if (ctx.wallet) return ctx.wallet.unread.includes(network) ? null : (ctx.wallet.units[symbol]?.[network] ?? 0);
     if (ctx.holdings === null) return null;
     return token(ctx, symbol)?.home === network ? (ctx.holdings[symbol] ?? 0) : 0;
 }
 
-/** Coin units held across every network, or null while nothing is known */
+/** Coin units held across every network, or null while nothing is known or any of the coin's networks is unread */
 export function heldTotal(ctx: TradeCtx, symbol: string): number | null {
     if (ctx.wallet === null) return null;
-    if (ctx.wallet) return Object.values(ctx.wallet[symbol] ?? {}).reduce((sum, units) => sum + units, 0);
+    if (ctx.wallet) {
+        const { units, unread } = ctx.wallet;
+        if (token(ctx, symbol)?.networks.some(({ network }) => unread.includes(network))) return null;
+        return Object.values(units[symbol] ?? {}).reduce((sum, amount) => sum + amount, 0);
+    }
     return held(ctx, symbol);
 }
 

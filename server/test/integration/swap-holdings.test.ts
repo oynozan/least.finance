@@ -97,6 +97,18 @@ describe("over the socket", () => {
         expect(pushes[0]!.rows).toHaveLength(2);
     });
 
+    test("a network that couldn't be read is left out of the pairs read", async () => {
+        const user = await holder();
+        const { pushes } = await bind(user);
+
+        const wallet = getAddress(user.wallet);
+        const read = pushes[0]!.read;
+        expect(read).toContainEqual({ wallet, network: "ethereum" });
+        expect(read).toContainEqual({ wallet, network: "bnb" });
+        expect(read.some((pair) => pair.network === "arbitrum")).toBe(false);
+        expect(read.every((pair) => pair.wallet === wallet)).toBe(true);
+    });
+
     test("a linked Solana wallet's SOL is read", async () => {
         const user = await holder();
         stack.privy.setUser(user.userId, [user.wallet, { address: SOLANA, chain: "solana" }]);
@@ -357,6 +369,99 @@ describe("the reader behind it", () => {
         await t.holdings.refresh(account, identity, "click");
 
         expect(t.holdings.last(account._id)!.rows.every((row) => row.wallet === A)).toBe(true);
+    });
+
+    test("the pairs read follow the wallets' order, and a pair that fails later stays read", async () => {
+        let down: string | null = null;
+        const t = setup({
+            evm: async (network, owner, entries) => {
+                if (network === down || (network === "arbitrum" && owner === B)) throw new Error("RPC down");
+                return ethOnly(1)(network, owner, entries);
+            },
+        });
+        t.linked.solana = [SOLANA];
+        await t.holdings.refresh(account, identity, "bind");
+
+        const pairs = (view: SwapHoldingsView | null) =>
+            view?.read.map((pair) => `${pair.wallet === A ? "A" : pair.wallet === B ? "B" : "S"}:${pair.network}`);
+        expect(pairs(t.holdings.last(account._id))).toEqual([
+            ...["ethereum", "arbitrum", "base", "optimism", "polygon", "bnb", "avalanche", "arc"].map(
+                (id) => `A:${id}`,
+            ),
+            ...["ethereum", "base", "optimism", "polygon", "bnb", "avalanche", "arc"].map((id) => `B:${id}`),
+            "S:solana",
+        ]);
+
+        down = "ethereum";
+        t.advance(15_000);
+        await t.holdings.refresh(account, identity, "click");
+        expect(pairs(t.holdings.last(account._id))).toContain("A:ethereum");
+
+        t.linked.evm = [A];
+        t.linked.solana = [];
+        t.advance(15_000);
+        await t.holdings.refresh(account, identity, "click");
+        expect(pairs(t.holdings.last(account._id))!.every((pair) => pair.startsWith("A:"))).toBe(true);
+    });
+
+    test("a click inside the window reads a wallet linked since, and only that one", async () => {
+        const C = getAddress("0x00000000000000000000000000000000000000c3");
+        const t = setup({ evm: ethOnly(1) });
+        await t.holdings.refresh(account, identity, "bind");
+        expect(t.readEvm).toHaveBeenCalledTimes(16);
+
+        t.linked.evm = [A, B, C];
+        t.advance(1_000);
+        expect(await t.holdings.refresh(account, identity, "click")).toEqual({ read: true });
+        expect(t.readEvm).toHaveBeenCalledTimes(24);
+        expect(t.readEvm.mock.calls.slice(16).every(([, owner]) => owner === C)).toBe(true);
+        expect(t.pushed).toHaveLength(2);
+        const rows = t.holdings.last(account._id)!.rows;
+        expect(rows.filter((row) => row.wallet === C)).toHaveLength(rows.filter((row) => row.wallet === A).length);
+        expect(rows.some((row) => row.wallet === C)).toBe(true);
+        expect(t.holdings.last(account._id)!.read.filter((pair) => pair.wallet === C)).toHaveLength(8);
+
+        // The window didn't move, so the next full read is due 15 s after the first
+        t.advance(1_000);
+        expect(await t.holdings.refresh(account, identity, "click")).toEqual({ read: false });
+        t.advance(13_000);
+        expect(await t.holdings.refresh(account, identity, "click")).toEqual({ read: true });
+        expect(t.readEvm).toHaveBeenCalledTimes(48);
+    });
+
+    test("a wallet whose first read failed is read again by the next click inside the window", async () => {
+        const C = getAddress("0x00000000000000000000000000000000000000c3");
+        let down = true;
+        const t = setup({
+            evm: async (network, owner, entries) => {
+                if (owner === C && down) throw new Error("RPC down");
+                return ethOnly(1)(network, owner, entries);
+            },
+        });
+        await t.holdings.refresh(account, identity, "bind");
+
+        t.linked.evm = [A, B, C];
+        t.advance(1_000);
+        expect(await t.holdings.refresh(account, identity, "click")).toEqual({ read: false });
+        expect(t.pushed).toHaveLength(1);
+        t.advance(1_000);
+        down = false;
+        expect(await t.holdings.refresh(account, identity, "click")).toEqual({ read: true });
+        expect(t.holdings.last(account._id)!.read.filter((pair) => pair.wallet === C)).toHaveLength(8);
+    });
+
+    test("inside the window a click asks Privy afresh at most every 5 s", async () => {
+        const t = setup({ evm: ethOnly(1) });
+        await t.holdings.refresh(account, identity, "bind");
+
+        t.advance(1_000);
+        await t.holdings.refresh(account, identity, "click");
+        t.advance(2_000);
+        await t.holdings.refresh(account, identity, "click");
+        t.advance(3_000);
+        await t.holdings.refresh(account, identity, "click");
+
+        expect(t.lookups).toEqual([{ fresh: false }, { fresh: true }, { fresh: true }]);
     });
 
     test("a click or a settle asks Privy afresh, a bind doesn't", async () => {

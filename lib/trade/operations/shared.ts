@@ -178,17 +178,18 @@ export function networkFits(ctx: TradeCtx, symbol: string, network: string, side
     return !!row && !row.disabled && !(strayed && wrapped);
 }
 
-/** The network a paying coin starts on, where the wallet holds the most of what it can spend, else the most, else its home */
+/** The network a paying coin starts on, where the wallet holds the most it can spend, else one not read yet, else its home */
 export function defaultPayNetwork(ctx: TradeCtx, symbol: string): NetworkId {
+    const home = homeOf(ctx, symbol);
     const networks = entriesOf(ctx, symbol).map((entry) => entry.network);
     const units = (network: NetworkId) => heldOn(ctx, symbol, network) ?? 0;
-    const richest = (among: NetworkId[]) =>
-        among.reduce<NetworkId | undefined>(
-            (best, network) => (units(network) > (best ? units(best) : 0) ? network : best),
-            undefined,
-        );
-    const spendable = networks.filter((network) => (spendableOn(ctx, symbol, network) ?? 0) > 0);
-    return richest(spendable) ?? richest(networks) ?? homeOf(ctx, symbol);
+    // A network not read yet might hold some, so it is usable too
+    const usable = networks.filter((network) => (spendableOn(ctx, symbol, network) ?? 1) > 0);
+    const among = usable.length ? usable : networks;
+    const most = Math.max(...among.map(units));
+    return (
+        among.find((network) => most > 0 && units(network) === most) ?? (among.includes(home) ? home : among[0]) ?? home
+    );
 }
 
 /** The network a received coin starts on, beside the pay side unless the coin is wrapped there */

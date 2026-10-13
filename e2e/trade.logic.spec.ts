@@ -13,8 +13,8 @@ import {
 import { CATALOG, MOCK_HOLDINGS, type Catalog } from "@/lib/trade/catalog";
 import { toPredictionMarket } from "@/lib/trade/markets";
 import type { MarketView, QuoteView } from "@/server/src/protocol";
-import { heldOn, heldTotal, type TradeCtx, type TradeTerms, type WalletHoldings } from "@/lib/trade/context";
-import { networkName } from "@/lib/trade/networks";
+import { heldOn, heldTotal, type CoinUnits, type TradeCtx, type TradeTerms } from "@/lib/trade/context";
+import { networkName, type NetworkId } from "@/lib/trade/networks";
 import { NETWORKS } from "@/server/src/swaps/coins";
 import {
     buyPayNetwork,
@@ -37,7 +37,11 @@ import type { PositionView } from "@/server/src/protocol";
 
 const connected: TradeCtx = { catalog: CATALOG, holdings: MOCK_HOLDINGS };
 const disconnected: TradeCtx = { catalog: CATALOG, holdings: null };
-const withWallet = (wallet: WalletHoldings | null): TradeCtx => ({ catalog: CATALOG, holdings: null, wallet });
+const withWallet = (units: CoinUnits | null, unread: NetworkId[] = []): TradeCtx => ({
+    catalog: CATALOG,
+    holdings: null,
+    wallet: units && { units, unread },
+});
 
 function run(verb: string, actions: SentenceAction[] = [], ctx = connected) {
     let state: SentenceState<TradeTerms> = initialState(TRADE, verb, ctx);
@@ -497,6 +501,8 @@ test.describe("networks", () => {
                 USDC: { base: 500 },
                 LINK: { polygon: 4 },
             }),
+            withWallet({ ETH: { ethereum: 1 }, USDC: { base: 500 } }, ["arbitrum", "base", "solana"]),
+            withWallet({}, ["ethereum", "arbitrum", "bnb"]),
             withWallet({ USDC: { base: 500 } }),
             withWallet({ SOL: { solana: 3 } }),
             // Gas money only on some networks
