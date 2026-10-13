@@ -12,7 +12,7 @@ import { renderTradeIcon } from "./trade-icons";
 type TradeComposerProps = {
     view: SentenceView<TransactionIntent>;
     dispatch: (action: SentenceAction) => void;
-    /** Answers the question picker's search; absent in demo mode. */
+    /** Answers the question picker's search. */
     search?: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
     /** Called as a coin's picker opens, to refresh what the wallet holds. */
     onCoinOpen?: () => void;

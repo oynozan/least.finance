@@ -10,7 +10,7 @@ import {
     type SentenceAction,
     type SentenceState,
 } from "@/lib/sentence";
-import { CATALOG, MOCK_HOLDINGS, type Catalog } from "@/lib/trade/catalog";
+import { CATALOG as UNPRICED, type Catalog } from "@/lib/trade/catalog";
 import { toPredictionMarket } from "@/lib/trade/markets";
 import type { MarketView, QuoteView } from "@/server/src/protocol";
 import { heldOn, heldTotal, type CoinUnits, type TradeCtx, type TradeTerms } from "@/lib/trade/context";
@@ -27,8 +27,9 @@ import { quoteRows } from "@/lib/trade/prediction-quote";
 import { TRADE } from "@/lib/trade/registry";
 import { balanceHistory, daysSince, depositActivity, predictionActivity, type Activity } from "@/lib/trade/activity";
 import type { PositionView } from "@/server/src/protocol";
+import { HOLDINGS, LOADED_CATALOG as CATALOG, MARKETS, PRICES } from "./trade-fixtures";
 
-const connected: TradeCtx = { catalog: CATALOG, holdings: MOCK_HOLDINGS };
+const connected: TradeCtx = { catalog: CATALOG, holdings: HOLDINGS };
 const disconnected: TradeCtx = { catalog: CATALOG, holdings: null };
 const withWallet = (units: CoinUnits | null, unread: NetworkId[] = []): TradeCtx => ({
     catalog: CATALOG,
@@ -70,12 +71,14 @@ test.describe("sentences", () => {
             network: "solana",
             amountUSD: "10",
         });
-        expect(run("short").view.intent).toEqual({
-            type: "perp",
-            side: "short",
-            asset: "BTC",
-            leverage: 5,
-            collateralUSD: "100",
+        // Perps have no venue: the sentence builds, but nothing to review comes of it.
+        const short = run("short").view;
+        expect(short.intent).toBeNull();
+        expect(short.blocking).toEqual({
+            code: "unavailable",
+            severity: "error",
+            message: "Long and short aren't available yet.",
+            cta: "Not available yet",
         });
         expect(run("predict").view.intent).toEqual({
             type: "prediction",
@@ -165,13 +168,13 @@ test.describe("preventing invalid sentences", () => {
     test("a market with a lower cap pulls the leverage down", () => {
         const { view } = run("long", [slot("leverage", "50"), slot("asset", "SOL")]);
         expect(view.text).toBe("I want to Long SOL at 20x leverage with 100 USD.");
-        expect(view.issues).toEqual([]);
-        expect(view.intent).toMatchObject({ leverage: 20 });
+        expect(view.issues.map((issue) => issue.code)).toEqual(["unavailable"]);
+        expect(view.slots.leverage).toMatchObject({ value: "20" });
     });
 
     test("leverage can be typed, within the market's cap", () => {
         expect(run("long", [slot("leverage", "7")]).view.text).toBe("I want to Long BTC at 7x leverage with 100 USD.");
-        expect(run("long", [slot("leverage", "12.5x")]).view.intent).toMatchObject({ leverage: 12.5 });
+        expect(run("long", [slot("leverage", "12.5x")]).view.slots.leverage).toMatchObject({ value: "12.5" });
         // Over BTC's 50x, or not a number: ignored.
         const start = run("long").state;
         expect(reduce(TRADE, start, slot("leverage", "70"), connected)).toBe(start);
@@ -251,19 +254,19 @@ test.describe("networks", () => {
 
     test("a flip puts the pay side where it is held, not on the receive side's empty network", () => {
         // DOGE lives on BNB only, so picking it to receive makes both pairs identical
-        const demo = run("swap", [
+        const plain = run("swap", [
             slot("fromToken", "DOGE"),
             slot("toToken", "ETH"),
             slot("toNetwork", "base"),
             slot("toToken", "DOGE"),
         ]);
-        expect(demo.view.intent).toMatchObject({
+        expect(plain.view.intent).toMatchObject({
             fromToken: "ETH",
             fromNetwork: "ethereum",
             toToken: "DOGE",
             toNetwork: "bnb",
         });
-        expect(demo.view.issues).toEqual([]);
+        expect(plain.view.issues).toEqual([]);
         // A real wallet that holds SOL on Solana only, received on Ethereum, then BNB picked there
         const wallet = withWallet({ BNB: { bnb: 2 }, SOL: { solana: 5 } });
         const real = run(
@@ -379,7 +382,7 @@ test.describe("networks", () => {
         expect(usdcCap(loading)).toBeUndefined();
     });
 
-    test("demo holdings sit on each coin's home network", () => {
+    test("holdings without a wallet read sit on each coin's home network", () => {
         expect(heldOn(connected, "ETH", "ethereum")).toBe(1.25);
         expect(heldOn(connected, "ETH", "base")).toBe(0);
         expect(heldOn(connected, "SOL", "solana")).toBe(42);
@@ -391,7 +394,7 @@ test.describe("networks", () => {
         expect(over.blocking).toMatchObject({ message: "That's more than your $4,013.00 of ETH on Ethereum." });
     });
 
-    test("a real wallet's rows replace the demo holdings and sum across networks", () => {
+    test("a real wallet's rows replace plain holdings and sum across networks", () => {
         const wallet = withWallet({ ETH: { ethereum: 1, base: 2 } });
         expect(heldTotal(wallet, "ETH")).toBe(3);
         expect(heldTotal(wallet, "SOL")).toBe(0);
@@ -632,7 +635,7 @@ test.describe("live prediction markets", () => {
             markets: listed.map((m) => known.get(m.id)!),
             findMarket: (id) => known.get(id),
         } satisfies Catalog,
-        holdings: MOCK_HOLDINGS,
+        holdings: HOLDINGS,
     });
 
     test("a question without outcomes doesn't break the list", () => {
@@ -701,7 +704,7 @@ test.describe("live prediction markets", () => {
         expect(run("predict", [slot("amountUSD", "50")], capped(null)).view.blocking).toBeUndefined();
         expect(run("predict", [slot("amountUSD", "50")], live([rain])).view.blocking).toBeUndefined();
         // The smaller of the two wins.
-        const poor = { ...capped(500), holdings: { ...MOCK_HOLDINGS, USDC: 30 } };
+        const poor = { ...capped(500), holdings: { ...HOLDINGS, USDC: 30 } };
         expect(run("predict", [slot("amountUSD", "50")], poor).view.blocking).toMatchObject({ cta: "Not enough USDC" });
     });
 
@@ -748,6 +751,45 @@ test.describe("amounts", () => {
     });
 });
 
+test.describe("before the swap catalog prices the coins", () => {
+    // The app's own catalog: no coin has a price until /swaps/catalog answers.
+    const unpriced: TradeCtx = { catalog: { ...UNPRICED, markets: MARKETS }, holdings: HOLDINGS };
+    const choice = (view: ReturnType<typeof run>["view"], id: string, value: string) => {
+        const slot = view.slots[id];
+        if (slot.kind !== "choice") throw new Error(`${id} isn't a choice slot`);
+        return slot.choices.find((c) => c.value === value);
+    };
+
+    test("no coin has a made-up price", () => {
+        expect(UNPRICED.tokens.every((token) => token.priceUSD === null)).toBe(true);
+        expect(UNPRICED.markets).toEqual([]);
+    });
+
+    test("prices show as a dash, never as $0", () => {
+        const swap = run("swap", [], unpriced).view;
+        // Held: the units, with no dollar value yet; not held: no price yet.
+        expect(choice(swap, "fromToken", "ETH")).toMatchObject({ detail: "1.25 ETH", subdetail: "—" });
+        expect(choice(swap, "toToken", "AVAX")).toMatchObject({ detail: "—" });
+        expect(choice(swap, "toToken", "USDC")).toMatchObject({ detail: "2,400 USDC", subdetail: "$2,400.00" });
+        expect(choice(run("long", [], unpriced).view, "asset", "BTC")).toMatchObject({ detail: "— · up to 50x" });
+        const sell = run("sell", [], unpriced).view;
+        expect(sell.preview.rows.find((r) => r.id === "pay")?.value).toBe("—");
+        expect(JSON.stringify(sell.preview)).not.toMatch(/\$0\.00/);
+    });
+
+    test("a coin with no price caps nothing and estimates nothing, while dollars stay capped", () => {
+        const over = run("swap", [slot("amountUSD", "5000")], unpriced).view;
+        expect(over.blocking).toBeUndefined();
+        expect(over.intent).toMatchObject({ fromToken: "ETH", amountUSD: "5000" });
+        const amount = over.slots.amountUSD;
+        expect(amount.kind === "number" && amount.summary).toBeFalsy();
+        // USDC is the dollar every amount is in, so it needs no price.
+        expect(run("buy", [slot("amountUSD", "3000")], unpriced).view.blocking).toMatchObject({
+            cta: "Not enough USDC",
+        });
+    });
+});
+
 test.describe("the amount's dropdown", () => {
     const amount = (view: ReturnType<typeof run>["view"], id = "amountUSD") => {
         const slot = view.slots[id];
@@ -761,7 +803,7 @@ test.describe("the amount's dropdown", () => {
         // Connected, the top is what the wallet holds of the coin being paid with.
         const swap = amount(run("swap").view).range!;
         expect(swap.capped).toBe(true);
-        expect(swap.max).toBeCloseTo(MOCK_HOLDINGS.ETH * CATALOG.tokens.find((t) => t.symbol === "ETH")!.priceUSD, 6);
+        expect(swap.max).toBeCloseTo(HOLDINGS.ETH * PRICES.ETH, 6);
         // Positions start at $10, and the bottom says so.
         expect(amount(run("long", [], disconnected).view, "collateralUSD").range).toMatchObject({ min: 10 });
     });

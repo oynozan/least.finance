@@ -1,7 +1,7 @@
 /**
- * Mock market data until prices, balances and markets come from a backend.
+ * The coins and markets the trade sentence offers, before any live data.
  * Operations never import this directly: it reaches them through the trade
- * context, so tests (and later live data) can pass their own.
+ * context, so the live catalog (and tests) can pass their own.
  */
 
 import { COINS, type NetworkId } from "@/server/src/swaps/coins";
@@ -18,30 +18,18 @@ export type TokenNetwork = {
 export type Token = {
     symbol: string;
     name: string;
-    priceUSD: number;
+    /** Null until the swap catalog (or its cache) has read it. */
+    priceUSD: number | null;
     home: NetworkId;
     /** The networks the coin exists on, in the picker's order */
     networks: readonly TokenNetwork[];
 };
 
-const PRICES: Readonly<Record<string, number>> = {
-    ETH: 3_210.4,
-    SOL: 147.2,
-    BTC: 97_300,
-    USDC: 1,
-    USDT: 1,
-    BNB: 600,
-    LINK: 18.45,
-    DOGE: 0.182,
-    AVAX: 32.1,
-    ARB: 0.74,
-    OP: 1.8,
-};
-
+/** Every swap coin, with no price until /swaps/catalog answers. */
 export const TOKENS: Token[] = COINS.map((coin) => ({
     symbol: coin.symbol,
     name: coin.name,
-    priceUSD: PRICES[coin.symbol] ?? 0,
+    priceUSD: null,
     home: coin.home,
     networks: coin.entries.map(({ network, label, wrapped, reserve }) => ({
         network,
@@ -51,32 +39,21 @@ export const TOKENS: Token[] = COINS.map((coin) => ({
     })),
 }));
 
-/** What the demo wallet holds (no Privy app ID), in coin units; a signed-in person has only their real coins. */
-export const MOCK_HOLDINGS: Record<string, number> = {
-    ETH: 1.25,
-    SOL: 42,
-    BTC: 0.05,
-    USDC: 2_400,
-    LINK: 60,
-    DOGE: 5_000,
-};
-
 /** The stablecoin that pays for buys, perp collateral and predictions. */
 export const QUOTE = "USDC";
 
+/** A coin Long and Short offer, with the most leverage its picker allows; no perp venue is connected yet. */
 export type PerpMarket = {
     asset: string;
     maxLeverage: number;
-    /** Fraction of position value kept as maintenance margin. */
-    maintenanceMargin: number;
 };
 
 export const PERP_MARKETS: PerpMarket[] = [
-    { asset: "BTC", maxLeverage: 50, maintenanceMargin: 0.005 },
-    { asset: "ETH", maxLeverage: 50, maintenanceMargin: 0.005 },
-    { asset: "SOL", maxLeverage: 20, maintenanceMargin: 0.01 },
-    { asset: "LINK", maxLeverage: 10, maintenanceMargin: 0.02 },
-    { asset: "DOGE", maxLeverage: 10, maintenanceMargin: 0.02 },
+    { asset: "BTC", maxLeverage: 50 },
+    { asset: "ETH", maxLeverage: 50 },
+    { asset: "SOL", maxLeverage: 20 },
+    { asset: "LINK", maxLeverage: 10 },
+    { asset: "DOGE", maxLeverage: 10 },
 ];
 
 export const LEVERAGE_STEPS = [2, 3, 5, 10, 20, 25, 50];
@@ -106,48 +83,6 @@ export type PredictionMarket = {
     outcomes: Outcome[];
 };
 
-const no = (yes: number) => Math.round((1 - yes) * 100) / 100;
-
-const yesNo = (yes: number): Outcome[] => [
-    { id: "yes", label: "YES", price: yes, chance: yes, tone: "gain", minUSD: 1 },
-    { id: "no", label: "NO", price: no(yes), chance: no(yes), tone: "loss", minUSD: 1 },
-];
-
-export const PREDICTION_MARKETS: PredictionMarket[] = [
-    {
-        id: "btc-150k-2026",
-        question: "Will BTC reach $150K?",
-        short: "BTC $150K?",
-        symbol: "BTC",
-        closes: "Dec 31",
-        outcomes: yesNo(0.38),
-    },
-    {
-        id: "eth-5k-2026",
-        question: "Will ETH flip $5K?",
-        short: "ETH $5K?",
-        symbol: "ETH",
-        closes: "Dec 31",
-        outcomes: yesNo(0.27),
-    },
-    {
-        id: "sol-ath-2026",
-        question: "Will SOL set a new all-time high?",
-        short: "SOL new high?",
-        symbol: "SOL",
-        closes: "Nov 30",
-        outcomes: yesNo(0.44),
-    },
-    {
-        id: "doge-1-2026",
-        question: "Will DOGE hit $1?",
-        short: "DOGE $1?",
-        symbol: "DOGE",
-        closes: "Dec 31",
-        outcomes: yesNo(0.06),
-    },
-];
-
 export type Catalog = {
     tokens: Token[];
     perps: PerpMarket[];
@@ -156,9 +91,10 @@ export type Catalog = {
     findMarket(id: string): PredictionMarket | undefined;
 };
 
+/** The questions come from Polymarket's trending list, so there are none until it loads. */
 export const CATALOG: Catalog = {
     tokens: TOKENS,
     perps: PERP_MARKETS,
-    markets: PREDICTION_MARKETS,
-    findMarket: (id) => PREDICTION_MARKETS.find((m) => m.id === id),
+    markets: [],
+    findMarket: () => undefined,
 };

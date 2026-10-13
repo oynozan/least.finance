@@ -45,7 +45,7 @@ export function Dock() {
     const pathname = usePathname();
     const { wallet } = useTrade();
     const pointerX = useMotionValue(Infinity);
-    const canReview = pathname === "/" && (wallet.status === "connected" || wallet.status === "demo");
+    const canReview = pathname === "/" && wallet.status === "connected";
 
     return (
         <MotionConfig reducedMotion="user">

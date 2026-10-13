@@ -13,7 +13,7 @@ export type TradeCtx = {
     catalog: Catalog;
     /** Coin units the connected wallet holds; null while no wallet is connected. */
     holdings: Readonly<Record<string, number>> | null;
-    /** The signing wallets' coins and unread networks; null until they load, and absent in the demo */
+    /** The signing wallets' coins and unread networks; null until they load or while signed out */
     wallet?: WalletHoldings | null;
     /** The most one prediction may spend; a number only while signed in with trading live. */
     maxOrderUSD?: number | null;
@@ -30,18 +30,21 @@ export const { operation, registry } = schema<TradeTerms, TradeCtx>();
 
 export const token = (ctx: TradeCtx, symbol: string) => ctx.catalog.tokens.find((t) => t.symbol === symbol);
 
-export const priceOf = (ctx: TradeCtx, symbol: string) => token(ctx, symbol)?.priceUSD ?? 0;
+/** A coin's price in dollars, or null until the swap catalog has read it; USDC is the dollar every amount is in. */
+export const priceOf = (ctx: TradeCtx, symbol: string): number | null =>
+    symbol === QUOTE ? 1 : (token(ctx, symbol)?.priceUSD ?? null);
 
 /** Coin units held, or null when no wallet is connected. */
 export const held = (ctx: TradeCtx, symbol: string) => (ctx.holdings === null ? null : (ctx.holdings[symbol] ?? 0));
 
-/** Dollar value held of a coin, or null when no wallet is connected. */
+/** Dollar value held of a coin, or null when no wallet is connected or the coin has no price yet. */
 export const heldUSD = (ctx: TradeCtx, symbol: string) => {
     const units = held(ctx, symbol);
-    return units === null ? null : units * priceOf(ctx, symbol);
+    const price = priceOf(ctx, symbol);
+    return units === null || price === null ? null : units * price;
 };
 
-/** Coin units held on one network or null while unknown, with the demo's coins on their home networks */
+/** Coin units held on one network or null while unknown; with no wallet read, `holdings` count on each coin's home network */
 export function heldOn(ctx: TradeCtx, symbol: string, network: NetworkId): number | null {
     if (ctx.wallet === null) return null;
     if (ctx.wallet) return ctx.wallet.unread.includes(network) ? null : (ctx.wallet.units[symbol]?.[network] ?? 0);

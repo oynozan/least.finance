@@ -46,11 +46,12 @@ function spendableOn(ctx: TradeCtx, symbol: string, network: NetworkId): number 
     return Math.max(units - reserve, 0);
 }
 
-/** Caps a sale or swap at what the wallet holds of the coin on that network, with no cap while unknown */
+/** Caps a sale or swap at what the wallet holds of the coin on that network, with no cap while that or its price is unknown */
 export function holdingCapOn(ctx: TradeCtx, symbol: string, network: NetworkId): Bound | undefined {
     const units = spendableOn(ctx, symbol, network);
-    if (units === null) return undefined;
-    const value = units * priceOf(ctx, symbol);
+    const price = priceOf(ctx, symbol);
+    if (units === null || price === null) return undefined;
+    const value = units * price;
     const where = `${symbol} on ${networkName(network)}`;
     return {
         value,
@@ -66,7 +67,8 @@ type UsdcRow = { network: NetworkId; usd: number };
 function usdcRows(ctx: TradeCtx): UsdcRow[] {
     return entriesOf(ctx, QUOTE).flatMap(({ network }) => {
         const units = spendableOn(ctx, QUOTE, network);
-        return units === null ? [] : [{ network, usd: units * priceOf(ctx, QUOTE) }];
+        // A USDC is a dollar
+        return units === null ? [] : [{ network, usd: units }];
     });
 }
 
@@ -92,7 +94,7 @@ export function usdcCap(ctx: TradeCtx): Bound | undefined {
 export function buyPayNetwork(ctx: TradeCtx, network: NetworkId, amountUSD: number): NetworkId | null {
     const here = spendableOn(ctx, QUOTE, network);
     if (here === null) return null;
-    if (here * priceOf(ctx, QUOTE) >= amountUSD) return network;
+    if (here >= amountUSD) return network;
     const best = richest(usdcRows(ctx));
     return best && best.usd > 0 ? best.network : network;
 }
@@ -108,16 +110,20 @@ export function spendCap(ctx: TradeCtx): Bound | undefined {
     };
 }
 
+/** "$12.40", or "—" while the price isn't known */
+const usdOrDash = (value: number | null) => (value === null ? "—" : formatUsd(value));
+
 /** A coin as a picker row with what you hold across networks once connected, else its price */
 export function coinChoice(ctx: TradeCtx, coin: Token, options: { disabled?: string } = {}): Choice {
     const units = heldTotal(ctx, coin.symbol);
+    const price = priceOf(ctx, coin.symbol);
     return {
         value: coin.symbol,
         label: coin.symbol,
         description: coin.name,
         ...(units
-            ? { detail: formatUnits(units, coin.symbol), subdetail: formatUsd(units * coin.priceUSD) }
-            : { detail: formatUsd(coin.priceUSD) }),
+            ? { detail: formatUnits(units, coin.symbol), subdetail: usdOrDash(price === null ? null : units * price) }
+            : { detail: usdOrDash(price) }),
         icon: { set: "coin", id: coin.symbol },
         disabled: options.disabled,
     };
@@ -136,7 +142,8 @@ export function largestHolding(ctx: TradeCtx): string | undefined {
     let best: string | undefined;
     let most = 0;
     for (const { symbol } of ctx.catalog.tokens) {
-        const value = symbol === QUOTE ? 0 : (spendableTotal(ctx, symbol) ?? 0) * priceOf(ctx, symbol);
+        // A coin with no price yet can't be ranked against the others
+        const value = symbol === QUOTE ? 0 : (spendableTotal(ctx, symbol) ?? 0) * (priceOf(ctx, symbol) ?? 0);
         if (value > most) {
             best = symbol;
             most = value;
@@ -171,6 +178,7 @@ export function networkChoices(
 ): Choice<NetworkId>[] {
     return entriesOf(ctx, symbol).map((entry) => {
         const units = heldOn(ctx, symbol, entry.network);
+        const price = priceOf(ctx, symbol);
         const same = other?.token === symbol && other.network === entry.network;
         const empty = side === "pay" ? payBlock(units, spendableOn(ctx, symbol, entry.network)) : undefined;
         return {
@@ -178,7 +186,7 @@ export function networkChoices(
             label: networkName(entry.network),
             description: entry.label,
             ...(units
-                ? { detail: formatUnits(units, symbol), subdetail: formatUsd(units * priceOf(ctx, symbol)) }
+                ? { detail: formatUnits(units, symbol), subdetail: usdOrDash(price === null ? null : units * price) }
                 : {}),
             icon: { set: "coin", id: symbol, badge: { set: "network", id: entry.network } },
             disabled: empty ?? (same ? "Same as the other side" : undefined),

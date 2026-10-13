@@ -22,7 +22,7 @@ sidebar.
 | Layer    | What it knows                                                                      | Files                  |
 | -------- | ---------------------------------------------------------------------------------- | ---------------------- |
 | Engine   | Sentences, slots, validation, state. No trading, no React.                         | `lib/sentence/`        |
-| Domain   | The four operations, mock market data, intents, execution stub.                    | `lib/trade/`           |
+| Domain   | The four operations, the coin and market lists, intents, execution stub.           | `lib/trade/`           |
 | Renderer | Generic sentence UI: pills, pickers, the amount input, motion. No trading.         | `components/sentence/` |
 | Trade UI | Wires the domain to the renderer, the dock's Review button and the review sidebar. | `components/trade/`    |
 
@@ -46,7 +46,10 @@ the coin) carry their value across verbs when the next operation accepts it, and
 between sentences instead of being replaced.
 
 Operations never import market data: prices, markets and the wallet's holdings come in through `ctx`
-(`holdings` is `null` while no wallet is connected, which lifts balance caps).
+(`holdings` is `null` while no wallet is connected, which lifts balance caps). Prices are LI.FI's, from
+`GET /swaps/catalog`; a coin has none until it answers, so its rows show "—" and it caps nothing. The
+questions are Polymarket's trending list. Long and Short build their sentence, but no perp venue is
+connected, so Review stays disabled with "Long and short aren't available yet."
 
 ## Adding a transaction type
 
@@ -79,6 +82,5 @@ on the chart, "Nothing here yet" under it.
 
 ## Not built yet
 
-Real prices, balances and quotes; execution (`lib/trade/execute.ts` only logs the intent); a real
-trade history and balance history from the server; slippage and order types; markets with more than
-two outcomes; picker search.
+Execution of swaps, buys and sells (`lib/trade/execute.ts` only logs the intent) and their quotes;
+a perp venue; slippage and order types.

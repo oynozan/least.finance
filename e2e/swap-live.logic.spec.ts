@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { createCoinsStore } from "@/components/trade/coins-store";
 import { initialState, reduce, refit, resolve } from "@/lib/sentence";
-import { CATALOG, TOKENS } from "@/lib/trade/catalog";
+import { TOKENS } from "@/lib/trade/catalog";
 import { heldOn, heldTotal, type CoinUnits, type TradeCtx } from "@/lib/trade/context";
 import { formatUsd } from "@/lib/trade/format";
 import { buyPayNetwork, networkChoices, usdcCap } from "@/lib/trade/operations/shared";
@@ -16,10 +16,11 @@ import {
 import { solanaWalletAddress } from "@/components/arc-wallet";
 import { NETWORKS, type NetworkId } from "@/server/src/swaps/coins";
 import type { SwapCatalogView, SwapHoldingRow, SwapHoldingsView } from "@/server/src/protocol";
+import { LOADED_CATALOG as CATALOG, PRICED_TOKENS, PRICES } from "./trade-fixtures";
 
 const view = (patch: (coin: SwapCatalogView["coins"][number]) => unknown = (coin) => coin): SwapCatalogView =>
     ({
-        coins: TOKENS.map((token) =>
+        coins: PRICED_TOKENS.map((token) =>
             patch({
                 symbol: token.symbol,
                 name: token.name,
@@ -35,11 +36,19 @@ const view = (patch: (coin: SwapCatalogView["coins"][number]) => unknown = (coin
         readAt: "2026-10-13T09:00:00.000Z",
     }) as SwapCatalogView;
 
-const priceOf = (tokens: { symbol: string; priceUSD: number }[], symbol: string) =>
+/** A perp sentence's values as shown: perps never produce an intent, since no venue is connected. */
+function perpOf(state: ReturnType<typeof initialState>, ctx: TradeCtx) {
+    const view = resolve(TRADE, state, ctx);
+    expect(["long", "short"]).toContain(view.verb.id);
+    const value = (id: string) => (view.slots[id] as { value?: string }).value;
+    return { asset: value("asset"), leverage: value("leverage"), collateralUSD: value("collateralUSD") };
+}
+
+const priceOf = (tokens: { symbol: string; priceUSD: number | null }[], symbol: string) =>
     tokens.find((token) => token.symbol === symbol)?.priceUSD;
 
 test.describe("live coins", () => {
-    test("toTokens takes live prices and keeps built-in ones for nulls", () => {
+    test("toTokens takes live prices and leaves a coin it can't price without one", () => {
         const live: Record<string, unknown> = {
             ETH: 3500.5,
             SOL: null,
@@ -56,16 +65,16 @@ test.describe("live coins", () => {
         expect(tokens.map((t) => t.symbol)).toEqual(TOKENS.map((t) => t.symbol));
         expect(priceOf(tokens, "ETH")).toBe(3500.5);
         expect(priceOf(tokens, "ARB")).toBe(0.9);
-        // A price that is missing, not a positive number, or not finite is the built-in one.
+        // A price that is missing, not a positive number, or not finite is no price, never a made-up one.
         for (const symbol of ["SOL", "BTC", "LINK", "DOGE", "AVAX"]) {
-            expect(priceOf(tokens, symbol), symbol).toBe(priceOf(TOKENS, symbol));
+            expect(priceOf(tokens, symbol), symbol).toBeNull();
         }
         // A price is the one thing a view changes: networks keep their gas reserve.
         const eth = tokens.find((t) => t.symbol === "ETH")!;
         expect(eth.networks).toEqual(TOKENS.find((t) => t.symbol === "ETH")!.networks);
         expect(eth.networks[0]).toMatchObject({ network: "ethereum", reserve: 0.002 });
-        for (const token of tokens)
-            expect(Number.isFinite(token.priceUSD) && token.priceUSD > 0, token.symbol).toBe(true);
+        for (const { symbol, priceUSD } of tokens)
+            expect(priceUSD === null || (Number.isFinite(priceUSD) && priceUSD > 0), symbol).toBe(true);
     });
 
     test("toTokens ignores an unknown network or coin", () => {
@@ -100,7 +109,10 @@ test.describe("live coins", () => {
         const eth = tokens.find((t) => t.symbol === "ETH")!;
         expect(eth.networks.map((n) => n.network)).toEqual(["base", "ethereum"]);
         expect(eth.networks[1]).toMatchObject({ label: "Ether", wrapped: true, reserve: 0.002 });
-        expect(tokens.find((t) => t.symbol === "LINK")).toEqual(TOKENS.find((t) => t.symbol === "LINK"));
+        expect(tokens.find((t) => t.symbol === "LINK")).toEqual({
+            ...TOKENS.find((t) => t.symbol === "LINK"),
+            priceUSD: PRICES.LINK,
+        });
         const arb = tokens.find((t) => t.symbol === "ARB")!;
         expect(arb.home).toBe("ethereum");
         expect(arb.networks.map((n) => n.network)).toEqual(["ethereum"]);
@@ -189,7 +201,7 @@ test.describe("wallet holdings", () => {
         expect(second.units.ETH).toEqual({ base: 2, optimism: 7 });
 
         // The cap is the signing wallet's, with the gas reserve held back.
-        const eth = TOKENS.find((t) => t.symbol === "ETH")!.priceUSD;
+        const eth = PRICES.ETH;
         const ctxFor = (signing: ReturnType<typeof walletHoldings>): TradeCtx => ({
             catalog: CATALOG,
             holdings: null,
@@ -381,7 +393,7 @@ test.describe("defaults follow the wallet", () => {
         state = refit(TRADE, state, loaded);
         expect(intentOf(state, loaded)).toMatchObject({ fromNetwork: "arbitrum", amountUSD: "25" });
         state = reduce(TRADE, state, { type: "verb", verbId: "long" }, loaded);
-        expect(intentOf(state, loaded)).toMatchObject({ type: "perp", leverage: 10 });
+        expect(perpOf(state, loaded)).toMatchObject({ leverage: "10" });
     });
 
     test("Sell moves off an ETH network holding only gas", () => {
@@ -444,13 +456,9 @@ test.describe("a refit keeps what the person chose", () => {
 
     test("Long SOL for 10 USD is unchanged by a holdings view", () => {
         const state = reduce(TRADE, initialState(TRADE, "swap", none), { type: "verb", verbId: "long" }, none);
-        expect(resolve(TRADE, state, none).intent).toMatchObject({ type: "perp", asset: "SOL", collateralUSD: "10" });
+        expect(perpOf(state, none)).toMatchObject({ asset: "SOL", collateralUSD: "10" });
         const fitted = refit(TRADE, state, spread);
-        expect(resolve(TRADE, fitted, spread).intent).toMatchObject({
-            type: "perp",
-            asset: "SOL",
-            collateralUSD: "10",
-        });
+        expect(perpOf(fitted, spread)).toMatchObject({ asset: "SOL", collateralUSD: "10" });
         expect(fitted.drafts.perp).toEqual(state.drafts.perp);
     });
 
@@ -481,7 +489,7 @@ test.describe("a refit keeps what the person chose", () => {
         state = refit(TRADE, state, spread);
         state = reduce(TRADE, state, { type: "verb", verbId: "swap" }, spread);
         state = reduce(TRADE, state, { type: "verb", verbId: "long" }, spread);
-        expect(resolve(TRADE, state, spread).intent).toMatchObject({ type: "perp", leverage: 10 });
+        expect(perpOf(state, spread)).toMatchObject({ leverage: "10" });
     });
 });
 
@@ -759,9 +767,7 @@ test.describe("the coins store", () => {
         });
         store.start();
         await wait(20);
-        expect(priceOf(toTokens(store.getSnapshot().view, TOKENS), "ETH")).toBe(
-            TOKENS.find((t) => t.symbol === "ETH")!.priceUSD,
-        );
+        expect(priceOf(toTokens(store.getSnapshot().view, TOKENS), "ETH")).toBe(PRICES.ETH);
         await wait(60);
         expect(priceOf(toTokens(store.getSnapshot().view, TOKENS), "ETH")).toBe(4000);
         await wait(250);

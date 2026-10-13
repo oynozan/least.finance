@@ -41,13 +41,13 @@ function merge(builtIn: Token, coin: Loose): Token {
     return {
         symbol: builtIn.symbol,
         name: typeof coin.name === "string" && coin.name.trim() !== "" ? coin.name : builtIn.name,
-        priceUSD: isPrice(coin.priceUSD) ? coin.priceUSD : builtIn.priceUSD,
+        priceUSD: isPrice(coin.priceUSD) ? coin.priceUSD : null,
         home,
         networks,
     };
 }
 
-/** The built-in coins with a catalog view's live prices and networks, skipping whatever a newer or broken server sends that doesn't fit. */
+/** The built-in coins with a catalog view's live prices and networks, skipping whatever a newer or broken server sends that doesn't fit; a coin it doesn't price has none. */
 export function toTokens(view: unknown, fallback: readonly Token[]): Token[] {
     const listed = isRecord(view) && Array.isArray(view.coins) ? view.coins : [];
     const live = new Map<string, Loose>();

@@ -20,7 +20,3 @@ export function formatUnits(value: number, symbol: string) {
 
 /** 0.38 -> "38¢" */
 export const formatCents = (price: number) => `${Math.round(price * 100)}¢`;
-
-/** 0.195 -> "19.5%" */
-export const formatPercent = (fraction: number) =>
-    `${(fraction * 100).toFixed(fraction < 0.1 ? 1 : 0).replace(/\.0$/, "")}%`;

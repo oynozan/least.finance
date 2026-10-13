@@ -5,7 +5,7 @@ import { useLogin, usePrivy } from "@privy-io/react-auth";
 import type { MarketView } from "@/server/src/protocol";
 import type { SentenceAction, SentenceView } from "@/lib/sentence";
 import { API_URL } from "@/lib/api";
-import { CATALOG, MOCK_HOLDINGS, QUOTE, TOKENS, type Catalog } from "@/lib/trade/catalog";
+import { CATALOG, QUOTE, TOKENS, type Catalog } from "@/lib/trade/catalog";
 import type { WalletHoldings } from "@/lib/trade/context";
 import type { TransactionIntent } from "@/lib/trade/intent";
 import { toTokens } from "@/lib/trade/live-coins";
@@ -19,20 +19,20 @@ import { createMarketsStore, type MarketsStore } from "./markets-store";
 import { useTradeSentence } from "./use-trade-sentence";
 
 export type WalletStatus =
-    { status: "demo" | "connected" } | { status: "loading" } | { status: "disconnected"; connect: () => void };
+    { status: "connected" } | { status: "loading" } | { status: "disconnected"; connect: () => void };
 
 type TradeState = {
     view: SentenceView<TransactionIntent>;
     dispatch: (action: SentenceAction) => void;
     wallet: WalletStatus;
-    /** The question picker's search; absent while the questions are mock ones. */
-    search?: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
+    /** The question picker's search. */
+    search: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
     catalog: Catalog;
     /** A number only while signed in with the server's trading on: predictions are placed for real. */
     maxOrderUSD: number | null;
     /** Every question seen, with the sell prices that value open positions. */
     known: ReadonlyMap<string, MarketView>;
-    /** Asks for fresh swap coins in the signing wallets; absent in the demo. */
+    /** Asks for fresh swap coins in the signing wallets; absent while signed out. */
     refreshHoldings?: () => void;
 };
 
@@ -48,19 +48,33 @@ export function useTrade() {
 }
 
 /**
- * Holds the sentence above the sidebar shell. With Privy configured, the
- * wallet decides whether balances apply; without it (no app ID), it runs as
- * a demo on mock balances.
+ * Holds the sentence above the sidebar shell, on the live questions and coin
+ * prices. With Privy configured, the wallet decides whether balances apply;
+ * without it (no app ID), nobody can sign in, so it stays signed out.
  */
 export function TradeProvider({ children }: { children: ReactNode }) {
-    if (!walletEnabled) {
-        return (
-            <Provide wallet={{ status: "demo" }} holdings={MOCK_HOLDINGS} catalog={CATALOG}>
-                {children}
-            </Provide>
-        );
-    }
+    if (!walletEnabled) return <SignedOutTradeProvider>{children}</SignedOutTradeProvider>;
     return <PrivyTradeProvider>{children}</PrivyTradeProvider>;
+}
+
+/** Signing in needs a Privy app ID, which the wallet button says; until one is set, connecting does nothing. */
+const NO_SIGN_IN: WalletStatus = { status: "disconnected", connect: () => undefined };
+
+function SignedOutTradeProvider({ children }: { children: ReactNode }) {
+    const { catalog, store, search, known } = useLiveCatalog();
+    return (
+        <Provide
+            wallet={NO_SIGN_IN}
+            holdings={null}
+            walletCoins={null}
+            catalog={catalog}
+            store={store}
+            search={search}
+            known={known}
+        >
+            {children}
+        </Provide>
+    );
 }
 
 function PrivyTradeProvider({ children }: { children: ReactNode }) {
@@ -135,8 +149,8 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
     );
 }
 
-/** Polymarket's questions in place of the mock ones, whoever is (or isn't) signed in. */
-type MarketSearch = NonNullable<TradeState["search"]>;
+/** Polymarket's questions and LI.FI's coin prices, whoever is (or isn't) signed in. */
+type MarketSearch = TradeState["search"];
 
 function useLiveCatalog(): {
     catalog: Catalog;
@@ -206,11 +220,11 @@ function Provide({
 }: {
     wallet: WalletStatus;
     holdings: Record<string, number> | null;
-    /** The signing wallets' coins per network; null until they load, and absent in the demo. */
-    walletCoins?: WalletHoldings | null;
+    /** The signing wallets' coins per network; null until they load, and while signed out. */
+    walletCoins: WalletHoldings | null;
     catalog: Catalog;
-    store?: MarketsStore;
-    search?: MarketSearch;
+    store: MarketsStore;
+    search: MarketSearch;
     maxOrderUSD?: number | null;
     known?: ReadonlyMap<string, MarketView>;
     refreshHoldings?: () => void;
@@ -220,8 +234,8 @@ function Provide({
     const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;
     const marketId = watched?.kind === "choice" && watched.value ? watched.value : null;
     useEffect(() => {
-        store?.watch(marketId);
-        return () => store?.watch(null);
+        store.watch(marketId);
+        return () => store.watch(null);
     }, [store, marketId]);
     return (
         <TradeContext value={{ view, dispatch, wallet, search, catalog, maxOrderUSD, known, refreshHoldings }}>

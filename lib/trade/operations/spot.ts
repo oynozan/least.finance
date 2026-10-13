@@ -130,7 +130,8 @@ export const spot = operation({
         const amount = Number(v.amountUSD) || 0;
         const price = priceOf(ctx, v.token);
         const fee = amount * FEE_RATE;
-        const coins = amount && price ? formatUnits(amount / price, v.token) : "—";
+        // Nothing to estimate before the coin has a price
+        const coins = amount && price ? `≈ ${formatUnits(amount / price, v.token)}` : "—";
         const paidFrom = buyPayNetwork(ctx, v.network, amount);
         const rows =
             v.side === "buy"
@@ -141,7 +142,7 @@ export const spot = operation({
                           value: amount ? `${formatUsd(amount)} ${QUOTE}` : "—",
                           primary: true,
                       },
-                      { id: "get", label: "You get", value: amount ? `≈ ${coins}` : "—", primary: true },
+                      { id: "get", label: "You get", value: coins, primary: true },
                       {
                           id: "from",
                           label: "Paid from",
@@ -149,7 +150,7 @@ export const spot = operation({
                       },
                   ]
                 : [
-                      { id: "pay", label: "You sell", value: amount ? `≈ ${coins}` : "—", primary: true },
+                      { id: "pay", label: "You sell", value: coins, primary: true },
                       {
                           id: "get",
                           label: "You get",
