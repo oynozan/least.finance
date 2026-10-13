@@ -99,6 +99,8 @@ type PillButtonProps = Omit<PillBodyProps, "pose" | "className"> & {
     "aria-controls"?: string;
     "aria-invalid"?: boolean;
     tone?: "default" | "muted" | "gain" | "loss";
+    /** Told when a mouse starts and stops hovering the pill; touch never hovers. */
+    onHoverChange?: (hovered: boolean) => void;
 };
 
 const TONE = {
@@ -109,7 +111,7 @@ const TONE = {
 } as const;
 
 /** A pill that opens something: springs on hover and press. */
-export function PillButton({ ref, onClick, tone = "default", ...props }: PillButtonProps) {
+export function PillButton({ ref, onClick, tone = "default", onHoverChange, ...props }: PillButtonProps) {
     const [hovered, setHovered] = useState(false);
     const [pressed, setPressed] = useState(false);
     const {
@@ -146,8 +148,14 @@ export function PillButton({ ref, onClick, tone = "default", ...props }: PillBut
             initial={false}
             whileHover="hover"
             whileTap="tap"
-            onHoverStart={() => setHovered(true)}
-            onHoverEnd={() => setHovered(false)}
+            onHoverStart={() => {
+                setHovered(true);
+                onHoverChange?.(true);
+            }}
+            onHoverEnd={() => {
+                setHovered(false);
+                onHoverChange?.(false);
+            }}
             onTapStart={() => setPressed(true)}
             onTap={() => setPressed(false)}
             onTapCancel={() => setPressed(false)}

@@ -27,7 +27,7 @@ export function Sentence({ parts, renderVerb, renderSlot, className = "" }: Sent
     return (
         // Positioned, so leaving items can be pinned where they were; a definite
         // width (not shrink-to-fit), so the pinned ones don't drift as it re-centers.
-        <p className={`relative ${className}`}>
+        <p data-sentence="" className={`relative ${className}`}>
             <LayoutGroup id={groupId}>
                 <AnimatePresence mode="popLayout" initial={false}>
                     {parts.flatMap((part, i) => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import NumberFlow from "@number-flow/react";
 import { motion } from "motion/react";
 import type { ChoiceSlotView, NumberSlotView } from "@/lib/sentence";
@@ -8,6 +8,7 @@ import { ChevronIcon } from "@/components/icons";
 import { SentenceIcon } from "./icons";
 import { layoutSpring, spring, typingLayout } from "./motion";
 import { FloatingDialog } from "./dialog";
+import { HoverCard, useHoverIntent } from "./hover-card";
 import { PillButton } from "./pill";
 import { Picker } from "./picker";
 import { Slider } from "./slider";
@@ -55,6 +56,8 @@ type ChoiceSlotProps = {
     onSearch?: (query: string) => void;
     /** Said above the list when the search found nothing. */
     searchEmpty?: string;
+    /** Shown in a card while a mouse hovers the pill, such as a coin's price chart. */
+    preview?: ReactNode;
 };
 
 /** A pill that opens a picker; its label changes only once a choice is made. */
@@ -67,9 +70,11 @@ export function ChoiceSlot({
     onOpen,
     onSearch,
     searchEmpty,
+    preview,
 }: ChoiceSlotProps) {
     const [open, setOpen] = useState(false);
     const button = useRef<HTMLButtonElement>(null);
+    const hover = useHoverIntent();
     const pickerId = useId();
     const hintId = useId();
     const wasOpen = useRef(false);
@@ -105,12 +110,22 @@ export function ChoiceSlot({
                 aria-expanded={open}
                 aria-controls={open ? pickerId : undefined}
                 onClick={() => {
+                    hover.hide();
                     setOpen(true);
                     onOpen?.();
                 }}
+                onHoverChange={preview ? hover.pill : undefined}
             >
                 {selected ? <Label label={selected.label} short={selected.short} /> : placeholder}
             </PillButton>
+            <HoverCard
+                open={!!preview && hover.shown && !open}
+                anchor={button}
+                onPointerEnter={() => hover.card(true)}
+                onPointerLeave={() => hover.card(false)}
+            >
+                {preview}
+            </HoverCard>
             <span id={hintId} className="sr-only">
                 {companion?.selected ? `${view.hint}, on ${companion.selected.label}` : view.hint}
             </span>

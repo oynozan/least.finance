@@ -14,7 +14,8 @@ const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.45 
 /** Pinned to the top of every page, outside its centered flow. */
 export function ConnectWallet() {
     return (
-        <div className={styles.top}>
+        // Hover cards keep clear of it
+        <div className={styles.top} data-keep-clear="">
             <Magnet padding={30} magnetStrength={4}>
                 {walletEnabled ? (
                     <PrivyWalletButton />

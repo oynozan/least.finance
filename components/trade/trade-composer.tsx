@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { MotionConfig } from "motion/react";
 import type { SentenceAction, SentenceView, SlotView } from "@/lib/sentence";
 import type { TransactionIntent } from "@/lib/trade/intent";
@@ -16,6 +16,15 @@ type TradeComposerProps = {
     search?: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
     /** Called as a coin's picker opens, to refresh what the wallet holds. */
     onCoinOpen?: () => void;
+    /** What a coin pill shows while hovered, such as its price chart; null for nothing. */
+    coinPreview?: (symbol: string) => ReactNode;
+};
+
+/** The coin a slot's pill shows: a choice whose value is the coin it pictures (not a market with a coin's icon). */
+const coinOf = (slot: SlotView) => {
+    if (slot.kind !== "choice") return null;
+    const icon = slot.selected?.icon;
+    return icon?.set === "coin" && slot.selected?.value === icon.id ? icon.id : null;
 };
 
 const shownValue = (slot: SlotView) => {
@@ -43,7 +52,7 @@ function useAnnouncer() {
  * The trade sentence itself. Fully controlled: the view and dispatch come
  * from the shared trade state. The details live in the review sidebar.
  */
-export function TradeComposer({ view, dispatch, search, onCoinOpen }: TradeComposerProps) {
+export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview }: TradeComposerProps) {
     const headingId = useId();
     const issueId = useId();
     const [typing, setTyping] = useState(false);
@@ -94,6 +103,7 @@ export function TradeComposer({ view, dispatch, search, onCoinOpen }: TradeCompo
     const renderSlot = (id: string) => {
         const slot = view.slots[id];
         const companion = slot.kind === "choice" ? slot.then : undefined;
+        const coin = coinOf(slot);
         return (
             <span data-slot={id} className="contents">
                 {slot.kind === "choice" ? (
@@ -105,6 +115,7 @@ export function TradeComposer({ view, dispatch, search, onCoinOpen }: TradeCompo
                         onOpen={companion && onCoinOpen}
                         onSearch={search?.onQuery}
                         searchEmpty={search?.empty}
+                        preview={coin ? coinPreview?.(coin) : undefined}
                     />
                 ) : (
                     <NumberSlot

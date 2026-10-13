@@ -51,6 +51,8 @@ export function Dock() {
         <MotionConfig reducedMotion="user">
             <nav
                 aria-label="Pages"
+                // Hover cards keep clear of it
+                data-keep-clear=""
                 className="absolute bottom-[max(24px,env(safe-area-inset-bottom))] left-1/2 z-20 flex h-16 -translate-x-1/2 items-end gap-2 rounded-full bg-panel p-2 shadow-[0_0_0_1px_rgb(255_255_255/0.07),0_20px_50px_-16px_rgb(0_0_0/0.75)]"
                 onPointerMove={(event) => {
                     if (event.pointerType === "mouse") pointerX.set(event.clientX);
