@@ -19,6 +19,8 @@ import type {
     QuoteView,
     SourceTxView,
     WalletSession,
+    WithdrawLimits,
+    WithdrawalView,
 } from "@/server/src/protocol";
 
 export type {
@@ -41,6 +43,8 @@ export type {
     QuoteView,
     SourceTxView,
     WalletSession,
+    WithdrawLimits,
+    WithdrawalView,
 };
 
 /** Arc's native USDC, which the server's amounts keep in full. */
@@ -83,6 +87,15 @@ export type OptimisticSell = {
     connection: number;
 };
 
+/** A withdrawal the server hasn't shown back yet, counted against the balance meanwhile. */
+export type PendingWithdrawal = {
+    requestId: string;
+    /** Wei. */
+    amount: bigint;
+    to: string;
+    at: number;
+};
+
 export type OptimisticTrade = OptimisticBuy | OptimisticSell;
 
 export type AccountState =
@@ -107,6 +120,12 @@ export type AccountState =
           predictions: PositionsView;
           /** Newest first; counted against the balance until the server's order shows up. */
           optimistic: OptimisticTrade[];
+          /** Newest first, as the server last said. */
+          withdrawals: WithdrawalView[];
+          /** Newest first; counted against the balance until the server's view of the request arrives. */
+          pendingWithdrawals: PendingWithdrawal[];
+          /** By withdrawal id: the account version held when the withdrawal arrived; the debit shows once a later one is. */
+          withdrawalSeen: Record<string, number>;
       };
 
 export type AccountAction =
@@ -129,7 +148,11 @@ export type AccountAction =
     | { type: "prediction"; update: PredictionUpdate }
     | { type: "positions"; positions: PositionsView; connection: number }
     /** A position was paid or lost when its market resolved. */
-    | { type: "position-settled"; position: PositionView; account: AccountView };
+    | { type: "position-settled"; position: PositionView; account: AccountView }
+    | { type: "withdraw"; withdrawal: PendingWithdrawal }
+    /** The server turned the withdrawal down. */
+    | { type: "withdraw-refused"; requestId: string }
+    | { type: "withdrawal"; withdrawal: WithdrawalView };
 
 export const initialAccountState: AccountState = { status: "idle" };
 
@@ -161,6 +184,12 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 // Positions follow as their own push after the session.
                 predictions: state.status === "ready" ? state.predictions : { positions: [], orders: [] },
                 optimistic: state.status === "ready" ? state.optimistic : [],
+                withdrawals: action.session.withdrawals,
+                pendingWithdrawals: (state.status === "ready" ? state.pendingWithdrawals : []).filter(
+                    (p) => !action.session.withdrawals.some((w) => w.requestId === p.requestId),
+                ),
+                // The session's balance already has every one of them taken
+                withdrawalSeen: Object.fromEntries(action.session.withdrawals.map((w) => [w.id, account.version - 1])),
             });
         }
         case "order": {
@@ -246,6 +275,33 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 }),
             };
         }
+        case "withdraw":
+            if (state.status !== "ready") return state;
+            if (state.pendingWithdrawals.some((p) => p.requestId === action.withdrawal.requestId)) return state;
+            if (state.withdrawals.some((w) => w.requestId === action.withdrawal.requestId)) return state;
+            return { ...state, pendingWithdrawals: [action.withdrawal, ...state.pendingWithdrawals] };
+        case "withdraw-refused":
+            if (state.status !== "ready") return state;
+            return {
+                ...state,
+                pendingWithdrawals: state.pendingWithdrawals.filter((p) => p.requestId !== action.requestId),
+            };
+        case "withdrawal": {
+            if (state.status !== "ready") return state;
+            const { withdrawal } = action;
+            const held = state.withdrawals.find((w) => w.id === withdrawal.id);
+            const pendingWithdrawals = state.pendingWithdrawals.filter((p) => p.requestId !== withdrawal.requestId);
+            if (held && held.updatedAt > withdrawal.updatedAt) return { ...state, pendingWithdrawals };
+            return {
+                ...state,
+                withdrawals: [withdrawal, ...state.withdrawals.filter((w) => w.id !== withdrawal.id)].sort(newestFirst),
+                pendingWithdrawals,
+                withdrawalSeen: {
+                    ...state.withdrawalSeen,
+                    [withdrawal.id]: state.withdrawalSeen[withdrawal.id] ?? state.account.version,
+                },
+            };
+        }
         case "position-settled": {
             if (state.status !== "ready") return state;
             const next = withAccount(state, action.account);
@@ -264,6 +320,10 @@ type Ready = Extract<AccountState, { status: "ready" }>;
 
 /** Replaces the entry with the same id, or adds it on top. */
 const upsert = <T extends { id: string }>(items: T[], item: T): T[] => [item, ...items.filter((i) => i.id !== item.id)];
+
+/** Newest created first. */
+const newestFirst = (a: WithdrawalView, b: WithdrawalView) =>
+    a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
 
 /** Adds the order, unless the one held is newer. */
 const keepNewer = (orders: PredictionOrderView[], order: PredictionOrderView): PredictionOrderView[] => {
@@ -346,7 +406,15 @@ export function optimisticBalance(state: AccountState): bigint | null {
         state.predictions.orders.filter((o) => o.state === "filled" || o.state === "failed").map((o) => o.requestId),
     );
     // A buy the server has is already debited in `account.balance`; a sale is credited only when it fills.
-    const afterDeposits = state.pending.reduce((sum, p) => sum + p.amount, state.balance);
+    // A withdrawal that is sending takes its amount until an account newer than the one it arrived with shows the debit.
+    const owed = state.withdrawals.reduce(
+        (sum, w) =>
+            w.state === "sending" && state.account.version <= (state.withdrawalSeen[w.id] ?? 0)
+                ? sum + toWei(w.amount)
+                : sum,
+        state.pendingWithdrawals.reduce((sum, p) => sum + p.amount, BigInt(0)),
+    );
+    const afterDeposits = state.pending.reduce((sum, p) => sum + p.amount, state.balance - owed);
     return state.optimistic.reduce((sum, t) => {
         if (t.side === "sell") return settled.has(t.requestId) ? sum : sum + t.proceedsWei;
         return placed.has(t.requestId) ? sum : sum - t.amountWei;

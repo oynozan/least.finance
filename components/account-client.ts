@@ -12,6 +12,7 @@ import {
     type PositionView,
     type PredictionFailure,
     type QuoteView,
+    type WithdrawLimits,
 } from "@/lib/account/state";
 import { sellableShares } from "@/components/wallet-data";
 import { dropAfterSend, loadCachedBalances, needsRefresh, saveCachedBalances } from "@/lib/account/balances";
@@ -96,6 +97,7 @@ const FAILURE_COPY: Record<PredictionFailure, string> = {
 };
 const OFFLINE_COPY = "You're offline. Nothing was spent.";
 const SELL_FAILED_COPY = "Couldn't sell right now. Your position is back.";
+const WITHDRAW_FAILED_COPY = "Didn't go through. Your balance is back.";
 /** The price sent when none is known; the exchange takes the best bid anyway, within a cent of it. */
 const UNQUOTED_SELL_PRICE = 0.01;
 
@@ -210,6 +212,10 @@ export class AccountClient {
             const { order } = update;
             if (order.state !== "failed") return;
             this.#tradeNotice(order.side === "sell" ? SELL_FAILED_COPY : FAILURE_COPY[order.reason ?? "rejected"]);
+        });
+        socket.on("withdrawal:update", ({ withdrawal }) => {
+            this.#dispatch({ type: "withdrawal", withdrawal });
+            if (withdrawal.state === "failed") this.#notify({ kind: "reverted", message: WITHDRAW_FAILED_COPY });
         });
         socket.on("position:settled", ({ position, account }) => {
             this.#dispatch({ type: "position-settled", position, account });
@@ -355,6 +361,41 @@ export class AccountClient {
             .catch(() => null);
         if (!result) return UNREACHABLE;
         return result.ok ? result.data : result.error;
+    }
+
+    /** What a withdrawal may be right now. */
+    async withdrawLimits(): Promise<WithdrawLimits | ApiError> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        const result = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("withdraw:limits", {})
+            .catch(() => null);
+        if (!result) return UNREACHABLE;
+        return result.ok ? result.data : result.error;
+    }
+
+    /**
+     * Withdraws `amount` USDC to `to` and counts it at once. A refusal rolls it back with the server's message;
+     * a missing answer leaves it counted, since the server may have taken it.
+     */
+    async withdraw(amount: string, to: string): Promise<"sent" | "refused" | "failed"> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket?.connected) return "failed";
+        const requestId = crypto.randomUUID();
+        this.#dispatch({ type: "withdraw", withdrawal: { requestId, amount: toWei(amount), to, at: Date.now() } });
+        const result = await socket
+            .timeout(REPORT_TIMEOUT_MS)
+            .emitWithAck("withdraw:create", { requestId, amount, to })
+            .catch(() => null);
+        if (this.#socket !== socket || !result) return "failed";
+        if (result.ok) {
+            this.#dispatch({ type: "withdrawal", withdrawal: result.data });
+            return "sent";
+        }
+        this.#dispatch({ type: "withdraw-refused", requestId });
+        this.#notify({ kind: "reverted", message: result.error.message });
+        return "refused";
     }
 
     /** What a prediction buy would cost and return right now. */

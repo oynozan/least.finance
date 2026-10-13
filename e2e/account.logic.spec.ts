@@ -14,6 +14,7 @@ import {
     type DepositView,
     type Hex,
     type WalletSession,
+    type WithdrawalView,
 } from "@/lib/account/state";
 
 const DEPOSIT_ADDRESS = "0x00000000000000000000000000000000000000b2" as Hex;
@@ -507,5 +508,87 @@ test.describe("bridged deposits", () => {
         const origin = { coin: "ethereum:ETH", amount: "0.1", txHash: hash(7) };
         const rows = historyRows(open("300", 1, [deposit(2, "5"), deposit(1, "300", { origin })]));
         expect(rows.map((r) => r.origin)).toEqual([undefined, origin]);
+    });
+});
+
+const withdrawal = (n: number, over: Partial<WithdrawalView> = {}): WithdrawalView => ({
+    id: oid(n),
+    requestId: `req-${n}`,
+    amount: "10",
+    to: "0x00000000000000000000000000000000000000d4",
+    state: "sending",
+    txHash: null,
+    createdAt: new Date(Date.UTC(2026, 8, n)).toISOString(),
+    updatedAt: new Date(Date.UTC(2026, 8, n)).toISOString(),
+    ...over,
+});
+
+const pendingWithdrawal = (n: number, usdc = "10"): AccountAction => ({
+    type: "withdraw",
+    withdrawal: {
+        requestId: `req-${n}`,
+        amount: toWei(usdc),
+        to: "0x00000000000000000000000000000000000000d4",
+        at: 1000 + n,
+    },
+});
+
+test.describe("withdrawals", () => {
+    test("a withdrawal upserts by id and ignores a stale update", () => {
+        const sending = withdrawal(1);
+        const sentView = withdrawal(1, { state: "sent", updatedAt: new Date(Date.UTC(2026, 8, 2)).toISOString() });
+        let state = run([{ type: "withdrawal", withdrawal: sending }], open());
+        expect(ready(state).withdrawals).toEqual([sending]);
+        state = run(
+            [
+                { type: "withdrawal", withdrawal: withdrawal(2) },
+                { type: "withdrawal", withdrawal: sentView },
+            ],
+            state,
+        );
+        expect(ready(state).withdrawals.map((w) => [w.id, w.state])).toEqual([
+            [oid(2), "sending"],
+            [oid(1), "sent"],
+        ]);
+        state = run([{ type: "withdrawal", withdrawal: sending }], state);
+        expect(ready(state).withdrawals.find((w) => w.id === oid(1))?.state).toBe("sent");
+    });
+
+    test("a pending withdrawal lowers the balance until the server's view arrives", () => {
+        let state = run([pendingWithdrawal(1, "10")], open("25", 1));
+        expect(optimisticBalance(state)).toBe(toWei("15"));
+        state = run([{ type: "withdrawal", withdrawal: withdrawal(1) }], state);
+        expect(ready(state).pendingWithdrawals).toEqual([]);
+        // The view is in, the account isn't yet: still counted once
+        expect(optimisticBalance(state)).toBe(toWei("15"));
+        // The account that includes the debit takes over
+        state = run([{ type: "credited", deposit: deposit(5, "1"), account: account("14", 3) }], state);
+        expect(optimisticBalance(state)).toBe(toWei("14"));
+    });
+
+    test("a refused withdrawal leaves the pending list", () => {
+        const state = run([pendingWithdrawal(1), { type: "withdraw-refused", requestId: "req-1" }], open("25", 1));
+        expect(ready(state).pendingWithdrawals).toEqual([]);
+        expect(optimisticBalance(state)).toBe(toWei("25"));
+    });
+
+    test("a failed withdrawal doesn't lower the balance", () => {
+        const failed = withdrawal(1, { state: "failed" });
+        const state = run([pendingWithdrawal(1), { type: "withdrawal", withdrawal: failed }], open("25", 1));
+        expect(optimisticBalance(state)).toBe(toWei("25"));
+    });
+
+    test("the session restores withdrawals", () => {
+        const views = [withdrawal(2), withdrawal(1, { state: "sent" })];
+        const state = run([{ type: "session", session: { ...session("20", 4), withdrawals: views } }]);
+        expect(ready(state).withdrawals).toEqual(views);
+        // The session's balance already has them taken
+        expect(optimisticBalance(state)).toBe(toWei("20"));
+    });
+
+    test("a session keeps a pending withdrawal the server doesn't have yet", () => {
+        let state = run([pendingWithdrawal(1), pendingWithdrawal(2)], open("25", 1));
+        state = run([{ type: "session", session: { ...session("15", 2), withdrawals: [withdrawal(1)] } }], state);
+        expect(ready(state).pendingWithdrawals.map((p) => p.requestId)).toEqual(["req-2"]);
     });
 });

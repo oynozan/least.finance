@@ -20,6 +20,7 @@ import {
     type ApiError,
     type HistoryRow,
     type OptimisticTrade,
+    type PendingWithdrawal,
 } from "@/lib/account/state";
 import { API_URL } from "@/lib/api";
 import type { Signers } from "@/lib/trade/swap-request";
@@ -35,6 +36,8 @@ import type {
     SwapOrderView,
     SwapQuoteView,
     SwapRequest,
+    WithdrawLimits,
+    WithdrawalView,
 } from "@/server/src/protocol";
 import {
     AccountClient,
@@ -91,6 +94,14 @@ export type Account = {
     /** Sells a whole position, counted at once; the outcome arrives as a push. */
     closePosition: (position: PositionView, sellPrice: number | null) => void;
     dismissTradeNotice: () => void;
+    /** The account's recent withdrawals, newest first. */
+    withdrawals: WithdrawalView[];
+    /** Withdrawals asked for that the server hasn't shown back yet, newest first. */
+    pendingWithdrawals: PendingWithdrawal[];
+    /** What a withdrawal may be right now. */
+    withdrawLimits: () => Promise<WithdrawLimits | ApiError>;
+    /** Withdraws `amount` USDC to the linked EVM wallet `to`; the amount is counted at once. */
+    withdraw: (amount: string, to: string) => Promise<"sent" | "refused" | "failed">;
 };
 
 type PlaceInput = Parameters<AccountClient["placePrediction"]>[0];
@@ -105,7 +116,11 @@ const IDLE: AccountSnapshot = {
 };
 const NO_PREDICTIONS: PositionsView = { positions: [], orders: [] };
 const NO_OPTIMISTIC: OptimisticTrade[] = [];
+const NO_WITHDRAWALS: WithdrawalView[] = [];
+const NO_PENDING_WITHDRAWALS: PendingWithdrawal[] = [];
 const UNAVAILABLE: ApiError = { code: "unavailable", message: "Predictions aren't available right now." };
+
+const UNAVAILABLE_WITHDRAW: ApiError = { code: "unavailable", message: "Withdrawals aren't available right now." };
 
 const NO_SIGNERS: Signers = {};
 
@@ -242,6 +257,8 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             placePrediction={(input) => client.placePrediction(input)}
             closePosition={(position, sellPrice) => client.closePosition(position, sellPrice)}
             dismissTradeNotice={() => client.dismissTradeNotice()}
+            withdrawLimits={() => client.withdrawLimits()}
+            withdraw={(amount, to) => client.withdraw(amount, to)}
         >
             {children}
         </Provide>
@@ -263,6 +280,8 @@ function Provide({
     placePrediction = () => ({ requestId: "", sent: false }),
     closePosition = () => undefined,
     dismissTradeNotice = () => undefined,
+    withdrawLimits = async () => UNAVAILABLE_WITHDRAW,
+    withdraw = async () => "failed",
     children,
 }: {
     snapshot: AccountSnapshot;
@@ -279,6 +298,8 @@ function Provide({
     placePrediction?: Account["placePrediction"];
     closePosition?: Account["closePosition"];
     dismissTradeNotice?: () => void;
+    withdrawLimits?: Account["withdrawLimits"];
+    withdraw?: Account["withdraw"];
     children: ReactNode;
 }) {
     const { state, notice } = snapshot;
@@ -309,6 +330,10 @@ function Provide({
         placePrediction,
         closePosition,
         dismissTradeNotice,
+        withdrawals: state.status === "ready" ? state.withdrawals : NO_WITHDRAWALS,
+        pendingWithdrawals: state.status === "ready" ? state.pendingWithdrawals : NO_PENDING_WITHDRAWALS,
+        withdrawLimits,
+        withdraw,
     };
     return <AccountContext value={value}>{children}</AccountContext>;
 }
