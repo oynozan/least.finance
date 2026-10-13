@@ -1,5 +1,5 @@
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
-import { fundSource, noSwapRoute, nextSwapQuote, setSwapStatus } from "./backend";
+import { fundSource, noSwapRoute, randomAddress, nextSwapQuote, setSwapStatus } from "./backend";
 import {
     addressOf,
     installWallet,
@@ -175,6 +175,37 @@ test("receiving on Solana without a Solana wallet asks to connect one", async ({
     await expect(reviewPanel(page).getByText("Connect a Solana wallet to receive SOL on Solana.")).toBeVisible();
     await expect(reviewPanel(page).getByRole("button", { name: "Connect", exact: true })).toBeVisible();
     await expect(reviewPanel(page).getByRole("button", { name: "Confirm swap" })).toHaveCount(0);
+});
+
+test("a paying wallet that is linked but not connected here asks to connect and opens no order", async ({ page }) => {
+    // The person's other linked wallet is the active one; only the first is connected in this browser.
+    const other = randomAddress();
+    await mockPrivy(page, [other]);
+    await page.addInitScript((address) => {
+        const original = Storage.prototype.getItem;
+        Storage.prototype.getItem = function (this: Storage, key: string) {
+            return key.startsWith("active-wallet:")
+                ? JSON.stringify({ kind: "evm", address })
+                : original.call(this, key);
+        };
+    }, other);
+    const orders: string[] = [];
+    await page.routeWebSocket(/socket\.io/, (ws) => {
+        const server = ws.connectToServer();
+        ws.onMessage((message) => {
+            if (typeof message === "string" && message.includes('"swap:order"')) orders.push(message);
+            server.send(message);
+        });
+        server.onMessage((message) => ws.send(message));
+    });
+    await ethToUsdc(page);
+    await openReview(page);
+    const panel = reviewPanel(page);
+    await expect(panel.getByText(`Connect ${other.slice(0, 6)}…${other.slice(-4)} to pay.`)).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Connect", exact: true })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Confirm swap" })).toHaveCount(0);
+    expect(orders).toHaveLength(0);
+    expect(await sends(page)).toHaveLength(0);
 });
 
 test("a stale quote is never shown for a new amount", async ({ page, isMobile }) => {

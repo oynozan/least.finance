@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useConnectWallet } from "@privy-io/react-auth";
 import { MotionConfig, motion, type Variants } from "motion/react";
 import { submitIntent } from "@/lib/trade/execute";
 import type { TradeCtx } from "@/lib/trade/context";
@@ -14,6 +15,7 @@ import type { QuoteView, SwapOrderView, SwapQuoteView, SwapRequest } from "@/ser
 import { useAccount } from "@/components/account-provider";
 import { useLinkOtherWallet } from "@/components/arc-wallet";
 import { CloseIcon } from "@/components/icons";
+import { shortenAddress } from "@/components/wallet-data";
 import { spring } from "@/components/sentence/motion";
 import { useSidebar } from "@/components/sidebar";
 import { useTrade } from "./trade-provider";
@@ -153,6 +155,13 @@ function ConnectKind({ kind }: { kind: "evm" | "solana" }) {
     return <ActionButton label="Connect" onClick={() => link(kind)} />;
 }
 
+/** Opens Privy's wallet connect for a linked wallet that isn't connected in this browser. */
+function ConnectHere({ address }: { address: string }) {
+    const { connectWallet } = useConnectWallet();
+    const walletChainType = address.startsWith("0x") ? "ethereum-only" : "solana-only";
+    return <ActionButton label="Connect" onClick={() => connectWallet({ walletChainType })} />;
+}
+
 const same = (a: SwapRequest, b: SwapRequest) =>
     a.from.token === b.from.token &&
     a.from.network === b.from.network &&
@@ -181,7 +190,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const intent = view.intent;
     // A swap, buy or sell is real once signed in: LI.FI quotes it and the person's own wallet signs it.
     const swapIntent = isSwapIntent(intent) ? intent : null;
-    const { swapHoldings, signers, swaps, state: accountState } = account;
+    const { swapHoldings, signers, connected, swaps, state: accountState } = account;
     const swapCtx = useMemo<TradeCtx>(
         () => ({
             catalog,
@@ -196,10 +205,11 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const [answer, setAnswer] = useState<SwapAnswer | null>(null);
     const built =
         swapIntent && showing && !done && !view.blocking && wallet.status === "connected"
-            ? toSwapRequest(swapIntent, swapCtx, signers)
+            ? toSwapRequest(swapIntent, swapCtx, signers, connected)
             : null;
-    const request = built && !("missing" in built) ? built : null;
+    const request = built && !("missing" in built) && !("connect" in built) ? built : null;
     const missing = built && "missing" in built ? built.missing : null;
+    const toConnect = built && "connect" in built ? built.connect : null;
     const requestKey = request && accountState.status === "ready" ? JSON.stringify(request) : null;
     const askSwap = useRef(account.quoteSwap);
     useEffect(() => {
@@ -354,7 +364,8 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                 ? `Connect ${needs(missing)} wallet to receive ${sides.to.token} on ${networkName(sides.to.network)}.`
                 : `Connect ${needs(missing)} wallet to pay with ${sides.from.token} on ${networkName(sides.from.network)}.`
             : null;
-    const swapNotice = missingMessage ?? problemNow ?? swapError;
+    const connectMessage = toConnect ? `Connect ${shortenAddress(toConnect)} to pay.` : null;
+    const swapNotice = missingMessage ?? connectMessage ?? problemNow ?? swapError;
 
     return (
         <motion.div
@@ -443,6 +454,8 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             <motion.div variants={rise} className="mt-auto pt-2">
                 {!done && missing ? (
                     <ConnectKind kind={missing} />
+                ) : !done && toConnect ? (
+                    <ConnectHere address={toConnect} />
                 ) : (
                     <ActionButton label={label} blocked={blocked} disabled={sending || placing} onClick={confirm} />
                 )}

@@ -1,3 +1,4 @@
+import { sameWallet } from "@/lib/account/balances";
 import { NETWORKS } from "@/server/src/swaps/coins";
 import type { SwapRequest } from "@/server/src/protocol";
 import { QUOTE } from "./catalog";
@@ -34,15 +35,18 @@ export function swapSides(intent: SwapIntent, ctx: TradeCtx): Pick<SwapRequest, 
     return { from: { token: intent.token, network: intent.network }, to: { token: QUOTE, network: intent.network } };
 }
 
-/** The request for an intent, or the kind of wallet still to connect. */
+/** The request for an intent, the kind of wallet still to link, or the linked paying wallet to connect in this browser. */
 export function toSwapRequest(
     intent: SwapIntent,
     ctx: TradeCtx,
     signers: Signers,
-): SwapRequest | { missing: "evm" | "solana" } {
+    connected: Signers,
+): SwapRequest | { missing: "evm" | "solana" } | { connect: string } {
     const { from, to } = swapSides(intent, ctx);
     const wallet = signers[kindOf(from.network)];
     if (!wallet) return { missing: kindOf(from.network) };
+    const here = connected[kindOf(from.network)];
+    if (!here || !sameWallet(here, wallet)) return { connect: wallet };
     const receiver = signers[kindOf(to.network)];
     if (!receiver) return { missing: kindOf(to.network) };
     return { from, to, amountUSD: intent.amountUSD, wallet, receiver };

@@ -22,6 +22,7 @@ import {
     type OptimisticTrade,
     type PendingWithdrawal,
 } from "@/lib/account/state";
+import { sameWallet } from "@/lib/account/balances";
 import { API_URL } from "@/lib/api";
 import type { Signers } from "@/lib/trade/swap-request";
 import { ensureNetwork } from "@/lib/wallet/network";
@@ -69,6 +70,8 @@ export type Account = {
     swaps: SwapOrderView[];
     /** The wallets that sign swaps: the active EVM one, and the Solana one; none while signed out. */
     signers: Signers;
+    /** The signers among them whose wallet is connected in this browser, which is what a swap needs to pay. */
+    connected: Signers;
     /** What a swap would pay right now, with no order opened. */
     quoteSwap: (req: SwapRequest) => Promise<SwapQuoteView | { error: ApiError }>;
     /** Opens a swap order and has the wallet that pays sign it; `reviewedMin` is the minimum received the person saw. */
@@ -153,6 +156,12 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     const solanaSigner = useSolanaSigner(solanaAddress);
     const evmAddress = user ? depositWalletAddress(user, active) : undefined;
     const signers = useMemo(() => ({ evm: evmAddress, solana: solanaAddress }), [evmAddress, solanaAddress]);
+    const evmHere = !!evmAddress && wallets.some((w) => sameWallet(w.address, evmAddress));
+    const solanaHere = !!solanaSigner;
+    const connected = useMemo(
+        () => ({ evm: evmHere ? evmAddress : undefined, solana: solanaHere ? solanaAddress : undefined }),
+        [evmHere, evmAddress, solanaHere, solanaAddress],
+    );
 
     // The latest token getter, without reconnecting whenever its identity changes.
     const accessToken = useRef(getAccessToken);
@@ -245,6 +254,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         <Provide
             snapshot={snapshot}
             signers={signers}
+            connected={connected}
             quoteSwap={(req) => client.quoteSwap(req)}
             placeSwap={placeSwap}
             deposit={deposit}
@@ -268,6 +278,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
 function Provide({
     snapshot,
     signers = NO_SIGNERS,
+    connected = NO_SIGNERS,
     deposit = async () => "failed",
     quote = async () => NO_WALLET,
     depositCoin = async () => "failed",
@@ -286,6 +297,7 @@ function Provide({
 }: {
     snapshot: AccountSnapshot;
     signers?: Signers;
+    connected?: Signers;
     deposit?: Account["deposit"];
     quote?: Account["quote"];
     depositCoin?: Account["depositCoin"];
@@ -316,6 +328,7 @@ function Provide({
         refreshSwapHoldings,
         swaps: snapshot.swaps,
         signers,
+        connected,
         quoteSwap,
         placeSwap,
         orders: state.status === "ready" ? state.orders : [],
