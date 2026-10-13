@@ -14,7 +14,7 @@ import {
 } from "../db/mongo.ts";
 import { e6ToWei, formatE6, formatUsdc, fromDecimal, toDecimal, weiToE6 } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
-import { AppError } from "../errors.ts";
+import { AppError, isAppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { MarketService } from "../markets/markets.ts";
 import type { PositionsView, PredictionOrderView, QuoteView, SellQuoteView } from "../protocol.ts";
@@ -471,9 +471,14 @@ export class PredictionService {
         );
         if (!posted) return;
 
-        // A throw here leaves the order posted, and the tracker finds out what became of it
-        const result = await trader.post(signed);
-        if (result.kind === "filled") await this.settle(posted, result.makingE6, result.takingE6);
+        // A post with no clear answer is marked, so the tracker holds it instead of refunding it blind
+        const result = await trader.post(signed).catch(() => ({ kind: "unknown" }) as const);
+        if (result.kind === "unknown")
+            await predictionOrders.updateOne(
+                { _id: order._id, state: "posted" },
+                { $set: { postUnknownAt: new Date(this.#now()), updatedAt: new Date() } },
+            );
+        else if (result.kind === "filled") await this.settle(posted, result.makingE6, result.takingE6);
         else if (result.kind === "rejected") await this.fail(posted, result.reason, "posted");
         else if (result.kind === "delayed")
             await predictionOrders.updateOne(
@@ -489,7 +494,7 @@ export class PredictionService {
         const meta = await trader.meta(order.tokenId);
         if (order.side === "sell") return this.#settleSell(order, makingE6, takingE6, meta);
         const spent = e6ToWei(costOfFill(makingE6, takingE6, meta));
-        const { predictionOrders, positions, accounts } = this.#deps.collections;
+        const { predictionOrders, accounts } = this.#deps.collections;
 
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const now = new Date();
@@ -502,34 +507,7 @@ export class PredictionService {
             if (!moved) return null;
             const held = fromDecimal(moved.amount);
             const cost = spent > held ? held : spent;
-
-            const position = await positions.findOneAndUpdate(
-                { accountId: moved.accountId, tokenId: order.tokenId, state: { $in: ["open", "closing"] } },
-                {
-                    $inc: { shares: toDecimal(takingE6), cost: toDecimal(cost) },
-                    $set: { updatedAt: now },
-                    $setOnInsert: {
-                        _id: new ObjectId(),
-                        eventId: moved.eventId,
-                        marketId: moved.marketId,
-                        conditionId: moved.conditionId,
-                        question: moved.question,
-                        outcome: moved.outcome,
-                        state: "open",
-                        proceeds: null,
-                        payout: null,
-                        openedAt: now,
-                        settledAt: null,
-                    },
-                },
-                { session, upsert: true, returnDocument: "after" },
-            );
-            if (!position) throw new Error("The position wasn't written");
-            const linked = await predictionOrders.findOneAndUpdate(
-                { _id: order._id },
-                { $set: { positionId: position._id, cost: toDecimal(cost) } },
-                { session, returnDocument: "after" },
-            );
+            const { position, linked } = await this.#bookBuyFill(session, moved, takingE6, cost, now);
 
             const refund = held - cost;
             const account =
@@ -554,12 +532,49 @@ export class PredictionService {
         this.#afterSettle(done);
     }
 
+    /** Adds a buy fill's shares and cost to the person's open position, creating it when there is none, and links the order to it. */
+    async #bookBuyFill(
+        session: ClientSession,
+        moved: PredictionOrderDoc,
+        takingE6: bigint,
+        cost: bigint,
+        now: Date,
+    ): Promise<{ position: PositionDoc; linked: PredictionOrderDoc | null }> {
+        const { predictionOrders, positions } = this.#deps.collections;
+        const position = await positions.findOneAndUpdate(
+            { accountId: moved.accountId, tokenId: moved.tokenId, state: { $in: ["open", "closing"] } },
+            {
+                $inc: { shares: toDecimal(takingE6), cost: toDecimal(cost) },
+                $set: { updatedAt: now },
+                $setOnInsert: {
+                    _id: new ObjectId(),
+                    eventId: moved.eventId,
+                    marketId: moved.marketId,
+                    conditionId: moved.conditionId,
+                    question: moved.question,
+                    outcome: moved.outcome,
+                    state: "open",
+                    proceeds: null,
+                    payout: null,
+                    openedAt: now,
+                    settledAt: null,
+                },
+            },
+            { session, upsert: true, returnDocument: "after" },
+        );
+        if (!position) throw new Error("The position wasn't written");
+        const linked = await predictionOrders.findOneAndUpdate(
+            { _id: moved._id },
+            { $set: { positionId: position._id, cost: toDecimal(cost) } },
+            { session, returnDocument: "after" },
+        );
+        return { position, linked };
+    }
+
     /** Books a sell fill: the proceeds, net of the fee, go to the balance and the position closes. A repeat does nothing. */
     async #settleSell(order: PredictionOrderDoc, makingE6: bigint, takingE6: bigint, meta: MarketMeta): Promise<void> {
-        // Taking is the gross pUSD; the fee comes off it
-        const fee = makingE6 > 0n ? feeE6(makingE6, Number(takingE6) / Number(makingE6), meta) : 0n;
-        const proceeds = e6ToWei(takingE6 > fee ? takingE6 - fee : 0n);
-        const { predictionOrders, positions, accounts } = this.#deps.collections;
+        const proceeds = sellProceeds(makingE6, takingE6, meta);
+        const { predictionOrders } = this.#deps.collections;
 
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const now = new Date();
@@ -569,40 +584,7 @@ export class PredictionService {
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
-            const closing = await positions.findOne(
-                { _id: moved.positionId!, accountId: moved.accountId, state: "closing" },
-                { session },
-            );
-            if (!closing) throw new Error("The position wasn't closing");
-            // Shares a buy added while the sell was out stay open; only dust under a step is left with the pool
-            const left = fromDecimal(closing.shares) - makingE6;
-            const keep = left >= SHARE_STEP_E6;
-            const position = await positions.findOneAndUpdate(
-                { _id: closing._id, state: "closing" },
-                {
-                    $set: keep
-                        ? {
-                              state: "open",
-                              shares: toDecimal(left),
-                              cost: toDecimal((fromDecimal(closing.cost) * left) / fromDecimal(closing.shares)),
-                              updatedAt: now,
-                          }
-                        : { state: "closed", proceeds: toDecimal(proceeds), settledAt: now, updatedAt: now },
-                },
-                { session, returnDocument: "after" },
-            );
-            if (!position) throw new Error("The position wasn't closing");
-            const account =
-                proceeds > 0n
-                    ? await this.#deps.ledger.creditInSession(
-                          session,
-                          moved.accountId,
-                          proceeds,
-                          "prediction_sell",
-                          moved._id,
-                      )
-                    : await accounts.findOne({ _id: moved.accountId }, { session });
-            if (!account) throw new Error("The account vanished");
+            const { position, account } = await this.#bookSellFill(session, moved, makingE6, proceeds, "closing", now);
             return { order: moved, position, account, float: null };
         });
         if (!done) return;
@@ -613,13 +595,65 @@ export class PredictionService {
         this.#afterSettle(done);
     }
 
-    /** Fails an order and gives back everything it held; a failed sell reopens its position. A repeat, or an order that already moved on, does nothing. */
-    async fail(order: PredictionOrderDoc, reason: PredictionFailure, from: "placing" | "posted"): Promise<void> {
+    /** Takes a sell fill's shares off the position it closes, which closes when only dust is left, and credits the proceeds. */
+    async #bookSellFill(
+        session: ClientSession,
+        moved: PredictionOrderDoc,
+        makingE6: bigint,
+        proceeds: bigint,
+        from: "closing" | "open",
+        now: Date,
+    ): Promise<{ position: PositionDoc; account: AccountDoc }> {
+        const { positions, accounts } = this.#deps.collections;
+        const closing = await positions.findOne(
+            { _id: moved.positionId!, accountId: moved.accountId, state: from },
+            { session },
+        );
+        if (!closing) throw new Error(`The position wasn't ${from}`);
+        // Shares a buy added while the sell was out stay open; only dust under a step is left with the pool
+        const left = fromDecimal(closing.shares) - makingE6;
+        const keep = left >= SHARE_STEP_E6;
+        const position = await positions.findOneAndUpdate(
+            { _id: closing._id, state: from },
+            {
+                $set: keep
+                    ? {
+                          state: "open",
+                          shares: toDecimal(left),
+                          cost: toDecimal((fromDecimal(closing.cost) * left) / fromDecimal(closing.shares)),
+                          updatedAt: now,
+                      }
+                    : { state: "closed", proceeds: toDecimal(proceeds), settledAt: now, updatedAt: now },
+            },
+            { session, returnDocument: "after" },
+        );
+        if (!position) throw new Error(`The position wasn't ${from}`);
+        const account =
+            proceeds > 0n
+                ? await this.#deps.ledger.creditInSession(
+                      session,
+                      moved.accountId,
+                      proceeds,
+                      "prediction_sell",
+                      moved._id,
+                  )
+                : await accounts.findOne({ _id: moved.accountId }, { session });
+        if (!account) throw new Error("The account vanished");
+        return { position, account };
+    }
+
+    /** Fails an order and gives back everything it held; a failed sell reopens its position, and `watchUntil` marks a refund the tracker keeps checking for a late fill. A repeat, or an order that already moved on, does nothing. */
+    async fail(
+        order: PredictionOrderDoc,
+        reason: PredictionFailure,
+        from: "placing" | "posted",
+        watchUntil?: Date,
+    ): Promise<void> {
         const { predictionOrders, positions, accounts } = this.#deps.collections;
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const moved = await predictionOrders.findOneAndUpdate(
                 { _id: order._id, state: from },
-                { $set: { state: "failed", reason, updatedAt: new Date() } },
+                { $set: { state: "failed", reason, updatedAt: new Date(), ...(watchUntil && { watchUntil }) } },
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
@@ -646,6 +680,92 @@ export class PredictionService {
         });
         if (!done) return;
         this.#deps.logger.info({ order: order._id.toHexString(), reason }, "Prediction failed and refunded");
+        this.#afterSettle(done);
+    }
+
+    /** Books a fill that landed after the order was refunded: takes the cost back from the person, or closes the reopened position. If neither can be done the order is orphaned and the pool keeps the shares. Exactly once. */
+    async settleLate(order: PredictionOrderDoc, makingE6: bigint, takingE6: bigint): Promise<void> {
+        const trader = this.#deps.trader();
+        if (!trader) throw new Error("The trader isn't ready");
+        const meta = await trader.meta(order.tokenId);
+        const { predictionOrders, accounts } = this.#deps.collections;
+        const refunded = {
+            _id: order._id,
+            state: "failed" as const,
+            lateFill: { $exists: false },
+        };
+
+        let done;
+        try {
+            done = await this.#deps.ledger.runInTransaction(async (session) => {
+                const now = new Date();
+                const lateRefId = new ObjectId();
+                const moved = await predictionOrders.findOneAndUpdate(
+                    { ...refunded, watchUntil: { $gt: new Date(this.#now()) } },
+                    {
+                        $set: {
+                            state: "filled",
+                            reason: null,
+                            lateFill: "settled",
+                            lateRefId,
+                            filledShares: toDecimal(order.side === "sell" ? makingE6 : takingE6),
+                            updatedAt: now,
+                        },
+                    },
+                    { session, returnDocument: "after" },
+                );
+                if (!moved) return null;
+                if (moved.side === "sell") {
+                    const open = await this.#deps.collections.positions.findOne(
+                        { _id: moved.positionId!, accountId: moved.accountId, state: "open" },
+                        { session },
+                    );
+                    if (!open || fromDecimal(open.shares) < makingE6) throw new Unbookable();
+                    const proceeds = sellProceeds(makingE6, takingE6, meta);
+                    const { position, account } = await this.#bookSellFill(
+                        session,
+                        moved,
+                        makingE6,
+                        proceeds,
+                        "open",
+                        now,
+                    );
+                    return { order: moved, position, account, float: null };
+                }
+                const held = fromDecimal(moved.amount);
+                const spent = e6ToWei(costOfFill(makingE6, takingE6, meta));
+                const cost = spent > held ? held : spent;
+                // The refund already gave the held amount back, so the cost is taken again, under its own ledger reference
+                const account =
+                    cost > 0n
+                        ? await this.#deps.ledger.debitInSession(
+                              session,
+                              moved.accountId,
+                              cost,
+                              "prediction_buy",
+                              lateRefId,
+                          )
+                        : await accounts.findOne({ _id: moved.accountId }, { session });
+                if (!account) throw new Error("The account vanished");
+                const { position, linked } = await this.#bookBuyFill(session, moved, takingE6, cost, now);
+                if (!linked) throw new Error("The order vanished");
+                return { order: linked, position, account, float: null };
+            });
+        } catch (error) {
+            if (!(error instanceof Unbookable) && !(isAppError(error) && error.code === "insufficient_funds"))
+                throw error;
+            const orphaned = await predictionOrders.updateOne(refunded, {
+                $set: { lateFill: "orphaned", updatedAt: new Date() },
+            });
+            if (orphaned.modifiedCount)
+                this.#deps.logger.error(
+                    { order: order._id.toHexString(), side: order.side },
+                    "A refunded prediction filled late and can't be booked; the pool holds the shares",
+                );
+            return;
+        }
+        if (!done) return;
+        this.#deps.logger.info({ order: order._id.toHexString() }, "A refunded prediction filled late and was booked");
         this.#afterSettle(done);
     }
 
@@ -786,6 +906,15 @@ const freeOf = (doc: PoolFloatDoc): bigint =>
     fromDecimal(doc.balanceE6) - fromDecimal(doc.heldE6) - fromDecimal(doc.unreadFillsE6);
 
 /** What a buy reserved; an order from before the float document held its whole amount. */
+/** A late fill the person's balance or position can't take. */
+class Unbookable extends Error {}
+
+/** The net proceeds of a sell fill in wei; taking is the gross pUSD, and the fee comes off it. */
+const sellProceeds = (makingE6: bigint, takingE6: bigint, meta: MarketMeta): bigint => {
+    const fee = makingE6 > 0n ? feeE6(makingE6, Number(takingE6) / Number(makingE6), meta) : 0n;
+    return e6ToWei(takingE6 > fee ? takingE6 - fee : 0n);
+};
+
 const reservedOf = (order: PredictionOrderDoc): bigint =>
     order.reservedE6 ? fromDecimal(order.reservedE6) : weiToE6(fromDecimal(order.amount));
 

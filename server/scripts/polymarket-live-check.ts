@@ -92,6 +92,7 @@ const buy = await trader.signBuy({
     maxPrice: limitBuyPrice(buyQuote.worstPrice, meta.tickSize),
 });
 console.log(`Computed order hash: ${buy.orderHash}`);
+const boughtAt = new Date(Date.now() - 60_000);
 const bought = await trader.post(buy);
 console.log(
     `Buy post: ${JSON.stringify(bought, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value))}`,
@@ -131,6 +132,18 @@ if (looked.kind !== "filled") {
     process.exit(1);
 }
 const sharesE6 = looked.takingE6;
+
+// 6b. the pool's trade records name the taker order id, and `after` takes a unix-seconds timestamp
+const traded = await trader.findFill({ orderHash: buy.orderHash, tokenId, side: "buy", since: boughtAt });
+verdict(
+    "trade records name the taker order id",
+    traded !== null && traded !== "unlinked",
+    traded === null
+        ? "no trade names the order hash; findFill cannot clear an unknown post"
+        : traded === "unlinked"
+          ? "trades exist without a taker order id; findFill cannot link them"
+          : `findFill found making ${traded.makingE6}, taking ${traded.takingE6}`,
+);
 
 // 7. sell everything at the bid
 const [sellBook, sellMeta] = await Promise.all([trader.book(tokenId), trader.meta(tokenId)]);

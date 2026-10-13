@@ -32,8 +32,12 @@ export type FakeClob = {
     setBalance(e6: bigint): void;
     /** Answers GET /data/order/:id; `null` answers 404. */
     setOrder(id: string, order: Json | null): void;
-    /** Answers GET /data/trades?id=:id with this trade. */
+    /** Answers GET /data/trades?id=:id with this trade, and an unfiltered GET /data/trades with every trade set. */
     setTrade(id: string, trade: Json): void;
+    /** Makes GET /data/trades fail with this status; null serves it again. */
+    failTrades(status: number | null): void;
+    /** The query strings of every GET /data/trades. */
+    tradeQueries: string[];
     /** Answers the next POST /order; "hold" never answers. */
     nextPost(response: NextPost): void;
     /** Every relayer transaction submitted, in order. */
@@ -89,6 +93,8 @@ export async function startFakeClob(): Promise<FakeClob> {
     const books = new Map<string, FakeBook>();
     const orders = new Map<string, Json | null>();
     const trades = new Map<string, Json>();
+    const tradeQueries: string[] = [];
+    let tradesStatus: number | null = null;
     const requests: string[] = [];
     const posted: Json[] = [];
     const submitted: { id: string; body: Json }[] = [];
@@ -235,8 +241,13 @@ export async function startFakeClob(): Promise<FakeClob> {
             );
         }
         if (path === "/data/trades") {
-            const trade = trades.get(url.searchParams.get("id") ?? "");
-            const data = trade ? [trade] : [];
+            tradeQueries.push(url.search);
+            if (tradesStatus !== null) return send(response, tradesStatus, { error: "trades are down" });
+            const id = url.searchParams.get("id");
+            const asset = url.searchParams.get("asset_id");
+            const data = id
+                ? [trades.get(id)].filter((trade) => trade !== undefined)
+                : [...trades.values()].filter((trade) => !asset || (trade as { asset_id?: string }).asset_id === asset);
             return send(response, 200, { limit: 100, count: data.length, next_cursor: "LTE=", data });
         }
         if (path.startsWith("/data/order/")) {
@@ -262,6 +273,8 @@ export async function startFakeClob(): Promise<FakeClob> {
         setBalance: (e6) => void (balance = e6),
         setOrder: (id, order) => void orders.set(id, order),
         setTrade: (id, trade) => void trades.set(id, trade),
+        failTrades: (status) => void (tradesStatus = status),
+        tradeQueries,
         nextPost: (response) => void (next = response),
         dropConnections: () => server.closeAllConnections(),
         postArrived: () => new Promise<void>((resolve) => (arrived = resolve)),

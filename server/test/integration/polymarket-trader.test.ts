@@ -1,6 +1,6 @@
 import { pino } from "pino";
 import { generatePrivateKey } from "viem/accounts";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.ts";
 import { createPolymarketTrader } from "../../src/predictions/polymarket-trader.ts";
 import type { PoolTrader } from "../../src/predictions/trader.ts";
@@ -230,6 +230,70 @@ describe("the Polymarket trader", () => {
         fake.setTrade("trade-1", { ...trade, id: "other" });
         fake.setOrder(HASH, order("BUY"));
         expect(await ask()).toEqual({ kind: "filled", makingE6: 6_000_000n, takingE6: 10_000_000n });
+    });
+
+    describe("findFill", () => {
+        const makerOrder = (price: string, matched: string) => ({
+            order_id: `0x${"1".repeat(64)}`,
+            maker_address: "0x0",
+            owner: "o",
+            matched_amount: matched,
+            price,
+            asset_id: TOKEN,
+            outcome: "Yes",
+            side: "SELL",
+            fee_rate_bps: "0",
+        });
+        const tradeOf = (id: string, taker: string, side: string, makers: ReturnType<typeof makerOrder>[]) => ({
+            id,
+            taker_order_id: taker,
+            market: `0x${"c".repeat(64)}`,
+            asset_id: TOKEN,
+            side,
+            size: "10",
+            fee_rate_bps: "0",
+            price: "0.5",
+            status: "CONFIRMED",
+            match_time: "1760000000",
+            last_update: "1760000000",
+            outcome: "Yes",
+            bucket_index: 0,
+            owner: "o",
+            maker_address: "0x0",
+            transaction_hash: `0x${"d".repeat(64)}`,
+            trader_side: "TAKER",
+            maker_orders: makers,
+        });
+        const since = new Date(1_760_000_000_000);
+        const FILL = `0x${"a".repeat(64)}`;
+        const find = (side: "buy" | "sell" = "buy", orderHash = FILL) =>
+            trader.findFill({ orderHash, tokenId: TOKEN, side, since });
+
+        afterEach(() => fake.failTrades(null));
+
+        it("sums the taker's trades and ignores others", async () => {
+            fake.setTrade("a", tradeOf("a", FILL, "BUY", [makerOrder("0.50", "6")]));
+            fake.setTrade("b", tradeOf("b", FILL.toUpperCase().replace("0X", "0x"), "BUY", [makerOrder("0.52", "4")]));
+            fake.setTrade("c", tradeOf("c", `0x${"e".repeat(64)}`, "BUY", [makerOrder("0.90", "9")]));
+            expect(await find("buy")).toEqual({ makingE6: 5_080_000n, takingE6: 10_000_000n });
+            expect(await find("sell")).toEqual({ makingE6: 10_000_000n, takingE6: 5_080_000n });
+            expect(fake.tradeQueries.at(-1)).toContain(`after=${since.getTime() / 1000}`);
+        });
+
+        it("answers null when no trade names the order", async () => {
+            fake.setTrade("c", tradeOf("c", `0x${"e".repeat(64)}`, "BUY", [makerOrder("0.90", "9")]));
+            expect(await find("buy", `0x${"f".repeat(64)}`)).toBeNull();
+        });
+
+        it("answers unlinked for a trade with no taker order id", async () => {
+            fake.setTrade("d", tradeOf("d", "", "BUY", [makerOrder("0.90", "9")]));
+            expect(await find("buy", `0x${"f".repeat(64)}`)).toBe("unlinked");
+        });
+
+        it("throws on a failing page instead of answering null", async () => {
+            fake.failTrades(400);
+            await expect(find()).rejects.toThrow();
+        });
     });
 
     it("balanceE6 parses the e6 balance", async () => {

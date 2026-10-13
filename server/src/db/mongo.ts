@@ -130,6 +130,16 @@ export type PredictionOrderDoc = {
     /** Wei. */
     cost: Decimal128 | null;
     postedAt: Date | null;
+    /** When the post got no clear answer; the order is held, never refunded, for a while after. */
+    postUnknownAt?: Date | null;
+    /** Until when a refunded unknown post is still checked for a fill that lands late. */
+    watchUntil?: Date | null;
+    /** What became of a fill that landed after the refund: booked, or left with the pool for an operator. */
+    lateFill?: "settled" | "orphaned";
+    /** The ledger reference of the debit that took the cost back for a late fill. */
+    lateRefId?: ObjectId;
+    /** When a trade that can't be linked to the order was found; an operator decides, nothing is refunded. */
+    needsReviewAt?: Date | null;
     createdAt: Date;
     updatedAt: Date;
 };

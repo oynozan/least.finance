@@ -21,6 +21,9 @@ export type LookupResult =
     | { kind: "cancelled" }
     | { kind: "missing" };
 
+/** What the pool's trade records show for an order: its fill, or a trade that can't be linked to any order. */
+export type FoundFill = { makingE6: bigint; takingE6: bigint } | "unlinked";
+
 export interface PoolTrader {
     book(tokenId: string): Promise<Book>;
     meta(tokenId: string): Promise<MarketMeta>;
@@ -28,6 +31,8 @@ export interface PoolTrader {
     signSell(o: { tokenId: string; sharesE6: bigint; minPrice: number }): Promise<SignedRecord>;
     post(record: SignedRecord): Promise<PostResult>;
     lookup(o: { orderHash: string; clobOrderId: string | null; tokenId: string }): Promise<LookupResult>;
+    /** The fill the pool's trades show for this order even when lookup doesn't know it; null when there is none, a throw when the history can't be read. */
+    findFill(o: { orderHash: string; tokenId: string; side: "buy" | "sell"; since: Date }): Promise<FoundFill | null>;
     balanceE6(): Promise<bigint>;
     /** Submits the relayer transaction that redeems the pool's tokens of a resolved condition, without waiting for it. */
     redeem(conditionId: string): Promise<{ transactionId: string }>;
@@ -52,7 +57,7 @@ function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
     return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
-/** The trader with every call bounded; a post that doesn't answer in time is `unknown`, which leaves the order posted for the tracker. */
+/** The trader with every call bounded (a timed-out call may still complete); a post that doesn't answer in time is `unknown`, which leaves the order posted for the tracker. */
 export function withTimeouts(trader: PoolTrader, ms: number): PoolTrader {
     return {
         book: (tokenId) => bounded(trader.book(tokenId), ms, "book"),
@@ -65,6 +70,7 @@ export function withTimeouts(trader: PoolTrader, ms: number): PoolTrader {
                 throw error;
             }),
         lookup: (o) => bounded(trader.lookup(o), ms, "lookup"),
+        findFill: (o) => bounded(trader.findFill(o), ms, "findFill"),
         balanceE6: () => bounded(trader.balanceE6(), ms, "balanceE6"),
         redeem: (conditionId) => bounded(trader.redeem(conditionId), ms, "redeem"),
         transaction: (transactionId) => bounded(trader.transaction(transactionId), ms, "transaction"),

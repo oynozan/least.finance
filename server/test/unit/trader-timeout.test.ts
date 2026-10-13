@@ -10,6 +10,7 @@ const stuck = {
     signSell: () => hung,
     post: () => hung,
     lookup: () => hung,
+    findFill: () => hung,
     balanceE6: () => hung,
     redeem: () => hung,
     transaction: () => hung,
@@ -22,6 +23,14 @@ test("a hung read rejects once the time is up", async () => {
     await expect(trader.meta("t")).rejects.toThrow(/timed out/);
     await expect(trader.lookup({ orderHash: "0x1", clobOrderId: null, tokenId: "t" })).rejects.toThrow(/timed out/);
     await expect(trader.balanceE6()).rejects.toThrow(/timed out/);
+});
+
+test("a hung trade lookup, redeem and holdings reject too", async () => {
+    const trader = withTimeouts(stuck, 20);
+    const since = new Date();
+    await expect(trader.findFill({ orderHash: "0x1", tokenId: "t", side: "buy", since })).rejects.toThrow(/timed out/);
+    await expect(trader.redeem("0xc")).rejects.toThrow(/timed out/);
+    await expect(trader.holdings()).rejects.toThrow(/timed out/);
 });
 
 test("a hung post is unknown, so the order stays posted", async () => {

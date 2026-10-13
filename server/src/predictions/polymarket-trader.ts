@@ -25,7 +25,7 @@ import { createWalletClient, hashTypedData, http, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
 import type { Config } from "../config.ts";
-import type { Book, LookupResult, MarketMeta, PoolTrader, PostResult, SignedRecord } from "./trader.ts";
+import type { Book, FoundFill, LookupResult, MarketMeta, PoolTrader, PostResult, SignedRecord } from "./trader.ts";
 
 type TraderConfig = Pick<
     Config,
@@ -66,6 +66,10 @@ function hashingSigner(inner: Signer, captures: AsyncLocalStorage<Capture>): Sig
 }
 
 const E6 = 1_000_000n;
+/** Pages of the pool's trades findFill reads before it gives up rather than answer "none". */
+const FIND_FILL_PAGES = 5;
+/** Trades priced per lookup, so one order can't hold the call for long. */
+const LOOKUP_TRADES = 5;
 
 /** A decimal string such as "4.5" as an e6 integer, truncating past six places. */
 function decimalToE6(value: string): bigint {
@@ -170,7 +174,7 @@ export async function createPolymarketTrader(
     const tradedDollars = async (tradeIds: string[], matchedE6: bigint): Promise<bigint | null> => {
         let shares = 0n;
         let dollars = 0n;
-        for (const id of tradeIds) {
+        for (const id of tradeIds.slice(0, LOOKUP_TRADES)) {
             const page = await listAccountTrades(client, { id }).firstPage();
             for (const trade of page.items) {
                 if (trade.id !== id) continue;
@@ -279,6 +283,40 @@ export async function createPolymarketTrader(
             }
             if (status.startsWith("CANCELED") || status === "INVALID") return { kind: "cancelled" };
             return { kind: "open" };
+        },
+
+        async findFill({ orderHash, tokenId, side, since }): Promise<FoundFill | null> {
+            const pages = listAccountTrades(client, {
+                assetId: tokenId,
+                after: String(Math.floor(since.getTime() / 1000)),
+            })[Symbol.asyncIterator]();
+            const wanted = orderHash.toLowerCase();
+            let shares = 0n;
+            let dollars = 0n;
+            let linked = false;
+            let unlinked = false;
+            for (let read = 0; ; read++) {
+                const next = await pages.next();
+                if (next.done) break;
+                for (const trade of next.value.items) {
+                    if (!trade.takerOrderId) unlinked = true;
+                    if (trade.takerOrderId.toLowerCase() !== wanted) continue;
+                    linked = true;
+                    for (const maker of trade.makerOrders) {
+                        const matched = decimalToE6(maker.matchedAmount);
+                        shares += matched;
+                        dollars += matched * decimalToE6(maker.price);
+                    }
+                }
+                // An unread page could hold the fill, so "none" is never answered from a partial read
+                if (read + 1 === FIND_FILL_PAGES && !linked) {
+                    if (!(await pages.next()).done) throw new Error("the trade history is too long to read");
+                    break;
+                }
+            }
+            if (!linked) return unlinked ? "unlinked" : null;
+            if (side === "sell") return { makingE6: shares, takingE6: dollars / E6 };
+            return { makingE6: (dollars + E6 - 1n) / E6, takingE6: shares };
         },
 
         async balanceE6() {

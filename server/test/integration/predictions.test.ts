@@ -476,3 +476,14 @@ test("a requestId retry still returns the original order even if the price now d
         await own.database.close();
     }
 });
+
+test("a post that answers unknown records postUnknownAt, and a clear answer does not", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "unknown");
+    const unknown = await h.service.place(account, input("10"));
+    await until(async () => (await orderOf(unknown.requestId))?.postUnknownAt != null);
+    expect(await orderOf(unknown.requestId)).toMatchObject({ state: "posted" });
+
+    const clear = await h.service.place(account, input("10"));
+    expect((await settled(clear.requestId)).postUnknownAt ?? null).toBeNull();
+});

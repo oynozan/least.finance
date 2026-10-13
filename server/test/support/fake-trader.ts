@@ -2,6 +2,7 @@ import { quoteBuy, quoteSell } from "../../src/predictions/pricing.ts";
 import type { FakePolymarket } from "./fake-polymarket.ts";
 import type {
     Book,
+    FoundFill,
     LookupResult,
     MarketMeta,
     PoolTrader,
@@ -45,6 +46,14 @@ export class FakeTrader implements PoolTrader {
     #failCheck = false;
     #hangRedeem = false;
     #holdings = new Map<string, bigint>();
+    #found = new Map<string, FoundFill>();
+    #failFind = false;
+    #hungLookups = new Map<string, Promise<void>>();
+    #unhang = new Map<string, () => void>();
+    /** The order hashes findFill was asked about, in order. */
+    findFills: string[] = [];
+    /** The order hashes lookup was asked about, in order. */
+    lookups: string[] = [];
 
     constructor(o: {
         bookOf: (tokenId: string) => Book;
@@ -92,6 +101,31 @@ export class FakeTrader implements PoolTrader {
         } else {
             this.#lookups.set(orderHash, { kind: "cancelled" });
         }
+    }
+
+    /** Sets what the pool's trade records show for an order: a fill, or a trade that can't be linked to it. */
+    setFound(orderHash: string, found: FoundFill): void {
+        this.#found.set(orderHash, found);
+    }
+
+    /** Makes every findFill throw (or work again). */
+    failFindFill(on = true): void {
+        this.#failFind = on;
+    }
+
+    /** Sets what lookup answers for an order. */
+    setLookup(orderHash: string, result: LookupResult): void {
+        this.#lookups.set(orderHash, result);
+    }
+
+    /** Makes lookups of an order wait until it is released. */
+    hangLookup(orderHash: string): void {
+        this.#hungLookups.set(orderHash, new Promise<void>((resolve) => this.#unhang.set(orderHash, resolve)));
+    }
+
+    releaseLookup(orderHash: string): void {
+        this.#unhang.get(orderHash)?.();
+        this.#hungLookups.delete(orderHash);
     }
 
     failNextRedeem(): void {
@@ -177,7 +211,15 @@ export class FakeTrader implements PoolTrader {
     }
 
     async lookup(o: { orderHash: string }): Promise<LookupResult> {
+        this.lookups.push(o.orderHash);
+        await this.#hungLookups.get(o.orderHash);
         return this.#lookups.get(o.orderHash) ?? { kind: "missing" };
+    }
+
+    async findFill(o: { orderHash: string }): Promise<FoundFill | null> {
+        this.findFills.push(o.orderHash);
+        if (this.#failFind) throw new Error("the trade history is unreachable");
+        return this.#found.get(o.orderHash) ?? null;
     }
 
     async balanceE6(): Promise<bigint> {
