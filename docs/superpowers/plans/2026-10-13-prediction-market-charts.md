@@ -436,6 +436,7 @@
   - **Outcome pill:** slot `"outcomeId"` with a selected value, while `marketId` has one, gets `marketPreview?.(marketValue, outcomeValue)`.
   - The coin preview logic stays as it is.
 - **`TradeScreen`**
+  - **Reading the lines:** `useMarketHistory()`, so a read that lands while the pill is hovered opens the card.
   - **Finding the market:** `catalog.markets.find(...) ?? catalog.findMarket(id)`.
   - **Read-ahead:** while the verb is `predict` and a market is picked, an effect on `[marketId, outcomeId]` calls `marketHistoryStore().want(marketId, historyTokens(market, outcomeId))` once the page is idle (`requestIdleCallback`, else `setTimeout` 200).
   - **`marketPreview(marketId, null)`** builds each drawn outcome's line with `withLiveEnd(line, outcome.chance, Date.now())`. It returns `null` unless `drawable(...)`, else a `QuestionChartCard`.
@@ -462,7 +463,7 @@
       - `data-chance` equals the pill's chance within 0.005.
       - `data-change` matches `/^([+−]\d+(\.\d)? pts|0 pts)$/`.
     - **"an outcome outside the 4 likeliest still shows its own line"**
-      - In `multi`, pick the 6th outcome, then hover the outcome pill.
+      - In `multi`, pick the outcome ranked 5th or lower by chance, then hover the outcome pill. The event must offer at least 5; if the recording offers fewer, pick another recorded event that does and say which in the report.
     - **"pointing rolls the chances and says when"**
       - Move the mouse across the chart.
       - `data-chance` changes, and the subtitle stops reading `Ends …`.
