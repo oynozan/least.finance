@@ -66,27 +66,30 @@ test("a credited deposit is swept into the treasury", async () => {
     expect(account && fromDecimal(account.balance)).toBe(wei("50"));
 });
 
-test("two quick deposits to one address sweep without a clash", async () => {
+test("two sweeps of one address at once sweep without a clash", async () => {
     const user = await openUser();
-    const sweeps = recordSweeps();
-    const first = await stack.chain.send(user.wallet, user.depositAddress, "10");
-    const second = await stack.chain.send(user.wallet, user.depositAddress, "20");
-    await Promise.all([
-        api(user, "/v1/account/deposits", { txHash: first }),
-        api(user, "/v1/account/deposits", { txHash: second }),
-    ]);
+    const account = await collections().accounts.findOne({ privyUserId: user.userId });
+    const index = account!.depositIndex;
+    const treasury = keyring().operator().address;
+    const before = await balanceOf(treasury);
+    await stack.chain.client.setBalance({ address: user.depositAddress, value: wei("30") });
 
-    await vi.waitFor(() => expect(sweeps.hashes.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
-    const settled = await Promise.allSettled(sweeps.hashes);
-    sweeps.restore();
-    expect(settled.every((result) => result.status === "fulfilled")).toBe(true);
-    for (const result of settled) {
-        if (result.status === "fulfilled" && result.value) {
-            const receipt = await stack.chain.client.getTransactionReceipt({ hash: result.value });
-            expect(receipt.status).toBe("success");
-        }
-    }
+    // Neither is awaited before the other starts, so without a queue both read the full balance.
+    const first = stack.server.services.sweeper.sweep(index);
+    const second = stack.server.services.sweeper.sweep(index);
+    const settled = await Promise.allSettled([first, second]);
+
+    expect(settled.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    const hashes = settled.map((result) => (result.status === "fulfilled" ? result.value : undefined));
+    // The first moves the balance; the second finds dust.
+    expect(hashes[0]).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(hashes[1]).toBeNull();
+    const receipt = await stack.chain.client.getTransactionReceipt({ hash: hashes[0]! });
+    expect(receipt.status).toBe("success");
     expect(await balanceOf(user.depositAddress)).toBeLessThanOrEqual(DUST);
+    const gained = (await balanceOf(treasury)) - before;
+    expect(gained).toBeGreaterThan(wei("29.99"));
+    expect(gained).toBeLessThanOrEqual(wei("30"));
 });
 
 test("the catch-up pass sweeps an address the bus never mentioned, and leaves dust alone", async () => {
@@ -102,7 +105,20 @@ test("the catch-up pass sweeps an address the bus never mentioned, and leaves du
 });
 
 test("a sweep credits nobody", async () => {
-    const treasury = keyring().operator().address;
-    await stack.server.services.sweeper.sweepAll();
-    expect(await collections().deposits.countDocuments({ to: treasury })).toBe(0);
+    const user = await openUser();
+    const account = await collections().accounts.findOne({ privyUserId: user.userId });
+    await stack.chain.client.setBalance({ address: user.depositAddress, value: wei("12") });
+    const balances = async () =>
+        (await collections().accounts.find().toArray()).map((doc) => [doc._id.toHexString(), doc.balance]);
+    const depositsBefore = await collections().deposits.countDocuments();
+    const balancesBefore = await balances();
+
+    const hash = await stack.server.services.sweeper.sweep(account!.depositIndex);
+    expect(hash).not.toBeNull();
+    // Let the deposit scan see the sweep's block before looking.
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+
+    expect(await collections().deposits.countDocuments()).toBe(depositsBefore);
+    expect(await collections().deposits.countDocuments({ txHash: hash! })).toBe(0);
+    expect(await balances()).toEqual(balancesBefore);
 });

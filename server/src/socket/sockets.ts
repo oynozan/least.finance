@@ -75,6 +75,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     const swapOrders = new RateLimiterMemory({ keyPrefix: "swap-order", points: 10, duration: 60 });
     const predictionQuotes = new RateLimiterMemory({ keyPrefix: "prediction-quote", points: 60, duration: 60 });
     const withdrawals = new RateLimiterMemory({ keyPrefix: "withdraw", points: 10, duration: 60 });
+    const withdrawLimits = new RateLimiterMemory({ keyPrefix: "withdraw-limits", points: 30, duration: 60 });
     const predictionOrders = new RateLimiterMemory({ keyPrefix: "prediction", points: 10, duration: 60 });
 
     io.use(async (socket, next) => {
@@ -235,6 +236,9 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
         socket.on("withdraw:limits", (_payload, ack) =>
             reply(ack, async () => {
+                await withdrawLimits.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                });
                 const { max, min } = await services.withdrawals.limits(await boundAccount(socket));
                 return { max: formatUsdc(max), min: formatUsdc(min) };
             }),

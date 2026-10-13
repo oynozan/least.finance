@@ -124,6 +124,10 @@ describe("loadConfig", () => {
         expect(load({ WITHDRAW_MIN_USDC: "0.5" }).WITHDRAW_MIN_USDC).toBe(parseUnits("0.5", 18));
     });
 
+    it.each(["0", "0.0"])("rejects a minimum withdrawal of '%s'", (value) => {
+        expect(() => load({ WITHDRAW_MIN_USDC: value })).toThrow(/WITHDRAW_MIN_USDC/);
+    });
+
     it("defaults the Ethereum and BNB Chain RPCs to public ones", () => {
         const config = load();
         expect(config.ETHEREUM_RPC_URLS).toEqual(["https://ethereum-rpc.publicnode.com"]);

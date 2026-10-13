@@ -62,7 +62,9 @@ const fields = z.object({
         .transform((phrase) => phrase.trim().split(/\s+/).join(" "))
         .refine((phrase) => validateMnemonic(phrase, wordlist), "a valid BIP-39 mnemonic"),
     DEPOSIT_MIN_USDC: usdc.default(parseUnits("0.01", NATIVE_DECIMALS)),
-    WITHDRAW_MIN_USDC: usdc.default(parseUnits("0.01", NATIVE_DECIMALS)),
+    WITHDRAW_MIN_USDC: usdc
+        .refine((wei) => wei > 0n, "a USDC amount above 0")
+        .default(parseUnits("0.01", NATIVE_DECIMALS)),
     DEPOSIT_POLL_MS: z.coerce.number().int().min(100).default(1_000),
     /** Blocks to wait past the one holding a deposit. Arc's finality is instant, so none by default. */
     DEPOSIT_CONFIRMATIONS: z.coerce.number().int().min(0).default(0),

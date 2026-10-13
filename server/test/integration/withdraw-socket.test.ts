@@ -127,3 +127,19 @@ test("another person's socket gets no withdrawal push", async () => {
     expect((await pushed).id).toBe(result.data.id);
     expect(got).toEqual([]);
 });
+
+test("withdraw:limits allows 30 reads a minute per person, then rate-limits", async () => {
+    await stack.fundTreasury("100");
+    const user = await stack.user();
+    const { socket } = await bind(user);
+    await credit(user, "1");
+    const read = () => socket.timeout(5000).emitWithAck("withdraw:limits", {}) as Promise<Ack<WithdrawLimits>>;
+
+    for (let i = 0; i < 30; i++) expect((await read()).ok).toBe(true);
+    expect(await read()).toMatchObject({ ok: false, error: { code: "rate_limited" } });
+    // Another person is not held up by it.
+    const other = await bind(await stack.user());
+    expect(((await other.socket.timeout(5000).emitWithAck("withdraw:limits", {})) as Ack<WithdrawLimits>).ok).toBe(
+        true,
+    );
+});

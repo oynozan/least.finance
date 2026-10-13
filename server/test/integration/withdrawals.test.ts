@@ -172,3 +172,30 @@ test("under the minimum, or more than 6 decimals, is a bad request", async () =>
     expect(await code(withdrawals.create(account, request("1.1234567")))).toBe("bad_request");
     expect(await balanceOf(account._id)).toBe(wei("100"));
 });
+
+test("an amount of zero is a bad request, even where the minimum is zero", async () => {
+    const logger = pino({ level: "silent" });
+    const ledger = new Ledger({
+        client: database.client,
+        collections: database.collections,
+        bus,
+        logger,
+        minDeposit: 0n,
+    });
+    const lax = new Withdrawals({
+        collections: database.collections,
+        ledger,
+        client: chain,
+        treasury,
+        bus,
+        logger,
+        minWithdraw: 0n,
+    });
+    const account = await seedAccount("100");
+    await fundTreasury("500");
+
+    expect(await code(lax.create(account, request("0")))).toBe("bad_request");
+    expect(await code(lax.create(account, request("0.000000")))).toBe("bad_request");
+    expect(await balanceOf(account._id)).toBe(wei("100"));
+    expect(await database.collections.withdrawals.countDocuments({ accountId: account._id })).toBe(0);
+});

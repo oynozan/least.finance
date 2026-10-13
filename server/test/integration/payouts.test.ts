@@ -134,12 +134,21 @@ test("a reverted payout is refunded", async () => {
 test("a restart after signing re-sends the same transaction and pays once", async () => {
     const { withdrawal, to } = await seedWithdrawal("3");
     const nonceBefore = await chain.getTransactionCount({ address: signer.address });
-    const first = worker({ broadcast: async () => "0x" as Hex });
+    // The broadcast reaches the node, and the worker is stopped before it looks for the receipt.
+    const first: Payouts = worker({
+        broadcast: async (rawTx) => {
+            const hash = await chain.sendRawTransaction({ serializedTransaction: rawTx });
+            void first.stop();
+            return hash;
+        },
+    });
     first.start();
-    await expect.poll(async () => (await stateOf(withdrawal._id)).rawTx).not.toBeNull();
+    await expect.poll(async () => chain.getBalance({ address: to })).toBe(wei("3"));
     await first.stop();
-    expect(await chain.getBalance({ address: to })).toBe(0n);
     const signed = await stateOf(withdrawal._id);
+    expect(signed.state).toBe("sending");
+    expect(signed.rawTx).not.toBeNull();
+    expect(await chain.getTransactionCount({ address: signer.address })).toBe(nonceBefore + 1);
 
     const second = worker();
     second.start();
@@ -149,9 +158,12 @@ test("a restart after signing re-sends the same transaction and pays once", asyn
     const done = await stateOf(withdrawal._id);
     expect(done.txHash).toBe(signed.txHash);
     expect(done.rawTx).toBe(signed.rawTx);
+    expect(done.nonce).toBe(signed.nonce);
     expect(await chain.getBalance({ address: to })).toBe(wei("3"));
     expect(await chain.getTransactionCount({ address: signer.address })).toBe(nonceBefore + 1);
-    expect((await chain.getTransactionReceipt({ hash: done.txHash! })).status).toBe("success");
+    const receipt = await chain.getTransactionReceipt({ hash: signed.txHash! });
+    expect(receipt.status).toBe("success");
+    expect(receipt.transactionHash).toBe(signed.txHash);
 });
 
 test("pushes arrive as sending, then sent", async () => {

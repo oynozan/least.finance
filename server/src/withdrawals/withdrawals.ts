@@ -65,6 +65,7 @@ export class Withdrawals {
             throw new AppError("bad_request", "Enter an amount with at most 6 decimals.");
         }
         const wei = parseUnits(input.amount, NATIVE_DECIMALS);
+        if (wei <= 0n) throw new AppError("bad_request", "Enter an amount above zero.");
         if (wei < minWithdraw) {
             throw new AppError("bad_request", `The smallest withdrawal is ${dollars(minWithdraw)}.`);
         }
