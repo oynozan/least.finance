@@ -6,8 +6,13 @@ import { NATIVE_DECIMALS } from "../chain/arc.ts";
 import type { AccountDoc, Collections, WithdrawalDoc } from "../db/mongo.ts";
 import { formatUsdc, fromDecimal, toDecimal } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
+import type { Config } from "../config.ts";
+import { solanaOpen } from "../crosschain/solana-switch.ts";
+import type { SolanaRpc } from "../crosschain/solana.ts";
+import { IrisError, type Iris } from "../crosschain/iris.ts";
 import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
+import { checkRecipient } from "./solana-recipient.ts";
 
 /** What the treasury keeps back for gas: 0.01 USDC in wei. */
 export const TREASURY_GAS_RESERVE = 10n ** 16n;
@@ -23,7 +28,19 @@ type Deps = {
     logger: Logger;
     /** Wei. */
     minWithdraw: bigint;
+    /** What withdrawals to Solana need; without it they are refused as not open. */
+    solana?: {
+        rpc: SolanaRpc;
+        iris: Iris;
+        switches: Pick<Config, "SOLANA_DEPOSITS" | "SOLANA_WITHDRAWALS">;
+        /** Wei. */
+        min: bigint;
+        /** Wei: how far the fee may rise past the reviewed one. */
+        tolerance: bigint;
+    };
 };
+
+type CreateInput = { requestId: string; amount: string; to: string; network?: "arc" | "solana"; reviewedFee?: string };
 
 /** "$12.50", floored to the cent so the figure is never more than can be paid. */
 const dollars = (wei: bigint) => {
@@ -46,7 +63,16 @@ export class Withdrawals {
         return { max: balance < free ? balance : free, min: this.#deps.minWithdraw };
     }
 
-    create(account: AccountDoc, input: { requestId: string; amount: string; to: Address }): Promise<WithdrawalDoc> {
+    /** What a withdrawal of `amount` to the Solana wallet `to` would cost; nothing is taken. */
+    async quoteSolana(
+        _account: AccountDoc,
+        input: { amount: string; to: string },
+    ): Promise<{ fee: bigint; receive: bigint; setup: boolean }> {
+        const priced = await this.#priceSolana(input);
+        return { fee: priced.fee, receive: priced.wei - priced.fee, setup: priced.setup };
+    }
+
+    create(account: AccountDoc, input: CreateInput): Promise<WithdrawalDoc> {
         const run = this.#lock.catch(() => undefined).then(() => this.#create(account, input));
         this.#lock = run;
         return run;
@@ -56,10 +82,36 @@ export class Withdrawals {
         return this.#deps.collections.withdrawals.find({ accountId }).sort({ _id: -1 }).limit(limit).toArray();
     }
 
-    async #create(account: AccountDoc, input: { requestId: string; amount: string; to: Address }) {
+    /** The recipient, the fee and the amount checked as a Solana withdrawal needs, before anything is taken. */
+    async #priceSolana(input: { amount: string; to: string }) {
+        const { solana } = this.#deps;
+        if (!solana) throw new AppError("unavailable", "Solana isn't open yet.");
+        solanaOpen(solana.switches, "withdrawals");
+        if (!/^\d+(\.\d{1,6})?$/.test(input.amount)) {
+            throw new AppError("bad_request", "Enter an amount with at most 6 decimals.");
+        }
+        const wei = parseUnits(input.amount, NATIVE_DECIMALS);
+        if (wei < solana.min) {
+            throw new AppError("bad_request", `The smallest withdrawal to Solana is ${dollars(solana.min)}.`);
+        }
+        const { usdcAccount, setup } = await checkRecipient(solana.rpc, input.to);
+        const { med, high } = await solana.iris.forwardFee({ from: 26, to: 5, setup }).catch((error: unknown) => {
+            if (error instanceof IrisError) {
+                throw new AppError("unavailable", "Couldn't price this right now. Nothing was taken.");
+            }
+            throw error;
+        });
+        if (wei <= high) {
+            throw new AppError("bad_request", "That's too small to cover the fee. Nothing was taken.");
+        }
+        return { wei, usdcAccount, setup, fee: med, maxFee: high };
+    }
+
+    async #create(account: AccountDoc, input: CreateInput) {
         const { collections, ledger, bus, logger, minWithdraw } = this.#deps;
         const known = await collections.withdrawals.findOne({ accountId: account._id, requestId: input.requestId });
         if (known) return known;
+        if (input.network === "solana") return this.#createSolana(account, input);
 
         if (!/^\d+(\.\d{1,6})?$/.test(input.amount)) {
             throw new AppError("bad_request", "Enter an amount with at most 6 decimals.");
@@ -85,6 +137,7 @@ export class Withdrawals {
             requestId: input.requestId,
             amount: toDecimal(wei),
             to: input.to.toLowerCase(),
+            network: "arc",
             state: "sending",
             nonce: null,
             rawTx: null,
@@ -103,6 +156,75 @@ export class Withdrawals {
                 accountId: account._id.toHexString(),
                 withdrawalId: withdrawal._id.toHexString(),
                 amount: formatUsdc(wei),
+            },
+            "Withdrawal created",
+        );
+        bus.emit("withdrawal:updated", { withdrawal, account: updated });
+        return withdrawal;
+    }
+
+    async #createSolana(account: AccountDoc, input: CreateInput) {
+        const { collections, ledger, bus, logger, solana } = this.#deps;
+        const priced = await this.#priceSolana(input);
+        if (input.reviewedFee !== undefined) {
+            const reviewed = parseUnits(input.reviewedFee, NATIVE_DECIMALS);
+            if (priced.fee > reviewed + solana!.tolerance) {
+                throw new AppError(
+                    "quote_changed",
+                    `The fee is now ${formatUsdc(priced.fee)} USDC and you'd receive ${formatUsdc(priced.wei - priced.fee)} USDC. Nothing was taken.`,
+                );
+            }
+        }
+        const free = await this.#treasuryFree();
+        if (priced.wei > free) {
+            throw new AppError(
+                "insufficient_funds",
+                `Withdrawals can pay at most ${dollars(free)} right now. Nothing was taken.`,
+            );
+        }
+
+        const now = new Date();
+        const withdrawal: WithdrawalDoc = {
+            _id: new ObjectId(),
+            accountId: account._id,
+            requestId: input.requestId,
+            amount: toDecimal(priced.wei),
+            to: input.to,
+            network: "solana",
+            state: "sending",
+            nonce: null,
+            rawTx: null,
+            txHash: null,
+            failure: null,
+            solana: {
+                wallet: input.to,
+                usdcAccount: priced.usdcAccount,
+                setup: priced.setup,
+                fee: toDecimal(priced.fee),
+                maxFee: toDecimal(priced.maxFee),
+                approveNonce: null,
+                approveRawTx: null,
+                approveTxHash: null,
+                burnNonce: null,
+                burnRawTx: null,
+                burnTxHash: null,
+                forwardTxHash: null,
+                irisCheckedAt: null,
+            },
+            createdAt: now,
+            updatedAt: now,
+        };
+        const updated = await ledger.runInTransaction(async (session) => {
+            const debited = await ledger.debitInSession(session, account._id, priced.wei, "withdrawal", withdrawal._id);
+            await collections.withdrawals.insertOne(withdrawal, { session });
+            return debited;
+        });
+        logger.info(
+            {
+                accountId: account._id.toHexString(),
+                withdrawalId: withdrawal._id.toHexString(),
+                amount: formatUsdc(priced.wei),
+                network: "solana",
             },
             "Withdrawal created",
         );

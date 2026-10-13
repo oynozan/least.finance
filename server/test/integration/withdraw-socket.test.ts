@@ -1,15 +1,30 @@
 import { afterAll, beforeAll, expect, inject, test } from "vitest";
 import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
+import { base58 } from "@scure/base";
 import { parseUnits } from "viem";
-import { toDecimal } from "../../src/db/money.ts";
-import type { Ack, WalletSession, WithdrawLimits, WithdrawalPlaced, WithdrawalView } from "../../src/protocol.ts";
+import { fromDecimal, toDecimal } from "../../src/db/money.ts";
+import type {
+    Ack,
+    WalletSession,
+    WithdrawLimits,
+    WithdrawQuote,
+    WithdrawalPlaced,
+    WithdrawalView,
+} from "../../src/protocol.ts";
 import { startStack, type AppSocket, type Stack, type User } from "../support/stack.ts";
 
 const SOLANA = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
 
+const newSolanaWallet = () => base58.encode(randomBytes(32));
+
 let stack: Stack;
 beforeAll(async () => {
-    stack = await startStack({ mongoUri: inject("mongoUri"), anvilUrl: inject("anvilUrl") });
+    stack = await startStack({
+        mongoUri: inject("mongoUri"),
+        anvilUrl: inject("anvilUrl"),
+        env: { SOLANA_WITHDRAWALS: "on" },
+    });
 });
 afterAll(() => stack?.stop());
 
@@ -66,7 +81,7 @@ test("withdrawing over the socket pays a linked wallet and pushes sending then s
     expect(after - before).toBe(4_500_000_000_000_000_000n);
 });
 
-test("an unlinked wallet is forbidden; a Solana address is a bad request with no Privy lookup", async () => {
+test("an unlinked wallet is forbidden, an unlinked Solana wallet too, and nothing is debited", async () => {
     await stack.fundTreasury("100");
     const user = await stack.user();
     const { socket } = await bind(user);
@@ -74,17 +89,56 @@ test("an unlinked wallet is forbidden; a Solana address is a bad request with no
 
     const stranger = await withdraw(socket, "0x1234567890123456789012345678901234567890", "1");
     expect(stranger).toMatchObject({ ok: false, error: { code: "forbidden" } });
+    const solana = await withdraw(socket, SOLANA, "2");
+    expect(solana).toMatchObject({ ok: false, error: { code: "forbidden" } });
+    const { accounts } = stack.server.services.database.collections;
+    expect(fromDecimal((await accounts.findOne({ privyUserId: user.userId }))!.balance)).toBe(parseUnits("10", 18));
+});
 
-    const lookups = stack.privy.userLookups;
-    const solana = await withdraw(socket, SOLANA, "1");
-    expect(solana).toEqual({
-        ok: false,
-        error: {
-            code: "bad_request",
-            message: "USDC on Arc can't go to a Solana wallet. Link an EVM wallet to withdraw.",
-        },
+test("withdraw:quote answers fee, receive and setup and is limited to 30 per minute", async () => {
+    const user = await stack.user();
+    const wallet = newSolanaWallet();
+    stack.privy.setUser(user.userId, [user.wallet, { address: wallet, chain: "solana" }]);
+    const { socket } = await bind(user);
+    const quote = (to: string) =>
+        socket.timeout(5000).emitWithAck("withdraw:quote", { amount: "10", to }) as Promise<Ack<WithdrawQuote>>;
+
+    expect(await quote(wallet)).toEqual({ ok: true, data: { fee: "0.286", receive: "9.714", setup: true } });
+    expect(await quote(SOLANA)).toMatchObject({ ok: false, error: { code: "forbidden" } });
+    expect(await quote(user.wallet)).toMatchObject({ ok: false, error: { code: "bad_request" } });
+
+    const results: Ack<WithdrawQuote>[] = [];
+    for (let i = 0; i < 27; i++) results.push(await quote(wallet));
+    expect(results.every((r) => r.ok)).toBe(true);
+    expect(await quote(wallet)).toMatchObject({ ok: false, error: { code: "rate_limited" } });
+});
+
+test("withdraw:create accepts a linked Solana wallet", async () => {
+    await stack.fundTreasury("100");
+    const user = await stack.user();
+    const wallet = newSolanaWallet();
+    stack.privy.setUser(user.userId, [user.wallet, { address: wallet, chain: "solana" }]);
+    const { socket } = await bind(user);
+    await credit(user, "10");
+
+    const result = (await socket.timeout(5000).emitWithAck("withdraw:create", {
+        requestId: randomUUID(),
+        amount: "4",
+        to: wallet,
+        reviewedFee: "0.286",
+    })) as Ack<WithdrawalPlaced>;
+    if (!result.ok) throw new Error(result.error.code);
+    expect(result.data).toMatchObject({
+        network: "solana",
+        to: wallet,
+        amount: "4",
+        fee: "0.286",
+        receive: "3.714",
+        state: "sending",
+        txHash: null,
+        forwardTxHash: null,
     });
-    expect(stack.privy.userLookups).toBe(lookups);
+    expect(result.data.account.balance).toBe("6");
 });
 
 test("the session hands back recent withdrawals, newest first", async () => {

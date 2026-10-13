@@ -16,6 +16,7 @@ import type { BridgeProvider } from "./crosschain/providers/types.ts";
 import { readBalances } from "./crosschain/balances.ts";
 import { createSourceClients, type SourceClients } from "./crosschain/chains.ts";
 import { lifiPrices, type PriceFeed } from "./crosschain/prices.ts";
+import { createIris, type Iris } from "./crosschain/iris.ts";
 import { createSolanaRpc, readSolanaBalances, type SolanaRpc } from "./crosschain/solana.ts";
 import { connectDatabase } from "./db/mongo.ts";
 import { formatUsdc } from "./db/money.ts";
@@ -74,6 +75,8 @@ type Overrides = {
     sources?: SourceClients;
     solana?: SolanaRpc;
     prices?: PriceFeed;
+    /** Stands in for Circle's Iris. */
+    iris?: Iris;
     /** The bridges that quote deposits; Relay and Across by default. */
     bridges?: BridgeProvider[];
     /** Stands in for the pool's Polymarket trader. */
@@ -151,6 +154,13 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             bus,
             logger: logger.child({ component: "withdrawals" }),
             minWithdraw: config.WITHDRAW_MIN_USDC,
+            solana: {
+                rpc: solana,
+                iris: overrides.iris ?? createIris({ baseUrl: config.CIRCLE_IRIS_URL }),
+                switches: config,
+                min: config.SOLANA_WITHDRAW_MIN_USDC,
+                tolerance: config.SOLANA_WITHDRAW_FEE_TOLERANCE,
+            },
         });
         const payouts = new Payouts({
             collections,

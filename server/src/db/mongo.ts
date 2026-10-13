@@ -219,16 +219,41 @@ export type WithdrawalDoc = {
     /** The client's UUID; a repeat of (accountId, requestId) is the same withdrawal. */
     requestId: string;
     amount: Decimal128;
-    /** Lowercase EVM address. */
+    /** Lowercase EVM address, or the base58 wallet of a Solana withdrawal. */
     to: string;
+    /** Missing means "arc". */
+    network?: "arc" | "solana";
     state: WithdrawalState;
     /** Set with rawTx before the first broadcast, so a restart re-sends the same transaction. */
     nonce: number | null;
     rawTx: Hex | null;
     txHash: Hex | null;
     failure: string | null;
+    /** What a Solana withdrawal needs beyond the Arc fields; the Arc nonce, rawTx and txHash are unused for it. */
+    solana?: SolanaWithdrawal;
     createdAt: Date;
     updatedAt: Date;
+};
+
+/** The CCTP burn on Arc and its forward to Solana; wei amounts, null until each step has happened. */
+export type SolanaWithdrawal = {
+    wallet: string;
+    /** The wallet's USDC token account, where the mint goes. */
+    usdcAccount: string;
+    /** True when the mint also creates that account. */
+    setup: boolean;
+    /** The quoted fee shown to the person. */
+    fee: Decimal128;
+    /** The most the burn lets Circle charge. */
+    maxFee: Decimal128;
+    approveNonce: number | null;
+    approveRawTx: Hex | null;
+    approveTxHash: Hex | null;
+    burnNonce: number | null;
+    burnRawTx: Hex | null;
+    burnTxHash: Hex | null;
+    forwardTxHash: string | null;
+    irisCheckedAt: Date | null;
 };
 
 /** A swap through LI.FI, signed by the person's own wallet; amounts are decimal coin units and `units` are the integers LI.FI works in. */

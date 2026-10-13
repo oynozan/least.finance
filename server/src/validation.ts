@@ -126,6 +126,16 @@ export const withdrawRequest = z.object({
     requestId: z.uuid(),
     amount: z.string().regex(/^\d+(\.\d{1,6})?$/, "an amount such as 12.5"),
     to: z.string().trim().min(32).max(64),
+    /** The fee the person reviewed; a Solana withdrawal is refused when the fee has since risen past it. */
+    reviewedFee: z
+        .string()
+        .regex(/^\d+(\.\d{1,6})?$/, "an amount such as 0.13")
+        .optional(),
+});
+
+export const withdrawQuoteRequest = z.object({
+    amount: withdrawRequest.shape.amount,
+    to: withdrawRequest.shape.to,
 });
 
 /** Parses client input, turning a mismatch into a 400 that names the field. */

@@ -1,6 +1,5 @@
 import type { Server as HttpServer } from "node:http";
 import type { ObjectId } from "mongodb";
-import type { Address } from "viem";
 import { RateLimiterMemory } from "rate-limiter-flexible";
 import { Server, type Socket } from "socket.io";
 import type { Identity } from "../auth/identity.ts";
@@ -27,6 +26,7 @@ import {
     swapOrder,
     swapRequest,
     swapSent,
+    withdrawQuoteRequest,
     withdrawRequest,
 } from "../validation.ts";
 
@@ -78,6 +78,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     const blockhashes = new RateLimiterMemory({ keyPrefix: "solana-blockhash", points: 30, duration: 60 });
     const withdrawals = new RateLimiterMemory({ keyPrefix: "withdraw", points: 10, duration: 60 });
     const withdrawLimits = new RateLimiterMemory({ keyPrefix: "withdraw-limits", points: 30, duration: 60 });
+    const withdrawQuotes = new RateLimiterMemory({ keyPrefix: "withdraw-quote", points: 30, duration: 60 });
     const predictionOrders = new RateLimiterMemory({ keyPrefix: "prediction", points: 10, duration: 60 });
 
     io.use(async (socket, next) => {
@@ -256,21 +257,32 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             }),
         );
 
+        socket.on("withdraw:quote", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(withdrawQuoteRequest, payload);
+                await withdrawQuotes.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                });
+                if (!BASE58_ADDRESS.test(input.to)) {
+                    throw new AppError("bad_request", "Only withdrawals to a Solana wallet have a quote.");
+                }
+                const account = await boundAccount(socket);
+                const to = await services.identity.authorizeWallet(socket.data.identity, input.to);
+                const { fee, receive, setup } = await services.withdrawals.quoteSolana(account, { ...input, to });
+                return { fee: formatUsdc(fee), receive: formatUsdc(receive), setup };
+            }),
+        );
+
         socket.on("withdraw:create", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(withdrawRequest, payload);
                 await withdrawals.consume(socket.data.identity.userId).catch(() => {
                     throw new AppError("rate_limited", "Too many withdrawals. Try again shortly.");
                 });
-                if (BASE58_ADDRESS.test(input.to)) {
-                    throw new AppError(
-                        "bad_request",
-                        "USDC on Arc can't go to a Solana wallet. Link an EVM wallet to withdraw.",
-                    );
-                }
                 const account = await boundAccount(socket);
-                const to = (await services.identity.authorizeWallet(socket.data.identity, input.to)) as Address;
-                const withdrawal = await services.withdrawals.create(account, { ...input, to });
+                const to = await services.identity.authorizeWallet(socket.data.identity, input.to);
+                const network = BASE58_ADDRESS.test(to) ? "solana" : "arc";
+                const withdrawal = await services.withdrawals.create(account, { ...input, to, network });
                 // Read after the debit, so it already has the amount taken
                 const held = await services.accounts.findById(account._id);
                 return { ...withdrawalView(withdrawal), account: accountView(held ?? account) };

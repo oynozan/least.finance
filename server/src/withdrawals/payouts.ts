@@ -104,7 +104,10 @@ export class Payouts {
 
     async #pass() {
         const { collections, logger } = this.#deps;
-        const sending = await collections.withdrawals.find({ state: "sending" }).sort({ _id: 1 }).toArray();
+        const sending = await collections.withdrawals
+            .find({ state: "sending", network: { $ne: "solana" } })
+            .sort({ _id: 1 })
+            .toArray();
         for (const withdrawal of sending) {
             if (this.#stop?.signal.aborted) return;
             try {

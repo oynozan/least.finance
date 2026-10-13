@@ -10,6 +10,7 @@ import { arcChain } from "../../src/chain/arc.ts";
 import { EVM_COINS } from "../../src/crosschain/catalog.ts";
 import { createSourceClients } from "../../src/crosschain/chains.ts";
 import { fixedPrices } from "../../src/crosschain/prices.ts";
+import { createIris } from "../../src/crosschain/iris.ts";
 import { createSolanaRpc } from "../../src/crosschain/solana.ts";
 import { loadConfig } from "../../src/config.ts";
 import type { ClientToServerEvents, ServerToClientEvents } from "../../src/protocol.ts";
@@ -17,6 +18,7 @@ import { startServer, type RunningServer } from "../../src/server.ts";
 import { startArcEmulator, type ArcEmulator, type EmulatorOptions } from "./arc-emulator.ts";
 import { fakePoolTrader, type FakeTrader } from "./fake-trader.ts";
 import { FakeBridge } from "./fake-bridge.ts";
+import { startFakeIris, type FakeIris } from "./fake-iris.ts";
 import { startFakeDefiLlama, type FakeDefiLlama } from "./fake-defillama.ts";
 import { startFakeLifi, type FakeLifi } from "./fake-lifi.ts";
 import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
@@ -103,6 +105,8 @@ export type Stack = {
     emulator: ArcEmulator;
     /** The Solana RPC stand-in the server reads balances from. */
     solanaRpc: FakeSolanaRpc;
+    /** The Circle Iris stand-in the server reads Solana withdrawal fees and messages from. */
+    iris: FakeIris;
     /** The Polymarket stand-in the server reads markets from. */
     polymarket: FakePolymarket;
     /** The bridge the server quotes Ethereum and BNB Chain deposits from; a test steps its orders by hand. */
@@ -169,6 +173,7 @@ export async function startStack({
     // The swap holdings read through Multicall3, which the fresh anvils lack.
     for (const url of [ethereumUrl, bnbUrl, anvilUrl]) await installMulticall3(url);
     const solanaRpc = await startFakeSolanaRpc();
+    const iris = await startFakeIris();
     const polymarket = await startFakePolymarket();
     const lifi = await startFakeLifi({ prices: SWAP_PRICES });
     const llama = await startFakeDefiLlama({ prices: SWAP_PRICES });
@@ -207,6 +212,7 @@ export async function startStack({
     const server = await startServer(config, logger, {
         sources: createSourceClients({ ethereum: [ethereumUrl], bnb: [bnbUrl] }),
         solana: createSolanaRpc([solanaRpc.url]),
+        iris: createIris({ baseUrl: iris.url }),
         prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
         bridges: [bridge, solanaBridge],
         trader,
@@ -227,6 +233,7 @@ export async function startStack({
         privy,
         emulator,
         solanaRpc,
+        iris,
         polymarket,
         bridge,
         solanaBridge,
@@ -267,6 +274,7 @@ export async function startStack({
             await server.close();
             await emulator.stop();
             await solanaRpc.stop();
+            await iris.stop();
             await polymarket.stop();
             await lifi.stop();
             await llama.stop();

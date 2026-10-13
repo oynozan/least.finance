@@ -122,21 +122,31 @@ export type BalancesView = {
     rows: CoinBalance[];
 };
 
-export type WithdrawalState = "sending" | "sent" | "failed";
+export type WithdrawalState = "sending" | "forwarding" | "sent" | "failed";
 
 export type WithdrawalView = {
     id: string;
     requestId: string;
     amount: UsdcAmount;
     to: string;
+    network: "arc" | "solana";
+    /** What Circle charges, for a Solana withdrawal. */
+    fee: UsdcAmount | null;
+    /** The amount less the fee, for a Solana withdrawal. */
+    receive: UsdcAmount | null;
     state: WithdrawalState;
+    /** The Arc hash: the payout, or the burn of a Solana withdrawal. */
     txHash: Hex | null;
+    forwardTxHash: string | null;
     createdAt: string;
     updatedAt: string;
 };
 
 /** A withdrawal with the account as the server holds it once the debit or refund is in. */
 export type WithdrawalPlaced = WithdrawalView & { account: AccountView };
+
+/** What a withdrawal to a Solana wallet would cost and what arrives. */
+export type WithdrawQuote = { fee: UsdcAmount; receive: UsdcAmount; setup: boolean };
 
 /** What a withdrawal may be right now: `max` is the smaller of the balance and what the treasury can pay. */
 export type WithdrawLimits = { max: UsdcAmount; min: UsdcAmount };
@@ -237,9 +247,11 @@ export type ClientToServerEvents = {
     "swap:sent": (payload: { orderId: string; txHashes: string[] }, ack: (result: Ack<SwapOrderView>) => void) => void;
     /** What a withdrawal may be right now. */
     "withdraw:limits": (payload: Record<string, never>, ack: (result: Ack<WithdrawLimits>) => void) => void;
-    /** Takes the amount off the balance and pays it to a linked EVM wallet; a repeated `requestId` is the same withdrawal. */
+    /** The fee and net amount of a withdrawal to a linked Solana wallet. */
+    "withdraw:quote": (payload: { amount: string; to: string }, ack: (result: Ack<WithdrawQuote>) => void) => void;
+    /** Takes the amount off the balance and pays it to a linked wallet; a repeated `requestId` is the same withdrawal. */
     "withdraw:create": (
-        payload: { requestId: string; amount: string; to: string },
+        payload: { requestId: string; amount: string; to: string; reviewedFee?: string },
         ack: (result: Ack<WithdrawalPlaced>) => void,
     ) => void;
     /** What a prediction buy would cost and return right now, or with a `positionId` what selling the position would pay. */
