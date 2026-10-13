@@ -353,13 +353,3 @@ test("a buy restored by a reload shows no amount in place of shares", async ({ p
     await expect(row(page, picked)).not.toContainText(/\$\d/);
     await releaseOrder(picked.outcome.tokenId, "fill");
 });
-
-test("other verbs stay simulated", async ({ page }) => {
-    await page.goto("/");
-    await connect(page);
-    await review(page).click();
-    await page.getByRole("complementary", { name: "Review" }).getByRole("button", { name: "Confirm swap" }).click();
-    await expect(page.getByRole("complementary", { name: "Review" })).toContainText(
-        "Trading isn't live yet, so nothing was sent.",
-    );
-});

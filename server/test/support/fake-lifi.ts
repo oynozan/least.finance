@@ -18,10 +18,10 @@ export type FakeLifi = {
     failNext(path: "/v1/tokens" | "/v1/chains" | "/v1/quote" | "/v1/status"): void;
     /** Every quote request served, as the client sent it. */
     quotes: LifiQuoteRequest[];
-    /** Merges this into the next raw quote, nested objects included. */
-    nextQuote(patch: Record<string, any>): void;
-    /** Answers the next quote request with LI.FI's no-route error. */
-    noRoute(): void;
+    /** Merges this into the next raw quote, nested objects included; with `fromAddress`, into the next one that wallet asks for. */
+    nextQuote(patch: Record<string, any>, fromAddress?: string): void;
+    /** Answers the next quote request, or the next one `fromAddress` makes, with LI.FI's no-route error. */
+    noRoute(fromAddress?: string): void;
     /** Serves this raw status for a sending hash; other hashes are unknown. */
     setStatus(txHash: string, raw: Record<string, any>): void;
     /** Prices every table entry of this symbol from now on; look-alike tokens keep their recorded price. */
@@ -68,8 +68,15 @@ export async function startFakeLifi(options: { prices?: Record<string, number> }
     const failing = new Set<string>();
     const chains: { id: number; key: string; diamondAddress: string | null }[] = fixture("chains.json").chains;
     const statuses = new Map<string, Record<string, any>>();
-    const patches: Record<string, any>[] = [];
-    let noRouteNext = false;
+    const patches: { patch: Record<string, any>; fromAddress?: string }[] = [];
+    const noRoutes: { fromAddress?: string }[] = [];
+    // The first queued entry that is for anyone or for this wallet
+    const takeFor = <T extends { fromAddress?: string }>(queue: T[], wallet: string): T | undefined => {
+        const at = queue.findIndex(
+            (entry) => !entry.fromAddress || entry.fromAddress.toLowerCase() === wallet.toLowerCase(),
+        );
+        return at < 0 ? undefined : queue.splice(at, 1)[0];
+    };
     let quoteCount = 0;
 
     const priceOf = (chainId: number, address: string): { symbol: string; decimals: number; price: number } => {
@@ -198,12 +205,12 @@ export async function startFakeLifi(options: { prices?: Record<string, number> }
                 ...(q.has("fee") ? { fee: Number(q.get("fee")) } : {}),
             };
             fake.quotes.push(ask);
-            if (noRouteNext) {
-                noRouteNext = false;
+            if (takeFor(noRoutes, ask.fromAddress)) {
                 return send(404, { message: "No available quotes for the requested transfer" });
             }
             let raw = rawQuote(ask);
-            for (const patch of patches.splice(0, 1)) raw = merge(raw, patch);
+            const queued = takeFor(patches, ask.fromAddress);
+            if (queued) raw = merge(raw, queued.patch);
             return send(200, raw);
         }
         if (req.method === "GET" && url.pathname === "/v1/status") {
@@ -219,8 +226,8 @@ export async function startFakeLifi(options: { prices?: Record<string, number> }
         requests: [],
         keys: [],
         quotes: [],
-        nextQuote: (patch) => void patches.push(patch),
-        noRoute: () => void (noRouteNext = true),
+        nextQuote: (patch, fromAddress) => void patches.push({ patch, fromAddress }),
+        noRoute: (fromAddress) => void noRoutes.push({ fromAddress }),
         setStatus: (txHash, raw) => void statuses.set(txHash, raw),
         failNext: (path) => failing.add(path),
         setPrice: (symbol, price) => prices.set(symbol, price),

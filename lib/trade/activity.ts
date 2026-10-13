@@ -1,6 +1,7 @@
 import { QUOTE } from "./catalog";
 import { formatUnits, formatUsdShort } from "./format";
-import type { PositionView } from "@/server/src/protocol";
+import type { PositionView, SwapOrderState, SwapOrderView } from "@/server/src/protocol";
+import { networkName } from "./networks";
 
 export type ActivityKind = "deposit" | "swap" | "buy" | "sell" | "long" | "short" | "close" | "predict";
 
@@ -15,8 +16,8 @@ export type Activity = {
     detail: string;
     /** Coins for the icon; two overlap. */
     symbols: string[];
-    /** Its size, in USD. */
-    amountUSD: number;
+    /** Its size, in USD; null while a swapped coin has no price. */
+    amountUSD: number | null;
     /** What it did to the balance, in USD: a deposit adds itself, a close its realized PnL. */
     change: number;
     /** A deposit the server hasn't confirmed yet, or a buy it hasn't filled. */
@@ -36,6 +37,31 @@ export function depositActivity(deposit: { key: string; amountUSD: number; at: D
         amountUSD: deposit.amountUSD,
         change: deposit.amountUSD,
         pending: deposit.pending,
+    };
+}
+
+const SWAP_STATE: Record<SwapOrderState, string> = {
+    created: "Waiting for your wallet",
+    sent: "On its way",
+    done: "Done",
+    partial: "Partly done",
+    refunded: "Refunded",
+    failed: "Failed",
+    expired: "Not sent",
+};
+
+/** A real swap, Buy or Sell: the networks and its state, with no change to the balance; `amountUSD` is its size when a price is known. */
+export function swapActivity(order: SwapOrderView, amountUSD: number | null = null): Activity {
+    return {
+        id: `swap:${order.id}`,
+        at: new Date(order.createdAt),
+        kind: "swap",
+        title: `Swap ${order.from.token} to ${order.to.token}`,
+        detail: `${networkName(order.from.network)} to ${networkName(order.to.network)} · ${SWAP_STATE[order.state]}`,
+        symbols: [order.from.token, order.to.token],
+        amountUSD,
+        change: 0,
+        pending: order.state === "created" || order.state === "sent" ? true : undefined,
     };
 }
 

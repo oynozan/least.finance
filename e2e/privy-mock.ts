@@ -340,6 +340,10 @@ type WalletWindow = {
     nextSwitch?: "fail" | "ignore";
     /** What the wallet does with the next transaction it's asked to send. */
     nextSend?: "reject" | "drop";
+    /** The hash of every transaction the wallet sent. */
+    sentHashes: string[];
+    /** The user declines every transaction once this many have been sent. */
+    rejectFrom?: number;
     useChain: (chainId: string) => void;
     lock: () => void;
     sendToChain: (
@@ -373,11 +377,20 @@ export const ignoreNextChainSwitch = (page: Page) =>
         (window as unknown as WalletWindow).nextSwitch = "ignore";
     });
 
+/** The hash of every transaction the wallet has sent, oldest first. */
+export const sentHashes = (page: Page) => page.evaluate(() => (window as unknown as WalletWindow).sentHashes);
+
 /** The user declines the next transaction in their wallet. */
 export const rejectNextSend = (page: Page) =>
     page.evaluate(() => {
         (window as unknown as WalletWindow).nextSend = "reject";
     });
+
+/** The user declines every transaction after the first `count`, as when they approve a spend and then turn down the swap. */
+export const rejectSendsAfter = (page: Page, count: number) =>
+    page.evaluate((count) => {
+        (window as unknown as WalletWindow).rejectFrom = count;
+    }, count);
 
 /** The wallet hands back a hash for the next transaction, but it never reaches the chain (as when the fee is too low). */
 export const dropNextSend = (page: Page) =>
@@ -413,6 +426,11 @@ export async function installWallet(page: Page, address = addressOf(page)) {
             `0x${Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
         const state = window as unknown as WalletWindow;
         state.walletRequests = [];
+        state.sentHashes = [];
+        const sent = (hash: string) => {
+            state.sentHashes.push(hash);
+            return hash;
+        };
         const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
         const emit = (event: string, ...args: unknown[]) => listeners[event]?.forEach((fn) => fn(...args));
         const fail = (code: number, message: string) => Object.assign(new Error(message), { code });
@@ -481,14 +499,16 @@ export async function installWallet(page: Page, address = addressOf(page)) {
                     case "eth_sendTransaction": {
                         const behavior = state.nextSend;
                         state.nextSend = undefined;
-                        if (behavior === "reject") throw fail(4001, "User rejected the request.");
-                        if (swapChains.has(chainId)) return fakeHash();
+                        if (behavior === "reject" || (state.rejectFrom ?? Infinity) <= state.sentHashes.length) {
+                            throw fail(4001, "User rejected the request.");
+                        }
+                        if (swapChains.has(chainId)) return sent(fakeHash());
                         // Only Ethereum, BNB Chain and Arc are on the test backend.
                         if (!testChains.has(chainId))
                             throw fail(-32603, `The wallet is on chain ${chainId}, which the tests don't run.`);
                         if (behavior === "drop") {
                             const bytes = crypto.getRandomValues(new Uint8Array(32));
-                            return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+                            return sent(`0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`);
                         }
                         const tx = { ...(params?.[0] as { chainId?: string }), from: account };
                         // Like real wallets, refuse a transaction meant for another chain.
@@ -496,7 +516,7 @@ export async function installWallet(page: Page, address = addressOf(page)) {
                             throw fail(-32602, `Expected chain ${tx.chainId}.`);
                         const { result, error } = await state.sendToChain(method, [tx], parseInt(chainId, 16));
                         if (error) throw fail(-32603, error.message);
-                        return result;
+                        return sent(result as string);
                     }
                     case "eth_getTransactionReceipt": {
                         if (swapChains.has(chainId)) return { status: "0x1" };

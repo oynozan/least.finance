@@ -86,9 +86,10 @@ export const setSwapStatus = (
     options: { substatus?: string; receiving?: { symbol?: string; amount?: string } } = {},
 ) => call<object>("/lifi/status", { txHash, status, ...options }).then(() => undefined);
 
-/** Merges `patch` into the next raw LI.FI quote, nested objects included. */
-export const nextSwapQuote = (patch: Record<string, unknown>) =>
-    call<object>("/lifi/quote", { patch }).then(() => undefined);
+/** Merges `patch` into the next raw LI.FI quote, nested objects included; `wallet` limits it to quotes that wallet pays. */
+export const nextSwapQuote = (patch: Record<string, unknown>, wallet?: string) =>
+    call<object>("/lifi/quote", { patch, fromAddress: wallet }).then(() => undefined);
 
-/** Answers the next LI.FI quote request with no route. */
-export const noSwapRoute = () => call<object>("/lifi/no-route", {}).then(() => undefined);
+/** Answers the next LI.FI quote request (that `wallet` makes, when given) with no route. */
+export const noSwapRoute = (wallet?: string) =>
+    call<object>("/lifi/no-route", { fromAddress: wallet }).then(() => undefined);

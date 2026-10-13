@@ -5,6 +5,7 @@ import {
     use,
     useCallback,
     useEffect,
+    useMemo,
     useRef,
     useState,
     useSyncExternalStore,
@@ -21,6 +22,7 @@ import {
     type OptimisticTrade,
 } from "@/lib/account/state";
 import { API_URL } from "@/lib/api";
+import type { Signers } from "@/lib/trade/swap-request";
 import { ensureNetwork } from "@/lib/wallet/network";
 import type {
     CoinBalance,
@@ -42,7 +44,7 @@ import {
     type SwapResult,
 } from "./account-client";
 import { arc } from "./arc";
-import { linkedWallets, solanaWalletAddress, useActiveWallet } from "./arc-wallet";
+import { depositWalletAddress, linkedWallets, solanaWalletAddress, useActiveWallet } from "./arc-wallet";
 import { useSolanaSigner } from "./solana-signer";
 import { walletEnabled } from "./wallet-provider";
 
@@ -62,6 +64,8 @@ export type Account = {
     refreshSwapHoldings: () => void;
     /** The account's open swap orders and those settled in the last 7 days, newest first. */
     swaps: SwapOrderView[];
+    /** The wallets that sign swaps: the active EVM one, and the Solana one; none while signed out. */
+    signers: Signers;
     /** What a swap would pay right now, with no order opened. */
     quoteSwap: (req: SwapRequest) => Promise<SwapQuoteView | { error: ApiError }>;
     /** Opens a swap order and has the wallet that pays sign it; `reviewedMin` is the minimum received the person saw. */
@@ -103,6 +107,8 @@ const NO_PREDICTIONS: PositionsView = { positions: [], orders: [] };
 const NO_OPTIMISTIC: OptimisticTrade[] = [];
 const UNAVAILABLE: ApiError = { code: "unavailable", message: "Predictions aren't available right now." };
 
+const NO_SIGNERS: Signers = {};
+
 const NO_SWAPS: ApiError = { code: "unavailable", message: "Swaps aren't available right now." };
 
 const NO_WALLET: ApiError = { code: "bad_request", message: "Connect a wallet to deposit." };
@@ -128,7 +134,10 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot, () => IDLE);
     const userId = user?.id;
     const active = useActiveWallet();
-    const solanaSigner = useSolanaSigner(user ? solanaWalletAddress(user, active) : undefined);
+    const solanaAddress = user ? solanaWalletAddress(user, active) : undefined;
+    const solanaSigner = useSolanaSigner(solanaAddress);
+    const evmAddress = user ? depositWalletAddress(user, active) : undefined;
+    const signers = useMemo(() => ({ evm: evmAddress, solana: solanaAddress }), [evmAddress, solanaAddress]);
 
     // The latest token getter, without reconnecting whenever its identity changes.
     const accessToken = useRef(getAccessToken);
@@ -220,6 +229,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     return (
         <Provide
             snapshot={snapshot}
+            signers={signers}
             quoteSwap={(req) => client.quoteSwap(req)}
             placeSwap={placeSwap}
             deposit={deposit}
@@ -240,6 +250,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
 
 function Provide({
     snapshot,
+    signers = NO_SIGNERS,
     deposit = async () => "failed",
     quote = async () => NO_WALLET,
     depositCoin = async () => "failed",
@@ -255,6 +266,7 @@ function Provide({
     children,
 }: {
     snapshot: AccountSnapshot;
+    signers?: Signers;
     deposit?: Account["deposit"];
     quote?: Account["quote"];
     depositCoin?: Account["depositCoin"];
@@ -282,6 +294,7 @@ function Provide({
         swapHoldings: snapshot.swapHoldings,
         refreshSwapHoldings,
         swaps: snapshot.swaps,
+        signers,
         quoteSwap,
         placeSwap,
         orders: state.status === "ready" ? state.orders : [],

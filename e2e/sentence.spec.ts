@@ -3,6 +3,7 @@ import { fundSource } from "./backend";
 import { toPredictionMarket } from "@/lib/trade/markets";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 import { sampleView, samples, trendingView } from "./polymarket";
+import { pickCoin } from "./swap-flow";
 
 const trade = (page: Page) => page.getByRole("region", { name: "Trade" });
 const pill = (page: Page, name: string | RegExp) =>
@@ -417,26 +418,14 @@ test("Review opens the details in the sidebar, then confirms", async ({ page, is
     await expect(review(page)).toHaveAccessibleDescription("That's more than your $3,203.98 of ETH on Ethereum.");
     await setAmount(page, "100");
 
+    // SOL is received on Solana, which this wallet can't; USDC on Ethereum it can.
+    await pickCoin(page, "term:token", "USDC", "Ethereum");
     await review(page).click();
     await expect(page.getByRole("complementary", { name: "Review" })).toBeVisible();
     await shoot(page, "6-review");
     await sidebar(page).getByRole("button", { name: "Confirm swap" }).click();
-    await expect(sidebar(page)).toContainText("Trading isn't live yet, so nothing was sent.");
-    await expect(sidebar(page).locator("pre")).toHaveText(
-        JSON.stringify(
-            {
-                type: "swap",
-                fromToken: "ETH",
-                fromNetwork: "ethereum",
-                toToken: "SOL",
-                toNetwork: "solana",
-                amountUSD: "100",
-            },
-            null,
-            2,
-        ),
-    );
-    await shoot(page, "7-not-sent");
+    await expect(sidebar(page)).toContainText("Swap sent.", { timeout: 20_000 });
+    await shoot(page, "7-sent");
     // The review stays in place, unfaded, while the sidebar slides away.
     const done = sidebar(page).getByRole("button", { name: "Done" });
     const button = await done.elementHandle();

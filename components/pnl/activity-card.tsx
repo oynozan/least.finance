@@ -73,7 +73,9 @@ export function ActivityCard({ activity }: { activity: readonly Activity[] }) {
                                             {a.title}
                                         </span>
                                         <span className="truncate text-[14px] leading-snug text-muted">
-                                            <span className="sm:hidden">{formatUsd(a.amountUSD)} · </span>
+                                            <span className="sm:hidden">
+                                                {a.amountUSD === null ? "—" : formatUsd(a.amountUSD)} ·{" "}
+                                            </span>
                                             {a.detail}
                                             <span className="md:hidden"> · {when.format(a.at)}</span>
                                         </span>
@@ -81,7 +83,7 @@ export function ActivityCard({ activity }: { activity: readonly Activity[] }) {
                                 </div>
                             </td>
                             <td className="py-2.5 text-right text-[16px] tabular-nums transition-colors duration-150 group-hover:bg-pill max-sm:hidden">
-                                {formatUsd(a.amountUSD)}
+                                {a.amountUSD === null ? "—" : formatUsd(a.amountUSD)}
                             </td>
                             <td className="py-2.5 text-right text-[16px] font-medium tabular-nums transition-colors duration-150 group-hover:bg-pill max-md:rounded-r-[24px] max-md:pr-[18px]">
                                 <Result activity={a} />

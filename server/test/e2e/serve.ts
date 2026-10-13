@@ -317,13 +317,13 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
         return {};
     },
     /** Merges `patch` into the next raw LI.FI quote. */
-    "/lifi/quote": async ({ patch }) => {
-        lifi.nextQuote(patch as Record<string, unknown>);
+    "/lifi/quote": async ({ patch, fromAddress }) => {
+        lifi.nextQuote(patch as Record<string, unknown>, fromAddress === undefined ? undefined : String(fromAddress));
         return {};
     },
     /** Answers the next LI.FI quote request with no route. */
-    "/lifi/no-route": async () => {
-        lifi.noRoute();
+    "/lifi/no-route": async ({ fromAddress }) => {
+        lifi.noRoute(fromAddress === undefined ? undefined : String(fromAddress));
         return {};
     },
     /** Runs one pass of the resolver now, instead of waiting for its timer. */
