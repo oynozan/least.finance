@@ -308,8 +308,8 @@ export async function createPolymarketTrader(
                         dollars += matched * decimalToE6(maker.price);
                     }
                 }
-                // An unread page could hold the fill, so "none" is never answered from a partial read
-                if (read + 1 === FIND_FILL_PAGES && !linked) {
+                // An unread page could hold more of the fill, so no answer comes from a partial read
+                if (read + 1 === FIND_FILL_PAGES) {
                     if (!(await pages.next()).done) throw new Error("the trade history is too long to read");
                     break;
                 }

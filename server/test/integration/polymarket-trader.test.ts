@@ -269,7 +269,10 @@ describe("the Polymarket trader", () => {
         const find = (side: "buy" | "sell" = "buy", orderHash = FILL) =>
             trader.findFill({ orderHash, tokenId: TOKEN, side, since });
 
-        afterEach(() => fake.failTrades(null));
+        afterEach(() => {
+            fake.failTrades(null);
+            fake.setTradesPageSize(Infinity);
+        });
 
         it("sums the taker's trades and ignores others", async () => {
             fake.setTrade("a", tradeOf("a", FILL, "BUY", [makerOrder("0.50", "6")]));
@@ -288,6 +291,22 @@ describe("the Polymarket trader", () => {
         it("answers unlinked for a trade with no taker order id", async () => {
             fake.setTrade("d", tradeOf("d", "", "BUY", [makerOrder("0.90", "9")]));
             expect(await find("buy", `0x${"f".repeat(64)}`)).toBe("unlinked");
+        });
+
+        it("throws instead of answering from a partial read when pages remain after the order is linked", async () => {
+            fake.clearTrades();
+            fake.setTradesPageSize(1);
+            fake.setTrade("t0", tradeOf("t0", FILL, "BUY", [makerOrder("0.50", "6")]));
+            for (let i = 1; i <= 6; i++) fake.setTrade(`t${i}`, tradeOf(`t${i}`, `0x${"e".repeat(64)}`, "BUY", []));
+            await expect(find()).rejects.toThrow("too long");
+        });
+
+        it("answers from a history that ends exactly at the page limit", async () => {
+            fake.clearTrades();
+            fake.setTradesPageSize(1);
+            fake.setTrade("t0", tradeOf("t0", FILL, "BUY", [makerOrder("0.50", "6")]));
+            for (let i = 1; i < 5; i++) fake.setTrade(`t${i}`, tradeOf(`t${i}`, `0x${"e".repeat(64)}`, "BUY", []));
+            expect(await find("buy")).toEqual({ makingE6: 3_000_000n, takingE6: 6_000_000n });
         });
 
         it("throws on a failing page instead of answering null", async () => {

@@ -46,6 +46,10 @@ export type FakeClob = {
     /** The rows GET /v2/positions serves, filtered by its status parameter. */
     setPositions(rows: FakePosition[]): void;
     setPositionsPageSize(size: number): void;
+    /** Serves GET /data/trades this many trades per page; the default is one page of everything. */
+    setTradesPageSize(size: number): void;
+    /** Removes every trade set so far. */
+    clearTrades(): void;
     /** Drops every open connection, as a network failure mid-request. */
     dropConnections(): void;
     /** Resolves when the next POST /order arrives. */
@@ -101,6 +105,7 @@ export async function startFakeClob(): Promise<FakeClob> {
     const states = new Map<string, RelayerState>();
     let positions: FakePosition[] = [];
     let positionsPage = 100;
+    let tradesPage = Infinity;
     let balance = 0n;
     let next: NextPost | undefined;
     let arrived: (() => void) | undefined;
@@ -248,7 +253,12 @@ export async function startFakeClob(): Promise<FakeClob> {
             const data = id
                 ? [trades.get(id)].filter((trade) => trade !== undefined)
                 : [...trades.values()].filter((trade) => !asset || (trade as { asset_id?: string }).asset_id === asset);
-            return send(response, 200, { limit: 100, count: data.length, next_cursor: "LTE=", data });
+            const cursor = url.searchParams.get("next_cursor");
+            const offset = cursor && cursor !== "MA==" ? Number(Buffer.from(cursor, "base64").toString()) : 0;
+            const page = data.slice(offset, offset + tradesPage);
+            const end = offset + tradesPage;
+            const next = end < data.length ? Buffer.from(String(end)).toString("base64") : "LTE=";
+            return send(response, 200, { limit: 100, count: page.length, next_cursor: next, data: page });
         }
         if (path.startsWith("/data/order/")) {
             const order = orders.get(decodeURIComponent(path.slice("/data/order/".length)));
@@ -272,6 +282,8 @@ export async function startFakeClob(): Promise<FakeClob> {
         setBook: (tokenId, book) => void books.set(tokenId, book),
         setBalance: (e6) => void (balance = e6),
         setOrder: (id, order) => void orders.set(id, order),
+        clearTrades: () => trades.clear(),
+        setTradesPageSize: (size) => void (tradesPage = size),
         setTrade: (id, trade) => void trades.set(id, trade),
         failTrades: (status) => void (tradesStatus = status),
         tradeQueries,
