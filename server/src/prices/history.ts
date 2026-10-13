@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
 import type { PriceHistoryView, PriceRange } from "../protocol.ts";
 import { COINS } from "../swaps/coins.ts";
@@ -22,6 +23,10 @@ export const PRICE_RANGES = Object.keys(RANGES) as [PriceRange, ...PriceRange[]]
 const CONCURRENCY = 3;
 /** How long a range waits after a failed read before DefiLlama is asked again. */
 const RETRY_MS = 30_000;
+/** How often the background loop looks for ranges due a read. */
+const SYNC_MS = 30_000;
+/** The loop reads a range again once this share of its TTL has passed, so a request never finds it stale. */
+const REFRESH_AT = 0.8;
 
 const SYMBOLS = COINS.map((coin) => coin.symbol).filter((symbol) => symbol in LLAMA_IDS);
 
@@ -38,10 +43,11 @@ type Deps = {
 };
 
 /**
- * The swap coins' dollar price history, read from DefiLlama. A range is read
- * for every coin at once on the first request after its TTL, one read at a
- * time; while DefiLlama fails, the last read is served and DefiLlama is left
- * alone for a while.
+ * The swap coins' dollar price history, read from DefiLlama. A background
+ * loop reads every range for every coin at start and again before its TTL is
+ * up, so requests are answered from memory; a range it hasn't read yet is
+ * read on request, one read at a time. While DefiLlama fails, the last read
+ * is served and DefiLlama is left alone for a while.
  */
 export class PriceHistory {
     readonly #deps: Deps;
@@ -50,10 +56,44 @@ export class PriceHistory {
     readonly #reading = new Map<PriceRange, Promise<void>>();
     /** When each range may ask DefiLlama again after a failed read. */
     readonly #retryAt = new Map<PriceRange, number>();
+    #stop: AbortController | null = null;
+    #loop: Promise<void> | null = null;
 
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+    }
+
+    start() {
+        if (this.#loop) return;
+        this.#stop = new AbortController();
+        this.#loop = this.#run(this.#stop.signal);
+    }
+
+    async stop() {
+        this.#stop?.abort();
+        await this.#loop;
+        this.#loop = null;
+        this.#stop = null;
+    }
+
+    async #run(signal: AbortSignal) {
+        while (!signal.aborted) {
+            await this.tick(signal);
+            await sleep(SYNC_MS, undefined, { signal }).catch(() => undefined);
+        }
+    }
+
+    /** Reads each range that's due, one range at a time: never read, or most of its TTL gone, and not waiting out a failure. */
+    async tick(signal?: AbortSignal): Promise<void> {
+        for (const range of PRICE_RANGES) {
+            if (signal?.aborted) return;
+            const kept = this.#reads.get(range);
+            const now = this.#now();
+            if (kept && now - kept.at < RANGES[range].ttlMs * REFRESH_AT) continue;
+            if (now < (this.#retryAt.get(range) ?? 0)) continue;
+            await this.#shared(range);
+        }
     }
 
     /** The range for these coins, every swap coin by default; null when it has never been read and can't be now. */
@@ -73,13 +113,18 @@ export class PriceHistory {
         const now = this.#now();
         if (kept && now - kept.at < RANGES[range].ttlMs) return kept;
         if (now < (this.#retryAt.get(range) ?? 0)) return kept ?? null;
+        await this.#shared(range);
+        return this.#reads.get(range) ?? null;
+    }
+
+    /** The range's read in flight, or a new one; the loop and requests share it. */
+    #shared(range: PriceRange): Promise<void> {
         let pending = this.#reading.get(range);
         if (!pending) {
             pending = this.#read(range).finally(() => this.#reading.delete(range));
             this.#reading.set(range, pending);
         }
-        await pending;
-        return this.#reads.get(range) ?? null;
+        return pending;
     }
 
     /** Reads every coin in batches under DefiLlama's point cap; one failed batch fails the read. Never throws. */

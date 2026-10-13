@@ -349,6 +349,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         tracker.start();
         markets.start();
         swapCatalog.start();
+        priceHistory.start();
         swapTracker.start();
         predictionTracker.start();
         predictionResolver.start();
@@ -378,6 +379,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await predictionTracker.stop();
                 await swapTracker.stop();
                 await swapCatalog.stop();
+                await priceHistory.stop();
                 await markets.stop();
                 await tracker.stop();
                 await watcher.stop();

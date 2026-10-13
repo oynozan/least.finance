@@ -178,3 +178,38 @@ test("a coin DefiLlama doesn't price has no points, and none priced fails the re
     expect((await history.view("7d"))!.readAt).toBe(view!.readAt);
     expect(await history.view("1d")).toBeNull();
 });
+
+test("the loop's tick reads every range, then each again once most of its TTL is gone", async () => {
+    const { history, requests, advance } = setup();
+
+    await history.tick();
+    expect(requests).toHaveLength(26);
+    await history.tick();
+    expect(requests).toHaveLength(26);
+
+    // 80% of 1d's 5 minutes
+    advance(4 * MINUTE);
+    await history.tick();
+    expect(requests).toHaveLength(29);
+    expect(new Set(requests.slice(26).map((request) => request.period))).toEqual(new Set(["15m"]));
+
+    // So a request finds every range already read
+    const asked = requests.length;
+    await Promise.all(PRICE_RANGES.map((range) => history.view(range)));
+    expect(requests).toHaveLength(asked);
+});
+
+test("the loop leaves a failing range alone until its retry", async () => {
+    const { history, requests, answer, advance } = setup(failing);
+
+    await history.tick();
+    const asked = requests.length;
+    answer(everyPoint);
+    advance(30_000 - 1);
+    await history.tick();
+    expect(requests).toHaveLength(asked);
+
+    advance(1);
+    await history.tick();
+    expect(requests).toHaveLength(asked + 26);
+});

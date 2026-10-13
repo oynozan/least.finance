@@ -59,17 +59,17 @@ Everything under `/v1` takes `Authorization: Bearer <Privy access token>`. Error
 
 `GET /prices/history?range=7d` answers every swap coin's dollar price over the range, oldest first, as `[unix ms, USD]` pairs (`PriceHistoryView` in [src/protocol.ts](src/protocol.ts)). `coins=ETH,BTC` narrows it to those coins, in that order. It needs no token: the history is the same for everyone. The web app reads it from here and never calls DefiLlama itself.
 
-| `range` | Points per coin      | Read again after |
-| ------- | -------------------- | ---------------- |
-| `1d`    | 96, every 15 minutes | 5 minutes        |
-| `7d`    | 168, hourly          | 15 minutes       |
-| `30d`   | 120, every 6 hours   | 1 hour           |
-| `90d`   | 90, daily            | 3 hours          |
-| `1y`    | 365, daily           | 6 hours          |
+| `range` | Points per coin      | Fresh for  |
+| ------- | -------------------- | ---------- |
+| `1d`    | 96, every 15 minutes | 5 minutes  |
+| `7d`    | 168, hourly          | 15 minutes |
+| `30d`   | 120, every 6 hours   | 1 hour     |
+| `90d`   | 90, daily            | 3 hours    |
+| `1y`    | 365, daily           | 6 hours    |
 
 The last point is the latest price, so it isn't on a whole step. DefiLlama leaves the odd gap of a few hours, and those points are missing rather than filled.
 
-Prices come from DefiLlama's free coins API, `https://coins.llama.fi`, which needs no key (its docs name `api.llama.fi`, which answers 404 for prices). It caps a chart at 500 points across all its coins, so a range is read in batches under the cap, three requests at a time: 3 to 11 requests a range, and about 70 an hour at most however many people ask. A range is read on the first request after its time is up, and requests in the meantime wait on that one read. If DefiLlama fails, the last read is served (its `readAt` says how old it is) and DefiLlama isn't asked again for 30 s, or for longer when a 429 says so. A range never read is a 503 until it can be.
+Prices come from DefiLlama's free coins API, `https://coins.llama.fi`, which needs no key (its docs name `api.llama.fi`, which answers 404 for prices). It caps a chart at 500 points across all its coins, so a range is read in batches under the cap, three requests at a time: 3 to 11 requests a range. A background loop reads every range at startup and each again once 80% of its time in the table is up, so requests are answered from memory and never wait on DefiLlama. That's about 80 requests an hour, however many people ask. If DefiLlama fails, the last read is served (its `readAt` says how old it is) and DefiLlama isn't asked again for 30 s, or for longer when a 429 says so. A range never read is a 503 until it can be.
 
 DefiLlama doesn't publish a firm free limit (its pricing page says 10 to 200 requests a minute), which this stays well under. With a Pro key, point `DEFILLAMA_COINS_URL` at `https://pro-api.llama.fi/<key>/coins`. The key is then part of the URL, so no error or log names the URL.
 

@@ -211,6 +211,7 @@ export async function startStack({
     // The first list is in before the first request, not a sync interval later.
     await server.services.markets.tick();
     await server.services.swapCatalog.tick();
+    await server.services.priceHistory.tick();
     await server.services.predictions.refreshFloat();
     const chain = chainHelpers(anvilUrl);
     const sockets: AppSocket[] = [];
