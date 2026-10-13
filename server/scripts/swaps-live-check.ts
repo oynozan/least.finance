@@ -1,6 +1,7 @@
 /**
  * Checks the swaps path against the real LI.FI. By default it is read-only: it quotes about $10 of every coin entry
- * to USDC on the same network (USDT for USDC entries, WETH on Arc) and holds each quote to checkQuote.
+ * to USDC on the same network (USDT for USDC entries, WETH on Arc), then USDC on each network to USDC on Arc and ETH
+ * on Ethereum to SOL, and holds each quote to checkQuote and the approval rule.
  * With --yes-spend-real-money it swaps $2 of USDC to USDT on Base from the wallet whose key is in SWAP_CHECK_KEY.
  *
  * Run it from server/ with `node --env-file=.env scripts/swaps-live-check.ts [--yes-spend-real-money]`.
@@ -11,7 +12,7 @@ import { base } from "viem/chains";
 import { checkQuote } from "../src/swaps/check.ts";
 import { COINS, NETWORKS, type CoinEntry, type NetworkId } from "../src/swaps/coins.ts";
 import { createLifi, LifiError, type LifiQuote } from "../src/swaps/lifi.ts";
-import { spendVerdict } from "./swaps-live-verdict.ts";
+import { approvalVerdict, spendVerdict } from "./swaps-live-verdict.ts";
 
 const QUOTE_USD = 10;
 const SPEND_USD = 2;
@@ -22,6 +23,8 @@ const POLL_LIMIT = 90;
 // Throwaway senders; LI.FI answers 422 for Ethereum USDT from the first, so the second is the fallback
 const EVM_WALLETS = ["0x0000000000000000000000000000000000000001", "0x00000000000000000000000000000000000a11ce"];
 const SOLANA_WALLET = "11111111111111111111111111111112";
+// A throwaway address that only receives quoted SOL
+const SOLANA_RECEIVER = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
 
 const apiKey = process.env.LIFI_API_KEY?.trim() || undefined;
 const integrator = process.env.LIFI_INTEGRATOR?.trim() || "least-finance";
@@ -53,68 +56,98 @@ const quoteWith = async (req: Parameters<typeof lifi.quote>[0]): Promise<LifiQuo
 const unitsFor = (usd: number, price: number, decimals: number): bigint =>
     (BigInt(Math.round((usd / price) * 1e10)) * 10n ** BigInt(decimals)) / 10n ** 10n;
 
+type Pair = { key: string; from: CoinEntry; to: CoinEntry; receiver?: string };
+
+// Same-network pairs for every coin entry, then the cross-chain pairs the app routes through bridges
+function pairs(): Pair[] {
+    const same = COINS.flatMap((coin) =>
+        coin.entries.map((entry) => ({
+            key: `${entry.network}:${coin.symbol}`,
+            from: entry,
+            to: targetOf(entry.network, coin.symbol),
+        })),
+    );
+    const arcUsdc = entryOf("USDC", "arc")!;
+    const toArc = NETWORKS.filter((network) => network.id !== "arc").map((network) => ({
+        key: `${network.id}:USDC -> arc:USDC`,
+        from: entryOf("USDC", network.id)!,
+        to: arcUsdc,
+        // A Solana source needs an EVM receiver
+        ...(network.kind === "solana" && { receiver: EVM_WALLETS[0] }),
+    }));
+    const ethToSol = {
+        key: "ethereum:ETH -> solana:SOL",
+        from: entryOf("ETH", "ethereum")!,
+        to: entryOf("SOL", "solana")!,
+        receiver: SOLANA_RECEIVER,
+    };
+    return [...same, ...toArc, ethToSol];
+}
+
 async function readOnly(): Promise<number> {
     const chains = await lifi.chains();
     const tokens = await lifi.tokens(NETWORKS.map((network) => network.chainId));
     let failed = 0;
     let passed = 0;
-    for (const coin of COINS) {
-        for (const entry of coin.entries) {
-            const network = networkOf(entry.network);
-            const key = `${entry.network}:${coin.symbol}`;
-            const price = tokens.find(
-                (token) =>
-                    token.chainId === network.chainId &&
-                    (network.kind === "evm"
-                        ? token.address.toLowerCase() === entry.address.toLowerCase()
-                        : token.address === entry.address),
-            )?.priceUSD;
-            if (!price) {
-                console.log(`FAIL  ${key}: LI.FI lists no price`);
-                failed++;
-                continue;
-            }
-            const to = targetOf(entry.network, coin.symbol);
-            const fromUnits = unitsFor(QUOTE_USD, price, entry.decimals);
-            const diamond = chains.find((chain) => chain.id === network.chainId)?.diamondAddress ?? null;
-            let verdict = "";
-            for (const wallet of network.kind === "solana" ? [SOLANA_WALLET] : EVM_WALLETS) {
-                await pause(QUOTE_PAUSE_MS);
-                try {
-                    const quote = await quoteWith({
-                        fromChain: network.chainId,
-                        toChain: network.chainId,
-                        fromToken: entry.address,
-                        toToken: to.address,
-                        fromAddress: wallet,
-                        toAddress: wallet,
-                        fromAmount: fromUnits.toString(),
-                        slippage: SLIPPAGE,
-                        integrator,
-                        ...(fee > 0 && { fee }),
-                    });
-                    checkQuote(quote, {
-                        fromNetwork: entry.network,
-                        from: entry,
-                        toNetwork: entry.network,
-                        to,
-                        fromAddress: wallet,
-                        toAddress: wallet,
-                        fromUnits,
-                        diamond,
-                    });
-                    verdict = "";
-                    console.log(`PASS  ${key}: ${quote.toolName}, to ${quote.toAmountMin} min of ${to.address}`);
-                    break;
-                } catch (error) {
-                    verdict = error instanceof Error ? error.message : String(error);
-                }
-            }
-            if (verdict) {
-                console.log(`FAIL  ${key}: ${verdict}`);
-                failed++;
-            } else passed++;
+    for (const { key, from: entry, to, receiver } of pairs()) {
+        const network = networkOf(entry.network);
+        const toNetwork = networkOf(to.network);
+        const price = tokens.find(
+            (token) =>
+                token.chainId === network.chainId &&
+                (network.kind === "evm"
+                    ? token.address.toLowerCase() === entry.address.toLowerCase()
+                    : token.address === entry.address),
+        )?.priceUSD;
+        if (!price) {
+            console.log(`FAIL  ${key}: LI.FI lists no price`);
+            failed++;
+            continue;
         }
+        const fromUnits = unitsFor(QUOTE_USD, price, entry.decimals);
+        const diamond = chains.find((chain) => chain.id === network.chainId)?.diamondAddress ?? null;
+        let verdict = "";
+        for (const wallet of network.kind === "solana" ? [SOLANA_WALLET] : EVM_WALLETS) {
+            await pause(QUOTE_PAUSE_MS);
+            const toAddress = receiver ?? wallet;
+            try {
+                const quote = await quoteWith({
+                    fromChain: network.chainId,
+                    toChain: toNetwork.chainId,
+                    fromToken: entry.address,
+                    toToken: to.address,
+                    fromAddress: wallet,
+                    toAddress,
+                    fromAmount: fromUnits.toString(),
+                    slippage: SLIPPAGE,
+                    integrator,
+                    ...(fee > 0 && { fee }),
+                });
+                checkQuote(quote, {
+                    fromNetwork: entry.network,
+                    from: entry,
+                    toNetwork: to.network,
+                    to,
+                    fromAddress: wallet,
+                    toAddress,
+                    fromUnits,
+                    diamond,
+                });
+                const approval = approvalVerdict(quote, entry, diamond);
+                if (approval) throw new Error(approval);
+                verdict = "";
+                console.log(
+                    `PASS  ${key}: ${quote.toolName}, value ${quote.tx.kind === "evm" ? quote.tx.value : "-"}, to ${quote.toAmountMin} min of ${to.address}`,
+                );
+                break;
+            } catch (error) {
+                verdict = error instanceof Error ? error.message : String(error);
+            }
+        }
+        if (verdict) {
+            console.log(`FAIL  ${key}: ${verdict}`);
+            failed++;
+        } else passed++;
     }
     console.log(`\n${passed} passed, ${failed} failed`);
     return failed ? 1 : 0;
@@ -195,13 +228,18 @@ async function spend(): Promise<number> {
             txHash: hash,
             fromChain: network.chainId,
             toChain: network.chainId,
-            bridge: quote.tool,
         });
         if (status.status === "DONE") {
             console.log(
                 `DONE ${status.substatus ?? ""} received ${status.receiving?.amount} ${status.receiving?.tokenSymbol}`,
             );
-            const verdict = spendVerdict(status, to.address);
+            console.log(`status ${JSON.stringify(status)}`);
+            const verdict = spendVerdict(status, {
+                hash,
+                wallet: account.address,
+                receiver: account.address,
+                token: to.address,
+            });
             if (!verdict.done) console.error(`NOT DONE ${verdict.reason}`);
             return verdict.done ? 0 : 1;
         }
