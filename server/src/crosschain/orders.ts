@@ -1,15 +1,34 @@
 import { ObjectId } from "mongodb";
-import { formatUnits, getAddress, type Address, type Hex } from "viem";
+import { formatUnits, getAddress, isAddress } from "viem";
+import type { Config } from "../config.ts";
 import type { AccountDoc, Collections, DepositOrderDoc } from "../db/mongo.ts";
 import { formatUsdc, toDecimal } from "../db/money.ts";
 import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { DepositQuoteView } from "../protocol.ts";
 import { coinByKey, parseCoinAmount, type Coin } from "./catalog.ts";
+import type { PriceFeed } from "./prices.ts";
 import type { BridgeProvider, Quote, SourceTx } from "./providers/types.ts";
 import { bestQuote } from "./quotes.ts";
+import type { SolanaRpc } from "./solana.ts";
+import { solanaOpen } from "./solana-switch.ts";
 
-type Deps = { collections: Collections; providers: readonly BridgeProvider[]; bus: Bus };
+type Deps = {
+    collections: Collections;
+    providers: readonly BridgeProvider[];
+    bus: Bus;
+    solana: SolanaRpc;
+    prices: PriceFeed;
+    switches: Pick<Config, "SOLANA_DEPOSITS" | "SOLANA_WITHDRAWALS">;
+    /** Solana deposits worth less than this many dollars are refused. */
+    minSolanaUsd: number;
+    /** Program ids a Solana quote's instructions may call. */
+    allowedPrograms: readonly string[];
+    logger?: { error: (fields: object, message: string) => void };
+};
+
+/** Tried in this order for Solana coins: Relay, then CCTP only when Relay gave nothing usable. */
+const SOLANA_TIERS = [["relay"], ["cctp"]] as const;
 
 const TERMINAL = ["delivered", "refunded", "failed", "expired"] as const;
 const OPEN_LIMIT = 20;
@@ -29,7 +48,7 @@ export class DepositOrders {
     }
 
     /** What the best bridge would pay for this coin, with no order opened. */
-    async preview(account: AccountDoc, wallet: Address, coin: string, amount: string): Promise<DepositQuoteView> {
+    async preview(account: AccountDoc, wallet: string, coin: string, amount: string): Promise<DepositQuoteView> {
         const { quote, source } = await this.#quote(account, wallet, coin, amount);
         return {
             coin: quote.coin,
@@ -43,10 +62,10 @@ export class DepositOrders {
     /** Quotes and opens an order; the wallet then signs `txs` and reports their hashes. */
     async create(
         account: AccountDoc,
-        wallet: Address,
+        wallet: string,
         coin: string,
         amount: string,
-    ): Promise<{ order: DepositOrderDoc; txs: SourceTx[] }> {
+    ): Promise<{ order: DepositOrderDoc; txs: SourceTx[]; tables: Map<string, string[]> }> {
         const unsettled = await this.#deps.collections.depositOrders.countDocuments({
             accountId: account._id,
             state: { $in: ["created", "sent"] },
@@ -58,6 +77,13 @@ export class DepositOrders {
             );
         }
         const { quote, source } = await this.#quote(account, wallet, coin, amount);
+        const names = [...new Set(quote.txs.flatMap((tx) => (tx.kind === "solana" ? tx.lookupTables : [])))];
+        const tables = new Map<string, string[]>();
+        if (names.length > 0) {
+            for (const { address, addresses } of await this.#deps.solana.getAddressLookupTables(names)) {
+                tables.set(address, addresses);
+            }
+        }
         const now = new Date();
         const order: DepositOrderDoc = {
             _id: new ObjectId(),
@@ -70,7 +96,7 @@ export class DepositOrders {
             usdcOut: toDecimal(quote.usdcOut),
             etaSeconds: quote.etaSeconds,
             recipient: quote.recipient.toLowerCase(),
-            refundTo: quote.refundTo.toLowerCase(),
+            refundTo: source.chain === "solana" ? quote.refundTo : quote.refundTo.toLowerCase(),
             state: "created",
             sourceTxHashes: [],
             fillTxHash: null,
@@ -80,13 +106,22 @@ export class DepositOrders {
         };
         await this.#deps.collections.depositOrders.insertOne(order);
         this.#deps.bus.emit("order:updated", { order });
-        return { order, txs: quote.txs };
+        return { order, txs: quote.txs, tables };
     }
 
     /** Records the hashes the wallet sent; only a created order moves, and a repeat changes nothing. */
-    async reportSource(account: AccountDoc, orderId: string, txHashes: Hex[]): Promise<DepositOrderDoc> {
+    async reportSource(account: AccountDoc, orderId: string, txHashes: string[]): Promise<DepositOrderDoc> {
         const { depositOrders } = this.#deps.collections;
         const _id = new ObjectId(orderId);
+        const order = await depositOrders.findOne({ _id, accountId: account._id });
+        if (!order) throw new AppError("not_found", "No such order.");
+        const solana = coinByKey(order.coin).chain === "solana";
+        if (txHashes.some((hash) => hash.startsWith("0x") === solana)) {
+            throw new AppError(
+                "bad_request",
+                solana ? "That isn't a Solana signature." : "That isn't a transaction hash.",
+            );
+        }
         // From before the write, so the tracker, which can see the order the moment it is written, announces after.
         let done = () => {};
         this.#announcing.set(
@@ -137,7 +172,7 @@ export class DepositOrders {
 
     async #quote(
         account: AccountDoc,
-        wallet: Address,
+        wallet: string,
         key: string,
         amount: string,
     ): Promise<{ quote: Quote; source: Coin }> {
@@ -145,18 +180,40 @@ export class DepositOrders {
         if (source.chain === "arc") {
             throw new AppError("bad_request", "USDC on Arc goes straight to your deposit address.");
         }
-        if (source.chain === "solana") throw new AppError("bad_request", "Deposits from Solana aren't open yet.");
+        const solana = source.chain === "solana";
+        if (solana) solanaOpen(this.#deps.switches, "deposits");
+        if (solana === isAddress(wallet, { strict: false })) {
+            throw new AppError("bad_request", "That wallet can't send this coin.");
+        }
+        const units = parseCoinAmount(source, amount);
+        if (solana) await this.#checkMinimum(source, units);
         const quote = await bestQuote(
             this.#deps.providers,
             {
                 coin: source,
-                amount: parseCoinAmount(source, amount),
+                amount: units,
                 sender: wallet,
                 recipient: getAddress(account.depositAddress),
                 refundTo: wallet,
             },
-            { allowedPrograms: [] },
+            solana
+                ? {
+                      tiers: SOLANA_TIERS,
+                      allowedPrograms: this.#deps.allowedPrograms,
+                      logger: this.#deps.logger,
+                  }
+                : { allowedPrograms: [] },
         );
         return { quote, source };
+    }
+
+    /** Refuses a Solana deposit worth less than the minimum, and one that can't be priced. */
+    async #checkMinimum(coin: Coin, units: bigint) {
+        const price =
+            coin.mint === null ? (await this.#deps.prices.usd([coin]).catch(() => new Map())).get(coin.key) : 1;
+        if (price === undefined) throw new AppError("unavailable", "Couldn't price this right now. Nothing was taken.");
+        if (Number(formatUnits(units, coin.decimals)) * price < this.#deps.minSolanaUsd) {
+            throw new AppError("bad_request", `The smallest deposit from Solana is $${this.#deps.minSolanaUsd}.`);
+        }
     }
 }

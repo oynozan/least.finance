@@ -9,6 +9,7 @@ import { coinByKey } from "./catalog.ts";
 import type { SourceClients } from "./chains.ts";
 import { GIVE_UP_MS } from "./orders.ts";
 import type { BridgeProvider } from "./providers/types.ts";
+import type { SolanaRpc } from "./solana.ts";
 
 const DEFAULT_EXPIRY_MS = 600_000;
 const OPEN: OrderState[] = ["created", "sent", "in_block", "bridging"];
@@ -24,6 +25,7 @@ type Deps = {
     collections: Collections;
     providers: readonly BridgeProvider[];
     sources: SourceClients;
+    solana: SolanaRpc;
     bus: Bus;
     logger: Logger;
     pollMs: number;
@@ -112,10 +114,11 @@ export class OrderTracker {
         return this.#checkBridge(order);
     }
 
-    /** The receipt of the last transaction decides whether the order is in a block. */
+    /** The receipt (EVM) or signature status (Solana) of the last transaction decides whether the order is in a block. */
     async #checkSource(order: DepositOrderDoc) {
         const hash = order.sourceTxHashes.at(-1) as Hex;
         const chain = coinByKey(order.coin).chain;
+        if (chain === "solana") return this.#checkSolanaSource(order, hash);
         if (chain !== "ethereum" && chain !== "bnb") return;
         const receipt = await this.#deps.sources[chain].getTransactionReceipt({ hash }).catch((error: unknown) => {
             if (error instanceof TransactionReceiptNotFoundError) return null;
@@ -125,10 +128,18 @@ export class OrderTracker {
         else if (this.#now() - order.updatedAt.getTime() > this.#expiryMs) await this.#move(order, "failed");
     }
 
+    /** A confirmed or finalized signature is in a block; one that errored failed; an unknown one fails once it is old. */
+    async #checkSolanaSource(order: DepositOrderDoc, signature: string) {
+        const [status] = await this.#deps.solana.getSignatureStatuses([signature]);
+        if (status?.err) await this.#move(order, "failed");
+        else if (status && status.confirmationStatus !== "processed") await this.#move(order, "in_block");
+        else if (!status && this.#now() - order.updatedAt.getTime() > this.#expiryMs) await this.#move(order, "failed");
+    }
+
     async #checkBridge(order: DepositOrderDoc) {
         const provider = this.#deps.providers.find((p) => p.name === order.provider);
         if (!provider) return;
-        const hash = (order.sourceTxHashes.at(-1) as Hex | undefined) ?? null;
+        const hash = order.sourceTxHashes.at(-1) ?? null;
         const status = await provider.status({ ref: order.ref }, hash, coinByKey(order.coin));
 
         if (order.state === "created") {
@@ -147,11 +158,14 @@ export class OrderTracker {
     }
 
     /** Links the credited deposit of the fill to the order; until the watcher has credited it, only the hash is kept. */
-    async #deliver(order: DepositOrderDoc, fill: string, sourceHash: Hex | null) {
+    async #deliver(order: DepositOrderDoc, fill: string, sourceHash: string | null) {
         const { deposits } = this.#deps.collections;
         const deposit = await deposits.findOne({ accountId: order.accountId, txHash: fill });
         if (!deposit || (deposit.origin && !deposit.origin.orderId.equals(order._id))) {
-            if (order.fillTxHash === null) await this.#move(order, order.state, { fillTxHash: fill });
+            // Filled but not yet credited here: an order still counted as in a block is now waiting on the bridge's payout.
+            const waiting = order.state === "in_block" ? "bridging" : order.state;
+            if (order.fillTxHash === null || waiting !== order.state)
+                await this.#move(order, waiting, { fillTxHash: fill });
             return;
         }
         if (!deposit.origin) {

@@ -33,12 +33,27 @@ type Issued = { quote: Quote; stage: BridgeStage; fillTxHash?: Hex; failNext: bo
  * has a solver of its own, so fills sent at the same time can't tangle over a nonce.
  */
 export class FakeBridge implements BridgeProvider {
-    readonly name = "fake";
+    readonly name: string;
+    /** Address lookup tables its Solana transactions name. */
+    lookupTables: string[] = [];
+    readonly #chains: readonly Coin["chain"][];
     readonly #rates: Record<string, number>;
     readonly #arc;
     readonly #issued = new Map<string, Issued>();
 
-    constructor({ arcRpcUrl, rates }: { arcRpcUrl: string; rates: Record<string, number> }) {
+    constructor({
+        arcRpcUrl,
+        rates,
+        name = "fake",
+        chains = ["ethereum", "bnb", "solana"],
+    }: {
+        arcRpcUrl: string;
+        rates: Record<string, number>;
+        name?: string;
+        chains?: readonly Coin["chain"][];
+    }) {
+        this.name = name;
+        this.#chains = chains;
         this.#rates = rates;
         this.#arc = createTestClient({
             mode: "anvil",
@@ -56,10 +71,7 @@ export class FakeBridge implements BridgeProvider {
     }
 
     supports(coin: Coin): boolean {
-        return (
-            (coin.chain === "ethereum" || coin.chain === "bnb" || coin.chain === "solana") &&
-            this.#rates[coin.symbol] !== undefined
-        );
+        return this.#chains.includes(coin.chain) && coin.chain !== "arc" && this.#rates[coin.symbol] !== undefined;
     }
 
     async quote(request: QuoteRequest, _signal?: AbortSignal): Promise<Quote> {
@@ -80,7 +92,7 @@ export class FakeBridge implements BridgeProvider {
                           data: ref,
                       },
                   ],
-                  lookupTables: [],
+                  lookupTables: this.lookupTables,
               }
             : {
                   kind: "evm",
@@ -123,7 +135,7 @@ export class FakeBridge implements BridgeProvider {
     }
 
     /** Where the quote stands, with or without the source hash. */
-    async status({ ref }: { ref: string }, _sourceTxHash?: Hex | null, _coin?: Coin): Promise<BridgeStatus> {
+    async status({ ref }: { ref: string }, _sourceTxHash?: string | null, _coin?: Coin): Promise<BridgeStatus> {
         const issued = this.#known(ref);
         if (issued.failNext) {
             issued.failNext = false;
@@ -132,10 +144,14 @@ export class FakeBridge implements BridgeProvider {
         return issued.fillTxHash ? { stage: issued.stage, fillTxHash: issued.fillTxHash } : { stage: issued.stage };
     }
 
-    /** Moves a quote to `stage`. "filled" sends the quoted USDC on Arc to its recipient first. */
-    async advance(ref: string, stage: "pending" | "filled" | "refunded" | "failed"): Promise<void> {
+    /** Moves a quote to `stage`. "filled" sends the quoted USDC on Arc to its recipient first, unless `pay` is false. */
+    async advance(
+        ref: string,
+        stage: "pending" | "filled" | "refunded" | "failed",
+        { pay = true }: { pay?: boolean } = {},
+    ): Promise<void> {
         const issued = this.#known(ref);
-        if (stage === "filled") issued.fillTxHash = await this.#fill(issued.quote);
+        if (stage === "filled") issued.fillTxHash = pay ? await this.#fill(issued.quote) : `0x${"fe".repeat(32)}`;
         issued.stage = stage;
     }
 

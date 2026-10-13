@@ -49,7 +49,7 @@ export type DepositOrderDoc = {
     coin: string;
     /** In the coin's own units, as a decimal. */
     amount: string;
-    /** The sending wallet, checksummed. */
+    /** The sending wallet: checksummed on EVM, base58 as the person linked it on Solana. */
     wallet: string;
     provider: string;
     /** The provider's id for the bridge. */
@@ -59,9 +59,10 @@ export type DepositOrderDoc = {
     etaSeconds: number;
     /** The account's deposit address, lowercase. */
     recipient: string;
-    /** Where a failed bridge pays back, lowercase. */
+    /** Where a failed bridge pays back: lowercase on EVM, the base58 wallet unchanged on Solana. */
     refundTo: string;
     state: OrderState;
+    /** Lowercase hex on EVM, base58 signatures on Solana. */
     sourceTxHashes: string[];
     fillTxHash: string | null;
     depositId: ObjectId | null;

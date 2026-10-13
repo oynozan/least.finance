@@ -18,6 +18,6 @@ export const depositView = (deposit: DepositDoc): DepositView => ({
     blockNumber: deposit.blockNumber,
     creditedAt: deposit.creditedAt.toISOString(),
     ...(deposit.origin && {
-        origin: { coin: deposit.origin.coin, amount: deposit.origin.amount, txHash: deposit.origin.txHash as Hex },
+        origin: { coin: deposit.origin.coin, amount: deposit.origin.amount, txHash: deposit.origin.txHash },
     }),
 });

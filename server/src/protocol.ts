@@ -34,8 +34,8 @@ export type DepositView = {
     origin?: DepositOrigin;
 };
 
-/** The coin a bridged deposit came from. */
-export type DepositOrigin = { coin: string; amount: string; txHash: Hex };
+/** The coin a bridged deposit came from; the hash is hex for EVM and a base58 signature for Solana. */
+export type DepositOrigin = { coin: string; amount: string; txHash: string };
 
 export type OrderState = "created" | "sent" | "in_block" | "bridging" | "delivered" | "refunded" | "failed" | "expired";
 
@@ -48,8 +48,23 @@ export type DepositQuoteView = {
     provider: string;
 };
 
-/** One transaction the person's wallet signs on the coin's chain. */
-export type SourceTxView = { chainId: number; to: Hex; data: Hex; value: Hex };
+/** One instruction of a Solana transaction, as the wallet rebuilds it. */
+export type SolanaInstruction = {
+    programId: string;
+    keys: { pubkey: string; isSigner: boolean; isWritable: boolean }[];
+    data: Hex;
+};
+
+export type EvmSourceTxView = { kind: "evm"; chainId: number; to: Hex; data: Hex; value: Hex };
+
+/** One transaction the person's wallet signs on the coin's chain; a Solana one carries its lookup tables' contents. */
+export type SourceTxView =
+    | EvmSourceTxView
+    | {
+          kind: "solana";
+          instructions: SolanaInstruction[];
+          lookupTables: { address: string; addresses: string[] }[];
+      };
 
 export type DepositOrderView = {
     id: string;
@@ -62,7 +77,8 @@ export type DepositOrderView = {
     usdcOut: UsdcAmount;
     etaSeconds: number;
     state: OrderState;
-    sourceTxHashes: Hex[];
+    /** Hex for an EVM order, base58 signatures for a Solana one. */
+    sourceTxHashes: string[];
     /** The credited deposit once delivered. */
     depositId: string | null;
     /** ISO 8601. */
@@ -204,6 +220,11 @@ export type ClientToServerEvents = {
     "deposit:source": (
         payload: { orderId: string; txHashes: string[] },
         ack: (result: Ack<DepositOrderView>) => void,
+    ) => void;
+    /** A recent blockhash for the wallet to build a Solana transaction on. */
+    "solana:blockhash": (
+        payload: Record<string, never>,
+        ack: (result: Ack<{ blockhash: string; lastValidBlockHeight: number }>) => void,
     ) => void;
     /** What a swap would pay right now, with no order opened. */
     "swap:quote": (req: SwapRequest, ack: (result: Ack<SwapQuoteView>) => void) => void;

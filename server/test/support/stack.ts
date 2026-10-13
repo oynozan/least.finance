@@ -105,8 +105,10 @@ export type Stack = {
     solanaRpc: FakeSolanaRpc;
     /** The Polymarket stand-in the server reads markets from. */
     polymarket: FakePolymarket;
-    /** The only bridge the server quotes from; a test steps its orders by hand. */
+    /** The bridge the server quotes Ethereum and BNB Chain deposits from; a test steps its orders by hand. */
     bridge: FakeBridge;
+    /** Stands in for Relay on Solana deposits, which the server asks by that name. */
+    solanaBridge: FakeBridge;
     /** The pool's trader over the fake Polymarket's books; used only while a test turns PREDICTIONS_TRADING on. */
     trader: FakeTrader;
     /** The LI.FI stand-in the server reads swap coin prices from. */
@@ -197,14 +199,16 @@ export async function startStack({
         DEFILLAMA_COINS_URL: llama.url,
         ...env,
     });
-    const bridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
+    const rates = { ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 };
+    const bridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates, chains: ["ethereum", "bnb"] });
+    const solanaBridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates, name: "relay", chains: ["solana"] });
     const trader = fakePoolTrader(polymarket);
     const logger = pino({ level: config.LOG_LEVEL });
     const server = await startServer(config, logger, {
         sources: createSourceClients({ ethereum: [ethereumUrl], bnb: [bnbUrl] }),
         solana: createSolanaRpc([solanaRpc.url]),
         prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
-        bridges: [bridge],
+        bridges: [bridge, solanaBridge],
         trader,
         now,
     });
@@ -225,6 +229,7 @@ export async function startStack({
         solanaRpc,
         polymarket,
         bridge,
+        solanaBridge,
         trader,
         lifi,
         llama,

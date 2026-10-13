@@ -4,6 +4,7 @@ import type { Address } from "viem";
 import { RateLimiterMemory } from "rate-limiter-flexible";
 import { Server, type Socket } from "socket.io";
 import type { Identity } from "../auth/identity.ts";
+import { solanaOpen } from "../crosschain/solana-switch.ts";
 import { orderView, sourceTxView } from "../crosschain/views.ts";
 import { swapOrderView } from "../swaps/views.ts";
 import { positionView, predictionUpdate } from "../predictions/views.ts";
@@ -74,6 +75,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     const swapQuotes = new RateLimiterMemory({ keyPrefix: "swap-quote", points: 60, duration: 60 });
     const swapOrders = new RateLimiterMemory({ keyPrefix: "swap-order", points: 10, duration: 60 });
     const predictionQuotes = new RateLimiterMemory({ keyPrefix: "prediction-quote", points: 60, duration: 60 });
+    const blockhashes = new RateLimiterMemory({ keyPrefix: "solana-blockhash", points: 30, duration: 60 });
     const withdrawals = new RateLimiterMemory({ keyPrefix: "withdraw", points: 10, duration: 60 });
     const withdrawLimits = new RateLimiterMemory({ keyPrefix: "withdraw-limits", points: 30, duration: 60 });
     const predictionOrders = new RateLimiterMemory({ keyPrefix: "prediction", points: 10, duration: 60 });
@@ -217,8 +219,18 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 });
                 const account = await boundAccount(socket);
                 const wallet = await authorizedWallet(socket, input.wallet);
-                const { order, txs } = await services.orders.create(account, wallet, input.coin, input.amount);
-                return { order: orderView(order), txs: txs.map(sourceTxView) };
+                const { order, txs, tables } = await services.orders.create(account, wallet, input.coin, input.amount);
+                return { order: orderView(order), txs: txs.map((tx) => sourceTxView(tx, tables)) };
+            }),
+        );
+
+        socket.on("solana:blockhash", (_payload, ack) =>
+            reply(ack, async () => {
+                solanaOpen(config, "deposits");
+                await blockhashes.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                });
+                return services.solana.getLatestBlockhash();
             }),
         );
 
@@ -467,10 +479,10 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         });
     });
 
-    /** The wallet as the account knows it: Solana is turned away before Privy is asked, an EVM wallet must be linked. */
+    /** The wallet as the account knows it: a linked EVM address checksummed, a linked Solana one as given. */
     async function authorizedWallet(socket: IoSocket, wallet: string) {
-        if (BASE58_ADDRESS.test(wallet)) throw new AppError("bad_request", "Deposits from Solana aren't open yet.");
-        return (await services.identity.authorizeWallet(socket.data.identity, wallet)) as Address;
+        if (BASE58_ADDRESS.test(wallet)) solanaOpen(config, "deposits");
+        return services.identity.authorizeWallet(socket.data.identity, wallet);
     }
 
     async function boundAccount(socket: IoSocket) {

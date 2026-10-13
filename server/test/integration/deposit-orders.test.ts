@@ -1,11 +1,13 @@
 import { ObjectId } from "mongodb";
 import { getAddress } from "viem";
-import { afterAll, beforeAll, expect, inject, test } from "vitest";
-import type { Ack, DepositOrderView, SourceTxView, WalletSession } from "../../src/protocol.ts";
+import { base58 } from "@scure/base";
+import { afterAll, beforeAll, describe, expect, inject, test, vi } from "vitest";
+import type { Ack, DepositOrderView, EvmSourceTxView, SourceTxView, WalletSession } from "../../src/protocol.ts";
 import { startStack, type AppSocket, type Stack, type User } from "../support/stack.ts";
-import { FAKE_BRIDGE_ADDRESS } from "../support/fake-bridge.ts";
+import { FAKE_BRIDGE_ADDRESS, FAKE_SOLANA_PROGRAM } from "../support/fake-bridge.ts";
 
 const SOLANA = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+const SIGNATURE = base58.encode(new Uint8Array(64).fill(7));
 const HASH = `0x${"ab".repeat(32)}` as const;
 
 let stack: Stack;
@@ -59,7 +61,7 @@ test("an order pays the account's Arc address and refunds the sending wallet", a
         depositId: null,
     });
     expect(txs).toHaveLength(2);
-    expect(txs.map((tx) => tx.chainId)).toEqual([1, 1]);
+    expect(txs.map((tx) => (tx as EvmSourceTxView).chainId)).toEqual([1, 1]);
     expect(txs[1]).toMatchObject({ to: getAddress(FAKE_BRIDGE_ADDRESS), value: "0x0" });
 
     const mine = await stack.server.services.database.collections.depositOrders.findOne({
@@ -78,7 +80,7 @@ test("a native coin order carries its value", async () => {
     const result = await ask(socket, "ethereum:ETH", "0.5", user.wallet);
     if (!result.ok) throw new Error(result.error.code);
     expect(result.data.txs).toHaveLength(1);
-    expect(BigInt(result.data.txs[0]!.value)).toBe(500_000_000_000_000_000n);
+    expect(BigInt((result.data.txs[0] as EvmSourceTxView).value)).toBe(500_000_000_000_000_000n);
 });
 
 test("a wallet that isn't linked is refused", async () => {
@@ -93,19 +95,144 @@ test("a wallet that isn't linked is refused", async () => {
     expect(quote).toMatchObject({ ok: false, error: { code: "forbidden" } });
 });
 
-test("a Solana wallet is refused for now", async () => {
+test("a Solana quote is refused while SOLANA_DEPOSITS is off", async () => {
     const user = await stack.user();
     stack.privy.setUser(user.userId, [user.wallet, { address: SOLANA, chain: "solana" }]);
     const { socket } = await bind(user);
     // Binding reads balances in the background, which looks the user up too.
     await new Promise((resolve) => setTimeout(resolve, 300));
     const lookups = stack.privy.userLookups;
-    const result = await ask(socket, "solana:SOL", "1", SOLANA);
-    expect(result).toEqual({
-        ok: false,
-        error: { code: "bad_request", message: "Deposits from Solana aren't open yet." },
-    });
+    const order = await ask(socket, "solana:SOL", "1", SOLANA);
+    expect(order).toEqual({ ok: false, error: { code: "unavailable", message: "Solana isn't open yet." } });
+    const quote = await socket
+        .timeout(5000)
+        .emitWithAck("deposit:quote", { coin: "solana:SOL", amount: "1", wallet: SOLANA });
+    expect(quote).toEqual({ ok: false, error: { code: "unavailable", message: "Solana isn't open yet." } });
     expect(stack.privy.userLookups).toBe(lookups);
+});
+
+describe("Solana deposits", () => {
+    let open: Stack;
+    beforeAll(async () => {
+        open = await startStack({
+            mongoUri: inject("mongoUri"),
+            anvilUrl: inject("anvilUrl"),
+            env: { SOLANA_DEPOSITS: "on" },
+        });
+    });
+    afterAll(() => open?.stop());
+
+    async function solanaUser() {
+        const user = await open.user();
+        open.privy.setUser(user.userId, [user.wallet, { address: SOLANA, chain: "solana" }]);
+        const socket = await open.socket(user);
+        const opened = (await socket.timeout(5000).emitWithAck("account:open", {})) as Ack<WalletSession>;
+        if (!opened.ok) throw new Error(opened.error.code);
+        return { user, socket, session: opened.data };
+    }
+    const quote = (socket: AppSocket, coin: string, amount: string, wallet = SOLANA) =>
+        socket.timeout(5000).emitWithAck("deposit:quote", { coin, amount, wallet });
+    const order = (socket: AppSocket, coin: string, amount: string, wallet = SOLANA) =>
+        socket.timeout(5000).emitWithAck("deposit:order", { coin, amount, wallet }) as Promise<
+            Ack<{ order: DepositOrderView; txs: SourceTxView[] }>
+        >;
+
+    test("a Solana wallet that isn't linked is forbidden", async () => {
+        const user = await open.user();
+        const socket = await open.socket(user);
+        await socket.timeout(5000).emitWithAck("account:open", {});
+        const result = await quote(socket, "solana:USDC", "10");
+        expect(result).toEqual({
+            ok: false,
+            error: { code: "forbidden", message: "That wallet isn't linked to your account." },
+        });
+    });
+
+    test("under $2 in USDC is refused", async () => {
+        const { socket } = await solanaUser();
+        const result = await order(socket, "solana:USDC", "1.99");
+        expect(result).toEqual({
+            ok: false,
+            error: { code: "bad_request", message: "The smallest deposit from Solana is $2." },
+        });
+        expect((await order(socket, "solana:USDC", "2")).ok).toBe(true);
+    });
+
+    test("0.01 SOL priced at $150 is refused with 'The smallest deposit from Solana is $2.'", async () => {
+        const { socket, session } = await solanaUser();
+        const result = await order(socket, "solana:SOL", "0.01");
+        expect(result).toEqual({
+            ok: false,
+            error: { code: "bad_request", message: "The smallest deposit from Solana is $2." },
+        });
+        const { depositOrders } = open.server.services.database.collections;
+        expect(await depositOrders.countDocuments({ recipient: session.account.depositAddress.toLowerCase() })).toBe(0);
+        expect((await order(socket, "solana:SOL", "0.02")).ok).toBe(true);
+    });
+
+    test("no route from Relay or CCTP is 'No route for this deposit right now.'", async () => {
+        const { socket } = await solanaUser();
+        const spy = vi.spyOn(open.solanaBridge, "quote").mockRejectedValue(new Error("no route"));
+        try {
+            expect(await quote(socket, "solana:USDC", "10")).toEqual({
+                ok: false,
+                error: { code: "unavailable", message: "No route for this deposit right now." },
+            });
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
+    test("create stores the base58 wallet as given and returns instructions with the lookup tables' contents", async () => {
+        const { socket } = await solanaUser();
+        const table = "AddressLookupTab1e1111111111111111111111111";
+        const entries = ["So11111111111111111111111111111111111111112", "SysvarC1ock11111111111111111111111111111111"];
+        open.solanaRpc.setLookupTable(table, entries);
+        open.solanaBridge.lookupTables = [table, "MissingTab1e1111111111111111111111111111111"];
+        try {
+            const result = await order(socket, "solana:USDC", "10");
+            if (!result.ok) throw new Error(result.error.code);
+            const [tx] = result.data.txs;
+            expect(tx).toMatchObject({
+                kind: "solana",
+                instructions: [{ programId: FAKE_SOLANA_PROGRAM, keys: [{ pubkey: SOLANA, isSigner: true }] }],
+                lookupTables: [{ address: table, addresses: entries }],
+            });
+            expect(result.data.order).toMatchObject({ coin: "solana:USDC", wallet: SOLANA, state: "created" });
+        } finally {
+            open.solanaBridge.lookupTables = [];
+        }
+    });
+
+    test("the order doc keeps refundTo exactly as the wallet, not lowercased", async () => {
+        const { socket } = await solanaUser();
+        const result = await order(socket, "solana:USDC", "10");
+        if (!result.ok) throw new Error(result.error.code);
+        const doc = await open.server.services.database.collections.depositOrders.findOne({
+            _id: new ObjectId(result.data.order.id),
+        });
+        expect(doc).toMatchObject({ wallet: SOLANA, refundTo: SOLANA, provider: "relay" });
+    });
+
+    test("deposit:source takes a base58 signature for a Solana order and refuses a 0x hash for it, and the reverse for an EVM order", async () => {
+        const { user, socket } = await solanaUser();
+        const solana = await order(socket, "solana:USDC", "10");
+        const evm = await order(socket, "ethereum:ETH", "0.1", user.wallet);
+        if (!solana.ok || !evm.ok) throw new Error("order failed");
+        const report = (orderId: string, txHashes: string[]) =>
+            socket.timeout(5000).emitWithAck("deposit:source", { orderId, txHashes });
+
+        expect(await report(solana.data.order.id, [HASH])).toMatchObject({ ok: false, error: { code: "bad_request" } });
+        expect(await report(evm.data.order.id, [SIGNATURE])).toMatchObject({
+            ok: false,
+            error: { code: "bad_request" },
+        });
+        expect(await report(solana.data.order.id, [SIGNATURE])).toMatchObject({
+            ok: true,
+            data: { state: "sent", sourceTxHashes: [SIGNATURE] },
+        });
+        expect(await report(evm.data.order.id, [HASH])).toMatchObject({ ok: true, data: { state: "sent" } });
+    });
 });
 
 test("reporting the source sends the order once", async () => {

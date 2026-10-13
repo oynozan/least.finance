@@ -7,6 +7,7 @@ import type { Database } from "./db/mongo.ts";
 import type { DepositService } from "./deposits/deposits.ts";
 import type { DepositWatcher } from "./deposits/watcher.ts";
 import type { DepositOrders } from "./crosschain/orders.ts";
+import type { SolanaRpc } from "./crosschain/solana.ts";
 import type { Bus } from "./events.ts";
 import type { MarketHistory } from "./markets/history.ts";
 import type { MarketService } from "./markets/markets.ts";
@@ -32,6 +33,7 @@ export type Services = {
     watcher: DepositWatcher;
     balances: WalletBalances;
     orders: DepositOrders;
+    solana: SolanaRpc;
     markets: MarketService;
     marketHistory: MarketHistory;
     predictions: PredictionService;

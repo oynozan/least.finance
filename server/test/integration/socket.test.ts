@@ -289,6 +289,57 @@ describe("limits", () => {
     });
 });
 
+describe("Solana sockets", () => {
+    let open: Stack;
+    beforeAll(async () => {
+        open = await startStack({
+            mongoUri: inject("mongoUri"),
+            anvilUrl: inject("anvilUrl"),
+            env: { SOLANA_DEPOSITS: "on" },
+        });
+    });
+    afterAll(() => open?.stop());
+
+    test("solana:blockhash answers the fake RPC's blockhash and is limited to 30 per minute", async () => {
+        open.solanaRpc.setBlockhash("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi", 321);
+        const user = await open.user();
+        const socket = await open.socket(user);
+        await connect(socket);
+        const acks: Ack<{ blockhash: string; lastValidBlockHeight: number }>[] = [];
+        for (let i = 0; i < 31; i++) acks.push(await socket.timeout(5000).emitWithAck("solana:blockhash", {}));
+        expect(acks[0]).toEqual({
+            ok: true,
+            data: { blockhash: "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi", lastValidBlockHeight: 321 },
+        });
+        expect(acks.slice(0, 30).every((ack) => ack.ok)).toBe(true);
+        expect(acks[30]).toMatchObject({ ok: false, error: { code: "rate_limited" } });
+    });
+
+    test("solana:blockhash is unavailable while SOLANA_DEPOSITS is off", async () => {
+        const user = await stack.user();
+        const socket = await stack.socket(user);
+        await connect(socket);
+        expect(await socket.timeout(5000).emitWithAck("solana:blockhash", {})).toEqual({
+            ok: false,
+            error: { code: "unavailable", message: "Solana isn't open yet." },
+        });
+    });
+
+    test("deposit:order for a Solana coin returns a kind: solana tx", async () => {
+        const wallet = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+        const user = await open.user();
+        open.privy.setUser(user.userId, [user.wallet, { address: wallet, chain: "solana" }]);
+        const socket = await open.socket(user);
+        await connect(socket);
+        const result = await socket
+            .timeout(5000)
+            .emitWithAck("deposit:order", { coin: "solana:USDC", amount: "10", wallet });
+        if (!result.ok) throw new Error(result.error.code);
+        expect(result.data.txs).toHaveLength(1);
+        expect(result.data.txs[0]).toMatchObject({ kind: "solana", lookupTables: [] });
+    });
+});
+
 describe("session expiry", () => {
     test("a token that runs out gets session:expired and a disconnect", async () => {
         const user = await stack.user();

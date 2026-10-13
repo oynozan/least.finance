@@ -12,13 +12,29 @@ export const orderView = (order: DepositOrderDoc): DepositOrderView => ({
     usdcOut: formatUsdc(fromDecimal(order.usdcOut)),
     etaSeconds: order.etaSeconds,
     state: order.state,
-    sourceTxHashes: order.sourceTxHashes as Hex[],
+    sourceTxHashes: order.sourceTxHashes,
     depositId: order.depositId?.toHexString() ?? null,
     createdAt: order.createdAt.toISOString(),
     updatedAt: order.updatedAt.toISOString(),
 });
 
-export function sourceTxView(tx: SourceTx): SourceTxView {
-    if (tx.kind !== "evm") throw new Error("A Solana transaction has no EVM view");
-    return { chainId: tx.chainId, to: getAddress(tx.to) as Hex, data: tx.data, value: `0x${tx.value.toString(16)}` };
+/** The view of a transaction; `tables` holds the contents of every lookup table a Solana transaction names. */
+export function sourceTxView(tx: SourceTx, tables: ReadonlyMap<string, string[]> = new Map()): SourceTxView {
+    if (tx.kind === "solana") {
+        return {
+            kind: "solana",
+            instructions: tx.instructions,
+            lookupTables: tx.lookupTables.flatMap((address) => {
+                const addresses = tables.get(address);
+                return addresses ? [{ address, addresses }] : [];
+            }),
+        };
+    }
+    return {
+        kind: "evm",
+        chainId: tx.chainId,
+        to: getAddress(tx.to) as Hex,
+        data: tx.data,
+        value: `0x${tx.value.toString(16)}`,
+    };
 }

@@ -130,7 +130,19 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             createRelay({ apiKey: config.RELAY_API_KEY }),
             createAcross({ apiKey: config.ACROSS_API_KEY, integratorId: config.ACROSS_INTEGRATOR_ID }),
         ];
-        const orders = new DepositOrders({ collections, bus, providers: bridges });
+        const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
+        const prices = overrides.prices ?? lifiPrices();
+        const orders = new DepositOrders({
+            collections,
+            bus,
+            providers: bridges,
+            solana,
+            prices,
+            switches: config,
+            minSolanaUsd: config.SOLANA_DEPOSIT_MIN_USD,
+            allowedPrograms: config.SOLANA_ALLOWED_PROGRAMS,
+            logger: logger.child({ component: "deposit-orders" }),
+        });
         const withdrawals = new Withdrawals({
             collections,
             ledger,
@@ -175,13 +187,12 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             collections,
             providers: bridges,
             sources,
+            solana,
             bus,
             logger: logger.child({ component: "order-tracker" }),
             pollMs: config.ORDER_POLL_MS,
             announced: (orderId) => orders.announced(orderId),
         });
-        const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
-        const prices = overrides.prices ?? lifiPrices();
         const balances = new WalletBalances({
             identity,
             bus,
@@ -345,6 +356,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             watcher,
             balances,
             orders,
+            solana,
             markets,
             marketHistory,
             predictions: service,

@@ -1,7 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { ObjectId } from "mongodb";
 import { pino } from "pino";
-import { afterAll, beforeAll, expect, inject, test, vi } from "vitest";
+import { base58 } from "@scure/base";
+import { afterAll, beforeAll, describe, expect, inject, test, vi } from "vitest";
 import { createSourceClients } from "../../src/crosschain/chains.ts";
 import { OrderTracker } from "../../src/crosschain/tracker.ts";
 import { formatUsdc, fromDecimal } from "../../src/db/money.ts";
@@ -28,15 +29,13 @@ afterAll(() => stack?.stop());
 const db = () => stack.server.services.database.collections;
 
 /** Opens an order for `user` on a socket that records every progress push. */
-async function place(user: User, current: Stack, coin: string, amount: string) {
+async function place(user: User, current: Stack, coin: string, amount: string, wallet: string = user.wallet) {
     const socket = await current.socket(user);
     const opened = (await socket.timeout(5000).emitWithAck("account:open", {})) as Ack<WalletSession>;
     if (!opened.ok) throw new Error(opened.error.code);
     const pushes: OrderState[] = [];
     socket.on("deposit:progress", ({ order }) => pushes.push(order.state));
-    const created = (await socket
-        .timeout(5000)
-        .emitWithAck("deposit:order", { coin, amount, wallet: user.wallet })) as Ack<{
+    const created = (await socket.timeout(5000).emitWithAck("deposit:order", { coin, amount, wallet })) as Ack<{
         order: DepositOrderView;
         txs: SourceTxView[];
     }>;
@@ -55,11 +54,16 @@ async function sendAndReport(user: User, placed: Awaited<ReturnType<typeof place
     await ethereum.fund(user.wallet, "5");
     const hashes = await ethereum.sendTxs(
         user.wallet,
-        placed.txs.map((tx) => ({ to: tx.to, data: tx.data, value: BigInt(tx.value) })),
+        placed.txs.map((tx) => evm(tx)),
     );
     await placed.report(hashes);
     return hashes;
 }
+
+const evm = (tx: SourceTxView) => {
+    if (tx.kind !== "evm") throw new Error("Not an EVM transaction");
+    return { to: tx.to, data: tx.data, value: BigInt(tx.value) };
+};
 
 const balanceOf = async (accountId: ObjectId) =>
     formatUsdc(fromDecimal((await db().accounts.findOne({ _id: accountId }))!.balance));
@@ -146,7 +150,7 @@ test("a reverted source transaction fails the order", async () => {
     try {
         const hashes = await bnb.sendTxs(
             user.wallet,
-            placed.txs.map((tx) => ({ to: tx.to, data: tx.data, value: BigInt(tx.value) })),
+            placed.txs.map((tx) => evm(tx)),
         );
         await placed.report(hashes);
         await expect.poll(inState(placed, "failed")).toBe(true);
@@ -205,6 +209,7 @@ test("a failing status call leaves the order as it was", async () => {
             collections: slow.server.services.database.collections,
             providers: [slow.bridge],
             sources: createSourceClients({ ethereum: [inject("ethereumUrl")], bnb: [inject("bnbUrl")] }),
+            solana: slow.server.services.solana,
             bus: slow.server.services.bus,
             logger: pino({ level: "silent" }),
             pollMs: 100,
@@ -242,6 +247,7 @@ async function steppedTracker() {
         collections: slow.server.services.database.collections,
         providers: [slow.bridge],
         sources: createSourceClients({ ethereum: [inject("ethereumUrl")], bnb: [inject("bnbUrl")] }),
+        solana: slow.server.services.solana,
         bus: slow.server.services.bus,
         logger: pino({ level: "silent" }),
         pollMs: 100,
@@ -288,7 +294,7 @@ test("a step the tracker sees is announced after the report that led to it", asy
     await ethereum.fund(user.wallet, "5");
     const hashes = await ethereum.sendTxs(
         user.wallet,
-        placed.txs.map((tx) => ({ to: tx.to, data: tx.data, value: BigInt(tx.value) })),
+        placed.txs.map((tx) => evm(tx)),
     );
     // The report is written at once, but its answer is slow: the tracker sees it and moves on first.
     const { depositOrders } = db();
@@ -395,4 +401,99 @@ test("a pass asks about at most eight orders at once", async () => {
     } finally {
         await slow.stop();
     }
+});
+
+describe("Solana orders", () => {
+    const SOLANA = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+    let open: Stack;
+    beforeAll(async () => {
+        open = await startStack({
+            mongoUri: inject("mongoUri"),
+            anvilUrl: inject("anvilUrl"),
+            env: { ORDER_POLL_MS: "100", SOLANA_DEPOSITS: "on" },
+        });
+    });
+    afterAll(() => open?.stop());
+
+    let counter = 0;
+    const signature = () => base58.encode(new Uint8Array(64).fill(++counter));
+
+    /** An order for 10 USDC from Solana, with its signature reported. */
+    async function sent() {
+        const user = await open.user();
+        open.privy.setUser(user.userId, [user.wallet, { address: SOLANA, chain: "solana" }]);
+        const placed = await place(user, open, "solana:USDC", "10", SOLANA);
+        const sig = signature();
+        await placed.report([sig]);
+        await expect.poll(inState(placed, "sent")).toBe(true);
+        return { placed, sig };
+    }
+    const dbOpen = () => open.server.services.database.collections;
+
+    test("a finalized signature without error moves sent to in_block", async () => {
+        const { placed, sig } = await sent();
+        open.solanaRpc.setSignatureStatus(sig, { confirmationStatus: "finalized", err: null });
+        await expect.poll(inState(placed, "in_block")).toBe(true);
+    });
+
+    test("confirmed counts as in_block", async () => {
+        const { placed, sig } = await sent();
+        open.solanaRpc.setSignatureStatus(sig, { confirmationStatus: "confirmed", err: null });
+        await expect.poll(inState(placed, "in_block")).toBe(true);
+    });
+
+    test("a signature with an error moves to failed", async () => {
+        const { placed, sig } = await sent();
+        open.solanaRpc.setSignatureStatus(sig, {
+            confirmationStatus: "confirmed",
+            err: { InstructionError: [0, "x"] },
+        });
+        await expect.poll(inState(placed, "failed")).toBe(true);
+    });
+
+    test("an unknown signature past expiryMs moves to failed", async () => {
+        const { placed } = await sent();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect((await placed.state()).state).toBe("sent");
+        await dbOpen().depositOrders.updateOne(
+            { _id: new ObjectId(placed.order.id) },
+            { $set: { updatedAt: new Date(Date.now() - DAY_MS) } },
+        );
+        await expect.poll(inState(placed, "failed")).toBe(true);
+    });
+
+    test("Relay filled with no USDC at the deposit address leaves the order bridging and credits nothing", async () => {
+        const { placed, sig } = await sent();
+        open.solanaRpc.setSignatureStatus(sig, { confirmationStatus: "finalized", err: null });
+        await expect.poll(inState(placed, "in_block")).toBe(true);
+        await open.solanaBridge.advance(placed.ref, "filled", { pay: false });
+        await expect.poll(inState(placed, "bridging")).toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect((await placed.state()).state).toBe("bridging");
+        expect(await dbOpen().deposits.countDocuments({ accountId: placed.accountId })).toBe(0);
+        expect(await dbOpen().ledger.countDocuments({ accountId: placed.accountId })).toBe(0);
+    });
+
+    test("Relay filled and the watcher credits the fill: delivered, one credit, linked to the order", async () => {
+        const { placed, sig } = await sent();
+        open.solanaRpc.setSignatureStatus(sig, { confirmationStatus: "finalized", err: null });
+        await expect.poll(inState(placed, "in_block")).toBe(true);
+        await open.solanaBridge.advance(placed.ref, "filled");
+        await expect.poll(inState(placed, "delivered")).toBe(true);
+        const order = await placed.state();
+        const deposits = await dbOpen().deposits.find({ accountId: placed.accountId }).toArray();
+        expect(deposits).toHaveLength(1);
+        expect(deposits[0]!.origin).toMatchObject({ coin: "solana:USDC", amount: "10", txHash: sig });
+        expect(order.depositId).toEqual(deposits[0]!._id);
+        expect(await dbOpen().ledger.countDocuments({ accountId: placed.accountId })).toBe(1);
+    });
+
+    test("Relay refunded moves the order to refunded", async () => {
+        const { placed, sig } = await sent();
+        open.solanaRpc.setSignatureStatus(sig, { confirmationStatus: "finalized", err: null });
+        await expect.poll(inState(placed, "in_block")).toBe(true);
+        await open.solanaBridge.advance(placed.ref, "refunded");
+        await expect.poll(inState(placed, "refunded")).toBe(true);
+        expect(await dbOpen().deposits.countDocuments({ accountId: placed.accountId })).toBe(0);
+    });
 });

@@ -11,17 +11,22 @@ export const depositReport = z.object({
         .transform((hash) => hash.toLowerCase() as `0x${string}`),
 });
 
-const txHash = depositReport.shape.txHash;
-
 export const coinWalletAmount = z.object({
     coin: z.string().min(3).max(32),
     amount: z.string().regex(/^\d+(\.\d+)?$/, "an amount such as 0.5"),
     wallet: z.string().trim().min(32).max(64),
 });
 
+// An EVM hash is 0x and 64 hex digits; a Solana signature is 64 bytes in base58
+const swapTxHash = z
+    .string()
+    .trim()
+    .regex(/^(0x[0-9a-fA-F]{64}|[1-9A-HJ-NP-Za-km-z]{64,90})$/, "a transaction hash")
+    .transform((hash) => (hash.startsWith("0x") ? hash.toLowerCase() : hash));
+
 export const sourceReport = z.object({
     orderId: z.string().regex(/^[0-9a-f]{24}$/i, "an order id"),
-    txHashes: z.array(txHash).min(1).max(4),
+    txHashes: z.array(swapTxHash).min(1).max(4),
 });
 
 export const depositPage = z.object({
@@ -111,13 +116,6 @@ export const swapRequest = z.object({
 export const swapOrder = swapRequest.extend({
     reviewedMin: z.string().regex(/^\d{1,30}(\.\d{1,30})?$/, "an amount such as 0.5"),
 });
-
-// An EVM hash is 0x and 64 hex digits; a Solana signature is 64 bytes in base58
-const swapTxHash = z
-    .string()
-    .trim()
-    .regex(/^(0x[0-9a-fA-F]{64}|[1-9A-HJ-NP-Za-km-z]{64,90})$/, "a transaction hash")
-    .transform((hash) => (hash.startsWith("0x") ? hash.toLowerCase() : hash));
 
 export const swapSent = z.object({
     orderId: sourceReport.shape.orderId,

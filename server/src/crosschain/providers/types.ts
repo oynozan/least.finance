@@ -1,4 +1,5 @@
 import type { Address, Hex } from "viem";
+import type { SolanaInstruction } from "../../protocol.ts";
 import type { Coin } from "../catalog.ts";
 
 export type QuoteRequest = {
@@ -13,11 +14,7 @@ export type QuoteRequest = {
     refundTo: string;
 };
 
-export type SolanaInstruction = {
-    programId: string;
-    keys: { pubkey: string; isSigner: boolean; isWritable: boolean }[];
-    data: Hex;
-};
+export type { SolanaInstruction };
 
 export type SourceTx =
     | { kind: "evm"; chainId: number; to: Address; data: Hex; value: bigint }
@@ -49,5 +46,5 @@ export interface BridgeProvider {
     supports(coin: Coin): boolean;
     quote(request: QuoteRequest, signal: AbortSignal): Promise<Quote>;
     /** `sourceTxHash` is null before the app reports it; providers that can't look up without it return "waiting". */
-    status(quote: { ref: string }, sourceTxHash: Hex | null, coin: Coin): Promise<BridgeStatus>;
+    status(quote: { ref: string }, sourceTxHash: string | null, coin: Coin): Promise<BridgeStatus>;
 }
