@@ -168,3 +168,59 @@ test("pushes arrive as sending, then sent", async () => {
     await payouts.stop();
     bus.off("withdrawal:updated", listener);
 });
+
+test("an unreachable broadcast stops the pass, so a later withdrawal never reuses its nonce", async () => {
+    const a = await seedWithdrawal("2");
+    const b = await seedWithdrawal("2");
+    const down = worker({
+        broadcast: async () => {
+            throw new Error("fetch failed");
+        },
+    });
+
+    await down.tick();
+
+    expect((await stateOf(a.withdrawal._id)).rawTx).not.toBeNull();
+    expect((await stateOf(b.withdrawal._id)).rawTx).toBeNull();
+
+    await worker().tick();
+
+    expect((await stateOf(a.withdrawal._id)).state).toBe("sent");
+    expect((await stateOf(b.withdrawal._id)).state).toBe("sent");
+    expect(await chain.getBalance({ address: a.to })).toBe(wei("2"));
+    expect(await chain.getBalance({ address: b.to })).toBe(wei("2"));
+});
+
+test("a signed transaction whose nonce another transaction took is signed again, not awaited forever", async () => {
+    const { withdrawal, to } = await seedWithdrawal("2");
+    const first = worker({ broadcast: async () => "0x" as Hex });
+    first.start();
+    await expect.poll(async () => (await stateOf(withdrawal._id)).rawTx).not.toBeNull();
+    await first.stop();
+    const stale = await stateOf(withdrawal._id);
+    expect(stale.rawTx).not.toBeNull();
+    const other = privateKeyToAddress(generatePrivateKey());
+    const hash = await chain.sendRawTransaction({
+        serializedTransaction: await signer.signTransaction({
+            type: "eip1559",
+            chainId: chain.chain!.id,
+            nonce: stale.nonce!,
+            to: other,
+            value: wei("1"),
+            gas: 21_000n,
+            maxFeePerGas: parseUnits("1000", 9),
+            maxPriorityFeePerGas: parseUnits("1", 9),
+        }),
+    });
+    await chain.waitForTransactionReceipt({ hash });
+
+    const payouts = worker();
+    await payouts.tick();
+    expect((await stateOf(withdrawal._id)).rawTx).toBeNull();
+    await payouts.tick();
+
+    const done = await stateOf(withdrawal._id);
+    expect(done.state).toBe("sent");
+    expect(done.nonce).not.toBe(stale.nonce);
+    expect(await chain.getBalance({ address: to })).toBe(wei("2"));
+});

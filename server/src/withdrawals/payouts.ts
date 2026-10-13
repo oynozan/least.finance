@@ -101,6 +101,8 @@ export class Payouts {
                 await this.#pay(withdrawal);
             } catch (error) {
                 logger.warn({ err: error, withdrawalId: withdrawal._id.toHexString() }, "Payout failed, will retry");
+                // Later items would sign with a nonce this unsent one still owns.
+                if (unreachable(error)) return;
             }
         }
     }
@@ -119,10 +121,16 @@ export class Payouts {
 
     async #sign(withdrawal: WithdrawalDoc): Promise<WithdrawalDoc> {
         const { client, signer, collections } = this.#deps;
-        const [nonce, block] = await Promise.all([
+        const [pending, block, highest] = await Promise.all([
             client.getTransactionCount({ address: signer.address, blockTag: "pending" }),
             client.getBlock(),
+            collections.withdrawals
+                .find({ state: "sending", rawTx: { $ne: null } })
+                .sort({ nonce: -1 })
+                .limit(1)
+                .toArray(),
         ]);
+        const nonce = Math.max(pending, highest[0]?.nonce != null ? highest[0].nonce + 1 : 0);
         const doubled = (block.baseFeePerGas ?? 0n) * 2n;
         const rawTx = await signer.signTransaction({
             type: "eip1559",
@@ -143,7 +151,7 @@ export class Payouts {
     }
 
     async #pay(found: WithdrawalDoc) {
-        const { client, broadcast } = this.#deps;
+        const { client, broadcast, collections } = this.#deps;
         const withdrawal = found.rawTx ? found : await this.#sign(found);
         const rawTx = withdrawal.rawTx;
         if (!rawTx || withdrawal.state !== "sending") return;
@@ -152,6 +160,13 @@ export class Payouts {
             await (broadcast ?? ((tx: Hex) => client.sendRawTransaction({ serializedTransaction: tx })))(rawTx);
         } catch (error) {
             if (unreachable(error)) throw error;
+            if (/nonce too low/i.test(String(error)) && !(await this.#mined(withdrawal))) {
+                await collections.withdrawals.updateOne(
+                    { _id: withdrawal._id, state: "sending", txHash: withdrawal.txHash },
+                    { $set: { rawTx: null, txHash: null, nonce: null, updatedAt: new Date() } },
+                );
+                return;
+            }
             if (!alreadySent(error)) return this.#fail(withdrawal, "Rejected by the network");
         }
 
@@ -165,6 +180,17 @@ export class Payouts {
         if (!receipt) return;
         if (receipt.status === "success") await this.#sent(withdrawal);
         else await this.#fail(withdrawal, "Reverted on the network");
+    }
+
+    /** True when the stored hash has a receipt; false when its nonce was taken by another transaction. */
+    async #mined(withdrawal: WithdrawalDoc) {
+        const receipt = await this.#deps.client
+            .getTransactionReceipt({ hash: withdrawal.txHash as Hex })
+            .catch((error: unknown) => {
+                if (/not found|could not be found/i.test(String(error))) return null;
+                throw error;
+            });
+        return receipt !== null;
     }
 
     async #sent(withdrawal: WithdrawalDoc) {
