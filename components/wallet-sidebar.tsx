@@ -390,11 +390,7 @@ function WalletSection({
                 aria-label={`Balance ${balanceLabel(balance)}, show deposits`}
                 onPointerUp={(event) => !canHover(event) && setPinned((p) => !p)}
             >
-                {balance == null ? (
-                    <span className={`${styles.balance} ${styles.balancePending}`}>—</span>
-                ) : (
-                    <Balance value={balance} />
-                )}
+                <Balance value={balance ?? 0} />
             </button>
 
             {depositing ? (

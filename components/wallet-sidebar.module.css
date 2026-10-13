@@ -96,10 +96,6 @@
     color: var(--muted);
 }
 
-.balancePending {
-    color: var(--muted);
-}
-
 /* Above the history, so the deposits slide out from underneath it. */
 .deposit {
     position: relative;
