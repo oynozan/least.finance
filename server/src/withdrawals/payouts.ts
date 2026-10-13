@@ -11,6 +11,8 @@ import type { Bus } from "../events.ts";
 const GAS_LIMIT = 21_000n;
 const PRIORITY_FEE = parseGwei("1");
 const RECEIPT_TIMEOUT_MS = 30_000;
+/** Passes an unrecognised refusal may leave the transaction unseen before the withdrawal is given up. */
+const ABSENT_PASSES_BEFORE_FAIL = 5;
 
 type Deps = {
     collections: Collections;
@@ -27,6 +29,12 @@ type Deps = {
 /** A node already holding or having mined the transaction: the receipt decides the rest. */
 const alreadySent = (error: unknown) => /already known|nonce too low|already imported/i.test(String(error));
 
+/** The network turned the transaction down, so it was never accepted and the amount can go back. */
+const refused = (error: unknown) =>
+    /insufficient funds|underpriced|gas too low|intrinsic gas|invalid sender|exceeds (the )?balance/i.test(
+        String(error),
+    );
+
 /** The RPC couldn't be reached or answered late, so the transaction may still be on its way. */
 const unreachable = (error: unknown) =>
     error instanceof HttpRequestError ||
@@ -40,6 +48,8 @@ export class Payouts {
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
     #wake: (() => void) | null = null;
+    /** Passes each withdrawal's unexplained refusal has gone by without its transaction turning up. */
+    readonly #absent = new Map<string, number>();
     #unsubscribe: (() => void) | null = null;
 
     constructor(deps: Deps) {
@@ -167,8 +177,19 @@ export class Payouts {
                 );
                 return;
             }
-            if (!alreadySent(error)) return this.#fail(withdrawal, "Rejected by the network");
+            if (!alreadySent(error) && !(await this.#seen(withdrawal))) {
+                // An opaque error may follow a node accepting the transaction, so only a clear refusal refunds at once.
+                const key = withdrawal._id.toHexString();
+                const passes = (this.#absent.get(key) ?? 0) + 1;
+                if (!refused(error) && passes < ABSENT_PASSES_BEFORE_FAIL) {
+                    this.#absent.set(key, passes);
+                    throw error;
+                }
+                this.#absent.delete(key);
+                return this.#fail(withdrawal, "Rejected by the network");
+            }
         }
+        this.#absent.delete(withdrawal._id.toHexString());
 
         const hash = withdrawal.txHash!;
         const receipt = await this.#abortable(
@@ -180,6 +201,17 @@ export class Payouts {
         if (!receipt) return;
         if (receipt.status === "success") await this.#sent(withdrawal);
         else await this.#fail(withdrawal, "Reverted on the network");
+    }
+
+    /** True when the node knows the stored hash, pending or mined. */
+    async #seen(withdrawal: WithdrawalDoc) {
+        const found = await this.#deps.client
+            .getTransaction({ hash: withdrawal.txHash as Hex })
+            .catch((error: unknown) => {
+                if (/not found|could not be found/i.test(String(error))) return null;
+                throw error;
+            });
+        return found !== null;
     }
 
     /** True when the stored hash has a receipt; false when its nonce was taken by another transaction. */

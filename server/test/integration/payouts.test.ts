@@ -224,3 +224,41 @@ test("a signed transaction whose nonce another transaction took is signed again,
     expect(done.nonce).not.toBe(stale.nonce);
     expect(await chain.getBalance({ address: to })).toBe(wei("2"));
 });
+
+test("an opaque broadcast error after the node took the transaction pays once and refunds nothing", async () => {
+    const { account, withdrawal, to } = await seedWithdrawal("2");
+    const payouts = worker({
+        broadcast: async (rawTx) => {
+            await chain.sendRawTransaction({ serializedTransaction: rawTx });
+            throw new Error("internal error");
+        },
+    });
+
+    await payouts.tick();
+
+    expect((await stateOf(withdrawal._id)).state).toBe("sent");
+    expect(await chain.getBalance({ address: to })).toBe(wei("2"));
+    expect(await balanceOf(account._id)).toBe(0n);
+    expect(await refunds(withdrawal._id)).toBe(0);
+});
+
+test("an opaque broadcast error with the transaction unseen is given several passes, then refunded once", async () => {
+    const { account, withdrawal, to } = await seedWithdrawal("2");
+    const payouts = worker({
+        broadcast: async () => {
+            throw new Error("txpool is full");
+        },
+    });
+
+    for (let pass = 0; pass < 4; pass++) await payouts.tick();
+    expect((await stateOf(withdrawal._id)).state).toBe("sending");
+    expect(await balanceOf(account._id)).toBe(0n);
+
+    await payouts.tick();
+    await payouts.tick();
+
+    expect((await stateOf(withdrawal._id)).state).toBe("failed");
+    expect(await balanceOf(account._id)).toBe(wei("2"));
+    expect(await refunds(withdrawal._id)).toBe(1);
+    expect(await chain.getBalance({ address: to })).toBe(0n);
+});
