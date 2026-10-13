@@ -109,6 +109,8 @@ export type PredictionOrderDoc = {
     outcome: string;
     /** Wei held, for a buy. */
     amount: Decimal128;
+    /** E6 pUSD a buy reserved from the pool's float; absent on orders from before the float document. */
+    reservedE6?: Decimal128;
     /** E6 shares, for a sell. */
     shares: Decimal128 | null;
     /** The price the limit derives from: the less generous of the client's quote and the server's price. */
@@ -129,6 +131,20 @@ export type PredictionOrderDoc = {
     cost: Decimal128 | null;
     postedAt: Date | null;
     createdAt: Date;
+    updatedAt: Date;
+};
+
+/** The pool's pUSD float, one document: what the last read saw, what open buys hold, and what fills spent since. */
+export type PoolFloatDoc = {
+    _id: "polygon";
+    /** E6 pUSD from the last CLOB read. */
+    balanceE6: Decimal128;
+    /** When that read finished. */
+    balanceAt: Date;
+    /** E6 reserved by buys that haven't settled or failed. */
+    heldE6: Decimal128;
+    /** E6 spent by fills that the last read may not show yet. */
+    unreadFillsE6: Decimal128;
     updatedAt: Date;
 };
 
@@ -231,6 +247,7 @@ export type Collections = {
     ledger: Collection<LedgerEntryDoc>;
     depositOrders: Collection<DepositOrderDoc>;
     predictionOrders: Collection<PredictionOrderDoc>;
+    poolFloat: Collection<PoolFloatDoc>;
     positions: Collection<PositionDoc>;
     predictionRedemptions: Collection<PredictionRedemptionDoc>;
     withdrawals: Collection<WithdrawalDoc>;
@@ -264,6 +281,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             ledger: db.collection("ledger"),
             depositOrders: db.collection("deposit_orders"),
             predictionOrders: db.collection("prediction_orders"),
+            poolFloat: db.collection("pool_float"),
             positions: db.collection("positions"),
             predictionRedemptions: db.collection("prediction_redemptions"),
             withdrawals: db.collection("withdrawals"),

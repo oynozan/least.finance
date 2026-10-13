@@ -7,6 +7,7 @@ import {
     isDuplicateKey,
     type AccountDoc,
     type Collections,
+    type PoolFloatDoc,
     type PositionDoc,
     type PredictionFailure,
     type PredictionOrderDoc,
@@ -38,6 +39,11 @@ const GIVE_UP_TRIES = 3;
 const GIVE_UP_RETRY_MS = 200;
 /** The SDK signs share sizes to 2 decimals. */
 const SHARE_STEP_E6 = 10_000n;
+/** A balance read older than this no longer backs new orders. */
+const FLOAT_MAX_AGE_MS = 180_000;
+/** How long an order waits on a fresh balance read before it is refused. */
+const FLOAT_READ_MS = 30_000;
+const FLOAT_ID = "polygon";
 const AMOUNT = /^\d+(\.\d{1,6})?$/;
 
 export const NOTHING_SPENT = "Nothing was spent.";
@@ -76,10 +82,8 @@ export type PlaceInput = {
 export class PredictionService {
     readonly #deps: Deps;
     readonly #now: () => number;
-    /** The pool's pUSD, from the last read. */
-    #balanceE6: bigint | null = null;
-    /** Wei held by buys that haven't settled. */
-    #heldE6 = 0n;
+    /** The float document as this process last saw it, for the figure shown to clients. */
+    #mirror: { balanceE6: bigint; heldE6: bigint; unreadE6: bigint; at: number } | null = null;
     #floatState: "low" | "high" | "ok" = "ok";
     /** Orders this process is still sending, so the tracker doesn't judge a post that hasn't answered yet. */
     readonly #submitting = new Set<string>();
@@ -95,23 +99,85 @@ export class PredictionService {
 
     /** The largest order the pool can cover now, in whole dollars; null while predictions aren't live. */
     maxOrderUSD(): number | null {
-        if (this.#deps.config.PREDICTIONS_TRADING !== "on" || !this.#deps.trader() || this.#balanceE6 === null)
+        if (this.#deps.config.PREDICTIONS_TRADING !== "on" || !this.#deps.trader() || this.#mirror === null)
             return null;
-        const free = this.#balanceE6 - this.#heldE6;
+        const free = this.#mirror.balanceE6 - this.#mirror.heldE6 - this.#mirror.unreadE6;
         return free <= 0n ? 0 : Number(free / 1_000_000n);
     }
 
+    /** Reads the pool's pUSD into the float document, keeping fills that landed during the read. */
     async refreshFloat(): Promise<void> {
         const trader = this.#deps.trader();
         if (!trader) return;
-        const { predictionOrders } = this.#deps.collections;
-        const [balance, open] = await Promise.all([
-            trader.balanceE6(),
-            predictionOrders.find({ side: "buy", state: { $in: ["placing", "posted"] } }).toArray(),
-        ]);
-        this.#balanceE6 = balance;
-        this.#heldE6 = open.reduce((total, order) => total + weiToE6(fromDecimal(order.amount)), 0n);
+        const { poolFloat } = this.#deps.collections;
+        const before = await poolFloat.findOne({ _id: FLOAT_ID });
+        const unread = before ? fromDecimal(before.unreadFillsE6) : 0n;
+        const balance = await trader.balanceE6();
+        const now = new Date(this.#now());
+        const initialHeld = before ? 0n : (await this.#openHolds()).total;
+        const zero = toDecimal(0n);
+        const doc = await poolFloat.findOneAndUpdate(
+            { _id: FLOAT_ID },
+            [
+                {
+                    $set: {
+                        balanceE6: toDecimal(balance),
+                        balanceAt: now,
+                        updatedAt: now,
+                        heldE6: { $ifNull: ["$heldE6", toDecimal(initialHeld)] },
+                        unreadFillsE6: {
+                            $max: [zero, { $subtract: [{ $ifNull: ["$unreadFillsE6", zero] }, toDecimal(unread)] }],
+                        },
+                    },
+                },
+            ],
+            { upsert: true, returnDocument: "after" },
+        );
+        if (doc) this.#remember(doc);
         this.#warnOnFloat(balance);
+        await this.#checkHolds();
+    }
+
+    /** The sum of what open buys reserved; orders from before the float document reserved their whole amount. */
+    async #openHolds(): Promise<{ total: bigint }> {
+        const open = await this.#deps.collections.predictionOrders
+            .find({ side: "buy", state: { $in: ["placing", "posted"] } })
+            .toArray();
+        return { total: open.reduce((sum, order) => sum + reservedOf(order), 0n) };
+    }
+
+    /** Reports and repairs a held figure that differs from the open buys; it can only differ through a bug. */
+    async #checkHolds(): Promise<void> {
+        const { poolFloat } = this.#deps.collections;
+        const first = await poolFloat.findOne({ _id: FLOAT_ID });
+        if (!first) return;
+        const { total } = await this.#openHolds();
+        const second = await poolFloat.findOne({ _id: FLOAT_ID });
+        // A reservation or release in between would make the two reads disagree for no fault
+        if (!second || fromDecimal(first.heldE6) !== fromDecimal(second.heldE6)) return;
+        const held = fromDecimal(second.heldE6);
+        if (held === total) return;
+        this.#deps.logger.error(
+            { heldE6: held.toString(), expected: total.toString() },
+            "The pool's float holds drifted",
+        );
+        const doc = await poolFloat.findOneAndUpdate(
+            { _id: FLOAT_ID, heldE6: second.heldE6 },
+            { $set: { heldE6: toDecimal(total), updatedAt: new Date(this.#now()) } },
+            { returnDocument: "after" },
+        );
+        if (doc) this.#remember(doc);
+    }
+
+    #remember(doc: PoolFloatDoc) {
+        const at = doc.updatedAt.getTime();
+        if (this.#mirror && at < this.#mirror.at) return;
+        this.#mirror = {
+            balanceE6: fromDecimal(doc.balanceE6),
+            heldE6: fromDecimal(doc.heldE6),
+            unreadE6: fromDecimal(doc.unreadFillsE6),
+            at,
+        };
     }
 
     #warnOnFloat(balance: bigint) {
@@ -276,6 +342,7 @@ export class PredictionService {
             question: offered.question,
             outcome: offered.outcome.label,
             amount: toDecimal(amount),
+            reservedE6: toDecimal(weiToE6(amount)),
             shares: null,
             quotedPrice: check.reference,
             ...(input.quotedPrice !== undefined && { clientPrice: input.quotedPrice }),
@@ -292,12 +359,15 @@ export class PredictionService {
             createdAt: now,
             updatedAt: now,
         };
-        const held = await this.#record(order, (session) =>
-            this.#deps.ledger.debitInSession(session, order.accountId, amount, "prediction_buy", order._id),
-        );
+        let reserved: PoolFloatDoc | null = null;
+        const held = await this.#record(order, async (session) => {
+            await this.#deps.ledger.debitInSession(session, order.accountId, amount, "prediction_buy", order._id);
+            // The shared float document goes last, to hold its lock briefly
+            reserved = await this.#reserve(session, weiToE6(amount));
+        });
         if (!held.fresh) return orderView(held.order);
 
-        this.#heldE6 += weiToE6(amount);
+        if (reserved) this.#remember(reserved);
         void this.#submit(order).catch((error: unknown) =>
             this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "Couldn't submit a prediction"),
         );
@@ -473,14 +543,15 @@ export class PredictionService {
                       )
                     : await accounts.findOne({ _id: moved.accountId }, { session });
             if (!account || !linked) throw new Error("The order or its account vanished");
-            return { order: linked, position, account, held, cost };
+            const float = await this.#release(session, reservedOf(moved), weiToE6(cost));
+            return { order: linked, position, account, float, cost };
         });
         if (!done) return;
         this.#deps.logger.info(
             { order: order._id.toHexString(), shares: formatE6(takingE6), cost: formatUsdc(done.cost) },
             "Prediction filled",
         );
-        this.#afterSettle(done.held, done);
+        this.#afterSettle(done);
     }
 
     /** Books a sell fill: the proceeds, net of the fee, go to the balance and the position closes. A repeat does nothing. */
@@ -532,14 +603,14 @@ export class PredictionService {
                       )
                     : await accounts.findOne({ _id: moved.accountId }, { session });
             if (!account) throw new Error("The account vanished");
-            return { order: moved, position, account };
+            return { order: moved, position, account, float: null };
         });
         if (!done) return;
         this.#deps.logger.info(
             { order: order._id.toHexString(), shares: formatE6(makingE6), proceeds: formatUsdc(proceeds) },
             "Prediction sold",
         );
-        this.#afterSettle(0n, done);
+        this.#afterSettle(done);
     }
 
     /** Fails an order and gives back everything it held; a failed sell reopens its position. A repeat, or an order that already moved on, does nothing. */
@@ -560,7 +631,7 @@ export class PredictionService {
                 );
                 const account = await accounts.findOne({ _id: moved.accountId }, { session });
                 if (!account) throw new Error("The account vanished");
-                return { order: moved, position, account, held: 0n };
+                return { order: moved, position, account, float: null };
             }
             const held = fromDecimal(moved.amount);
             const account = await this.#deps.ledger.creditInSession(
@@ -570,19 +641,26 @@ export class PredictionService {
                 "prediction_refund",
                 moved._id,
             );
-            return { order: moved, position: null, account, held };
+            const float = await this.#release(session, reservedOf(moved), 0n);
+            return { order: moved, position: null, account, float };
         });
         if (!done) return;
         this.#deps.logger.info({ order: order._id.toHexString(), reason }, "Prediction failed and refunded");
-        this.#afterSettle(done.held, done);
+        this.#afterSettle(done);
     }
 
-    #afterSettle(
-        held: bigint,
-        update: { order: PredictionOrderDoc; position: PositionDoc | null; account: AccountDoc },
-    ) {
-        this.#heldE6 -= weiToE6(held);
-        this.#deps.bus.emit("prediction:updated", update);
+    #afterSettle(update: {
+        order: PredictionOrderDoc;
+        position: PositionDoc | null;
+        account: AccountDoc;
+        float: PoolFloatDoc | null;
+    }) {
+        if (update.float) this.#remember(update.float);
+        this.#deps.bus.emit("prediction:updated", {
+            order: update.order,
+            position: update.position,
+            account: update.account,
+        });
         void this.refreshFloat().catch((error: unknown) =>
             this.#deps.logger.warn({ err: error }, "Couldn't read the pool's float"),
         );
@@ -629,16 +707,87 @@ export class PredictionService {
         return wei;
     }
 
+    /** Refuses an order the float obviously can't cover, before a transaction opens; the reservation is the real guard. */
     async #checkFloat(amountE6: bigint) {
-        if (this.#balanceE6 === null) await this.refreshFloat();
-        const max = this.maxOrderUSD();
-        if (max === null || amountE6 > this.#balanceE6! - this.#heldE6)
-            throw new AppError(
-                "float_short",
-                `Predictions are limited to ${formatUsdShort(max ?? 0)} right now. ${NOTHING_SPENT}`,
-            );
+        const { poolFloat } = this.#deps.collections;
+        let doc = await poolFloat.findOne({ _id: FLOAT_ID });
+        if (!doc || this.#stale(doc)) {
+            await this.#readBalance();
+            doc = await poolFloat.findOne({ _id: FLOAT_ID });
+        }
+        if (!doc || this.#stale(doc) || freeOf(doc) < amountE6) throw this.#short(doc);
+    }
+
+    /** Reads the balance once, giving up after a while; a failed read leaves the old figure to be judged stale. */
+    async #readBalance() {
+        const abort = new AbortController();
+        const timer = sleep(FLOAT_READ_MS, undefined, { signal: abort.signal }).then(
+            () => {
+                throw new Error("The balance read timed out");
+            },
+            () => undefined,
+        );
+        try {
+            await Promise.race([this.refreshFloat(), timer]);
+        } catch (error) {
+            this.#deps.logger.warn({ err: error }, "Couldn't read the pool's float");
+        } finally {
+            abort.abort();
+        }
+    }
+
+    #stale(doc: PoolFloatDoc): boolean {
+        return doc.balanceAt.getTime() < this.#now() - FLOAT_MAX_AGE_MS;
+    }
+
+    /** Takes the order's pUSD from the float inside the order's transaction; nothing is taken if it doesn't fit. */
+    async #reserve(session: ClientSession, amountE6: bigint): Promise<PoolFloatDoc> {
+        const now = this.#now();
+        const amount = toDecimal(amountE6);
+        const doc = await this.#deps.collections.poolFloat.findOneAndUpdate(
+            {
+                _id: FLOAT_ID,
+                balanceAt: { $gte: new Date(now - FLOAT_MAX_AGE_MS) },
+                $expr: {
+                    $gte: [{ $subtract: [{ $subtract: ["$balanceE6", "$heldE6"] }, "$unreadFillsE6"] }, amount],
+                },
+            },
+            { $inc: { heldE6: amount }, $set: { updatedAt: new Date(now) } },
+            { session, returnDocument: "after" },
+        );
+        if (doc) return doc;
+        throw this.#short(await this.#deps.collections.poolFloat.findOne({ _id: FLOAT_ID }, { session }));
+    }
+
+    /** Gives back a reservation and counts what the fill spent until a balance read shows it; an order that held nothing does nothing. */
+    async #release(session: ClientSession, reservedE6: bigint, spentE6: bigint): Promise<PoolFloatDoc | null> {
+        if (reservedE6 === 0n && spentE6 === 0n) return null;
+        return this.#deps.collections.poolFloat.findOneAndUpdate(
+            { _id: FLOAT_ID },
+            {
+                $inc: { heldE6: toDecimal(-reservedE6), unreadFillsE6: toDecimal(spentE6) },
+                $set: { updatedAt: new Date(this.#now()) },
+            },
+            { session, returnDocument: "after" },
+        );
+    }
+
+    #short(doc: PoolFloatDoc | null): AppError {
+        const free = doc && !this.#stale(doc) ? freeOf(doc) : 0n;
+        const usd = free <= 0n ? 0 : Number(free / 1_000_000n);
+        return new AppError(
+            "float_short",
+            `Predictions are limited to ${formatUsdShort(usd)} right now. ${NOTHING_SPENT}`,
+        );
     }
 }
+
+const freeOf = (doc: PoolFloatDoc): bigint =>
+    fromDecimal(doc.balanceE6) - fromDecimal(doc.heldE6) - fromDecimal(doc.unreadFillsE6);
+
+/** What a buy reserved; an order from before the float document held its whole amount. */
+const reservedOf = (order: PredictionOrderDoc): bigint =>
+    order.reservedE6 ? fromDecimal(order.reservedE6) : weiToE6(fromDecimal(order.amount));
 
 const marketClosed = () => new AppError("market_closed", `This market just closed. ${NOTHING_SPENT}`);
 
