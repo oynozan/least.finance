@@ -1,9 +1,19 @@
 import { expect, test, type Page } from "@playwright/test";
-import { chainRpc, failNextPayout, fundTreasury, randomAddress, randomSolanaAddress, seedDeposits } from "./backend";
+import {
+    chainRpc,
+    failNextPayout,
+    fundTreasury,
+    pauseDepositScan,
+    randomAddress,
+    randomSolanaAddress,
+    resumeDepositScan,
+    seedDeposits,
+} from "./backend";
 import { addressOf, installSolanaWallet, installWallet, mockArcRpc, mockPrivy, pickWallet } from "./privy-mock";
 
-// The treasury and the next payout are shared by the whole backend: these run one at a time, and only on desktop,
-// so the phone project can't withdraw in between. Touch is covered by the deposit history's tests.
+// The treasury is shared by the whole backend: every test that withdraws or sets it lives in this file, which runs
+// one test at a time and only on desktop, so nothing withdraws meanwhile. A payout made to fail belongs to its
+// recipient. Touch is covered by the deposit history's tests.
 test.describe.configure({ mode: "serial" });
 test.skip(({ isMobile }) => isMobile, "shares the treasury with the desktop run");
 
@@ -12,10 +22,10 @@ const modal = (page: Page) => page.locator("#privy-modal-content");
 const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: /^Balance/ });
 const withdrawButton = (page: Page) => sidebar(page).getByRole("button", { name: "Withdraw", exact: true });
 const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "Withdraw amount" });
+const LOSS = "rgb(255, 107, 91)";
 const status = (page: Page) => sidebar(page).getByRole("status");
 const history = (page: Page) => sidebar(page).getByRole("list", { name: "Deposits" });
 const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
-const LOSS = "rgb(255, 107, 91)";
 
 test.beforeEach(async () => {
     test.setTimeout(60_000);
@@ -204,36 +214,42 @@ test("the wallet in use is Solana with an EVM wallet linked: the EVM wallet is t
     };
     await deposit("100");
     await expect(status(page)).toHaveText("Deposited $100.00", { timeout: 20_000 });
-    hold = true;
-    await deposit("5");
-    await expect(balanceButton(page)).toHaveAccessibleName("Balance $105.00, show deposits");
+    // The server's own scan would credit the deposit within moments, so it stays off until the end.
+    await pauseDepositScan();
+    try {
+        hold = true;
+        await deposit("5");
+        await expect(balanceButton(page)).toHaveAccessibleName("Balance $105.00, show deposits");
 
-    // Back to Solana as the wallet in use.
-    await page.evaluate(
-        (wallet) => {
-            const key = Object.keys(localStorage).find((k) => k.startsWith("active-wallet:"));
-            localStorage.setItem(key!, JSON.stringify(wallet));
-            window.dispatchEvent(new Event("storage"));
-        },
-        { kind: "solana", address: solana },
-    );
-    await expect(sidebar(page).locator("header").first().getByRole("img", { name: "Solana" })).toBeVisible();
+        // Back to Solana as the wallet in use.
+        await page.evaluate(
+            (wallet) => {
+                const key = Object.keys(localStorage).find((k) => k.startsWith("active-wallet:"));
+                localStorage.setItem(key!, JSON.stringify(wallet));
+                window.dispatchEvent(new Event("storage"));
+            },
+            { kind: "solana", address: solana },
+        );
+        await expect(sidebar(page).locator("header").first().getByRole("img", { name: "Solana" })).toBeVisible();
 
-    const before = await arcBalance(evm);
-    await withdrawButton(page).click();
-    await expect(sidebar(page).locator("#withdraw-max")).toHaveText("You can withdraw up to $100.00");
-    await expect(balanceButton(page)).toHaveAccessibleName("Balance $105.00, show deposits");
-    await sidebar(page).getByRole("button", { name: "Max" }).click();
-    await expect(amountField(page)).toHaveValue("100");
-    // The one EVM wallet is the recipient: no picker, and it is the one paid.
-    await expect(sidebar(page).getByRole("radiogroup", { name: "Withdraw to" })).toHaveCount(0);
-    await sidebar(page).getByRole("button", { name: "Withdraw", exact: true }).click();
-    await expect.poll(async () => (await arcBalance(evm)) - before).toBe(ether(100));
+        const before = await arcBalance(evm);
+        await withdrawButton(page).click();
+        await expect(sidebar(page).locator("#withdraw-max")).toHaveText("You can withdraw up to $100.00");
+        await expect(balanceButton(page)).toHaveAccessibleName("Balance $105.00, show deposits");
+        await sidebar(page).getByRole("button", { name: "Max" }).click();
+        await expect(amountField(page)).toHaveValue("100");
+        // The one EVM wallet is the recipient: no picker, and it is the one paid.
+        await expect(sidebar(page).getByRole("radiogroup", { name: "Withdraw to" })).toHaveCount(0);
+        await sidebar(page).getByRole("button", { name: "Withdraw", exact: true }).click();
+        await expect.poll(async () => (await arcBalance(evm)) - before).toBe(ether(100));
+    } finally {
+        await resumeDepositScan();
+    }
 });
 
 test("a failed payout puts the balance back and says so", async ({ page }) => {
     await signIn(page);
-    await failNextPayout();
+    await failNextPayout(addressOf(page));
     await withdraw(page, "50");
     await expect(status(page)).toHaveText("Didn't go through. Your balance is back.", { timeout: 20_000 });
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $200.00, show deposits");
@@ -249,4 +265,42 @@ test("Escape closes the form and returns focus to Withdraw", async ({ page }) =>
     await expect(amountField(page)).toHaveCount(0);
     await expect(withdrawButton(page)).toBeFocused();
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
+});
+
+// The PnL page's own pieces: the wallet button up top comes after the page's content, which may have a Connect button.
+const walletButton = (page: Page) => page.getByRole("button", { name: /^(Wallet|Connect wallet)/ }).last();
+const chart = (page: Page) => page.getByRole("slider", { name: "Balance by day" });
+const activity = (page: Page) => page.getByRole("region", { name: "Activity" });
+const rows = (page: Page) => activity(page).locator("tbody tr");
+
+test("the PnL feed lists a withdrawal under Deposits, and the chart drops by it", async ({ page }) => {
+    await mockPrivy(page);
+    await mockArcRpc(page);
+    await installWallet(page);
+    await seedDeposits(addressOf(page), [{ amount: "200", daysAgo: 1 }]);
+    await page.goto("/pnl");
+    await walletButton(page).click();
+    await modal(page).getByRole("button", { name: "MetaMask" }).click();
+    await waitForAccount(page);
+    // Privy hands focus back to the wallet button a moment after its modal closes.
+    await expect(walletButton(page)).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+    await expect(chart(page)).toHaveAttribute("aria-valuetext", /: \$200\.00$/);
+
+    await walletButton(page).click();
+    await withdraw(page, "50");
+    await expect(balanceButton(page)).toHaveAccessibleName("Balance $150.00, show deposits");
+    await page.keyboard.press("Escape");
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+
+    await expect(chart(page)).toHaveAttribute("aria-valuetext", /: \$150\.00$/);
+    const row = rows(page).filter({ hasText: "Withdrawal" });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("USDC to 0x");
+    await expect(row).toContainText("−$50.00");
+    await activity(page).getByRole("radio", { name: "Deposits" }).click();
+    await expect(rows(page)).toHaveCount(2);
+    await activity(page).getByRole("radio", { name: "Trades" }).click();
+    await expect(rows(page)).toHaveCount(0);
 });
