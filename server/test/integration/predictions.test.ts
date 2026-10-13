@@ -396,3 +396,83 @@ test("positions keeps settled ones for the whole chart window, and drops older o
     expect(ids).toContain(monthAgo);
     expect(ids).not.toContain(ancient);
 });
+
+test("a buy quoted far above the server price keeps the server's limit", async () => {
+    const own = await predictionHarness();
+    try {
+        await own.service.refreshFloat();
+        const account = await own.seedAccount("100");
+        const view = await own.service.place(account, { ...input("10"), quotedPrice: 0.98 });
+        await until(async () => own.trader.posts.length === 1);
+        expect(own.trader.posts[0]!.signed).toMatchObject({ side: "BUY", maxPrice: 0.52 });
+        const order = (await own.database.collections.predictionOrders.findOne({ requestId: view.requestId }))!;
+        expect(order).toMatchObject({ quotedPrice: 0.5, limitPrice: 0.52, clientPrice: 0.98 });
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("a buy quoted lower than the server price by under 2 cents keeps the client's tighter limit", async () => {
+    const own = await predictionHarness();
+    try {
+        await own.service.refreshFloat();
+        const account = await own.seedAccount("100");
+        await own.service.place(account, { ...input("10"), quotedPrice: 0.49 });
+        await until(async () => own.trader.posts.length === 1);
+        expect(own.trader.posts[0]!.signed).toMatchObject({ maxPrice: 0.51 });
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("a buy the market moved more than 2 cents past is price_moved before any hold", async () => {
+    const own = await predictionHarness();
+    try {
+        await own.service.refreshFloat();
+        const account = await own.seedAccount("100");
+        own.offered.current!.outcome.buyPrice = 0.53;
+        const requestId = randomUUID();
+        const error = await own.service.place(account, { ...input("10", requestId), quotedPrice: 0.5 }).catch((e) => e);
+        expect(isAppError(error) && error.code).toBe("price_moved");
+        expect(isAppError(error) && error.message).toBe(
+            "The price moved, so your prediction didn't go through. Nothing was spent.",
+        );
+        expect(await own.database.collections.predictionOrders.countDocuments({ requestId })).toBe(0);
+        const s = await own.state(account._id);
+        expect(s.balance).toBe(wei("100"));
+        expect(kinds(s.rows)).toEqual(["deposit"]);
+        expect(own.trader.posts).toHaveLength(0);
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("exactly 2 cents of movement is still allowed", async () => {
+    const own = await predictionHarness();
+    try {
+        await own.service.refreshFloat();
+        const account = await own.seedAccount("100");
+        own.offered.current!.outcome.buyPrice = 0.52;
+        await own.service.place(account, { ...input("10"), quotedPrice: 0.5 });
+        await until(async () => own.trader.posts.length === 1);
+        expect(own.trader.posts[0]!.signed).toMatchObject({ maxPrice: 0.52 });
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("a requestId retry still returns the original order even if the price now differs", async () => {
+    const own = await predictionHarness();
+    try {
+        await own.service.refreshFloat();
+        const account = await own.seedAccount("100");
+        const first = { ...input("10"), quotedPrice: 0.5 };
+        const view = await own.service.place(account, first);
+        own.offered.current!.outcome.buyPrice = 0.7;
+        const again = await own.service.place(account, first);
+        expect(again.id).toBe(view.id);
+        expect(await own.database.collections.predictionOrders.countDocuments({ requestId: first.requestId })).toBe(1);
+    } finally {
+        await own.database.close();
+    }
+});

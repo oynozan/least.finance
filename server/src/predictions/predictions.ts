@@ -17,7 +17,16 @@ import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { MarketService } from "../markets/markets.ts";
 import type { PositionsView, PredictionOrderView, QuoteView, SellQuoteView } from "../protocol.ts";
-import { costOfFill, feeE6, limitBuyPrice, limitSellPrice, quoteBuy, quoteSell } from "./pricing.ts";
+import {
+    costOfFill,
+    feeE6,
+    limitBuyPrice,
+    limitSellPrice,
+    quoteBuy,
+    quoteSell,
+    referenceBuyPrice,
+    referenceSellPrice,
+} from "./pricing.ts";
 import type { MarketMeta, PoolTrader, SignedRecord } from "./trader.ts";
 import { formatUsdShort, orderView, positionView } from "./views.ts";
 
@@ -32,7 +41,7 @@ const SHARE_STEP_E6 = 10_000n;
 const AMOUNT = /^\d+(\.\d{1,6})?$/;
 
 export const NOTHING_SPENT = "Nothing was spent.";
-const PRICE_MOVED = "The price moved, so your prediction didn't go through.";
+const PRICE_MOVED = `The price moved, so your prediction didn't go through. ${NOTHING_SPENT}`;
 const TOO_SMALL = "Too small to sell. It pays out when the market resolves.";
 
 export type CloseInput = { requestId: string; positionId: string; quotedPrice: number };
@@ -169,6 +178,9 @@ export class PredictionService {
         const book = await trader.book(position.tokenId);
         if (sharesE6 <= 0n || sharesE6 < minSharesE6(book.minOrderSize)) throw new AppError("below_minimum", TOO_SMALL);
 
+        const check = referenceSellPrice(input.quotedPrice, book.bids[0]?.price ?? null);
+        if (!check.ok) throw new AppError("price_moved", PRICE_MOVED);
+
         const now = new Date(this.#now());
         const order: PredictionOrderDoc = {
             _id: new ObjectId(),
@@ -183,7 +195,8 @@ export class PredictionService {
             outcome: position.outcome,
             amount: toDecimal(0n),
             shares: toDecimal(sharesE6),
-            quotedPrice: input.quotedPrice,
+            quotedPrice: check.reference,
+            clientPrice: input.quotedPrice,
             limitPrice: 0,
             positionId: position._id,
             orderHash: null,
@@ -245,6 +258,8 @@ export class PredictionService {
         this.#trader();
         const offered = await this.#deps.markets.outcome(input.eventId, input.tokenId);
         if (!offered) throw marketClosed();
+        const check = referenceBuyPrice(input.quotedPrice, offered.outcome.buyPrice);
+        if (!check.ok) throw new AppError("price_moved", PRICE_MOVED);
         const amount = this.#amount(input.amountUSD, offered.outcome.minUSD);
         await this.#checkFloat(weiToE6(amount));
 
@@ -262,7 +277,8 @@ export class PredictionService {
             outcome: offered.outcome.label,
             amount: toDecimal(amount),
             shares: null,
-            quotedPrice: input.quotedPrice ?? offered.outcome.buyPrice,
+            quotedPrice: check.reference,
+            ...(input.quotedPrice !== undefined && { clientPrice: input.quotedPrice }),
             limitPrice: 0,
             positionId: null,
             orderHash: null,

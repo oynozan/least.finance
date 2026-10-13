@@ -95,6 +95,23 @@ export function limitSellPrice(quotedPrice: number, tickSize: number): number {
     return Number(down < tick ? tick : down) / 1e6;
 }
 
+export type PriceCheck = { ok: true; reference: number } | { ok: false };
+
+/** Buy: the market must not have risen more than the slippage past the client's quote; the lower price is kept. */
+export function referenceBuyPrice(quoted: number | undefined, offered: number): PriceCheck {
+    if (quoted === undefined) return { ok: true, reference: offered };
+    if (scaled(offered) - scaled(quoted) > SLIPPAGE_E6) return { ok: false };
+    return { ok: true, reference: Math.min(quoted, offered) };
+}
+
+/** Sell: the best bid must not have fallen more than the slippage under the client's quote; the higher price is kept. */
+export function referenceSellPrice(quoted: number | undefined, bestBid: number | null): PriceCheck {
+    if (bestBid === null) return { ok: false };
+    if (quoted === undefined) return { ok: true, reference: bestBid };
+    if (scaled(quoted) - scaled(bestBid) > SLIPPAGE_E6) return { ok: false };
+    return { ok: true, reference: Math.max(quoted, bestBid) };
+}
+
 export function costOfFill(makingE6: bigint, takingE6: bigint, meta: FeeMeta): bigint {
     if (takingE6 <= 0n) return makingE6;
     return makingE6 + feeE6(takingE6, Number(makingE6) / Number(takingE6), meta);

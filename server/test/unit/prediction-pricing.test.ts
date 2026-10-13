@@ -6,6 +6,8 @@ import {
     limitSellPrice,
     quoteBuy,
     quoteSell,
+    referenceBuyPrice,
+    referenceSellPrice,
 } from "../../src/predictions/pricing.ts";
 import type { Book, MarketMeta } from "../../src/predictions/trader.ts";
 
@@ -127,5 +129,54 @@ describe("costOfFill", () => {
         const c = costOfFill(making, taking, meta);
         expect(c).toBe(making + feeE6(taking, Number(making) / Number(taking), meta));
         expect(c - making).toBeLessThanOrEqual(feeE6(taking, 0.5, meta));
+    });
+});
+
+describe("referenceBuyPrice", () => {
+    it("uses the server's price when the client sent none", () => {
+        expect(referenceBuyPrice(undefined, 0.5)).toEqual({ ok: true, reference: 0.5 });
+    });
+
+    it("keeps the lower of the quote and the offered price", () => {
+        expect(referenceBuyPrice(0.49, 0.5)).toEqual({ ok: true, reference: 0.49 });
+        expect(referenceBuyPrice(0.51, 0.5)).toEqual({ ok: true, reference: 0.5 });
+    });
+
+    it("never lets a generous quote lift the limit past the offered price plus the slippage", () => {
+        const check = referenceBuyPrice(0.98, 0.5);
+        expect(check).toEqual({ ok: true, reference: 0.5 });
+        expect(limitBuyPrice(0.5, 0.01)).toBe(0.52);
+    });
+
+    it("allows exactly 2 cents of movement and refuses more", () => {
+        expect(referenceBuyPrice(0.5, 0.52)).toEqual({ ok: true, reference: 0.5 });
+        expect(referenceBuyPrice(0.5, 0.53)).toEqual({ ok: false });
+    });
+
+    it("decides the boundary in whole e6 units, not floats", () => {
+        expect(referenceBuyPrice(0.1, 0.12)).toEqual({ ok: true, reference: 0.1 });
+        expect(referenceBuyPrice(0.57, 0.59)).toEqual({ ok: true, reference: 0.57 });
+    });
+});
+
+describe("referenceSellPrice", () => {
+    it("is refused with no bid", () => {
+        expect(referenceSellPrice(0.48, null)).toEqual({ ok: false });
+        expect(referenceSellPrice(undefined, null)).toEqual({ ok: false });
+    });
+
+    it("uses the best bid when the client sent none", () => {
+        expect(referenceSellPrice(undefined, 0.48)).toEqual({ ok: true, reference: 0.48 });
+    });
+
+    it("keeps the higher of the quote and the best bid", () => {
+        expect(referenceSellPrice(0.49, 0.48)).toEqual({ ok: true, reference: 0.49 });
+        expect(referenceSellPrice(0.01, 0.48)).toEqual({ ok: true, reference: 0.48 });
+        expect(limitSellPrice(0.48, 0.01)).toBe(0.46);
+    });
+
+    it("allows exactly 2 cents of fall and refuses more", () => {
+        expect(referenceSellPrice(0.5, 0.48)).toEqual({ ok: true, reference: 0.5 });
+        expect(referenceSellPrice(0.5, 0.47)).toEqual({ ok: false });
     });
 });

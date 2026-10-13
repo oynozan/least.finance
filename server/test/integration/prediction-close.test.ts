@@ -339,3 +339,52 @@ function placingSell(account: AccountDoc, position: PositionDoc): PredictionOrde
         updatedAt: now,
     };
 }
+
+const withBids = (own: Harness, bids: { price: number; size: number }[]) => {
+    const book = own.trader.book.bind(own.trader);
+    own.trader.book = async (tokenId: string) => ({ ...(await book(tokenId)), bids });
+};
+
+test("a sell quoted far under the best bid keeps the bid-based floor", async () => {
+    const own = await predictionHarness();
+    try {
+        await own.service.refreshFloat();
+        const { account, position } = await holder(own);
+        const view = await own.service.close(account, { ...closeInput(position), quotedPrice: 0.01 });
+        await until(async () => own.trader.posts.length === 1);
+        expect(own.trader.posts[0]!.signed).toMatchObject({ side: "SELL", minPrice: 0.46 });
+        const order = (await orderOf(own, view.requestId))!;
+        expect(order).toMatchObject({ quotedPrice: 0.48, clientPrice: 0.01 });
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("a sell the bid fell more than 2 cents under is price_moved and the position stays open", async () => {
+    const own = await predictionHarness();
+    try {
+        const { account, position } = await holder(own);
+        withBids(own, [{ price: 0.44, size: 1000 }]);
+        const input = closeInput(position);
+        const error = await own.service.close(account, input).catch((e) => e);
+        expect(isAppError(error) && error.code).toBe("price_moved");
+        expect(isAppError(error) && error.message).toContain("Nothing was spent.");
+        expect((await positionOf(own, position._id))!.state).toBe("open");
+        expect(await orderOf(own, input.requestId)).toBeNull();
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("a sell into an empty bid side is price_moved", async () => {
+    const own = await predictionHarness();
+    try {
+        const { account, position } = await holder(own);
+        withBids(own, []);
+        const error = await own.service.close(account, closeInput(position)).catch((e) => e);
+        expect(isAppError(error) && error.code).toBe("price_moved");
+        expect((await positionOf(own, position._id))!.state).toBe("open");
+    } finally {
+        await own.database.close();
+    }
+});

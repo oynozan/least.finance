@@ -111,7 +111,10 @@ export type PredictionOrderDoc = {
     amount: Decimal128;
     /** E6 shares, for a sell. */
     shares: Decimal128 | null;
+    /** The price the limit derives from: the less generous of the client's quote and the server's price. */
     quotedPrice: number;
+    /** The client's own quote, kept for audit. */
+    clientPrice?: number;
     limitPrice: number;
     /** The position a sell closes. */
     positionId: ObjectId | null;
