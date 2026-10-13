@@ -164,6 +164,8 @@ export type ErrorCode =
     /** The position is already being sold under another request. */
     | "position_busy"
     | "trading_off"
+    /** LI.FI has no route for the swap. */
+    | "no_route"
     | "internal";
 
 export type ApiError = { code: ErrorCode; message: string };
@@ -196,6 +198,15 @@ export type ClientToServerEvents = {
         payload: { orderId: string; txHashes: string[] },
         ack: (result: Ack<DepositOrderView>) => void,
     ) => void;
+    /** What a swap would pay right now, with no order opened. */
+    "swap:quote": (req: SwapRequest, ack: (result: Ack<SwapQuoteView>) => void) => void;
+    /** Quotes again and opens a swap order; `reviewedMin` is the `toAmountMin` the person saw. */
+    "swap:order": (
+        req: SwapRequest & { reviewedMin: string },
+        ack: (result: Ack<{ order: SwapOrderView; txs: SwapTxView[] }>) => void,
+    ) => void;
+    /** Reports the hashes of the transactions the wallet sent for a swap order, approvals first. */
+    "swap:sent": (payload: { orderId: string; txHashes: string[] }, ack: (result: Ack<SwapOrderView>) => void) => void;
     /** What a withdrawal may be right now. */
     "withdraw:limits": (payload: Record<string, never>, ack: (result: Ack<WithdrawLimits>) => void) => void;
     /** Takes the amount off the balance and pays it to a linked EVM wallet; a repeated `requestId` is the same withdrawal. */
@@ -228,6 +239,10 @@ export type ServerToClientEvents = {
     balances: (payload: BalancesView) => void;
     /** The coins the account's wallets hold on the swap networks, pushed after `account:open` and whenever a read finishes. */
     "swap:holdings": (payload: SwapHoldingsView) => void;
+    /** A swap order was opened or changed state. */
+    "swap:update": (payload: { order: SwapOrderView }) => void;
+    /** The account's open swap orders and those settled in the last 7 days, newest first, at most 50; pushed after `account:open`. */
+    swaps: (payload: { orders: SwapOrderView[] }) => void;
     /** A bridge order changed state. */
     "deposit:progress": (payload: { order: DepositOrderView }) => void;
     /** The access token expired; the server disconnects next, and the client reconnects with a fresh one. */
@@ -382,4 +397,50 @@ export type SwapHoldingsView = {
     readAt: string;
     rows: SwapHoldingRow[];
     read: { wallet: string; network: SwapNetworkId }[];
+};
+
+/** One side of a swap: a coin symbol on a network. */
+export type SwapSide = { token: string; network: SwapNetworkId };
+
+/** `wallet` pays and signs; `receiver` is the person's own wallet on the receiving network's kind. */
+export type SwapRequest = { from: SwapSide; to: SwapSide; amountUSD: string; wallet: string; receiver: string };
+
+/** Amounts are decimal coin units. */
+export type SwapQuoteView = {
+    request: SwapRequest;
+    fromAmount: string;
+    toAmount: string;
+    toAmountMin: string;
+    fees: { name: string; usd: number }[];
+    gasUSD: number;
+    etaSeconds: number;
+    tool: string;
+    needsApproval: boolean;
+};
+
+/** One transaction the wallet signs: EVM ones name their chain, a Solana one is LI.FI's base64 transaction. */
+export type SwapTxView =
+    | {
+          kind: "evm";
+          purpose: "reset" | "approve" | "swap";
+          chainId: number;
+          to: string;
+          data: string;
+          /** Wei, as a decimal string. */
+          value: string;
+      }
+    | { kind: "solana"; data: string };
+
+export type SwapOrderState = "created" | "sent" | "done" | "partial" | "refunded" | "failed" | "expired";
+
+export type SwapOrderView = {
+    id: string;
+    state: SwapOrderState;
+    from: SwapSide & { amount: string };
+    to: SwapSide & { amount: string; received: string | null; receivedSymbol: string | null };
+    wallet: string;
+    txHashes: string[];
+    /** ISO 8601. */
+    createdAt: string;
+    updatedAt: string;
 };

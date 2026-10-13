@@ -5,6 +5,7 @@ import { RateLimiterMemory } from "rate-limiter-flexible";
 import { Server, type Socket } from "socket.io";
 import type { Identity } from "../auth/identity.ts";
 import { orderView, sourceTxView } from "../crosschain/views.ts";
+import { swapOrderView } from "../swaps/views.ts";
 import { positionView, predictionUpdate } from "../predictions/views.ts";
 import { accountView, depositView } from "../deposits/views.ts";
 import { AppError, isAppError, toApiError } from "../errors.ts";
@@ -20,6 +21,9 @@ import {
     predictionQuote,
     sellQuote,
     sourceReport,
+    swapOrder,
+    swapRequest,
+    swapSent,
 } from "../validation.ts";
 
 type SocketData = {
@@ -64,6 +68,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     // Quotes ask outside providers, so they get a limit of their own.
     const quotes = new RateLimiterMemory({ keyPrefix: "quote", points: 30, duration: 60 });
     const orders = new RateLimiterMemory({ keyPrefix: "order", points: 10, duration: 60 });
+    const swapQuotes = new RateLimiterMemory({ keyPrefix: "swap-quote", points: 60, duration: 60 });
+    const swapOrders = new RateLimiterMemory({ keyPrefix: "swap-order", points: 10, duration: 60 });
     const predictionQuotes = new RateLimiterMemory({ keyPrefix: "prediction-quote", points: 60, duration: 60 });
     const predictionOrders = new RateLimiterMemory({ keyPrefix: "prediction", points: 10, duration: 60 });
 
@@ -148,6 +154,14 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                         logger.warn({ err: error }, "Couldn't read positions at sign-in");
                     }
                 });
+                enqueue(account._id.toHexString(), async () => {
+                    try {
+                        const recent = await services.swapOrders.recent(account._id);
+                        socket.emit("swaps", { orders: recent.map(swapOrderView) });
+                    } catch (error) {
+                        logger.warn({ err: error }, "Couldn't read swaps at sign-in");
+                    }
+                });
                 return session;
             }),
         );
@@ -212,6 +226,49 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     input.txHashes,
                 );
                 return orderView(order);
+            }),
+        );
+
+        socket.on("swap:quote", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(swapRequest, payload);
+                await swapQuotes.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many quotes. Try again shortly.");
+                });
+                return services.swapOrders.quote(await boundAccount(socket), socket.data.identity, input);
+            }),
+        );
+
+        socket.on("swap:order", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(swapOrder, payload);
+                await swapOrders.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many swaps. Try again shortly.");
+                });
+                const ip = clientIp(
+                    socket.handshake.headers["x-forwarded-for"],
+                    socket.handshake.address,
+                    config.TRUST_PROXY,
+                );
+                const { order, txs } = await services.swapOrders.create(
+                    await boundAccount(socket),
+                    socket.data.identity,
+                    input,
+                    ip,
+                );
+                return { order: swapOrderView(order), txs };
+            }),
+        );
+
+        socket.on("swap:sent", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(swapSent, payload);
+                const order = await services.swapOrders.reportSent(
+                    await boundAccount(socket),
+                    input.orderId,
+                    input.txHashes,
+                );
+                return swapOrderView(order);
             }),
         );
 
@@ -305,6 +362,22 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push an order update");
+            }
+        });
+    });
+
+    bus.on("swap:updated", ({ order }) => {
+        enqueue(order.accountId.toHexString(), async () => {
+            try {
+                const room = roomOf(order.accountId);
+                const owner = await services.accounts.findById(order.accountId);
+                const payload = { order: swapOrderView(order) };
+                for (const socket of await io.in(room).fetchSockets()) {
+                    if (socket.data.identity.userId === owner?.privyUserId) socket.emit("swap:update", payload);
+                    else socket.leave(room);
+                }
+            } catch (error) {
+                logger.warn({ err: error }, "Couldn't push a swap update");
             }
         });
     });

@@ -1,6 +1,13 @@
 import { EventEmitter } from "node:events";
 import type { ObjectId } from "mongodb";
-import type { AccountDoc, DepositDoc, DepositOrderDoc, PositionDoc, PredictionOrderDoc } from "./db/mongo.ts";
+import type {
+    AccountDoc,
+    DepositDoc,
+    DepositOrderDoc,
+    PositionDoc,
+    PredictionOrderDoc,
+    SwapOrderDoc,
+} from "./db/mongo.ts";
 import type { BalancesView, SwapHoldingsView } from "./protocol.ts";
 
 type Events = {
@@ -8,6 +15,8 @@ type Events = {
     "deposit:credited": [{ deposit: DepositDoc; account: AccountDoc }];
     /** Fired when a bridge order is opened or changes state. */
     "order:updated": [{ order: DepositOrderDoc }];
+    /** Fired when a swap order is opened or changes state. */
+    "swap:updated": [{ order: SwapOrderDoc }];
     /** Fired after each read of an account's wallets. */
     "balances:updated": [{ accountId: ObjectId; privyUserId: string; view: BalancesView }];
     /** Fired after each read of an account's swap holdings. */

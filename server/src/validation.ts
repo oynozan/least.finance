@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AppError } from "./errors.ts";
+import { NETWORKS, type NetworkId } from "./swaps/coins.ts";
 
 export const depositReport = z.object({
     txHash: z
@@ -55,6 +56,38 @@ export const sellQuote = z.object({ positionId: z.string().regex(/^[0-9a-f]{24}$
 export const predictionClose = sellQuote.extend({
     requestId: z.string().regex(UUID, "a UUID"),
     quotedPrice: z.number().gt(0).lt(1),
+});
+
+const swapSide = z.object({
+    token: z.string().trim().min(1).max(16),
+    network: z.enum(NETWORKS.map((network) => network.id) as [NetworkId, ...NetworkId[]]),
+});
+
+export const swapRequest = z.object({
+    from: swapSide,
+    to: swapSide,
+    amountUSD: z
+        .string()
+        .regex(/^\d{1,9}(\.\d{1,6})?$/, "an amount such as 10.50")
+        .refine((amount) => Number(amount) > 0, "an amount over zero"),
+    wallet: z.string().trim().min(32).max(64),
+    receiver: z.string().trim().min(32).max(64),
+});
+
+export const swapOrder = swapRequest.extend({
+    reviewedMin: z.string().regex(/^\d{1,30}(\.\d{1,30})?$/, "an amount such as 0.5"),
+});
+
+// An EVM hash is 0x and 64 hex digits; a Solana signature is 64 bytes in base58
+const swapTxHash = z
+    .string()
+    .trim()
+    .regex(/^(0x[0-9a-fA-F]{64}|[1-9A-HJ-NP-Za-km-z]{64,90})$/, "a transaction hash")
+    .transform((hash) => (hash.startsWith("0x") ? hash.toLowerCase() : hash));
+
+export const swapSent = z.object({
+    orderId: sourceReport.shape.orderId,
+    txHashes: z.array(swapTxHash).min(1).max(4),
 });
 
 /** Parses client input, turning a mismatch into a 400 that names the field. */

@@ -18,6 +18,7 @@ const STATUS: Record<ErrorCode, number> = {
     float_short: 409,
     position_busy: 409,
     trading_off: 503,
+    no_route: 422,
     internal: 500,
 };
 

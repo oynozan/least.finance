@@ -39,6 +39,7 @@ import { SwapCatalog } from "./swaps/catalog.ts";
 import { createSwapClients } from "./swaps/clients.ts";
 import { SwapHoldings, multicallReader, solanaReader } from "./swaps/holdings.ts";
 import { createLifi } from "./swaps/lifi.ts";
+import { SwapOrders } from "./swaps/orders.ts";
 import { attachSockets } from "./socket/sockets.ts";
 import { Sweeper } from "./withdrawals/sweeper.ts";
 
@@ -174,8 +175,19 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             // Read lazily: the service below needs the markets, so it's built after them
             maxOrderUSD: (): number | null => service.maxOrderUSD(),
         });
+        const lifi = createLifi({ url: config.LIFI_URL, apiKey: config.LIFI_API_KEY });
+        const swapClients = createSwapClients({
+            ethereum: config.ETHEREUM_RPC_URLS,
+            arbitrum: config.ARBITRUM_RPC_URLS,
+            base: config.BASE_RPC_URLS,
+            optimism: config.OPTIMISM_RPC_URLS,
+            polygon: config.POLYGON_RPC_URLS,
+            bnb: config.BNB_RPC_URLS,
+            avalanche: config.AVALANCHE_RPC_URLS,
+            arc: config.ARC_RPC_URLS,
+        });
         const swapCatalog = new SwapCatalog({
-            lifi: createLifi({ url: config.LIFI_URL, apiKey: config.LIFI_API_KEY }),
+            lifi,
             logger: logger.child({ component: "swaps" }),
             syncMs: config.SWAPS_CATALOG_SYNC_MS,
         });
@@ -184,20 +196,20 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             bus,
             logger: logger.child({ component: "swap-holdings" }),
             catalog: swapCatalog,
-            readEvm: multicallReader(
-                createSwapClients({
-                    ethereum: config.ETHEREUM_RPC_URLS,
-                    arbitrum: config.ARBITRUM_RPC_URLS,
-                    base: config.BASE_RPC_URLS,
-                    optimism: config.OPTIMISM_RPC_URLS,
-                    polygon: config.POLYGON_RPC_URLS,
-                    bnb: config.BNB_RPC_URLS,
-                    avalanche: config.AVALANCHE_RPC_URLS,
-                    arc: config.ARC_RPC_URLS,
-                }),
-            ),
+            readEvm: multicallReader(swapClients),
             readSolana: solanaReader(solana),
             now: overrides.now,
+        });
+        const swapOrders = new SwapOrders({
+            collections,
+            lifi,
+            catalog: swapCatalog,
+            holdings: swapHoldings,
+            clients: swapClients,
+            identity,
+            bus,
+            integrator: config.LIFI_INTEGRATOR,
+            fee: config.LIFI_FEE,
         });
         const sweeper = new Sweeper({
             client,
@@ -277,6 +289,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             predictions: service,
             swapCatalog,
             swapHoldings,
+            swapOrders,
             sweeper,
         };
 

@@ -1,5 +1,5 @@
 import { MongoClient, MongoServerError, type Collection, type Db, type Decimal128, type ObjectId } from "mongodb";
-import type { Hex, OrderState, WithdrawalState } from "../protocol.ts";
+import type { Hex, OrderState, SwapNetworkId, SwapOrderState, WithdrawalState } from "../protocol.ts";
 import { mergeAccountsByPerson, type MigrationReport } from "./migrations.ts";
 
 /** A person's account. Addresses are stored lowercase. */
@@ -189,6 +189,34 @@ export type WithdrawalDoc = {
     updatedAt: Date;
 };
 
+/** A swap through LI.FI, signed by the person's own wallet; amounts are decimal coin units and `units` are the integers LI.FI works in. */
+export type SwapOrderDoc = {
+    _id: ObjectId;
+    accountId: ObjectId;
+    /** The paying wallet, in the form Privy knows it. */
+    wallet: string;
+    /** The person's wallet on the receiving network. */
+    receiver: string;
+    from: { token: string; network: SwapNetworkId; units: string; amount: string };
+    to: { token: string; network: SwapNetworkId; amount: string; minAmount: string; units: string; minUnits: string };
+    /** LI.FI's key for the route's tool, which the status call needs. */
+    tool: string;
+    toolName: string;
+    fees: { name: string; usd: number }[];
+    gasUSD: number;
+    etaSeconds: number;
+    state: SwapOrderState;
+    /** Approvals first, the swap last. */
+    txHashes: string[];
+    received: string | null;
+    receivedSymbol: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+};
+
+/** The IP an order was placed from, kept apart from the order and dropped after 30 days. */
+export type SwapIpDoc = { _id: ObjectId; orderId: ObjectId; ip: string; expiresAt: Date };
+
 /** How far a chain scan has got. */
 export type CursorDoc = { _id: string; block: number; updatedAt: Date };
 
@@ -203,6 +231,8 @@ export type Collections = {
     positions: Collection<PositionDoc>;
     predictionRedemptions: Collection<PredictionRedemptionDoc>;
     withdrawals: Collection<WithdrawalDoc>;
+    swapOrders: Collection<SwapOrderDoc>;
+    swapIps: Collection<SwapIpDoc>;
     cursors: Collection<CursorDoc>;
     counters: Collection<CounterDoc>;
 };
@@ -234,6 +264,8 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             positions: db.collection("positions"),
             predictionRedemptions: db.collection("prediction_redemptions"),
             withdrawals: db.collection("withdrawals"),
+            swapOrders: db.collection("swap_orders"),
+            swapIps: db.collection("swap_ips"),
             cursors: db.collection("cursors"),
             counters: db.collection("counters"),
         };
@@ -264,6 +296,8 @@ async function ensureIndexes({
     positions,
     predictionRedemptions,
     withdrawals,
+    swapOrders,
+    swapIps,
 }: Collections) {
     await Promise.all([
         accounts.createIndexes([
@@ -320,6 +354,11 @@ async function ensureIndexes({
             { key: { accountId: 1, requestId: 1 }, name: "request_unique", unique: true },
             { key: { state: 1, createdAt: 1 }, name: "state_created" },
         ]),
+        swapOrders.createIndexes([
+            { key: { accountId: 1, createdAt: -1 }, name: "account_orders" },
+            { key: { state: 1, updatedAt: 1 }, name: "state_updated" },
+        ]),
+        swapIps.createIndexes([{ key: { expiresAt: 1 }, name: "expires", expireAfterSeconds: 0 }]),
     ]);
 }
 

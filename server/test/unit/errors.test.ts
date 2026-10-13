@@ -33,6 +33,7 @@ describe("AppError", () => {
         expect(new AppError("float_short", "x").status).toBe(409);
         expect(new AppError("position_busy", "x").status).toBe(409);
         expect(new AppError("trading_off", "x").status).toBe(503);
+        expect(new AppError("no_route", "x").status).toBe(422);
     });
 
     it("is recognised by isAppError", () => {

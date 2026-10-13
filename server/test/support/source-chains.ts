@@ -13,8 +13,8 @@ import { bsc, mainnet } from "viem/chains";
 import { MULTICALL3_CODE } from "../fixtures/multicall3.ts";
 import { MULTICALL3 } from "../../src/swaps/holdings.ts";
 
-/** Returns `sload(calldataload(4))`: the first argument, read as a storage slot. */
-const TOKEN_CODE = "0x6004355460005260206000f3";
+/** Returns `sload(calldataload(4))`, the first argument read as a storage slot; for `allowance` it returns `sload(calldataload(36))`, the spender's slot. */
+const TOKEN_CODE: Hex = "0x60003560e01c63dd62ed3e14601b576004355460005260206000f35b6024355460005260206000f3";
 
 /** Talks to a local Ethereum (1) or BNB Chain (56) the way a user's wallet would. */
 export function sourceChain(url: string, chainId: 1 | 56) {
@@ -46,6 +46,14 @@ export function sourceChain(url: string, chainId: 1 | 56) {
             await client.setStorageAt({
                 address: token,
                 index: pad(owner, { size: 32 }),
+                value: numberToHex(units, { size: 32 }),
+            });
+        },
+        /** Sets what the stand-in token's `allowance(owner, spender)` returns for any owner. */
+        async setAllowance(token: Address, spender: Address, units: bigint) {
+            await client.setStorageAt({
+                address: token,
+                index: pad(spender, { size: 32 }),
                 value: numberToHex(units, { size: 32 }),
             });
         },
