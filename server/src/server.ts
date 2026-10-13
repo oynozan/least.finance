@@ -33,6 +33,8 @@ import { PredictionResolver } from "./predictions/resolver.ts";
 import { PredictionTracker } from "./predictions/tracker.ts";
 import { traderNeeded, withTimeouts, type PoolTrader } from "./predictions/trader.ts";
 import { createPolymarketData } from "./markets/polymarket-data.ts";
+import { createDefiLlama } from "./prices/defillama.ts";
+import { PriceHistory } from "./prices/history.ts";
 import { createApp } from "./http/app.ts";
 import type { Services } from "./services.ts";
 import { Sessions } from "./sessions.ts";
@@ -249,6 +251,10 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             pollMs: config.SWAPS_POLL_MS,
             now: overrides.now,
         });
+        const priceHistory = new PriceHistory({
+            llama: createDefiLlama({ url: config.DEFILLAMA_COINS_URL }),
+            logger: logger.child({ component: "prices" }),
+        });
         const sweeper = new Sweeper({
             client,
             keyring,
@@ -325,6 +331,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             orders,
             markets,
             predictions: service,
+            priceHistory,
             swapCatalog,
             swapHoldings,
             swapOrders,

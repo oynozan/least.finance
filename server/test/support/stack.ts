@@ -17,6 +17,7 @@ import { startServer, type RunningServer } from "../../src/server.ts";
 import { startArcEmulator, type ArcEmulator, type EmulatorOptions } from "./arc-emulator.ts";
 import { fakePoolTrader, type FakeTrader } from "./fake-trader.ts";
 import { FakeBridge } from "./fake-bridge.ts";
+import { startFakeDefiLlama, type FakeDefiLlama } from "./fake-defillama.ts";
 import { startFakeLifi, type FakeLifi } from "./fake-lifi.ts";
 import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
@@ -110,6 +111,8 @@ export type Stack = {
     trader: FakeTrader;
     /** The LI.FI stand-in the server reads swap coin prices from. */
     lifi: FakeLifi;
+    /** The DefiLlama stand-in the server reads price history from. */
+    llama: FakeDefiLlama;
     chain: ChainHelpers;
     /** The server's treasury address, where withdrawals are paid from. */
     treasury: Address;
@@ -166,6 +169,7 @@ export async function startStack({
     const solanaRpc = await startFakeSolanaRpc();
     const polymarket = await startFakePolymarket();
     const lifi = await startFakeLifi({ prices: SWAP_PRICES });
+    const llama = await startFakeDefiLlama({ prices: SWAP_PRICES });
     const privy = await startFakePrivy();
     const emulator = await startArcEmulator(anvilUrl, emulatorOptions);
     const config = loadConfig({
@@ -190,6 +194,7 @@ export async function startStack({
         POLYMARKET_GAMMA_URL: polymarket.url,
         POLYMARKET_CLOB_URL: polymarket.url,
         LIFI_URL: lifi.url,
+        DEFILLAMA_COINS_URL: llama.url,
         ...env,
     });
     const bridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates: { ETH: 3000, BNB: 600, USDC: 1, USDT: 1 } });
@@ -221,6 +226,7 @@ export async function startStack({
         bridge,
         trader,
         lifi,
+        llama,
         chain,
         treasury,
         async fundTreasury(usdc) {
@@ -257,6 +263,7 @@ export async function startStack({
             await solanaRpc.stop();
             await polymarket.stop();
             await lifi.stop();
+            await llama.stop();
             await privy.stop();
         },
     };

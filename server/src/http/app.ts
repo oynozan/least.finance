@@ -8,7 +8,7 @@ import type { Identity } from "../auth/identity.ts";
 import { AppError, toApiError } from "../errors.ts";
 import type { ApiError } from "../protocol.ts";
 import type { Services } from "../services.ts";
-import { depositPage, depositReport, marketId, marketSearch, parse } from "../validation.ts";
+import { depositPage, depositReport, marketId, marketSearch, parse, priceHistory } from "../validation.ts";
 
 const REQUEST_ID = /^[\w.:-]{1,64}$/;
 
@@ -119,6 +119,16 @@ export function createApp(services: Services): express.Express {
     // Public: the swap coins and their prices are the same for everyone.
     app.get("/swaps/catalog", noStore, limit(120, 60_000), (_req, res) => {
         res.json(services.swapCatalog.view());
+    });
+
+    // Public: the same for everyone, and it's only DefiLlama's data. The browser never calls DefiLlama itself.
+    app.get("/prices/history", noStore, limit(120, 60_000), async (req, res) => {
+        const { range, coins } = parse(priceHistory, req.query);
+        const view = await services.priceHistory.view(range, coins);
+        if (!view) throw new AppError("unavailable", "Prices are unavailable right now. Try again shortly.");
+        // A range changes every few minutes at most, so a minute in the browser misses nothing.
+        res.set("Cache-Control", "public, max-age=60");
+        res.json(view);
     });
 
     const v1 = express.Router();

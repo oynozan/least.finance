@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AppError } from "./errors.ts";
-import { NETWORKS, type NetworkId } from "./swaps/coins.ts";
+import { PRICE_RANGES } from "./prices/history.ts";
+import { COINS, NETWORKS, type NetworkId } from "./swaps/coins.ts";
 
 export const depositReport = z.object({
     txHash: z
@@ -34,6 +35,24 @@ export const depositPage = z.object({
 export const marketSearch = z.object({ q: z.string().max(100) });
 
 export const marketId = z.string().regex(/^\d{1,12}$/, "a market id");
+
+const SWAP_SYMBOLS = new Set(COINS.map((coin) => coin.symbol));
+
+export const priceHistory = z.object({
+    range: z.enum(PRICE_RANGES),
+    // Comma-separated swap coin symbols, such as "ETH,BTC"; every coin when left out
+    coins: z
+        .string()
+        .max(100)
+        .optional()
+        .transform((list, ctx) => {
+            if (list === undefined) return undefined;
+            const symbols = [...new Set(list.split(",").map((symbol) => symbol.trim().toUpperCase()))];
+            if (symbols.every((symbol) => SWAP_SYMBOLS.has(symbol))) return symbols;
+            ctx.addIssue({ code: "custom", message: "comma-separated coin symbols such as ETH,BTC" });
+            return z.NEVER;
+        }),
+});
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

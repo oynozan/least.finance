@@ -113,6 +113,9 @@ const fields = z.object({
     /** How often sent swaps are checked for ones that are due a status call. */
     SWAPS_POLL_MS: z.coerce.number().int().min(100).default(2_000),
 
+    /** DefiLlama's coin prices API; with a Pro key, `https://pro-api.llama.fi/<key>/coins`. */
+    DEFILLAMA_COINS_URL: z.url().default("https://coins.llama.fi"),
+
     /** Real orders go to Polymarket only while this is on. */
     PREDICTIONS_TRADING: z.enum(["on", "off"]).default("off"),
     /** Owner key of the pool's Polymarket deposit wallet. */

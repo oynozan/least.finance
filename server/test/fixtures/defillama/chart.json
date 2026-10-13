@@ -1,0 +1,65 @@
+{
+    "recordedFrom": "https://coins.llama.fi/chart/coingecko:ethereum,coingecko:usd-coin?end=1791892800&span=6&period=1h",
+    "coins": {
+        "coingecko:ethereum": {
+            "symbol": "ETH",
+            "confidence": 0.99,
+            "prices": [
+                {
+                    "timestamp": 1791874800,
+                    "price": 2532.429633604665
+                },
+                {
+                    "timestamp": 1791878400,
+                    "price": 2528.8618054248436
+                },
+                {
+                    "timestamp": 1791882000,
+                    "price": 2516.82235236441
+                },
+                {
+                    "timestamp": 1791885600,
+                    "price": 2512.2739491514285
+                },
+                {
+                    "timestamp": 1791889200,
+                    "price": 2496.094485661592
+                },
+                {
+                    "timestamp": 1791892800,
+                    "price": 2498.4698722847916
+                }
+            ]
+        },
+        "coingecko:usd-coin": {
+            "symbol": "USDC",
+            "confidence": 0.99,
+            "prices": [
+                {
+                    "timestamp": 1791874800,
+                    "price": 0.9998329810273402
+                },
+                {
+                    "timestamp": 1791878400,
+                    "price": 0.999812684593105
+                },
+                {
+                    "timestamp": 1791882000,
+                    "price": 0.9997880267492859
+                },
+                {
+                    "timestamp": 1791885600,
+                    "price": 0.9997964925163701
+                },
+                {
+                    "timestamp": 1791889200,
+                    "price": 0.9997860539698824
+                },
+                {
+                    "timestamp": 1791892800,
+                    "price": 0.9998092569760734
+                }
+            ]
+        }
+    }
+}

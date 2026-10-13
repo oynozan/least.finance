@@ -10,6 +10,7 @@ import type { DepositOrders } from "./crosschain/orders.ts";
 import type { Bus } from "./events.ts";
 import type { MarketService } from "./markets/markets.ts";
 import type { PredictionService } from "./predictions/predictions.ts";
+import type { PriceHistory } from "./prices/history.ts";
 import type { Sessions } from "./sessions.ts";
 import type { SwapCatalog } from "./swaps/catalog.ts";
 import type { SwapHoldings } from "./swaps/holdings.ts";
@@ -32,6 +33,7 @@ export type Services = {
     orders: DepositOrders;
     markets: MarketService;
     predictions: PredictionService;
+    priceHistory: PriceHistory;
     swapCatalog: SwapCatalog;
     swapHoldings: SwapHoldings;
     swapOrders: SwapOrders;
