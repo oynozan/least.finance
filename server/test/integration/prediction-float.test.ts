@@ -100,6 +100,8 @@ test("a fill releases the hold and counts as unread until the balance is read", 
     expect(after).toEqual({ balance: 50_000_000n, held: 0n, unread: 10_000_000n });
     expect(after.balance - after.held - after.unread).toBe(40_000_000n);
 
+    // The settle's refresh installs the mocked read in the background
+    await until(async () => (readBalance as ((e6: bigint) => void) | undefined) !== undefined);
     readBalance(40_000_000n);
     await until(async () => (await pool(h)).unread === 0n);
     expect(await pool(h)).toEqual({ balance: 40_000_000n, held: 0n, unread: 0n });

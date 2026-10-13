@@ -161,7 +161,7 @@ test("a clear post answer that turns up missing still gives up after 2 minutes",
     const order = await posted(view.requestId);
     await sent(order);
     h.trader.setLookup(order.orderHash!, { kind: "missing" });
-    expect(order.postUnknownAt ?? null).toBeNull();
+    expect((await orderOf(view.requestId))!.postUnknownAt ?? null).toBeNull();
 
     await tracker.tick();
     expect((await orderOf(view.requestId))!.state).toBe("posted");
@@ -516,4 +516,69 @@ test("an unknown post that filled is settled by the tracker, not refunded", asyn
     const s = await h.state(account._id);
     expect(s.balance).toBe(wei("90"));
     expect(s.sum).toBe(s.balance);
+});
+
+test("a post whose answer never came back is held, then decided by the trades, not refunded at 2 minutes", async () => {
+    const account = await h.seedAccount("100");
+    // The post hangs forever, as when the process dies before the answer
+    h.trader.onNext(TOKEN, "hold");
+    const view = await h.service.place(account, input("10"));
+    const order = await posted(view.requestId);
+    vi.spyOn(h.service, "submitting").mockReturnValue(false);
+    try {
+        expect((await orderOf(view.requestId))!.postUnknownAt).toBeInstanceOf(Date);
+        h.trader.setFound(order.orderHash!, { makingE6: 10_000_000n, takingE6: 20_000_000n });
+
+        clock += 121_000;
+        await tracker.tick();
+        expect((await orderOf(view.requestId))!.state).toBe("posted");
+        expect(h.trader.findFills).not.toContain(order.orderHash);
+
+        clock += 15 * MIN;
+        await tracker.tick();
+        await tracker.tick();
+        expect((await orderOf(view.requestId))!.state).toBe("filled");
+        expect(h.trader.findFills.filter((hash) => hash === order.orderHash)).toHaveLength(1);
+        const s = await h.state(account._id);
+        expect(s.balance).toBe(wei("90"));
+        expect(s.sum).toBe(s.balance);
+    } finally {
+        vi.restoreAllMocks();
+    }
+});
+
+test("a settle that throws after a filled answer leaves the order held and booked once by findFill", async () => {
+    const account = await h.seedAccount("100");
+    vi.spyOn(h.service, "settle").mockRejectedValueOnce(new Error("the database blinked"));
+    const view = await h.service.place(account, input("10"));
+    const order = await posted(view.requestId);
+    await sent(order);
+    // The exchange doesn't know the order by id, only the trades name it
+    h.trader.setLookup(order.orderHash!, { kind: "missing" });
+    h.trader.setFound(order.orderHash!, { makingE6: 10_000_000n, takingE6: 20_000_000n });
+
+    clock += 121_000;
+    await tracker.tick();
+    expect((await orderOf(view.requestId))!.state).toBe("posted");
+    expect(h.trader.findFills).not.toContain(order.orderHash);
+
+    clock += 15 * MIN;
+    await tracker.tick();
+    await tracker.tick();
+    expect((await orderOf(view.requestId))!.state).toBe("filled");
+    expect(h.trader.findFills.filter((hash) => hash === order.orderHash)).toHaveLength(1);
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("90"));
+    expect(s.sum).toBe(s.balance);
+});
+
+test("no order is taken once orders are stopped", async () => {
+    const stopped = await predictionHarness();
+    try {
+        const account = await stopped.seedAccount("100");
+        stopped.service.stopOrders();
+        await expect(stopped.service.place(account, input("10"))).rejects.toMatchObject({ code: "trading_off" });
+    } finally {
+        await stopped.database.close();
+    }
 });

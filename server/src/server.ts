@@ -389,6 +389,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             resolveNow: () => predictionResolver.tick(),
             async close() {
                 closed = true;
+                service.stopOrders();
                 if (connecting) clearTimeout(connecting);
                 await predictionReconciler.stop();
                 await predictionRedeemer.stop();

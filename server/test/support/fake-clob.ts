@@ -250,9 +250,15 @@ export async function startFakeClob(): Promise<FakeClob> {
             if (tradesStatus !== null) return send(response, tradesStatus, { error: "trades are down" });
             const id = url.searchParams.get("id");
             const asset = url.searchParams.get("asset_id");
+            // Like the exchange, a trade at the `after` second itself is left out
+            const after = Number(url.searchParams.get("after") ?? 0);
             const data = id
                 ? [trades.get(id)].filter((trade) => trade !== undefined)
-                : [...trades.values()].filter((trade) => !asset || (trade as { asset_id?: string }).asset_id === asset);
+                : [...trades.values()].filter(
+                      (trade) =>
+                          (!asset || (trade as { asset_id?: string }).asset_id === asset) &&
+                          Number((trade as { match_time?: string }).match_time ?? 0) > after,
+                  );
             const cursor = url.searchParams.get("next_cursor");
             const offset = cursor && cursor !== "MA==" ? Number(Buffer.from(cursor, "base64").toString()) : 0;
             const page = data.slice(offset, offset + tradesPage);

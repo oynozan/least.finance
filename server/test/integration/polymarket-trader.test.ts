@@ -280,7 +280,19 @@ describe("the Polymarket trader", () => {
             fake.setTrade("c", tradeOf("c", `0x${"e".repeat(64)}`, "BUY", [makerOrder("0.90", "9")]));
             expect(await find("buy")).toEqual({ makingE6: 5_080_000n, takingE6: 10_000_000n });
             expect(await find("sell")).toEqual({ makingE6: 10_000_000n, takingE6: 5_080_000n });
-            expect(fake.tradeQueries.at(-1)).toContain(`after=${since.getTime() / 1000}`);
+            expect(fake.tradeQueries.at(-1)).toContain(`after=${since.getTime() / 1000 - 600}`);
+        });
+
+        it("finds a trade stamped a second before the window start", async () => {
+            fake.clearTrades();
+            fake.setTrade("a", tradeOf("a", FILL, "BUY", [makerOrder("0.50", "6")]));
+            const late = await trader.findFill({
+                orderHash: FILL,
+                tokenId: TOKEN,
+                side: "buy",
+                since: new Date(since.getTime() + 1000),
+            });
+            expect(late).toEqual({ makingE6: 3_000_000n, takingE6: 6_000_000n });
         });
 
         it("answers null when no trade names the order", async () => {

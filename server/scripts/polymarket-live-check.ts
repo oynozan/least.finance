@@ -92,7 +92,8 @@ const buy = await trader.signBuy({
     maxPrice: limitBuyPrice(buyQuote.worstPrice, meta.tickSize),
 });
 console.log(`Computed order hash: ${buy.orderHash}`);
-const boughtAt = new Date(Date.now() - 60_000);
+// Production passes the time it recorded just before the post as findFill's `since`
+const postedAt = new Date();
 const bought = await trader.post(buy);
 console.log(
     `Buy post: ${JSON.stringify(bought, (_key, value: unknown) => (typeof value === "bigint" ? value.toString() : value))}`,
@@ -134,7 +135,7 @@ if (looked.kind !== "filled") {
 const sharesE6 = looked.takingE6;
 
 // 6b. the pool's trade records name the taker order id, and `after` takes a unix-seconds timestamp
-const traded = await trader.findFill({ orderHash: buy.orderHash, tokenId, side: "buy", since: boughtAt });
+const traded = await trader.findFill({ orderHash: buy.orderHash, tokenId, side: "buy", since: postedAt });
 verdict(
     "trade records name the taker order id",
     traded !== null && traded !== "unlinked",
@@ -144,6 +145,29 @@ verdict(
           ? "trades exist without a taker order id; findFill cannot link them"
           : `findFill found making ${traded.makingE6}, taking ${traded.takingE6}`,
 );
+
+if (bought.kind === "filled") {
+    const same =
+        traded !== null &&
+        traded !== "unlinked" &&
+        traded.makingE6 === bought.makingE6 &&
+        traded.takingE6 === bought.takingE6;
+    verdict(
+        "findFill amounts equal the post's matched amounts",
+        same,
+        same
+            ? `both making ${bought.makingE6}, taking ${bought.takingE6}`
+            : `post making ${bought.makingE6}, taking ${bought.takingE6}; findFill ${
+                  traded === null || traded === "unlinked"
+                      ? String(traded)
+                      : `making ${traded.makingE6}, taking ${traded.takingE6}`
+              }`,
+    );
+    if (!same) {
+        console.error("findFill disagrees with the post, so an unknown post would be booked wrongly; stopping.");
+        process.exit(1);
+    }
+}
 
 // 7. sell everything at the bid
 const [sellBook, sellMeta] = await Promise.all([trader.book(tokenId), trader.meta(tokenId)]);

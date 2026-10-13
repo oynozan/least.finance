@@ -484,6 +484,8 @@ test("a post that answers unknown records postUnknownAt, and a clear answer does
     await until(async () => (await orderOf(unknown.requestId))?.postUnknownAt != null);
     expect(await orderOf(unknown.requestId)).toMatchObject({ state: "posted" });
 
+    h.trader.onNext(TOKEN, "delay");
     const clear = await h.service.place(account, input("10"));
-    expect((await settled(clear.requestId)).postUnknownAt ?? null).toBeNull();
+    await until(async () => (await orderOf(clear.requestId))?.clobOrderId != null);
+    expect(await orderOf(clear.requestId)).toMatchObject({ state: "posted", postUnknownAt: null });
 });

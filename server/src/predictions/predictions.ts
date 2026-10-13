@@ -88,9 +88,17 @@ export class PredictionService {
     /** Orders this process is still sending, so the tracker doesn't judge a post that hasn't answered yet. */
     readonly #submitting = new Set<string>();
 
+    /** Set at shutdown; no new order is taken after. */
+    #stopped = false;
+
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+    }
+
+    /** Stops taking new orders, so a shutdown doesn't post one it can't follow. */
+    stopOrders(): void {
+        this.#stopped = true;
     }
 
     submitting(id: ObjectId): boolean {
@@ -464,6 +472,8 @@ export class PredictionService {
                     conditionId: meta.conditionId,
                     limitPrice,
                     postedAt: now,
+                    // Marked unknown from the moment it is posted, so a lost answer is held by the tracker, never refunded blind
+                    postUnknownAt: now,
                     updatedAt: now,
                 },
             },
@@ -471,19 +481,14 @@ export class PredictionService {
         );
         if (!posted) return;
 
-        // A post with no clear answer is marked, so the tracker holds it instead of refunding it blind
         const result = await trader.post(signed).catch(() => ({ kind: "unknown" }) as const);
-        if (result.kind === "unknown")
-            await predictionOrders.updateOne(
-                { _id: order._id, state: "posted" },
-                { $set: { postUnknownAt: new Date(this.#now()), updatedAt: new Date() } },
-            );
-        else if (result.kind === "filled") await this.settle(posted, result.makingE6, result.takingE6);
+        if (result.kind === "unknown") return;
+        if (result.kind === "filled") await this.settle(posted, result.makingE6, result.takingE6);
         else if (result.kind === "rejected") await this.fail(posted, result.reason, "posted");
         else if (result.kind === "delayed")
             await predictionOrders.updateOne(
                 { _id: order._id, state: "posted" },
-                { $set: { clobOrderId: result.orderId } },
+                { $set: { clobOrderId: result.orderId, postUnknownAt: null } },
             );
     }
 
@@ -813,7 +818,7 @@ export class PredictionService {
 
     #trader(): PoolTrader {
         const trader = this.#deps.trader();
-        if (this.#deps.config.PREDICTIONS_TRADING !== "on" || !trader)
+        if (this.#deps.config.PREDICTIONS_TRADING !== "on" || !trader || this.#stopped)
             throw new AppError("trading_off", `Predictions aren't live yet. ${NOTHING_SPENT}`);
         return trader;
     }

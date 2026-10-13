@@ -66,6 +66,8 @@ function hashingSigner(inner: Signer, captures: AsyncLocalStorage<Capture>): Sig
 }
 
 const E6 = 1_000_000n;
+/** How far before the asked-for time findFill starts reading, so clock skew or an exclusive bound can't hide the order's own trade. */
+const FIND_FILL_MARGIN_MS = 600_000;
 /** Pages of the pool's trades findFill reads before it gives up rather than answer "none". */
 const FIND_FILL_PAGES = 5;
 /** Trades priced per lookup, so one order can't hold the call for long. */
@@ -288,7 +290,7 @@ export async function createPolymarketTrader(
         async findFill({ orderHash, tokenId, side, since }): Promise<FoundFill | null> {
             const pages = listAccountTrades(client, {
                 assetId: tokenId,
-                after: String(Math.floor(since.getTime() / 1000)),
+                after: String(Math.floor((since.getTime() - FIND_FILL_MARGIN_MS) / 1000)),
             })[Symbol.asyncIterator]();
             const wanted = orderHash.toLowerCase();
             let shares = 0n;
