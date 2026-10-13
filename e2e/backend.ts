@@ -78,3 +78,17 @@ export const resolveNow = () => call<object>("/predictions/resolve-now", {}).the
 /** Cuts the person's open position on a token down to `shares`, which leaves it too small to sell. */
 export const shrinkPosition = (address: string, tokenId: string, shares: string) =>
     call<object>("/positions/shrink", { address, tokenId, shares }).then(() => undefined);
+
+/** Serves LI.FI's status for a sent swap's last hash; `receiving` is the coin and amount that arrived, the order's own by default. */
+export const setSwapStatus = (
+    txHash: string,
+    status: "DONE" | "FAILED" | "PENDING" | "NOT_FOUND",
+    options: { substatus?: string; receiving?: { symbol?: string; amount?: string } } = {},
+) => call<object>("/lifi/status", { txHash, status, ...options }).then(() => undefined);
+
+/** Merges `patch` into the next raw LI.FI quote, nested objects included. */
+export const nextSwapQuote = (patch: Record<string, unknown>) =>
+    call<object>("/lifi/quote", { patch }).then(() => undefined);
+
+/** Answers the next LI.FI quote request with no route. */
+export const noSwapRoute = () => call<object>("/lifi/no-route", {}).then(() => undefined);

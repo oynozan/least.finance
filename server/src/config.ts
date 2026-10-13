@@ -108,6 +108,8 @@ const fields = z.object({
     LIFI_FEE: z.coerce.number().min(0).lt(0.1).default(0),
     /** How often the swap coins' prices are re-read from LI.FI. */
     SWAPS_CATALOG_SYNC_MS: z.coerce.number().int().min(10_000).default(300_000),
+    /** How often sent swaps are checked for ones that are due a status call. */
+    SWAPS_POLL_MS: z.coerce.number().int().min(100).default(2_000),
 
     /** Real orders go to Polymarket only while this is on. */
     PREDICTIONS_TRADING: z.enum(["on", "off"]).default("off"),

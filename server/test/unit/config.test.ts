@@ -36,6 +36,7 @@ describe("loadConfig", () => {
         expect(config.PREDICTIONS_TRADING).toBe("off");
         expect(config.POLYMARKET_FLOAT_USD).toBe(100);
         expect(config.PREDICTIONS_POLL_MS).toBe(2_000);
+        expect(config.SWAPS_POLL_MS).toBe(2_000);
         expect(config.POLYGON_RPC_URL).toBe("https://polygon.drpc.org");
         expect(config.POLYMARKET_POOL_KEY).toBeUndefined();
     });

@@ -20,6 +20,7 @@ import { loadConfig } from "../../src/config.ts";
 import type { DepositDoc } from "../../src/db/mongo.ts";
 import { formatUsdc, fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { startServer } from "../../src/server.ts";
+import { COINS, NETWORKS } from "../../src/swaps/coins.ts";
 import { startAnvil } from "../support/anvil.ts";
 import { startArcEmulator } from "../support/arc-emulator.ts";
 import { FakeBridge } from "../support/fake-bridge.ts";
@@ -271,6 +272,58 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
     /** Closes a market with its result: `prices` such as ["1", "0"], or ["0.5", "0.5"] for a 50/50. */
     "/polymarket/resolve": async ({ marketId, prices }) => {
         polymarket.resolve(String(marketId), prices as string[]);
+        return {};
+    },
+    /** Serves LI.FI status for a sent swap's last hash; `receiving` names the coin and amount that arrived, the order's own by default. */
+    "/lifi/status": async ({ txHash, status, substatus, receiving }) => {
+        const hash = String(txHash);
+        const orders = services.database.collections.swapOrders;
+        let order = await orders.findOne({ txHashes: { $elemMatch: { $eq: hash } } });
+        // The wallet's report may still be on its way to the server
+        for (let tries = 0; !order && tries < 50; tries++) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            order = await orders.findOne({ txHashes: { $elemMatch: { $eq: hash } } });
+        }
+        if (!order) throw new Error("No swap with that hash");
+        const want = receiving as { symbol?: string; amount?: string } | undefined;
+        const symbol = want?.symbol ?? order.to.token;
+        const network = NETWORKS.find((candidate) => candidate.id === order.to.network)!;
+        const coin = COINS.find((candidate) => candidate.symbol === symbol)?.entries.find(
+            (candidate) => candidate.network === network.id,
+        );
+        const decimals = coin?.decimals ?? 18;
+        const units = want?.amount === undefined ? order.to.units : parseUnits(want.amount, decimals).toString();
+        lifi.setStatus(hash, {
+            status,
+            substatus: substatus ?? null,
+            fromAddress: order.wallet,
+            toAddress: order.receiver,
+            sending: { txHash: hash },
+            receiving:
+                status === "DONE"
+                    ? {
+                          txHash: `0x${"ab".repeat(32)}`,
+                          chainId: network.chainId,
+                          amount: units,
+                          token: {
+                              address: coin?.address ?? "0x1111111111111111111111111111111111111111",
+                              symbol,
+                              decimals,
+                              chainId: network.chainId,
+                          },
+                      }
+                    : null,
+        });
+        return {};
+    },
+    /** Merges `patch` into the next raw LI.FI quote. */
+    "/lifi/quote": async ({ patch }) => {
+        lifi.nextQuote(patch as Record<string, unknown>);
+        return {};
+    },
+    /** Answers the next LI.FI quote request with no route. */
+    "/lifi/no-route": async () => {
+        lifi.noRoute();
         return {};
     },
     /** Runs one pass of the resolver now, instead of waiting for its timer. */

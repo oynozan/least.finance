@@ -40,6 +40,7 @@ import { createSwapClients } from "./swaps/clients.ts";
 import { SwapHoldings, multicallReader, solanaReader } from "./swaps/holdings.ts";
 import { createLifi } from "./swaps/lifi.ts";
 import { SwapOrders } from "./swaps/orders.ts";
+import { SwapTracker } from "./swaps/tracker.ts";
 import { attachSockets } from "./socket/sockets.ts";
 import { Sweeper } from "./withdrawals/sweeper.ts";
 
@@ -211,6 +212,17 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             integrator: config.LIFI_INTEGRATOR,
             fee: config.LIFI_FEE,
         });
+        const swapTracker = new SwapTracker({
+            collections,
+            lifi,
+            clients: swapClients,
+            bus,
+            holdings: swapHoldings,
+            accounts,
+            logger: logger.child({ component: "swap-tracker" }),
+            pollMs: config.SWAPS_POLL_MS,
+            now: overrides.now,
+        });
         const sweeper = new Sweeper({
             client,
             keyring,
@@ -302,6 +314,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         tracker.start();
         markets.start();
         swapCatalog.start();
+        swapTracker.start();
         predictionTracker.start();
         predictionResolver.start();
         predictionRedeemer.start();
@@ -328,6 +341,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await predictionRedeemer.stop();
                 await predictionResolver.stop();
                 await predictionTracker.stop();
+                await swapTracker.stop();
                 await swapCatalog.stop();
                 await markets.stop();
                 await tracker.stop();
