@@ -1,6 +1,6 @@
 # Least Finance server
 
-Gives every connected wallet an account of its own on the server, so trades and bets can run on the user's behalf without a signature or a transaction each time. This first part covers accounts and deposits: Express and socket.io over MongoDB, crediting real USDC deposits on Arc Mainnet (chain 5042).
+Gives every connected wallet an account of its own on the server, so trades and bets can run on the user's behalf without a signature or a transaction each time. It is Express and socket.io over MongoDB: accounts, deposits and withdrawals on Arc Mainnet (chain 5042) and other networks, Polymarket predictions and LI.FI swaps. To run it in production, follow the [deployment runbook](../deploy/README.md).
 
 ## How deposits work
 

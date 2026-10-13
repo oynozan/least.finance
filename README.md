@@ -18,6 +18,8 @@ Balances and deposits come from the deposit server. Set it up as [server/README.
 
 Open [http://localhost:3000](http://localhost:3000).
 
+To run it on a server (Docker Compose behind Caddy, with backups), follow the [deployment runbook](deploy/README.md).
+
 ## Prediction trading
 
 Predictions are simulated until you turn real trading on. To send real orders to Polymarket from the pool's wallet, set up the server (`server/`) in this order:
@@ -55,7 +57,7 @@ Sanctions screening of users is a launch blocker. LI.FI asks integrators to scre
 - `components/connect-wallet.tsx`: the wallet button docked at the bottom, wrapped in `Magnet` (`components/magnet.tsx`). Before sign-in it opens Privy's login; after, it toggles the wallet sidebar. Privy is set up in `components/wallet-provider.tsx`, and `app/privy.css` restyles its modal to match the app.
 - `components/sidebar.tsx`: the right-hand sidebar shell. Opening it pushes the page left on a spring (on phones the sidebar covers the screen and the page slides out).
 - `components/arc.ts`: Arc Mainnet (chain ID 5042), where accounts are credited, and the USDC balance read over its public RPC. Wallets connect on any network and are switched to Arc only when they deposit (`ensureNetwork` in `lib/wallet/network.ts`, which also checks the network again right before sending). `components/arc-wallet.ts` holds the hooks: the polled USDC balance, and the network the wallet is on, whose logo the sidebar header shows (`components/network-icons.tsx`).
-- `components/wallet-sidebar.tsx`: the sidebar's content: balance, deposit button, deposit history (revealed on hover) and open positions (`components/position-row.tsx`), stacked bottom-up. The balance is the account's USDC on the deposit server, deposits still on their way included. Positions are still mock data in `components/wallet-data.ts`.
+- `components/wallet-sidebar.tsx`: the sidebar's content: balance, deposit button, deposit history (revealed on hover) and open positions (`components/position-row.tsx`), stacked bottom-up. The balance is the account's USDC on the deposit server, deposits still on their way included. Open positions are the account's live predictions, plus bets still waiting for their fill (`components/wallet-data.ts` shapes them).
 - `components/deposit-form.tsx`: the amount entry the deposit button opens. It sends USDC from the wallet to the account's deposit address; the wallet's own balance (`useUsdcBalance`) sets the Max.
 - `components/account-provider.tsx` and `components/account-client.ts`: the account over a socket to the deposit server, signed in with the Privy access token. Deposits are optimistic: one counts as soon as the wallet sends it, and comes back out if the server can't confirm it. The state itself is a pure reducer in `lib/account/state.ts`. Its USDC also feeds the trade sentence's spendable balance.
 - `components/icons.tsx`: sticker-style SVG icons for the pills
