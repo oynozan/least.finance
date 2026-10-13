@@ -272,3 +272,38 @@ test.describe("companion slots", () => {
         expect(() => registry([make({ other: { term: undefined, then: "net" } })], lead)).toThrow(/then/);
     });
 });
+
+test.describe("what the person chose", () => {
+    test("a slot action records its slot and term, and nothing else does", () => {
+        const c = ctx();
+        const reg = build(true, true);
+        const start = initialState(reg, "move", c);
+        expect(start.chosen).toEqual({ slots: {}, terms: [] });
+
+        const picked = reduce(reg, start, { type: "slot", slot: "coin", value: "USDC" }, c);
+        expect(picked.chosen).toEqual({ slots: { move: ["coin"] }, terms: ["coin"] });
+        // A verb change, even one that normalizes, adds nothing
+        const moved = reduce(reg, picked, { type: "verb", verbId: "hold" }, c);
+        expect(moved.chosen).toBe(picked.chosen);
+        // A rejected action adds nothing; an accepted one adds its slot once
+        expect(reduce(reg, picked, { type: "slot", slot: "coin", value: "DOGE" }, c)).toBe(picked);
+        const again = reduce(reg, moved, { type: "slot", slot: "coin", value: "SOL" }, c);
+        expect(again.chosen).toEqual({ slots: { move: ["coin"], hold: ["coin"] }, terms: ["coin"] });
+        const more = reduce(reg, again, { type: "slot", slot: "amount", value: "25" }, c);
+        expect(more.chosen.terms).toEqual(["coin", "amount"]);
+        expect(reduce(reg, more, { type: "slot", slot: "amount", value: "30" }, c).chosen.slots).toEqual({
+            move: ["coin"],
+            hold: ["coin", "amount"],
+        });
+    });
+
+    test("a value the slot already holds is still a choice", () => {
+        const c = ctx();
+        const reg = build(true, true);
+        const start = initialState(reg, "move", c);
+        const same = reduce(reg, start, { type: "slot", slot: "coin", value: "ETH" }, c);
+        expect(same.chosen).toEqual({ slots: { move: ["coin"] }, terms: ["coin"] });
+        expect(same.drafts).toBe(start.drafts);
+        expect(reduce(reg, same, { type: "slot", slot: "coin", value: "ETH" }, c)).toBe(same);
+    });
+});

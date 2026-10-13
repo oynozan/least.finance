@@ -18,7 +18,7 @@ export function useTradeSentence(
         [catalog, holdings, wallet, maxOrderUSD],
     );
     const [state, setState] = useState<SentenceState<TradeTerms>>(() => initialState(TRADE, DEFAULT_VERB, ctx));
-    // Coins that load after the sentence, or a new signing wallet's, move a network that is now empty.
+    // Coins that load after the sentence, or a new signing wallet's, re-default everything the person didn't choose.
     const [fitted, setFitted] = useState(wallet);
     if (fitted !== wallet) {
         setFitted(wallet);

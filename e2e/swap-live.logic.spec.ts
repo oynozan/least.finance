@@ -4,6 +4,7 @@ import { initialState, reduce, refit, resolve } from "@/lib/sentence";
 import { CATALOG, TOKENS } from "@/lib/trade/catalog";
 import type { TradeCtx, WalletHoldings } from "@/lib/trade/context";
 import { formatUsd } from "@/lib/trade/format";
+import { networkChoices } from "@/lib/trade/operations/shared";
 import { loadCachedCatalog, toTokens } from "@/lib/trade/live-coins";
 import { TRADE } from "@/lib/trade/registry";
 import { loadCachedSwapHoldings, saveCachedSwapHoldings, walletHoldings } from "@/lib/trade/wallet-holdings";
@@ -219,6 +220,82 @@ test.describe("wallet holdings", () => {
         // A wallet that holds ETH only on Ethereum takes it back there.
         const other: TradeCtx = { ...base, wallet: { ETH: { ethereum: 3 } } };
         expect(resolve(TRADE, refit(TRADE, picked, other), other).intent).toMatchObject({ fromNetwork: "ethereum" });
+    });
+});
+
+test.describe("defaults follow the wallet", () => {
+    const eth = (units: WalletHoldings["ETH"]): TradeCtx => ({
+        catalog: CATALOG,
+        holdings: null,
+        wallet: { ETH: units },
+    });
+    const none: TradeCtx = { catalog: CATALOG, holdings: null, wallet: null };
+    const act = (type: "slot", slot: string, value: string) => ({ type, slot, value }) as const;
+    const intentOf = (state: ReturnType<typeof initialState>, ctx: TradeCtx) => resolve(TRADE, state, ctx).intent;
+
+    test("a wallet that loads after the sentence puts the pay side where it holds the most", () => {
+        const state = initialState(TRADE, "swap", none);
+        // Dust on Ethereum is below the gas kept back, so the sentence moves to where the ETH is
+        const dust = eth({ ethereum: 0.001, arbitrum: 2 });
+        expect(intentOf(refit(TRADE, state, dust), dust)).toMatchObject({ fromToken: "ETH", fromNetwork: "arbitrum" });
+        // A home network that holds something still loses to a richer one
+        const both = eth({ ethereum: 0.05, arbitrum: 2 });
+        expect(intentOf(refit(TRADE, state, both), both)).toMatchObject({ fromNetwork: "arbitrum" });
+    });
+
+    test("a signer that changes takes the new wallet's richest network", () => {
+        const first = eth({ ethereum: 1.5 });
+        const state = initialState(TRADE, "swap", first);
+        expect(intentOf(state, first)).toMatchObject({ fromNetwork: "ethereum" });
+        const second = eth({ ethereum: 0.001, optimism: 7 });
+        expect(intentOf(refit(TRADE, state, second), second)).toMatchObject({ fromNetwork: "optimism" });
+    });
+
+    test("a network the person picked survives a load where it still fits", () => {
+        const state = reduce(TRADE, initialState(TRADE, "swap", none), act("slot", "fromNetwork", "base"), none);
+        const loaded = eth({ ethereum: 1, base: 0.5, arbitrum: 2 });
+        expect(intentOf(refit(TRADE, state, loaded), loaded)).toMatchObject({ fromNetwork: "base" });
+        // Where it no longer fits, it is repaired
+        const gone = eth({ ethereum: 1, arbitrum: 2 });
+        expect(intentOf(refit(TRADE, state, gone), gone)).toMatchObject({ fromNetwork: "arbitrum" });
+    });
+
+    test("an amount and a leverage the person chose survive a refit and a verb round trip", () => {
+        let state = initialState(TRADE, "swap", none);
+        state = reduce(TRADE, state, act("slot", "amountUSD", "25"), none);
+        state = reduce(TRADE, state, { type: "verb", verbId: "long" }, none);
+        state = reduce(TRADE, state, act("slot", "leverage", "10"), none);
+        state = reduce(TRADE, state, { type: "verb", verbId: "swap" }, none);
+        const loaded = eth({ arbitrum: 2 });
+        state = refit(TRADE, state, loaded);
+        expect(intentOf(state, loaded)).toMatchObject({ fromNetwork: "arbitrum", amountUSD: "25" });
+        state = reduce(TRADE, state, { type: "verb", verbId: "long" }, loaded);
+        expect(intentOf(state, loaded)).toMatchObject({ type: "perp", leverage: 10 });
+    });
+
+    test("Sell moves off an ETH network holding only gas", () => {
+        const sold = (ctx: TradeCtx) =>
+            reduce(TRADE, initialState(TRADE, "sell", ctx), act("slot", "token", "ETH"), ctx);
+        const wallet = eth({ ethereum: 0.001, base: 1 });
+        expect(intentOf(sold(wallet), wallet)).toMatchObject({ type: "spot", token: "ETH", network: "base" });
+        // The same pick before the coins load, repaired when they do
+        const state = sold(none);
+        expect(intentOf(state, none)).toMatchObject({ token: "ETH", network: "ethereum" });
+        expect(intentOf(refit(TRADE, state, wallet), wallet)).toMatchObject({ token: "ETH", network: "base" });
+    });
+
+    test("a row with only gas money says so, an empty one says nothing is there", () => {
+        const wallet = eth({ ethereum: 0.001, arbitrum: 0.0002, base: 1 });
+        const rows = networkChoices(wallet, "ETH", "pay");
+        expect(rows.find((c) => c.value === "ethereum")).toMatchObject({ disabled: "Too little for gas" });
+        // Exactly the reserve leaves nothing to spend
+        expect(rows.find((c) => c.value === "arbitrum")).toMatchObject({ disabled: "Too little for gas" });
+        expect(rows.find((c) => c.value === "optimism")).toMatchObject({ disabled: "Nothing here" });
+        expect(rows.find((c) => c.value === "base")?.disabled).toBeUndefined();
+        // Receiving is never blocked, and a coin with no gas reserve fits at any amount
+        expect(networkChoices(wallet, "ETH", "receive").every((c) => !c.disabled)).toBe(true);
+        const link = networkChoices({ ...none, wallet: { LINK: { ethereum: 0.0001 } } }, "LINK", "pay");
+        expect(link.find((c) => c.value === "ethereum")?.disabled).toBeUndefined();
     });
 });
 

@@ -126,7 +126,14 @@ export function coinChoice(ctx: TradeCtx, coin: Token, options: { disabled?: str
 export const unheld = (ctx: TradeCtx, symbol: string) =>
     heldTotal(ctx, symbol) === 0 ? `You don't hold any ${symbol}` : undefined;
 
-/** A coin's networks as picker rows, with empty pay rows and the other side's pair disabled */
+/** Why a pay row can't be used: nothing there, or no more than the gas kept back; nothing while unknown */
+function payBlock(units: number | null, spendable: number | null) {
+    if (units === null || spendable === null) return undefined;
+    if (units === 0) return "Nothing here";
+    return spendable > 0 ? undefined : "Too little for gas";
+}
+
+/** A coin's networks as picker rows, with unusable pay rows and the other side's pair disabled */
 export function networkChoices(
     ctx: TradeCtx,
     symbol: string,
@@ -136,6 +143,7 @@ export function networkChoices(
     return entriesOf(ctx, symbol).map((entry) => {
         const units = heldOn(ctx, symbol, entry.network);
         const same = other?.token === symbol && other.network === entry.network;
+        const empty = side === "pay" ? payBlock(units, spendableOn(ctx, symbol, entry.network)) : undefined;
         return {
             value: entry.network,
             label: networkName(entry.network),
@@ -144,30 +152,29 @@ export function networkChoices(
                 ? { detail: formatUnits(units, symbol), subdetail: formatUsd(units * priceOf(ctx, symbol)) }
                 : {}),
             icon: { set: "coin", id: symbol, badge: { set: "network", id: entry.network } },
-            disabled: side === "pay" && units === 0 ? "Nothing here" : same ? "Same as the other side" : undefined,
+            disabled: empty ?? (same ? "Same as the other side" : undefined),
         };
     });
 }
 
-/** Whether a coin's network can be kept, which it can't be if absent, empty on the pay side, or a wrapped form that arrived without its coin */
+/** Whether a coin's network can be kept, which it can't be if absent, unusable on the pay side, or a wrapped form that arrived without its coin */
 export function networkFits(ctx: TradeCtx, symbol: string, network: string, side: "pay" | "receive", strayed = false) {
     const row = networkChoices(ctx, symbol, side).find((c) => c.value === network);
     const wrapped = entriesOf(ctx, symbol).find((e) => e.network === network)?.wrapped;
     return !!row && !row.disabled && !(strayed && wrapped);
 }
 
-/** The network a paying coin starts on, where the wallet holds the most, else its home */
+/** The network a paying coin starts on, where the wallet holds the most of what it can spend, else the most, else its home */
 export function defaultPayNetwork(ctx: TradeCtx, symbol: string): NetworkId {
-    let best = homeOf(ctx, symbol);
-    let most = 0;
-    for (const { network } of entriesOf(ctx, symbol)) {
-        const units = heldOn(ctx, symbol, network) ?? 0;
-        if (units > most) {
-            best = network;
-            most = units;
-        }
-    }
-    return best;
+    const networks = entriesOf(ctx, symbol).map((entry) => entry.network);
+    const units = (network: NetworkId) => heldOn(ctx, symbol, network) ?? 0;
+    const richest = (among: NetworkId[]) =>
+        among.reduce<NetworkId | undefined>(
+            (best, network) => (units(network) > (best ? units(best) : 0) ? network : best),
+            undefined,
+        );
+    const spendable = networks.filter((network) => (spendableOn(ctx, symbol, network) ?? 0) > 0);
+    return richest(spendable) ?? richest(networks) ?? homeOf(ctx, symbol);
 }
 
 /** The network a received coin starts on, beside the pay side unless the coin is wrapped there */

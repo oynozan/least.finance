@@ -497,6 +497,12 @@ test.describe("networks", () => {
                 USDC: { base: 500 },
                 LINK: { polygon: 4 },
             }),
+            // Gas money only on some networks
+            withWallet({
+                ETH: { ethereum: 0.001, arbitrum: 0.0002, base: 1 },
+                SOL: { solana: 0.005 },
+                USDC: { arc: 0.005, base: 3 },
+            }),
         ];
         const coins = CATALOG.tokens.map((t) => t.symbol);
         const networks = NETWORKS.map((n) => n.id);
