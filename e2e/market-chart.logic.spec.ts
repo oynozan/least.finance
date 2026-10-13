@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { chartedOutcomes, historyTokens, lineColor } from "@/lib/trade/market-lines";
+import { chanceScale, formatPts, valueAt, withLiveEnd } from "@/lib/trade/chance-chart";
+import { drawable } from "@/components/trade/market-chart-card";
 import type { Outcome, PredictionMarket } from "@/lib/trade/catalog";
 
 function outcome(label: string, chance: number): Outcome {
@@ -71,4 +73,79 @@ test.describe("a 7-outcome event", () => {
         expect(lineColor(event, event.outcomes[2].id)).toBe("--chart-3");
         expect(lineColor(event, event.outcomes[6].id)).toBe("--chart-1");
     });
+});
+
+test.describe("withLiveEnd", () => {
+    test("appends the live chance at now", () => {
+        expect(withLiveEnd([[1, 0.2]], 0.3, 5)).toEqual([
+            [1, 0.2],
+            [5, 0.3],
+        ]);
+    });
+
+    test("replaces a last point at or after now", () => {
+        expect(
+            withLiveEnd(
+                [
+                    [1, 0.2],
+                    [5, 0.25],
+                ],
+                0.3,
+                5,
+            ),
+        ).toEqual([
+            [1, 0.2],
+            [5, 0.3],
+        ]);
+    });
+});
+
+test.describe("chanceScale", () => {
+    test("never spans under 0.2, centred on the values", () => {
+        const { floor, span } = chanceScale([0.5, 0.52]);
+        expect(span).toBeCloseTo(0.2);
+        expect(floor + span / 2).toBeCloseTo(0.51);
+    });
+
+    test("stays inside 0 to 1 at the bottom", () => {
+        const { floor, span } = chanceScale([0.01, 0.05]);
+        expect(floor).toBe(0);
+        expect(span).toBeCloseTo(0.2);
+    });
+
+    test("fits a wide range", () => {
+        const { floor, span } = chanceScale([0.1, 0.9]);
+        expect(floor).toBeCloseTo(0.1);
+        expect(span).toBeCloseTo(0.8);
+    });
+
+    test("stays inside 0 to 1 at the top", () => {
+        expect(chanceScale([0.95, 0.99]).floor).toBeCloseTo(0.8);
+    });
+});
+
+test.describe("valueAt", () => {
+    const points = [
+        [10, 0.2],
+        [20, 0.4],
+    ] as const;
+
+    test("is null before the line starts", () => expect(valueAt(points, 5)).toBeNull());
+    test("holds the earlier value between points", () => expect(valueAt(points, 15)).toBe(0.2));
+    test("holds the last value after the end", () => expect(valueAt(points, 99)).toBe(0.4));
+});
+
+test.describe("formatPts", () => {
+    test("whole points from 10 up", () => expect(formatPts(0.12)).toEqual({ text: "+12 pts", trend: "gain" }));
+    test("one decimal under 10, with a true minus", () =>
+        expect(formatPts(-0.035)).toEqual({ text: "\u22123.5 pts", trend: "loss" }));
+    test("flat under half a point", () => expect(formatPts(0.004)).toEqual({ text: "0 pts", trend: "flat" }));
+    test("9.5 keeps its decimal", () => expect(formatPts(0.095)).toEqual({ text: "+9.5 pts", trend: "gain" }));
+});
+
+test.describe("drawable", () => {
+    const line = (n: number) => Array.from({ length: n }, (_, i) => [i, 0.5] as const);
+    test("one point is not a line", () => expect(drawable([line(1)])).toBe(false));
+    test("some line with two points is", () => expect(drawable([line(1), line(2)])).toBe(true));
+    test("no lines draw nothing", () => expect(drawable([])).toBe(false));
 });

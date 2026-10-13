@@ -17,6 +17,10 @@
     --color-gain: var(--gain);
     --color-loss: var(--loss);
     --color-flat: var(--flat);
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
     --ease-spring: var(--spring);
 }
 
@@ -30,6 +34,10 @@
     --gain: #68d670;
     --loss: #ff6b5b;
     --flat: #8f8f8a;
+    --chart-1: #5b9dff;
+    --chart-2: #f2b84b;
+    --chart-3: #b48cff;
+    --chart-4: #5fd4e6;
 
     /* A bouncy spring (bounce ~0.3) for CSS transitions, sampled from the
      same physics Motion uses; pair it with ~500ms durations. */
