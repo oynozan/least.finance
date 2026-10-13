@@ -1,5 +1,5 @@
 import { MongoClient, MongoServerError, type Collection, type Db, type Decimal128, type ObjectId } from "mongodb";
-import type { OrderState } from "../protocol.ts";
+import type { Hex, OrderState, WithdrawalState } from "../protocol.ts";
 import { mergeAccountsByPerson, type MigrationReport } from "./migrations.ts";
 
 /** A person's account. Addresses are stored lowercase. */
@@ -80,7 +80,9 @@ export type LedgerEntryDoc = {
         | "prediction_buy"
         | "prediction_refund"
         | "prediction_sell"
-        | "prediction_payout";
+        | "prediction_payout"
+        | "withdrawal"
+        | "withdrawal_refund";
     /** Signed wei. */
     amount: Decimal128;
     balanceAfter: Decimal128;
@@ -168,6 +170,25 @@ export type PredictionRedemptionDoc = {
     updatedAt: Date;
 };
 
+/** USDC paid out of the treasury to one of the person's linked EVM wallets; `amount` wei left the balance when it was created. */
+export type WithdrawalDoc = {
+    _id: ObjectId;
+    accountId: ObjectId;
+    /** The client's UUID; a repeat of (accountId, requestId) is the same withdrawal. */
+    requestId: string;
+    amount: Decimal128;
+    /** Lowercase EVM address. */
+    to: string;
+    state: WithdrawalState;
+    /** Set with rawTx before the first broadcast, so a restart re-sends the same transaction. */
+    nonce: number | null;
+    rawTx: Hex | null;
+    txHash: Hex | null;
+    failure: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+};
+
 /** How far a chain scan has got. */
 export type CursorDoc = { _id: string; block: number; updatedAt: Date };
 
@@ -181,6 +202,7 @@ export type Collections = {
     predictionOrders: Collection<PredictionOrderDoc>;
     positions: Collection<PositionDoc>;
     predictionRedemptions: Collection<PredictionRedemptionDoc>;
+    withdrawals: Collection<WithdrawalDoc>;
     cursors: Collection<CursorDoc>;
     counters: Collection<CounterDoc>;
 };
@@ -211,6 +233,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             predictionOrders: db.collection("prediction_orders"),
             positions: db.collection("positions"),
             predictionRedemptions: db.collection("prediction_redemptions"),
+            withdrawals: db.collection("withdrawals"),
             cursors: db.collection("cursors"),
             counters: db.collection("counters"),
         };
@@ -240,6 +263,7 @@ async function ensureIndexes({
     predictionOrders,
     positions,
     predictionRedemptions,
+    withdrawals,
 }: Collections) {
     await Promise.all([
         accounts.createIndexes([
@@ -290,6 +314,11 @@ async function ensureIndexes({
         predictionRedemptions.createIndexes([
             { key: { conditionId: 1 }, name: "condition_unique", unique: true },
             { key: { state: 1, nextAt: 1 }, name: "state_next" },
+        ]),
+        withdrawals.createIndexes([
+            { key: { accountId: 1, _id: -1 }, name: "account_withdrawals" },
+            { key: { accountId: 1, requestId: 1 }, name: "request_unique", unique: true },
+            { key: { state: 1, createdAt: 1 }, name: "state_created" },
         ]),
     ]);
 }

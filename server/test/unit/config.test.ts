@@ -1,3 +1,4 @@
+import { parseUnits } from "viem";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/config.ts";
 
@@ -115,6 +116,11 @@ describe("loadConfig", () => {
 
     it.each(["1e3", "-1", "0.1234567890123456789", "abc", ".5", ""])("rejects a minimum deposit of '%s'", (value) => {
         expect(() => load({ DEPOSIT_MIN_USDC: value })).toThrow(/DEPOSIT_MIN_USDC/);
+    });
+
+    it("defaults the minimum withdrawal to 0.01 USDC and parses an override", () => {
+        expect(load().WITHDRAW_MIN_USDC).toBe(parseUnits("0.01", 18));
+        expect(load({ WITHDRAW_MIN_USDC: "0.5" }).WITHDRAW_MIN_USDC).toBe(parseUnits("0.5", 18));
     });
 
     it("defaults the Ethereum and BNB Chain RPCs to public ones", () => {

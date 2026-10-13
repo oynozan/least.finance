@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { mnemonicToAccount } from "viem/accounts";
 import { createKeyring } from "../../src/accounts/keyring.ts";
 
 const MNEMONIC = "test test test test test test test test test test test junk";
@@ -22,5 +23,10 @@ describe("keyring", () => {
     it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])("rejects the index %s", (index) => {
         expect(() => keyring.addressAt(index)).toThrow(/Bad deposit index/);
         expect(() => keyring.signerAt(index)).toThrow(/Bad deposit index/);
+    });
+
+    it("exposes the operator at index 0 while signerAt(0) stays refused", () => {
+        expect(keyring.operator().address).toBe(mnemonicToAccount(MNEMONIC, { addressIndex: 0 }).address);
+        expect(() => keyring.signerAt(0)).toThrow(/Bad deposit index/);
     });
 });

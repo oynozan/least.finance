@@ -10,6 +10,8 @@ export type Keyring = {
     /** Lowercase. */
     addressAt(index: number): Address;
     signerAt(index: number): HDAccount;
+    /** The treasury: index 0, which no account's deposit address uses. */
+    operator(): HDAccount;
 };
 
 export function createKeyring(mnemonic: string): Keyring {
@@ -22,5 +24,6 @@ export function createKeyring(mnemonic: string): Keyring {
     return {
         addressAt: (index) => signerAt(index).address.toLowerCase() as Address,
         signerAt,
+        operator: () => hdKeyToAccount(root, { addressIndex: 0 }),
     };
 }

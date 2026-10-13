@@ -106,6 +106,22 @@ export type BalancesView = {
     rows: CoinBalance[];
 };
 
+export type WithdrawalState = "sending" | "sent" | "failed";
+
+export type WithdrawalView = {
+    id: string;
+    requestId: string;
+    amount: UsdcAmount;
+    to: string;
+    state: WithdrawalState;
+    txHash: Hex | null;
+    createdAt: string;
+    updatedAt: string;
+};
+
+/** What a withdrawal may be right now: `max` is the smaller of the balance and what the treasury can pay. */
+export type WithdrawLimits = { max: UsdcAmount; min: UsdcAmount };
+
 /** What opening the account hands back: everything the sidebar shows. */
 export type WalletSession = {
     account: AccountView;
@@ -113,6 +129,8 @@ export type WalletSession = {
     rules: DepositRules;
     /** Open bridge orders, newest first. */
     orders: DepositOrderView[];
+    /** The 50 newest withdrawals, newest first. */
+    withdrawals: WithdrawalView[];
 };
 
 /** The outcome of a deposit transaction the client reported. */
@@ -178,6 +196,13 @@ export type ClientToServerEvents = {
         payload: { orderId: string; txHashes: string[] },
         ack: (result: Ack<DepositOrderView>) => void,
     ) => void;
+    /** What a withdrawal may be right now. */
+    "withdraw:limits": (payload: Record<string, never>, ack: (result: Ack<WithdrawLimits>) => void) => void;
+    /** Takes the amount off the balance and pays it to a linked EVM wallet; a repeated `requestId` is the same withdrawal. */
+    "withdraw:create": (
+        payload: { requestId: string; amount: string; to: string },
+        ack: (result: Ack<WithdrawalView>) => void,
+    ) => void;
     /** What a prediction buy would cost and return right now, or with a `positionId` what selling the position would pay. */
     "prediction:quote": (
         payload: { eventId: string; tokenId: string; amountUSD: string } | { positionId: string },
@@ -196,6 +221,8 @@ export type ClientToServerEvents = {
 };
 
 export type ServerToClientEvents = {
+    /** A withdrawal changed state. */
+    "withdrawal:update": (payload: { withdrawal: WithdrawalView }) => void;
     "deposit:credited": (payload: { deposit: DepositView; account: AccountView }) => void;
     /** The account's coin balances, pushed after `account:open` and whenever a read finishes. */
     balances: (payload: BalancesView) => void;

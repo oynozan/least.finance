@@ -184,6 +184,7 @@ describe("opening accounts", () => {
             deposits: { items: [], next: null },
             rules: { chainId: 5042, minDeposit: "0.01" },
             orders: [],
+            withdrawals: [],
         });
     });
 

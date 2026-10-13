@@ -36,6 +36,7 @@ export class Sessions {
             deposits: await this.#deps.deposits.list(current),
             rules: this.#deps.rules,
             orders: (await this.#deps.orders.open(current._id)).map(orderView),
+            withdrawals: [],
         };
     }
 
