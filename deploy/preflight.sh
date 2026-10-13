@@ -61,4 +61,16 @@ for key in SITE_HOST API_HOST; do
     fi
 done
 
+# Passwords with anything beyond letters and digits break compose interpolation, the YAML config or the Mongo URI.
+for key in MONGO_ROOT_PASSWORD MONGO_APP_PASSWORD; do
+    value="${!key:-$(env_value "$key")}"
+    if [ -z "$value" ]; then
+        echo "WARN: $key is not set in $ENV_FILE" >&2
+    elif [[ ! "$value" =~ ^[A-Za-z0-9]+$ ]]; then
+        echo "WARN: $key contains characters other than A-Z, a-z and 0-9; generate it with: openssl rand -hex 32" >&2
+    else
+        pass "$key is letters and digits only"
+    fi
+done
+
 exit "$failed"

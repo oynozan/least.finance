@@ -87,10 +87,19 @@ Edit it on the VPS (`nano /etc/least-finance/server.env`) and fill in at least t
 | `DEPOSIT_MNEMONIC`                                           | A fresh phrase from `npm run mnemonic` in `server/`. It holds every deposit: back it up off the server and never change it |
 | `NEXT_PUBLIC_API_URL`                                        | `https://api.least.finance`                                                                                                |
 | `NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_PRIVY_CLIENT_ID`    | From the Privy dashboard. Next bakes these into the web image at build time                                                |
-| `MONGO_ROOT_PASSWORD`, `MONGO_APP_PASSWORD`                  | Two long random strings: `openssl rand -hex 24` for each                                                                   |
+| `MONGO_ROOT_PASSWORD`, `MONGO_APP_PASSWORD`                  | Two random strings, each from `openssl rand -hex 32` (see below)                                                           |
 | `MONGODB_DB`                                                 | Optional, defaults to `TradeEverything`                                                                                    |
 | `PREDICTIONS_TRADING`                                        | Leave `off` until the live check in the [README](../README.md#prediction-trading) has passed                               |
 | Optional: `SITE_HOST`, `API_HOST`, `BACKUP_DIR`              | Default to `least.finance`, `api.least.finance` and `/var/backups/least-finance`                                           |
+
+Generate every password and secret in the file with `openssl rand -hex 32`, which gives letters and digits only. Other characters break things: `$` breaks compose interpolation, quotes break the YAML config, and `@`, `:`, `/` and the like break the `MONGODB_URI`. Paste the output beside each line:
+
+```bash
+MONGO_ROOT_PASSWORD=   # openssl rand -hex 32
+MONGO_APP_PASSWORD=    # openssl rand -hex 32
+```
+
+`preflight.sh` warns when either Mongo password holds anything but `A-Za-z0-9`.
 
 Leave `MONGODB_URI`, `NODE_ENV`, `TRUST_PROXY`, `HOST` and `PORT` out: the compose file sets them (production mode, one proxy, the stack's own database). In production the API refuses to start if `CORS_ORIGINS` is not `https://`, if `TRUST_PROXY` is 0 or if the database URI has no credentials, and it names each problem in its log.
 
@@ -113,7 +122,15 @@ deploy/deploy.sh --dry-run root@HOST   # prints the rsync and compose commands w
 deploy/deploy.sh root@HOST
 ```
 
-The script copies the repo to `/opt/least-finance` on the VPS (leaving out `.git`, `node_modules`, `.next`, `.env*`, test output and `.superpowers`), runs `docker compose --env-file /etc/least-finance/server.env up -d --build` there, then waits up to five minutes for `https://api.least.finance/ready` to answer 200. The first build takes several minutes. If it never gets there it prints the logs of every service that is not healthy and exits non-zero. The SSH user needs to read the env file and use Docker, which in practice means `root`, so pass `root@HOST`, not a bare address.
+The script refuses to deploy while the working tree has uncommitted changes (outside `.superpowers/` and `.impeccable/`) and lists the files that block it; `--allow-dirty` deploys anyway and marks the revision `-dirty`. It copies the repo to `/opt/least-finance` on the VPS (leaving out `.git`, `node_modules`, `.next`, `.env*`, test output, `.superpowers`, `.claude` and `.impeccable`), backs up a running stack (`--skip-backup` skips this; a failed backup stops the deploy), runs `docker compose --env-file /etc/least-finance/server.env up -d --build` there, then waits up to five minutes for `https://api.least.finance/ready` to answer 200. It then records the commit in `/opt/least-finance/REVISION` (the one it replaces goes to `REVISION.previous`) and prints both. The first build takes several minutes. If it never gets there it prints the logs of every service that is not healthy and exits non-zero. The SSH user needs to read the env file and use Docker, which in practice means `root`, so pass `root@HOST`, not a bare address.
+
+The stack is not running yet, so take the first backup by hand and check the file exists. On the VPS:
+
+```bash
+cd /opt/least-finance/deploy
+docker compose --env-file /etc/least-finance/server.env exec -T backup bash /lf-backup/backup.sh --now
+ls -lh /var/backups/least-finance
+```
 
 Then check it from outside: open `https://least.finance`, sign in, and look at `ssh root@HOST 'cd /opt/least-finance/deploy && docker compose --env-file /etc/least-finance/server.env ps'`: every service should be `running`, and `server`, `web` and `mongo` `healthy`.
 
@@ -132,7 +149,7 @@ Watch the logs after an update with `compose logs -f --tail 100 server` on the V
 
 ## 8. Roll back
 
-Redeploy the previous commit. From a separate worktree, so your working copy stays as it is:
+Redeploy the previous commit, named in `REVISION.previous` (`ssh root@HOST cat /opt/least-finance/REVISION.previous`). From a separate worktree, so your working copy stays as it is:
 
 ```bash
 git worktree add ../least-finance-rollback <previous-commit>
@@ -151,14 +168,25 @@ compose exec -T backup bash /lf-backup/backup.sh --now
 ls -lh /var/backups/least-finance
 ```
 
-The backups share the server's disk, so copy them elsewhere regularly. From your machine, the newest one:
+Every deploy of a running stack takes one first, and `deploy/status.sh` reports the newest backup's age and warns when it is over 26 hours:
 
 ```bash
-latest="$(ssh root@HOST 'ls -1t /var/backups/least-finance/least-finance-*.archive.gz | head -n 1')"
-scp "root@HOST:$latest" .
+ssh root@HOST 'bash -s' < deploy/status.sh
 ```
 
-Keep that copy somewhere encrypted. It holds every account and balance.
+The backups share the server's disk, so copy them off it. This line goes in the crontab of your own machine (`crontab -e`). Every night at 07:00 it pulls the newest archive over SSH into `~/least-finance-backups` and deletes local copies older than 30 days. Replace `HOST`:
+
+```cron
+0 7 * * * mkdir -p ~/least-finance-backups && rsync -a --chmod=F600 "root@HOST:$(ssh root@HOST 'ls -1t /var/backups/least-finance/least-finance-*.archive.gz | head -n 1')" ~/least-finance-backups/ && find ~/least-finance-backups -name 'least-finance-*.archive.gz' -mtime +30 -delete
+```
+
+A weekly check that the newest local copy is under 26 hours old (it fails, and cron mails you, when it is not):
+
+```cron
+0 8 * * 1 test -n "$(find ~/least-finance-backups -name 'least-finance-*.archive.gz' -mmin -1560 | head -n 1)"
+```
+
+Keep the copies somewhere encrypted. They hold every account and balance.
 
 ## 10. Restore, and the restore drill
 
@@ -187,7 +215,7 @@ No diff output means every collection came back with the same number of document
 
 ## 11. Local smoke test
 
-`deploy/smoke.sh` builds the whole stack on your machine as compose project `lf-smoke` on ports 18080 and 18443 with dummy secrets, checks it through Caddy (web, `/health`, a real socket.io websocket, the built API URL, a backup and its restore) and tears it down. Run it before a deploy that changes the Dockerfiles, the compose file or the Caddyfile. `deploy/deploy.test.sh` tests `deploy.sh` and `preflight.sh` against stub commands.
+`deploy/smoke.sh` builds the whole stack on your machine as compose project `lf-smoke` on ports 18080 and 18443 with dummy secrets, checks it through Caddy (web, `/health`, a real socket.io websocket, the built API URL, a backup and its restore) and tears it down. Run it before a deploy that changes the Dockerfiles, the compose file or the Caddyfile. `deploy/deploy.test.sh` tests `deploy.sh`, `preflight.sh`, `status.sh` and `backup.sh` against stub commands.
 
 ## Not included
 

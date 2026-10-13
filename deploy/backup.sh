@@ -33,5 +33,5 @@ while true; do
     next="$(date -u -d "today 03:00" +%s)"
     [ "$next" -gt "$now" ] || next="$(date -u -d "tomorrow 03:00" +%s)"
     sleep "$((next - now))"
-    backup_once || echo "backup failed" >&2
+    backup_once || { echo "backup failed" >&2; exit 1; }
 done
