@@ -8,6 +8,8 @@ import { orderView, sourceTxView } from "../crosschain/views.ts";
 import { swapOrderView } from "../swaps/views.ts";
 import { positionView, predictionUpdate } from "../predictions/views.ts";
 import { accountView, depositView } from "../deposits/views.ts";
+import { formatUsdc } from "../db/money.ts";
+import { withdrawalView } from "../withdrawals/views.ts";
 import { AppError, isAppError, toApiError } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
 import type { Services } from "../services.ts";
@@ -24,6 +26,7 @@ import {
     swapOrder,
     swapRequest,
     swapSent,
+    withdrawRequest,
 } from "../validation.ts";
 
 type SocketData = {
@@ -71,6 +74,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     const swapQuotes = new RateLimiterMemory({ keyPrefix: "swap-quote", points: 60, duration: 60 });
     const swapOrders = new RateLimiterMemory({ keyPrefix: "swap-order", points: 10, duration: 60 });
     const predictionQuotes = new RateLimiterMemory({ keyPrefix: "prediction-quote", points: 60, duration: 60 });
+    const withdrawals = new RateLimiterMemory({ keyPrefix: "withdraw", points: 10, duration: 60 });
     const predictionOrders = new RateLimiterMemory({ keyPrefix: "prediction", points: 10, duration: 60 });
 
     io.use(async (socket, next) => {
@@ -229,6 +233,32 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             }),
         );
 
+        socket.on("withdraw:limits", (_payload, ack) =>
+            reply(ack, async () => {
+                const { max, min } = await services.withdrawals.limits(await boundAccount(socket));
+                return { max: formatUsdc(max), min: formatUsdc(min) };
+            }),
+        );
+
+        socket.on("withdraw:create", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(withdrawRequest, payload);
+                await withdrawals.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many withdrawals. Try again shortly.");
+                });
+                if (BASE58_ADDRESS.test(input.to)) {
+                    throw new AppError(
+                        "bad_request",
+                        "USDC on Arc can't go to a Solana wallet. Link an EVM wallet to withdraw.",
+                    );
+                }
+                const account = await boundAccount(socket);
+                const to = (await services.identity.authorizeWallet(socket.data.identity, input.to)) as Address;
+                const withdrawal = await services.withdrawals.create(account, { ...input, to });
+                return withdrawalView(withdrawal);
+            }),
+        );
+
         socket.on("swap:quote", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(swapRequest, payload);
@@ -378,6 +408,22 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push a swap update");
+            }
+        });
+    });
+
+    bus.on("withdrawal:updated", ({ withdrawal }) => {
+        enqueue(withdrawal.accountId.toHexString(), async () => {
+            try {
+                const room = roomOf(withdrawal.accountId);
+                const owner = await services.accounts.findById(withdrawal.accountId);
+                const payload = { withdrawal: withdrawalView(withdrawal) };
+                for (const socket of await io.in(room).fetchSockets()) {
+                    if (socket.data.identity.userId === owner?.privyUserId) socket.emit("withdrawal:update", payload);
+                    else socket.leave(room);
+                }
+            } catch (error) {
+                logger.warn({ err: error }, "Couldn't push a withdrawal update");
             }
         });
     });

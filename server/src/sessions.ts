@@ -5,6 +5,8 @@ import type { Identity } from "./auth/identity.ts";
 import type { AccountDoc } from "./db/mongo.ts";
 import type { DepositService } from "./deposits/deposits.ts";
 import { accountView } from "./deposits/views.ts";
+import { withdrawalView } from "./withdrawals/views.ts";
+import type { Withdrawals } from "./withdrawals/withdrawals.ts";
 import { AppError } from "./errors.ts";
 import type { DepositRules, WalletSession } from "./protocol.ts";
 
@@ -12,6 +14,7 @@ type Deps = {
     accounts: AccountService;
     deposits: DepositService;
     orders: DepositOrders;
+    withdrawals: Withdrawals;
     rules: DepositRules;
 };
 
@@ -36,7 +39,7 @@ export class Sessions {
             deposits: await this.#deps.deposits.list(current),
             rules: this.#deps.rules,
             orders: (await this.#deps.orders.open(current._id)).map(orderView),
-            withdrawals: [],
+            withdrawals: (await this.#deps.withdrawals.recent(current._id)).map(withdrawalView),
         };
     }
 

@@ -5,6 +5,7 @@ import { pino } from "pino";
 import { io as connectSocket, type Socket } from "socket.io-client";
 import { createTestClient, http, parseUnits, publicActions, walletActions, type Address, type Hash } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
+import { createKeyring } from "../../src/accounts/keyring.ts";
 import { arcChain } from "../../src/chain/arc.ts";
 import { EVM_COINS } from "../../src/crosschain/catalog.ts";
 import { createSourceClients } from "../../src/crosschain/chains.ts";
@@ -20,6 +21,7 @@ import { startFakeLifi, type FakeLifi } from "./fake-lifi.ts";
 import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
 import { startFakeSolanaRpc, type FakeSolanaRpc } from "./fake-solana-rpc.ts";
+import { TREASURY_GAS_RESERVE } from "../../src/withdrawals/withdrawals.ts";
 import { installMulticall3, sourceChain } from "./source-chains.ts";
 
 export const WEB_ORIGIN = "http://localhost:3000";
@@ -109,6 +111,10 @@ export type Stack = {
     /** The LI.FI stand-in the server reads swap coin prices from. */
     lifi: FakeLifi;
     chain: ChainHelpers;
+    /** The server's treasury address, where withdrawals are paid from. */
+    treasury: Address;
+    /** Sets the treasury's balance to `usdc` plus its gas reserve, so that much can be withdrawn. */
+    fundTreasury(usdc: string): Promise<void>;
     /** A signed-in Privy user with one funded wallet. */
     user(options?: { usdc?: string }): Promise<User>;
     /** A socket signed in as `user`, already connected. */
@@ -203,6 +209,7 @@ export async function startStack({
     await server.services.predictions.refreshFloat();
     const chain = chainHelpers(anvilUrl);
     const sockets: AppSocket[] = [];
+    const treasury = createKeyring(config.DEPOSIT_MNEMONIC).operator().address;
 
     return {
         server,
@@ -215,6 +222,10 @@ export async function startStack({
         trader,
         lifi,
         chain,
+        treasury,
+        async fundTreasury(usdc) {
+            await chain.client.setBalance({ address: treasury, value: parseUnits(usdc, 18) + TREASURY_GAS_RESERVE });
+        },
         async user({ usdc = "1000" } = {}) {
             const wallet = privateKeyToAddress(generatePrivateKey());
             const userId = `did:privy:${randomUUID().replaceAll("-", "")}`;

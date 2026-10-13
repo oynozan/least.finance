@@ -14,6 +14,7 @@ import type { Sessions } from "./sessions.ts";
 import type { SwapCatalog } from "./swaps/catalog.ts";
 import type { SwapHoldings } from "./swaps/holdings.ts";
 import type { SwapOrders } from "./swaps/orders.ts";
+import type { Withdrawals } from "./withdrawals/withdrawals.ts";
 import type { Sweeper } from "./withdrawals/sweeper.ts";
 
 /** Everything the HTTP and socket layers call into. */
@@ -35,4 +36,5 @@ export type Services = {
     swapHoldings: SwapHoldings;
     swapOrders: SwapOrders;
     sweeper: Sweeper;
+    withdrawals: Withdrawals;
 };

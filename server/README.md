@@ -12,6 +12,12 @@ Gives every connected wallet an account of its own on the server, so trades and 
 
 Amounts keep all 18 of Arc's native decimals: Decimal128 wei in the database, decimal strings such as `"12.5"` on the wire. Transfers under `DEPOSIT_MIN_USDC` (0.01) aren't credited.
 
+## How withdrawals work
+
+Withdrawals are paid from the treasury, the wallet at HD index 0 of `DEPOSIT_MNEMONIC`; its address is logged at startup. A sweeper moves every credited deposit's balance from its deposit address into the treasury (right after each credit, and in a catch-up pass every 10 minutes), so withdrawals are paid from one place. Balances under ten sends' worth of gas stay put as dust. `withdraw:create` takes the amount off the balance in one transaction, and only when the treasury holds it plus a 0.01 USDC gas reserve; a payout worker then signs and sends it, and a failed one is refunded. The smallest withdrawal is `WITHDRAW_MIN_USDC` (0.01). There are no fees.
+
+**Don't send from the treasury key while the server runs.** The worker signs with the treasury's nonces, so a transaction from elsewhere can clash with a payout or a sweep.
+
 ## Setup
 
 Needs Node 24.12 or later (it runs the TypeScript directly) and MongoDB running as a replica set (deposits are credited in transactions; one node is enough).
@@ -52,18 +58,21 @@ Everything under `/v1` takes `Authorization: Bearer <Privy access token>`. Error
 
 The handshake carries `auth: { token }`; a token that expires gets `session:expired` and a disconnect, and the client reconnects with a fresh one. Every event takes an acknowledgement and answers `{ ok: true, data } | { ok: false, error }`.
 
-| Event                                      |                                                                                                                                                          |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `account:open` `{}`                        | Binds the socket to the person's account (opening it) and answers like the HTTP route.                                                                   |
-| `deposits:list` `{ before?, limit? }`      | A page of deposits.                                                                                                                                      |
-| `deposit:submit` `{ txHash }`              | Like the HTTP route.                                                                                                                                     |
-| `deposit:credited` (server → client)       | `{ deposit, account }`, for each deposit as it's credited.                                                                                               |
-| `balances:refresh` `{}`                    | Reads the person's wallets again, silently: answers `{ read }`, and `read` is false within 30 s of the last read. A wallet not read yet is read at once. |
-| `balances` (server → client)               | `{ readAt, rows }`: every supported coin in every linked wallet. Pushed after `account:open` and after each read, to every socket of the account.        |
-| `deposit:quote` `{ coin, amount, wallet }` | What the coin would pay in USDC on Arc, with no order opened. 30 a minute per user. The wallet must be linked to the person.                             |
-| `deposit:order` `{ coin, amount, wallet }` | Opens a bridge order paying the account's Arc address and refunding the wallet; answers `{ order, txs }`, the transactions the wallet signs.             |
-| `deposit:source` `{ orderId, txHashes }`   | Reports the sent hashes: a created order becomes sent, and a repeat changes nothing.                                                                     |
-| `deposit:progress` (server → client)       | `{ order }`, whenever an order of the account changes.                                                                                                   |
+| Event                                         |                                                                                                                                                                 |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `account:open` `{}`                           | Binds the socket to the person's account (opening it) and answers like the HTTP route.                                                                          |
+| `deposits:list` `{ before?, limit? }`         | A page of deposits.                                                                                                                                             |
+| `deposit:submit` `{ txHash }`                 | Like the HTTP route.                                                                                                                                            |
+| `deposit:credited` (server → client)          | `{ deposit, account }`, for each deposit as it's credited.                                                                                                      |
+| `balances:refresh` `{}`                       | Reads the person's wallets again, silently: answers `{ read }`, and `read` is false within 30 s of the last read. A wallet not read yet is read at once.        |
+| `balances` (server → client)                  | `{ readAt, rows }`: every supported coin in every linked wallet. Pushed after `account:open` and after each read, to every socket of the account.               |
+| `deposit:quote` `{ coin, amount, wallet }`    | What the coin would pay in USDC on Arc, with no order opened. 30 a minute per user. The wallet must be linked to the person.                                    |
+| `deposit:order` `{ coin, amount, wallet }`    | Opens a bridge order paying the account's Arc address and refunding the wallet; answers `{ order, txs }`, the transactions the wallet signs.                    |
+| `deposit:source` `{ orderId, txHashes }`      | Reports the sent hashes: a created order becomes sent, and a repeat changes nothing.                                                                            |
+| `deposit:progress` (server → client)          | `{ order }`, whenever an order of the account changes.                                                                                                          |
+| `withdraw:limits` `{}`                        | `{ max, min }`: `max` is the smaller of the balance and what the treasury can pay now.                                                                          |
+| `withdraw:create` `{ requestId, amount, to }` | Takes `amount` off the balance and pays it to a linked EVM wallet; answers the withdrawal. A repeated `requestId` is the same withdrawal. 10 a minute per user. |
+| `withdrawal:update` (server → client)         | `{ withdrawal }`, when a withdrawal is created and each time it changes: `sending`, then `sent` or `failed` (the balance is refunded).                          |
 
 A failed network keeps its last values in `rows` (a coin never read has a null amount). Solana balances are read from `SOLANA_RPC_URLS` (the Ethereum and BNB Chain ones from `ETHEREUM_RPC_URLS` and `BNB_RPC_URLS`), so a production deployment should list a paid endpoint first: the public one rate-limits.
 

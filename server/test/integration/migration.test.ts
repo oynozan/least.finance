@@ -174,6 +174,29 @@ test("a merged account's deposit orders follow it to the survivor", async () => 
     expect(order?.accountId.equals(a.id)).toBe(true);
 });
 
+test("an account merge carries withdrawals over", async () => {
+    const did = newDid();
+    let a!: Seed;
+    const withdrawalId = new ObjectId();
+    const running = await boot(async (db) => {
+        a = await seedAccount(db, did, "3");
+        const b = await seedAccount(db, did, "2");
+        await mongo
+            .db(db)
+            .collection("withdrawals")
+            .insertOne({
+                _id: withdrawalId,
+                accountId: b.id,
+                requestId: randomUUID(),
+                amount: toDecimal(wei("1")),
+                state: "sent",
+            } as never);
+    });
+
+    const withdrawal = await collections(running).withdrawals.findOne({ _id: withdrawalId });
+    expect(withdrawal?.accountId.equals(a.id)).toBe(true);
+});
+
 const orderDoc = (accountId: ObjectId, requestId: string) => ({
     _id: new ObjectId(),
     accountId,

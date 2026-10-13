@@ -1,6 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Logger } from "pino";
+import type { Hex } from "viem";
 import { AccountService } from "./accounts/accounts.ts";
 import { WalletBalances } from "./balances/wallet-balances.ts";
 import { createKeyring } from "./accounts/keyring.ts";
@@ -42,7 +43,9 @@ import { createLifi } from "./swaps/lifi.ts";
 import { SwapOrders } from "./swaps/orders.ts";
 import { SwapTracker } from "./swaps/tracker.ts";
 import { attachSockets } from "./socket/sockets.ts";
+import { Payouts } from "./withdrawals/payouts.ts";
 import { Sweeper } from "./withdrawals/sweeper.ts";
+import { Withdrawals } from "./withdrawals/withdrawals.ts";
 
 const TRADER_RETRY_MS = 60_000;
 const REDEEM_MS = 60_000;
@@ -71,6 +74,8 @@ type Overrides = {
     bridges?: BridgeProvider[];
     /** Stands in for the pool's Polymarket trader. */
     trader?: PoolTrader;
+    /** Sends the signed payout transactions; tests wrap it to cut a broadcast short. */
+    payoutBroadcast?: (rawTx: Hex) => Promise<Hex>;
     /** The clock the balance and holdings refresh limits run on. */
     now?: () => number;
 };
@@ -122,10 +127,29 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             createAcross({ apiKey: config.ACROSS_API_KEY, integratorId: config.ACROSS_INTEGRATOR_ID }),
         ];
         const orders = new DepositOrders({ collections, bus, providers: bridges });
+        const withdrawals = new Withdrawals({
+            collections,
+            ledger,
+            client,
+            treasury: keyring.operator().address,
+            bus,
+            logger: logger.child({ component: "withdrawals" }),
+            minWithdraw: config.WITHDRAW_MIN_USDC,
+        });
+        const payouts = new Payouts({
+            collections,
+            ledger,
+            client,
+            signer: keyring.operator(),
+            bus,
+            logger: logger.child({ component: "payouts" }),
+            broadcast: overrides.payoutBroadcast,
+        });
         const sessions = new Sessions({
             accounts,
             deposits,
             orders,
+            withdrawals,
             rules: { chainId: ARC_CHAIN_ID, minDeposit: formatUsdc(config.DEPOSIT_MIN_USDC) },
         });
         const watcher = new DepositWatcher({
@@ -303,6 +327,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             swapHoldings,
             swapOrders,
             sweeper,
+            withdrawals,
         };
 
         const httpServer = createServer(createApp(services));
@@ -311,6 +336,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         await listen(httpServer, config.PORT, config.HOST);
         watcher.start();
         sweeper.start();
+        payouts.start();
         tracker.start();
         markets.start();
         swapCatalog.start();
@@ -346,6 +372,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await markets.stop();
                 await tracker.stop();
                 await watcher.stop();
+                await payouts.stop();
                 await sweeper.stop();
                 // Closes the HTTP server too; idle keep-alive connections would hold it open.
                 httpServer.closeIdleConnections();
