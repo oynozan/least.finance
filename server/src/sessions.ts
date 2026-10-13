@@ -16,6 +16,7 @@ type Deps = {
     orders: DepositOrders;
     withdrawals: Withdrawals;
     rules: DepositRules;
+    solana: { deposits: boolean; withdrawals: boolean };
 };
 
 /** Opening a person's account, the same over HTTP and sockets. */
@@ -40,6 +41,7 @@ export class Sessions {
             rules: this.#deps.rules,
             orders: (await this.#deps.orders.open(current._id)).map(orderView),
             withdrawals: (await this.#deps.withdrawals.recent(current._id)).map(withdrawalView),
+            solana: this.#deps.solana,
         };
     }
 

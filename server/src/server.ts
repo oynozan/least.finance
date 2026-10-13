@@ -155,6 +155,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             orders,
             withdrawals,
             rules: { chainId: ARC_CHAIN_ID, minDeposit: formatUsdc(config.DEPOSIT_MIN_USDC) },
+            solana: { deposits: config.SOLANA_DEPOSITS === "on", withdrawals: config.SOLANA_WITHDRAWALS === "on" },
         });
         const watcher = new DepositWatcher({
             clients: config.ARC_RPC_URLS.map((url) => createArcClient([url])),

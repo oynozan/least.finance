@@ -49,7 +49,14 @@ function session(
     next: string | null = null,
     orders: DepositOrderView[] = [],
 ): WalletSession {
-    return { account: account(balance, version), deposits: { items, next }, rules: RULES, orders, withdrawals: [] };
+    return {
+        account: account(balance, version),
+        deposits: { items, next },
+        rules: RULES,
+        orders,
+        withdrawals: [],
+        solana: { deposits: false, withdrawals: false },
+    };
 }
 
 const order = (n: number, state: DepositOrderView["state"] = "sent"): DepositOrderView => ({

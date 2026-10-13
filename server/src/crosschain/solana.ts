@@ -1,3 +1,4 @@
+import { base58 } from "@scure/base";
 import type { CoinBalance } from "../protocol.ts";
 import { SOLANA_COINS, formatCoinAmount } from "./catalog.ts";
 import type { PriceFeed } from "./prices.ts";
@@ -7,7 +8,18 @@ export type SolanaRpc = {
     getBalance(owner: string): Promise<bigint>;
     /** Base units of the mint, summed over the owner's token accounts. */
     getTokenBalance(owner: string, mint: string): Promise<bigint>;
+    getLatestBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }>;
+    /** One entry per signature, null when the cluster doesn't know it. */
+    getSignatureStatuses(
+        signatures: string[],
+    ): Promise<({ confirmationStatus: "processed" | "confirmed" | "finalized"; err: unknown } | null)[]>;
+    /** The address list of each lookup table; a missing table is left out. */
+    getAddressLookupTables(addresses: string[]): Promise<{ address: string; addresses: string[] }[]>;
+    /** Null when the account doesn't exist. */
+    getAccountInfo(address: string): Promise<{ owner: string; lamports: bigint } | null>;
 };
+
+const LOOKUP_TABLE_HEADER_BYTES = 56;
 
 /** Plain JSON-RPC over fetch; each URL is tried in order until one answers. */
 export function createSolanaRpc(
@@ -46,6 +58,45 @@ export function createSolanaRpc(
                 value: { account: { data: { parsed: { info: { tokenAmount: { amount: string } } } } } }[];
             }>("getTokenAccountsByOwner", [owner, { mint }, { encoding: "jsonParsed", commitment: "confirmed" }]);
             return value.reduce((sum, { account }) => sum + BigInt(account.data.parsed.info.tokenAmount.amount), 0n);
+        },
+        async getLatestBlockhash() {
+            const { value } = await call<{ value: { blockhash: string; lastValidBlockHeight: number } }>(
+                "getLatestBlockhash",
+                [{ commitment: "confirmed" }],
+            );
+            return { blockhash: value.blockhash, lastValidBlockHeight: value.lastValidBlockHeight };
+        },
+        async getSignatureStatuses(signatures) {
+            const { value } = await call<{
+                value: ({ confirmationStatus: "processed" | "confirmed" | "finalized"; err: unknown } | null)[];
+            }>("getSignatureStatuses", [signatures, { searchTransactionHistory: true }]);
+            return value.map((status) =>
+                status ? { confirmationStatus: status.confirmationStatus, err: status.err } : null,
+            );
+        },
+        async getAddressLookupTables(addresses) {
+            const { value } = await call<{ value: ({ data: [string, string] } | null)[] }>("getMultipleAccounts", [
+                addresses,
+                { encoding: "base64", commitment: "confirmed" },
+            ]);
+            const tables: { address: string; addresses: string[] }[] = [];
+            value.forEach((account, i) => {
+                if (!account) return;
+                const data = Buffer.from(account.data[0], "base64");
+                const list: string[] = [];
+                for (let at = LOOKUP_TABLE_HEADER_BYTES; at + 32 <= data.length; at += 32) {
+                    list.push(base58.encode(data.subarray(at, at + 32)));
+                }
+                tables.push({ address: addresses[i]!, addresses: list });
+            });
+            return tables;
+        },
+        async getAccountInfo(address) {
+            const { value } = await call<{ value: { owner: string; lamports: number } | null }>("getAccountInfo", [
+                address,
+                { encoding: "base64", commitment: "confirmed" },
+            ]);
+            return value ? { owner: value.owner, lamports: BigInt(value.lamports) } : null;
         },
     };
 }

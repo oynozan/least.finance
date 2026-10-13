@@ -19,6 +19,7 @@ const STATUS: Record<ErrorCode, number> = {
     position_busy: 409,
     trading_off: 503,
     no_route: 422,
+    quote_changed: 409,
     internal: 500,
 };
 

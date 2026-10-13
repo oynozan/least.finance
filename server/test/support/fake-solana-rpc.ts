@@ -1,12 +1,17 @@
+import { base58 } from "@scure/base";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
 export type FakeSolanaRpc = Awaited<ReturnType<typeof startFakeSolanaRpc>>;
 
-/** A Solana JSON-RPC stand-in that answers getBalance and getTokenAccountsByOwner from what's been set. */
+/** A Solana JSON-RPC stand-in that answers balance, blockhash, signature, lookup-table and account reads from what's been set. */
 export async function startFakeSolanaRpc() {
     const lamports = new Map<string, bigint>();
     const tokens = new Map<string, bigint>();
+    const statuses = new Map<string, { confirmationStatus: string; err: unknown }>();
+    const tables = new Map<string, string[]>();
+    const accounts = new Map<string, { owner: string; lamports: bigint }>();
+    let blockhash = { blockhash: "11111111111111111111111111111111", lastValidBlockHeight: 1 };
     let failures = 0;
     let failStatus = 500;
     let requests = 0;
@@ -34,6 +39,33 @@ export async function startFakeSolanaRpc() {
                 // Two accounts when held, so the reader has to sum them.
                 const value = units === undefined ? [] : [account(units / 2n), account(units - units / 2n)];
                 result = { context: { slot: 1 }, value };
+            } else if (method === "getLatestBlockhash") {
+                result = { context: { slot: 1 }, value: blockhash };
+            } else if (method === "getSignatureStatuses") {
+                result = {
+                    context: { slot: 1 },
+                    value: (params[0] as string[]).map((sig) => statuses.get(sig) ?? null),
+                };
+            } else if (method === "getMultipleAccounts") {
+                const value = (params[0] as string[]).map((address) => {
+                    const list = tables.get(address);
+                    if (!list) return null;
+                    const data = Buffer.concat([Buffer.alloc(56), ...list.map((a) => Buffer.from(base58.decode(a)))]);
+                    return {
+                        data: [data.toString("base64"), "base64"],
+                        lamports: 1,
+                        owner: "AddressLookupTab1e1111111111111111111111111",
+                    };
+                });
+                result = { context: { slot: 1 }, value };
+            } else if (method === "getAccountInfo") {
+                const found = accounts.get(params[0]);
+                result = {
+                    context: { slot: 1 },
+                    value: found
+                        ? { data: ["", "base64"], owner: found.owner, lamports: Number(found.lamports) }
+                        : null,
+                };
             }
             res.writeHead(200, { "content-type": "application/json" });
             res.end(
@@ -51,6 +83,13 @@ export async function startFakeSolanaRpc() {
         url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
         setBalance: (owner: string, amount: bigint) => void lamports.set(owner, amount),
         setTokenBalance: (owner: string, mint: string, units: bigint) => void tokens.set(`${owner}:${mint}`, units),
+        setBlockhash: (value: string, lastValidBlockHeight: number) =>
+            void (blockhash = { blockhash: value, lastValidBlockHeight }),
+        setSignatureStatus: (signature: string, status: { confirmationStatus: string; err: unknown }) =>
+            void statuses.set(signature, status),
+        setLookupTable: (address: string, addresses: string[]) => void tables.set(address, addresses),
+        setAccount: (address: string, account: { owner: string; lamports: bigint }) =>
+            void accounts.set(address, account),
         /** JSON-RPC requests received so far, failed ones included. */
         requests: () => requests,
         failNext(count: number, status = 500) {

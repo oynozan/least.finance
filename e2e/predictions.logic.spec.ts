@@ -31,6 +31,7 @@ const session = (balance: string, version: number): WalletSession => ({
     rules: RULES,
     orders: [],
     withdrawals: [],
+    solana: { deposits: false, withdrawals: false },
 });
 
 const at = (n: number) => new Date(Date.UTC(2026, 9, 12, 0, 0, n)).toISOString();

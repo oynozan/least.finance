@@ -19,3 +19,9 @@ test("a reported deposit is credited and pushed", async () => {
     expect(receipt).toMatchObject({ ok: true, data: { account: { balance: "12.5" } } });
     expect(await pushed).toMatchObject({ deposit: { amount: "12.5", txHash: hash } });
 });
+
+test("the session carries solana: { deposits: false, withdrawals: false } by default", async () => {
+    const socket = await stack.socket(await stack.user());
+    const session = await socket.timeout(5000).emitWithAck("account:open", {});
+    expect(session).toMatchObject({ ok: true, data: { solana: { deposits: false, withdrawals: false } } });
+});

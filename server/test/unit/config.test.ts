@@ -67,6 +67,34 @@ describe("loadConfig", () => {
         expect(config.POLYMARKET_POOL_KEY).toBe(key);
     });
 
+    it("Solana switches are off by default", () => {
+        const config = load();
+        expect(config.SOLANA_DEPOSITS).toBe("off");
+        expect(config.SOLANA_WITHDRAWALS).toBe("off");
+        expect(config.SOLANA_DEPOSIT_MIN_USD).toBe(2);
+        expect(config.SOLANA_WITHDRAW_FEE_TOLERANCE).toBe(parseUnits("0.05", 18));
+    });
+
+    it("SOLANA_WITHDRAW_MIN_USDC defaults to 1 USDC in wei", () => {
+        expect(load().SOLANA_WITHDRAW_MIN_USDC).toBe(parseUnits("1", 18));
+        expect(load({ SOLANA_WITHDRAW_MIN_USDC: "2.5" }).SOLANA_WITHDRAW_MIN_USDC).toBe(parseUnits("2.5", 18));
+    });
+
+    it("SOLANA_ALLOWED_PROGRAMS defaults to the five programs", () => {
+        expect(load().SOLANA_ALLOWED_PROGRAMS).toEqual([
+            "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2",
+            "11111111111111111111111111111111",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+            "ComputeBudget111111111111111111111111111111",
+        ]);
+        expect(load({ SOLANA_ALLOWED_PROGRAMS: "A, B" }).SOLANA_ALLOWED_PROGRAMS).toEqual(["A", "B"]);
+    });
+
+    it("CIRCLE_IRIS_URL defaults to https://iris-api.circle.com", () => {
+        expect(load().CIRCLE_IRIS_URL).toBe("https://iris-api.circle.com");
+    });
+
     it("fills in defaults", () => {
         const config = load();
         expect(config.PORT).toBe(4500);
@@ -281,5 +309,14 @@ describe("publicRpcWarnings", () => {
         const names = ["ARC", "ETHEREUM", "BNB", "ARBITRUM", "BASE", "OPTIMISM", "POLYGON", "AVALANCHE", "SOLANA"];
         const env = Object.fromEntries(names.map((name) => [`${name}_RPC_URLS`, `https://rpc.example/${name}`]));
         expect(publicRpcWarnings(load(env))).toEqual([]);
+    });
+});
+
+describe("solanaOpen", () => {
+    it("throws unavailable while the switch is off and passes when it is on", async () => {
+        const { solanaOpen } = await import("../../src/crosschain/solana-switch.ts");
+        expect(() => solanaOpen(load(), "deposits")).toThrow("Solana isn't open yet.");
+        expect(() => solanaOpen(load({ SOLANA_DEPOSITS: "on" }), "withdrawals")).toThrow(/open yet/);
+        expect(() => solanaOpen(load({ SOLANA_DEPOSITS: "on" }), "deposits")).not.toThrow();
     });
 });

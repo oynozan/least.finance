@@ -134,6 +134,8 @@ export type WalletSession = {
     orders: DepositOrderView[];
     /** The 50 newest withdrawals, newest first. */
     withdrawals: WithdrawalView[];
+    /** Which Solana flows are open. */
+    solana: { deposits: boolean; withdrawals: boolean };
 };
 
 /** The outcome of a deposit transaction the client reported. */
@@ -169,6 +171,8 @@ export type ErrorCode =
     | "trading_off"
     /** LI.FI has no route for the swap. */
     | "no_route"
+    /** The quote the person reviewed no longer holds. */
+    | "quote_changed"
     | "internal";
 
 export type ApiError = { code: ErrorCode; message: string };

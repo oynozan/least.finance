@@ -29,6 +29,14 @@ const DEFAULT_RPC_URLS = {
     SOLANA_RPC_URLS: ["https://api.mainnet-beta.solana.com"],
 } as const satisfies Record<string, readonly string[]>;
 
+const SOLANA_ALLOWED_PROGRAMS = [
+    "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2",
+    "11111111111111111111111111111111",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    "ComputeBudget111111111111111111111111111111",
+] as const;
+
 /** An optional secret: left blank in the .env file, it's the same as unset. */
 const optionalKey = z
     .string()
@@ -101,6 +109,20 @@ const fields = z.object({
     AVALANCHE_RPC_URLS: list(DEFAULT_RPC_URLS.AVALANCHE_RPC_URLS),
     /** RPCs for reading Solana wallets' balances, tried in order. */
     SOLANA_RPC_URLS: list(DEFAULT_RPC_URLS.SOLANA_RPC_URLS),
+    /** Deposits from a linked Solana wallet are open only while this is on. */
+    SOLANA_DEPOSITS: z.enum(["on", "off"]).default("off"),
+    /** Withdrawals to a linked Solana wallet are open only while this is on. */
+    SOLANA_WITHDRAWALS: z.enum(["on", "off"]).default("off"),
+    /** Solana deposits quoted below this many dollars are refused. */
+    SOLANA_DEPOSIT_MIN_USD: z.coerce.number().positive().default(2),
+    SOLANA_WITHDRAW_MIN_USDC: usdc
+        .refine((wei) => wei > 0n, "a USDC amount above 0")
+        .default(parseUnits("1", NATIVE_DECIMALS)),
+    /** How far the USDC received may fall short of the amount less the shown fee. */
+    SOLANA_WITHDRAW_FEE_TOLERANCE: usdc.default(parseUnits("0.05", NATIVE_DECIMALS)),
+    /** Programs a Relay quote's instructions may call: Relay's depository, System, Token, Associated Token, Compute Budget. */
+    SOLANA_ALLOWED_PROGRAMS: list(SOLANA_ALLOWED_PROGRAMS),
+    CIRCLE_IRIS_URL: z.url().default("https://iris-api.circle.com"),
     RELAY_API_KEY: optionalKey,
     ACROSS_API_KEY: optionalKey,
     ACROSS_INTEGRATOR_ID: optionalKey,

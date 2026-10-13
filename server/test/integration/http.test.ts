@@ -185,6 +185,7 @@ describe("opening accounts", () => {
             rules: { chainId: 5042, minDeposit: "0.01" },
             orders: [],
             withdrawals: [],
+            solana: { deposits: false, withdrawals: false },
         });
     });
 
