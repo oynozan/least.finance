@@ -38,3 +38,19 @@ export function formatPts(delta: number): { text: string; trend: "gain" | "loss"
     const body = tenth >= 10 ? String(Math.round(pts)) : tenth.toFixed(1);
     return delta > 0 ? { text: `+${body} pts`, trend: "gain" } : { text: `−${body} pts`, trend: "loss" };
 }
+
+const MS_PER_DAY = 86_400_000;
+/** A line spanning more than this many days no longer shows the hour. */
+const HOURLY_DAYS = 60;
+
+/** The pointed-at moment: with the year when the line spans two calendar years, without the hour when it spans more than 60 days. */
+export function chartDate(time: number, first: number, last: number, timeZone?: string): string {
+    const year = (ms: number) => new Date(ms).toLocaleString("en-US", { year: "numeric", timeZone });
+    return new Date(time).toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: year(first) === year(last) ? undefined : "numeric",
+        hour: last - first > HOURLY_DAYS * MS_PER_DAY ? undefined : "numeric",
+        timeZone,
+    });
+}

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { chartedOutcomes, historyTokens, lineColor } from "@/lib/trade/market-lines";
-import { chanceScale, formatPts, valueAt, withLiveEnd } from "@/lib/trade/chance-chart";
+import { chanceScale, chartDate, formatPts, valueAt, withLiveEnd } from "@/lib/trade/chance-chart";
 import { drawable } from "@/components/trade/market-chart-card";
 import { createMarketHistoryStore } from "@/components/trade/market-history-store";
 import type { Outcome, PredictionMarket } from "@/lib/trade/catalog";
@@ -269,5 +269,34 @@ test.describe("the market history store", () => {
                 .lines.get("a")!
                 .map(([t]) => t),
         ).toEqual([1, 2, 3]);
+    });
+});
+
+test.describe("chartDate", () => {
+    const at = (text: string) => Date.parse(text);
+    const utc = "UTC";
+
+    test("a short span in one year shows the day and the hour", () => {
+        expect(chartDate(at("2026-10-01T20:10:00Z"), at("2026-10-01T00:00:00Z"), at("2026-10-04T00:00:00Z"), utc)).toBe(
+            "Oct 1, 8 PM",
+        );
+    });
+
+    test("a span over 60 days in one year drops the hour", () => {
+        expect(chartDate(at("2026-04-20T09:00:00Z"), at("2026-03-01T00:00:00Z"), at("2026-10-17T00:00:00Z"), utc)).toBe(
+            "Apr 20",
+        );
+    });
+
+    test("a span over two calendar years adds the year, and the hour goes past 60 days", () => {
+        expect(chartDate(at("2026-04-20T09:00:00Z"), at("2025-12-20T00:00:00Z"), at("2026-10-17T00:00:00Z"), utc)).toBe(
+            "Apr 20, 2026",
+        );
+    });
+
+    test("a short span across New Year keeps the hour and adds the year", () => {
+        expect(chartDate(at("2025-12-31T23:30:00Z"), at("2025-12-27T00:00:00Z"), at("2026-01-06T00:00:00Z"), utc)).toBe(
+            "Dec 31, 2025, 11 PM",
+        );
     });
 });

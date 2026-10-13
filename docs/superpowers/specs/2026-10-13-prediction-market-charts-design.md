@@ -78,7 +78,7 @@ GET /markets/:eventId/history?outcomes=<tokenId>,<tokenId>
 
 - **Public and rate-limited.** It has `noStore` and `limit(120, 60_000)`, like the other `/markets` routes.
 - **Bad request.** `outcomes` must hold 1 to 5 distinct token ids, or the answer is `bad_request`.
-- **Not found.** Each token must belong to an outcome of the event as `markets.event(eventId)` shapes it now. An unknown event, or a token that isn't one of its outcomes, gets `not_found` ("That market isn't available."). This means no request can make us read an arbitrary token.
+- **Not found.** Each token must be one of the cached Gamma event's own `clobTokenIds` (`MarketService.tokensOf`), even if the books no longer offer it, and the event must shape now. An unknown event, or a token that isn't one of its own, gets `not_found` ("That market isn't available."). This means no request can make us read an arbitrary token.
 - **Unavailable.** When Polymarket can't be read and nothing is cached for a token that was asked for, the answer is `unavailable`.
 
 The answer is a `MarketHistoryView` (in `server/src/protocol.ts`):
@@ -131,24 +131,25 @@ export function historyTokens(market: PredictionMarket, outcomeId: string | null
 
 ### Cards
 
-`components/trade/market-chart-card.tsx` has two exports. Both use the coin card's 300 × 120 chart, its draw-in animation and its pointer behaviour.
+`components/trade/market-chart-card.tsx` has two exports. Both draw their chart 300 px wide, edge to edge, with the coin card's draw-in animation and pointer behaviour. The question card's header (image and question) was dropped so it fits a 720 px-tall screen; the pill under the card already shows both.
 
-**`QuestionChartCard`**
-- **Header.** The market's image (40 px) and its question, clamped to 2 lines. The subtitle shows when it ends, or the pointed-at date while pointing.
-- **Chart.**
+**`QuestionChartCard`**, top to bottom (about 223 px for 4 lines, about 192 px for one or two)
+- **Legend.** It leads: a 2×2 grid, each cell a color swatch, the name (truncated) and the % (NumberFlow, rolling to the pointed-at moment). One or two lines make a single row.
+- **Muted line.** On the left, "Ends …", which gives way to the pointed-at date while pointing. On the right, "+N more" when outcomes were left out.
+- **Chart.** About 106 px tall, flush to the card's bottom and side edges, with no fill.
   - **Lines.** One per drawn outcome. A YES-only chart uses `--gain`. Named outcomes use `--chart-1` to `--chart-4` in order of their chance.
   - **Pointing.** A dashed crosshair follows the pointer, with a dot on every line.
   - **A line that starts later.** If a line hadn't started yet at the pointed time, it shows no dot and its legend reads "—".
-- **Legend.** One row per line: a color swatch, the name (truncated), and the % (NumberFlow, rolling to the pointed-at moment). If outcomes were left out, a muted "+N more" row follows.
 
 **`OutcomeChartCard`**
 - **Header.**
-  - **Left.** The outcome's icon (the YES/NO mark or its image) and its label. The subtitle shows the question's short form, or the pointed-at date while pointing.
+  - **Left.** The outcome's label, whole where it fits, with no icon since the outcome pill under the card shows it. The subtitle shows "Ends …", or the pointed-at date while pointing.
   - **Right.** The chance now (NumberFlow) and a chip showing the change since the line's first point, in percentage points: "+12 pts" or "−3.5 pts". Under 0.5 points reads as flat.
 - **Line.**
   - **Color.** YES uses `--gain` and NO uses `--loss`. A named outcome uses its color from the question card, or `--chart-1` when that card doesn't draw it.
 
 **Both cards**
+- **Dates.** The pointed-at date carries the year when the line spans two calendar years, and drops the hour when it spans more than 60 days (`chartDate`).
 - **Vertical scale.** It fits the data but never spans less than 20 points, and is clamped to 0–100%.
 - **No card when there's nothing to draw.** A card renders only when at least one of its lines has 2 or more points, including the live end. Otherwise there is no card, as with coins.
 

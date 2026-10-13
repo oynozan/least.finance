@@ -114,7 +114,7 @@ export function ChoiceSlot({
                     setOpen(true);
                     onOpen?.();
                 }}
-                onHoverChange={preview ? hover.pill : undefined}
+                onHoverChange={hover.pill}
             >
                 {selected ? <Label label={selected.label} short={selected.short} /> : placeholder}
             </PillButton>

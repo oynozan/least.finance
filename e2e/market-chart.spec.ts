@@ -25,6 +25,11 @@ async function openCard(page: Page, pill: Locator) {
         .toBe(true);
 }
 
+/** Waits for the card to show whole: nothing of it scrolls out of sight. */
+async function expectWhole(page: Page) {
+    await expect.poll(() => card(page).evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
+}
+
 /** Picks Predict, then a sample question; its likeliest outcome comes with it. */
 async function predict(page: Page, eventId: string) {
     const market = await sampleView(eventId);
@@ -79,6 +84,21 @@ test("hovering a multi-outcome question shows its 4 likeliest outcomes and +N mo
     await expect(card(page).locator("[data-more]")).toHaveText(`+${market.outcomes.length - 4} more`);
 });
 
+test("the whole multi-outcome question card shows", async ({ page, isMobile }) => {
+    test.skip(isMobile, "hover only");
+    await predict(page, samples.multi!);
+    await openCard(page, questionPill(page));
+    await expectWhole(page);
+});
+
+test("the whole multi-outcome question card shows on a 1280 by 720 screen", async ({ page, isMobile }) => {
+    test.skip(isMobile, "hover only");
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await predict(page, samples.multi!);
+    await openCard(page, questionPill(page));
+    await expectWhole(page);
+});
+
 test("a Yes/No question draws only YES", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
     const market = await predict(page, samples.yesNo!);
@@ -87,6 +107,13 @@ test("a Yes/No question draws only YES", async ({ page, isMobile }) => {
     await expect(card(page).locator("[data-line]")).toHaveCount(1);
     await expect(card(page).locator("[data-line]")).toHaveAttribute("data-line", yes.tokenId);
     await expect(card(page).locator("[data-more]")).toHaveCount(0);
+});
+
+test("the whole Yes/No question card shows", async ({ page, isMobile }) => {
+    test.skip(isMobile, "hover only");
+    await predict(page, samples.yesNo!);
+    await openCard(page, questionPill(page));
+    await expectWhole(page);
 });
 
 test("the outcome pill shows only that outcome, with its chance and change", async ({ page, isMobile }) => {
@@ -102,6 +129,15 @@ test("the outcome pill shows only that outcome, with its chance and change", asy
     const shown = Number(await outcome.locator("[data-chance]").getAttribute("data-chance"));
     expect(Math.abs(shown - second!.chance)).toBeLessThan(0.005);
     await expect(outcome.locator("[data-change]")).toHaveAttribute("data-change", /^([+−]\d+(\.\d)? pts|0 pts)$/);
+});
+
+test("the whole outcome card shows", async ({ page, isMobile }) => {
+    test.skip(isMobile, "hover only");
+    const market = await predict(page, samples.multi!);
+    const [second] = [...market.outcomes].sort((a, b) => b.chance - a.chance).slice(1);
+    await pickOutcome(page, second!.label);
+    await openCard(page, outcomePill(page));
+    await expectWhole(page);
 });
 
 test("an outcome outside the 4 likeliest still shows its own line", async ({ page, isMobile }) => {
@@ -143,8 +179,6 @@ test("the chart is read before the hover", async ({ page, isMobile }) => {
 
 test("opening the picker hides the card, and Escape closes it", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
-    // Tall enough for the card to sit clear of the pill, so the pointer stays on the pill
-    await page.setViewportSize({ width: 1388, height: 1100 });
     await predict(page, samples.multi!);
     await openCard(page, questionPill(page));
     await page.keyboard.press("Escape");
@@ -162,10 +196,30 @@ test("a history that can't be read shows no card", async ({ page, isMobile }) =>
     test.skip(isMobile, "hover only");
     // The pick's read-ahead takes the failure, and a failed read isn't retried within seconds
     await failNextPolymarket("/batch-prices-history");
+    const refused = page.waitForResponse(
+        (response) => response.url().startsWith(`${API}/markets/${samples.named}/history`) && response.status() === 503,
+    );
     await predict(page, samples.named!);
+    await refused;
     await questionPill(page).hover();
     await page.waitForTimeout(500);
     await expect(card(page)).toHaveCount(0);
+});
+
+test("a read that lands while the pill is hovered opens the card", async ({ page, isMobile }) => {
+    test.skip(isMobile, "hover only");
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(new RegExp(`/markets/${samples.multi}/history`), async (route) => {
+        await held;
+        await route.continue();
+    });
+    await predict(page, samples.multi!);
+    await questionPill(page).hover();
+    await page.waitForTimeout(300);
+    await expect(card(page)).toHaveCount(0);
+    release();
+    await expect(card(page)).toBeVisible();
 });
 
 test("a tap opens the picker, never a chart", async ({ page, isMobile }) => {

@@ -1,21 +1,21 @@
 "use client";
 
-import { useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import NumberFlow from "@number-flow/react";
 import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
 import type { Outcome, PredictionMarket } from "@/lib/trade/catalog";
-import { chanceScale, formatPts, valueAt, type ChancePoints } from "@/lib/trade/chance-chart";
+import { chanceScale, chartDate, formatPts, valueAt, type ChancePoints } from "@/lib/trade/chance-chart";
 import { chartedOutcomes, lineColor } from "@/lib/trade/market-lines";
 import { smoothPath } from "./chart-path";
-import { MarketImage } from "./market-image";
-import { renderTradeIcon } from "./trade-icons";
 
-/** The chart's drawing size, the card's own width: it runs to the card's edges and scales evenly with it. */
+/** The chart's drawing width, the card's own: it runs to the card's edges and scales evenly with it. */
 const WIDTH = 300;
-const HEIGHT = 120;
-/** Room above the line for the stroke, and below it for the fill, clear of the card's rounded corners. */
+/** Room above the line for the stroke. */
 const TOP = 10;
-const BOTTOM = 26;
+/** The outcome card's drawing height, and its room below the line for the fill. */
+const OUTCOME_SHAPE = { height: 120, bottom: 26 };
+/** The question card's drawing height, with room below the lines only for their stroke and the rounded corners. */
+const QUESTION_SHAPE = { height: 106, bottom: 12 };
 
 const TONE = {
     gain: "bg-gain/15 text-gain",
@@ -28,11 +28,15 @@ const pop: Transition = { type: "spring", visualDuration: 0.3, bounce: 0.5 };
 const swap: Transition = { type: "spring", visualDuration: 0.25, bounce: 0.3 };
 const follow: Transition = { type: "spring", visualDuration: 0.15, bounce: 0 };
 
-const when = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric" });
-
 const PERCENT = { style: "percent", maximumFractionDigits: 0 } as const;
 
 type ChartLine = { id: string; color: string; points: ChancePoints };
+
+/** The first and last moments any of the lines covers. */
+function spanOf(lines: readonly ChartLine[]): { first: number; last: number } {
+    const times = lines.flatMap((line) => line.points.map(([t]) => t));
+    return { first: Math.min(...times), last: Math.max(...times) };
+}
 
 /** Whether a card has anything to draw: some line with at least 2 points. */
 export function drawable(lines: Iterable<ChancePoints>): boolean {
@@ -41,13 +45,13 @@ export function drawable(lines: Iterable<ChancePoints>): boolean {
 }
 
 /** The subtitle that gives way to the pointed-at date while pointing. */
-function Subtitle({ rest, time }: { rest: string; time: number | null }) {
+function Subtitle({ rest, date, className = "" }: { rest: string; date: string | null; className?: string }) {
     const reduce = useReducedMotion();
     return (
-        <span className="relative h-[1.375em] overflow-hidden text-[14px] leading-snug text-muted">
+        <span className={`relative h-[1.375em] overflow-hidden text-[14px] leading-snug text-muted ${className}`}>
             <AnimatePresence mode="popLayout" initial={false}>
                 <motion.span
-                    key={time === null ? "rest" : "when"}
+                    key={date === null ? "rest" : "when"}
                     data-subtitle=""
                     className="absolute inset-x-0 truncate tabular-nums"
                     initial={reduce ? { opacity: 0 } : { opacity: 0, y: "70%" }}
@@ -55,7 +59,7 @@ function Subtitle({ rest, time }: { rest: string; time: number | null }) {
                     exit={reduce ? { opacity: 0 } : { opacity: 0, y: "-70%" }}
                     transition={swap}
                 >
-                    {time === null ? rest : when.format(time)}
+                    {date ?? rest}
                 </motion.span>
             </AnimatePresence>
         </span>
@@ -64,6 +68,8 @@ function Subtitle({ rest, time }: { rest: string; time: number | null }) {
 
 type ChartProps = {
     lines: readonly ChartLine[];
+    /** The drawing's height and its room below the lines. */
+    shape: { height: number; bottom: number };
     /** Whether the first line gets a fill down to the card's bottom edge. */
     fill: boolean;
     time: number | null;
@@ -71,7 +77,8 @@ type ChartProps = {
 };
 
 /** The lines on one shared time axis and chance scale, with a crosshair and a dot per line while pointing. */
-function Chart({ lines, fill, time, onTime }: ChartProps) {
+function Chart({ lines, shape, fill, time, onTime }: ChartProps) {
+    const { height, bottom } = shape;
     const reduce = useReducedMotion();
     // A bare name, so url(#…) needs no escaping
     const gradientId = useId().replace(/[^\w-]/g, "");
@@ -84,12 +91,12 @@ function Chart({ lines, fill, time, onTime }: ChartProps) {
         const t1 = Math.max(...all.map(([t]) => t));
         const { floor, span } = chanceScale(all.map(([, chance]) => chance));
         const xOf = (t: number) => ((t - t0) / (t1 - t0 || 1)) * WIDTH;
-        const yOf = (chance: number) => TOP + (1 - (chance - floor) / span) * (HEIGHT - TOP - BOTTOM);
+        const yOf = (chance: number) => TOP + (1 - (chance - floor) / span) * (height - TOP - bottom);
         const paths = lines.map((line) =>
             line.points.length >= 2 ? smoothPath(line.points.map(([t, c]) => [xOf(t), yOf(c)] as const)) : null,
         );
         return { t0, t1, xOf, yOf, paths };
-    }, [lines]);
+    }, [lines, height, bottom]);
     if (!chart) return null;
 
     const point = (clientX: number) => {
@@ -104,7 +111,7 @@ function Chart({ lines, fill, time, onTime }: ChartProps) {
     return (
         <svg
             ref={svg}
-            viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+            viewBox={`0 0 ${WIDTH} ${height}`}
             className="block h-auto w-full cursor-crosshair overflow-visible"
             aria-hidden="true"
             data-chart=""
@@ -118,10 +125,10 @@ function Chart({ lines, fill, time, onTime }: ChartProps) {
                 </linearGradient>
             </defs>
             {/* Catches the pointer over the whole chart, not only on the line */}
-            <rect width={WIDTH} height={HEIGHT} fill="transparent" />
+            <rect width={WIDTH} height={height} fill="transparent" />
             {fill && chart.paths[0] && (
                 <motion.path
-                    d={`${chart.paths[0]}L${WIDTH},${HEIGHT}L0,${HEIGHT}Z`}
+                    d={`${chart.paths[0]}L${WIDTH},${height}L0,${height}Z`}
                     fill={`url(#${gradientId})`}
                     initial={reduce ? false : { opacity: 0 }}
                     animate={{ opacity: 1 }}
@@ -148,7 +155,7 @@ function Chart({ lines, fill, time, onTime }: ChartProps) {
             {time !== null && (
                 <motion.line
                     y1={0}
-                    y2={HEIGHT}
+                    y2={height}
                     stroke="var(--muted)"
                     strokeOpacity={0.45}
                     strokeWidth={1.5}
@@ -191,8 +198,8 @@ type QuestionChartCardProps = {
 };
 
 /**
- * A question's leading outcomes over its life, one line each on a shared axis, with a legend
- * underneath. Pointing rolls every percentage to that moment, and "Ends …" gives way to the date.
+ * A question's leading outcomes over its life: a legend that leads, one muted line, and the chart, one line
+ * per outcome on a shared axis. Pointing rolls every percentage to that moment, and "Ends …" gives way to the date.
  */
 export function QuestionChartCard({ market, lines }: QuestionChartCardProps) {
     const [time, setTime] = useState<number | null>(null);
@@ -201,36 +208,25 @@ export function QuestionChartCard({ market, lines }: QuestionChartCardProps) {
         () =>
             drawn.flatMap((outcome) => {
                 const points = lines.get(outcome.id);
-                return points?.length
+                return points && points.length > 0
                     ? [{ outcome, id: outcome.id, color: lineColor(market, outcome.id), points }]
                     : [];
             }),
         [drawn, lines, market],
     );
+    const { first, last } = spanOf(shown);
 
     return (
-        <div className="flex flex-col gap-4" data-market-card="question">
-            <div className="flex items-center gap-3 px-5 pt-5">
-                {market.image && (
-                    <span className="flex shrink-0 text-[35px]">
-                        <MarketImage src={market.image} />
-                    </span>
-                )}
-                <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="line-clamp-2 text-[17px] leading-snug font-medium tracking-[-0.01em]">
-                        {market.question}
-                    </span>
-                    <Subtitle rest={`Ends ${market.closes}`} time={time} />
-                </div>
-            </div>
-
-            <Chart lines={shown} fill={false} time={time} onTime={setTime} />
-
-            <div className="flex flex-col gap-2 px-5 pb-5">
+        <div className="flex flex-col gap-3" data-market-card="question">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 px-5 pt-5">
                 {shown.map(({ outcome, id, color, points }) => {
                     const chance = time === null ? points.at(-1)![1] : valueAt(points, time);
                     return (
-                        <div key={id} data-legend={id} className="flex items-center gap-2.5 text-[15px] leading-snug">
+                        <div
+                            key={id}
+                            data-legend={id}
+                            className="flex min-w-0 items-center gap-2 text-[15px] leading-snug"
+                        >
                             <span
                                 aria-hidden="true"
                                 className="size-2 shrink-0 rounded-full"
@@ -243,21 +239,24 @@ export function QuestionChartCard({ market, lines }: QuestionChartCardProps) {
                         </div>
                     );
                 })}
+            </div>
+
+            <div className="flex items-baseline gap-3 px-5">
+                <Subtitle
+                    className="min-w-0 flex-1"
+                    rest={`Ends ${market.closes}`}
+                    date={time === null ? null : chartDate(time, first, last)}
+                />
                 {more > 0 && (
-                    <div data-more="" className="text-[14px] leading-snug text-muted">
+                    <span data-more="" className="shrink-0 text-[14px] leading-snug text-muted">
                         +{more} more
-                    </div>
+                    </span>
                 )}
             </div>
+
+            <Chart lines={shown} shape={QUESTION_SHAPE} fill={false} time={time} onTime={setTime} />
         </div>
     );
-}
-
-/** The YES/NO mark, else the outcome's own picture, else nothing. */
-function outcomeIcon(outcome: Outcome): ReactNode {
-    if (/^(yes|no)$/i.test(outcome.label))
-        return renderTradeIcon({ set: "outcome", id: outcome.label.toLowerCase(), tone: outcome.tone });
-    return outcome.image ? renderTradeIcon({ set: "image", id: outcome.image }) : null;
 }
 
 type OutcomeChartCardProps = {
@@ -280,17 +279,19 @@ export function OutcomeChartCard({ market, outcome, points }: OutcomeChartCardPr
 
     const chance = time === null ? points.at(-1)![1] : (valueAt(points, time) ?? points[0]![1]);
     const change = formatPts(chance - points[0]![1]);
-    const icon = outcomeIcon(outcome);
+    const { first, last } = spanOf(lines);
 
     return (
         <div className="flex flex-col gap-4" data-market-card="outcome">
             <div className="flex items-center gap-3 px-5 pt-5">
-                {icon && <span className="flex shrink-0 text-[35px]">{icon}</span>}
                 <div className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate text-[17px] leading-snug font-medium tracking-[-0.01em]">
                         {outcome.label}
                     </span>
-                    <Subtitle rest={`Ends ${market.closes}`} time={time} />
+                    <Subtitle
+                        rest={`Ends ${market.closes}`}
+                        date={time === null ? null : chartDate(time, first, last)}
+                    />
                 </div>
                 <div className="flex flex-col items-end gap-1">
                     <span className="text-[17px] leading-snug font-medium tracking-[-0.01em]" data-chance={chance}>
@@ -308,7 +309,7 @@ export function OutcomeChartCard({ market, outcome, points }: OutcomeChartCardPr
                 </div>
             </div>
 
-            <Chart lines={lines} fill time={time} onTime={setTime} />
+            <Chart lines={lines} shape={OUTCOME_SHAPE} fill time={time} onTime={setTime} />
         </div>
     );
 }
