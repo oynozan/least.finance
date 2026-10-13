@@ -17,6 +17,8 @@ type Deps = {
     clients: Record<EvmNetworkId, PublicClient>;
     bus: Bus;
     holdings: Pick<SwapHoldings, "refresh">;
+    /** Whether a Solana signature failed on chain; null while the chain has no verdict. */
+    solanaStatus: (signature: string) => Promise<{ failed: boolean } | null>;
     accounts: Pick<AccountService, "findById">;
     logger: Logger;
     /** How often the loop looks for orders that are due. */
@@ -47,6 +49,42 @@ const tokenOf = (side: SwapOrderDoc["to"]) =>
     COINS.find((coin) => coin.symbol === side.token)!.entries.find((entry) => entry.network === side.network)!;
 
 type Move = { state: SwapOrderState; received?: string; receivedSymbol?: string };
+
+/** What a swap status is held against: the order's last hash, its wallets and the token it asked for. */
+export type StatusExpect = { hash: string; wallet: string; receiver: string; token: string };
+
+/** The move LI.FI's status settles an order to, or null with the reason it doesn't. */
+export function moveFromStatus(status: LifiStatus, expect: StatusExpect): { move: Move | null; note: string | null } {
+    if (status.status === "NOT_FOUND" || status.status === "INVALID" || status.status === "PENDING") {
+        return { move: null, note: null };
+    }
+    // A failure or refund pays no one, so only the fields LI.FI sent are held to the order
+    const lenient = status.status === "FAILED" || status.substatus === "REFUNDED";
+    const present = (value: string | null, want: string) => value === null || sameValue(value, want);
+    const matches = lenient
+        ? present(status.sendingTxHash, expect.hash) &&
+          present(status.fromAddress, expect.wallet) &&
+          present(status.toAddress, expect.receiver)
+        : status.sendingTxHash !== null &&
+          status.fromAddress !== null &&
+          status.toAddress !== null &&
+          sameValue(status.sendingTxHash, expect.hash) &&
+          sameValue(status.fromAddress, expect.wallet) &&
+          sameValue(status.toAddress, expect.receiver);
+    if (!matches) return { move: null, note: "Ignored a swap status for another transaction" };
+
+    if (status.substatus === "REFUNDED") return { move: { state: "refunded" }, note: null };
+    if (status.status === "FAILED") return { move: { state: "failed" }, note: null };
+    const got = status.receiving;
+    if (status.status !== "DONE" || !got || (status.substatus !== "COMPLETED" && status.substatus !== "PARTIAL")) {
+        return { move: null, note: "Left a swap status unread" };
+    }
+    const received = formatUnits(BigInt(got.amount), got.decimals);
+    if (status.substatus === "COMPLETED" && sameValue(expect.token, got.tokenAddress)) {
+        return { move: { state: "done", received }, note: null };
+    }
+    return { move: { state: "partial", received, receivedSymbol: got.tokenSymbol || got.tokenAddress }, note: null };
+}
 
 /** Follows each sent swap to done, partial, refunded or failed, and expires the ones that never finish. */
 export class SwapTracker {
@@ -125,54 +163,34 @@ export class SwapTracker {
         const from = networkOf(order.from.network);
         const to = networkOf(order.to.network);
 
-        if (from.kind === "evm" && from.id === to.id) {
+        if (from.kind === "evm") {
             const receipt = await this.#deps.clients[from.id as EvmNetworkId]
                 .getTransactionReceipt({ hash: hash as `0x${string}` })
                 .catch(() => null);
             if (receipt?.status === "reverted") return { state: "failed" };
+        } else if ((await this.#deps.solanaStatus(hash))?.failed) {
+            return { state: "failed" };
         }
 
         const status = await this.#deps.lifi.status({
             txHash: hash,
             fromChain: from.chainId,
             toChain: to.chainId,
-            bridge: order.tool,
+            ...(from.id !== to.id && { bridge: order.tool }),
         });
-        if (status.status === "NOT_FOUND" || status.status === "INVALID" || status.status === "PENDING") return null;
-        if (
-            !status.sendingTxHash ||
-            !status.fromAddress ||
-            !status.toAddress ||
-            !sameValue(status.sendingTxHash, hash) ||
-            !sameValue(status.fromAddress, order.wallet) ||
-            !sameValue(status.toAddress, order.receiver)
-        ) {
-            this.#deps.logger.warn(
-                { orderId: order._id.toHexString() },
-                "Ignored a swap status for another transaction",
-            );
-            return null;
-        }
-        return this.#mapped(order, status);
-    }
-
-    #mapped(order: SwapOrderDoc, status: LifiStatus): Move | null {
-        if (status.substatus === "REFUNDED") return { state: "refunded" };
-        if (status.status === "FAILED") return { state: "failed" };
-        const got = status.receiving;
-        if (status.status !== "DONE" || !got || (status.substatus !== "COMPLETED" && status.substatus !== "PARTIAL")) {
+        const { move, note } = moveFromStatus(status, {
+            hash,
+            wallet: order.wallet,
+            receiver: order.receiver,
+            token: tokenOf(order.to).address,
+        });
+        if (note) {
             this.#deps.logger.warn(
                 { orderId: order._id.toHexString(), status: status.status, substatus: status.substatus },
-                "Left a swap status unread",
+                note,
             );
-            return null;
         }
-        const received = formatUnits(BigInt(got.amount), got.decimals);
-        const asked = tokenOf(order.to);
-        if (status.substatus === "COMPLETED" && sameValue(asked.address, got.tokenAddress)) {
-            return { state: "done", received };
-        }
-        return { state: "partial", received, receivedSymbol: got.tokenSymbol || got.tokenAddress };
+        return move;
     }
 
     /** Moves the order only if it is still in `from`; a settled move refreshes the account's holdings. */

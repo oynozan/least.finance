@@ -37,7 +37,9 @@ beforeEach(async () => {
 
 const orders = () => stack.server.services.database.collections.swapOrders;
 
-function tracker(options: { lifi?: Lifi } = {}) {
+function tracker(
+    options: { lifi?: Lifi; solanaStatus?: (signature: string) => Promise<{ failed: boolean } | null> } = {},
+) {
     const ethereumUrl = inject("ethereumUrl");
     const refused = ["http://127.0.0.1:9"];
     const clients = createSwapClients({
@@ -69,6 +71,7 @@ function tracker(options: { lifi?: Lifi } = {}) {
                 return { read: false };
             },
         },
+        solanaStatus: options.solanaStatus ?? (async () => null),
         accounts: stack.server.services.accounts,
         logger: stack.server.services.logger,
         pollMs: 1_000,
@@ -216,7 +219,8 @@ describe("following swaps", () => {
         }
     });
 
-    test("a reverted same-chain swap fails", async () => {
+    // A transaction on the Ethereum anvil that reverted, sent by `wallet`
+    async function revertedTx() {
         const chain = sourceChain(inject("ethereumUrl"), 1);
         const wallet = privateKeyToAddress(generatePrivateKey());
         const reverting = privateKeyToAddress(generatePrivateKey()) as Address;
@@ -230,7 +234,11 @@ describe("following swaps", () => {
             gas: 100_000n,
         });
         await chain.client.waitForTransactionReceipt({ hash: txHash });
+        return { wallet, txHash };
+    }
 
+    test("a reverted same-chain swap fails", async () => {
+        const { wallet, txHash } = await revertedTx();
         const order = await sent({
             wallet,
             receiver: wallet,
@@ -247,6 +255,81 @@ describe("following swaps", () => {
         await tracker().tick();
         expect((await state(order)).state).toBe("failed");
         expect(getAddress(wallet)).toBeTruthy();
+    });
+
+    test("a reverted cross-chain source transaction fails", async () => {
+        const { wallet, txHash } = await revertedTx();
+        const order = await sent({ wallet, receiver: wallet, txHashes: [txHash] });
+        await tracker().tick();
+        expect((await state(order)).state).toBe("failed");
+    });
+
+    test("a Solana swap whose signature errored fails, and one without a verdict stays sent", async () => {
+        const solana = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+        const base = {
+            wallet: solana,
+            from: { token: "SOL", network: "solana" as const, units: "1000000000", amount: "1" },
+        };
+        const signature = "5".repeat(88);
+        const asked: string[] = [];
+        const solanaStatus = async (value: string) => {
+            asked.push(value);
+            return { failed: true };
+        };
+        const failing = await sent({ ...base, txHashes: [signature] });
+        await tracker({ solanaStatus }).tick();
+        expect((await state(failing)).state).toBe("failed");
+        expect(asked).toEqual([signature]);
+
+        const waiting = await sent({ ...base, txHashes: [signature] });
+        await tracker({ solanaStatus: async () => ({ failed: false }) }).tick();
+        expect((await state(waiting)).state).toBe("sent");
+    });
+
+    test("a FAILED status without addresses settles to failed, and one for another hash does not", async () => {
+        const order = await sent();
+        status(order, { status: "FAILED", substatus: "UNKNOWN_ERROR", fromAddress: undefined, toAddress: undefined });
+        await tracker().tick();
+        expect((await state(order)).state).toBe("failed");
+
+        const other = await sent();
+        status(other, { status: "FAILED", fromAddress: undefined, toAddress: undefined, sending: { txHash: hash() } });
+        await tracker().tick();
+        expect((await state(other)).state).toBe("sent");
+    });
+
+    test("a same-chain status request carries no bridge, a cross-chain one does", async () => {
+        const same = await sent({
+            to: {
+                token: "USDT",
+                network: "ethereum",
+                units: "99000000",
+                minUnits: "98000000",
+                amount: "99",
+                minAmount: "98",
+            },
+        });
+        const cross = await sent();
+        stack.lifi.requests.length = 0;
+        await tracker().tick();
+        const asked = stack.lifi.requests.filter((request) => request.includes("/v1/status"));
+        const forOrder = (order: SwapOrderDoc) => asked.find((request) => request.includes(order.txHashes[0]!))!;
+        expect(forOrder(same)).not.toContain("bridge=");
+        expect(forOrder(cross)).toContain("bridge=fakebridge");
+    });
+
+    test("the received amount uses the status's own decimals", async () => {
+        const order = await sent();
+        status(
+            order,
+            {},
+            {
+                amount: "30900000",
+                token: { address: entry("ETH", "base").address, symbol: "ETH", decimals: 6, chainId: 8453 },
+            },
+        );
+        await tracker().tick();
+        expect(await state(order)).toMatchObject({ state: "done", received: "30.9" });
     });
 
     test("unreported orders expire after 15 minutes", async () => {

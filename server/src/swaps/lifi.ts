@@ -56,7 +56,7 @@ export type LifiStatus = {
     } | null;
 };
 
-export type LifiStatusRequest = { txHash: string; fromChain: number; toChain: number; bridge: string };
+export type LifiStatusRequest = { txHash: string; fromChain: number; toChain: number; bridge?: string };
 
 export type Lifi = {
     tokens(chainIds: readonly number[]): Promise<LifiToken[]>;
@@ -311,15 +311,13 @@ export function createLifi(options: {
         },
 
         async status(req) {
-            const response = await get(
-                "/v1/status",
-                new URLSearchParams({
-                    txHash: req.txHash,
-                    fromChain: String(req.fromChain),
-                    toChain: String(req.toChain),
-                    bridge: req.bridge,
-                }),
-            );
+            const params = new URLSearchParams({
+                txHash: req.txHash,
+                fromChain: String(req.fromChain),
+                toChain: String(req.toChain),
+            });
+            if (req.bridge !== undefined) params.set("bridge", req.bridge);
+            const response = await get("/v1/status", params);
             if (response.status === 404) {
                 return {
                     status: "NOT_FOUND",

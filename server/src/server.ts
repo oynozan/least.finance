@@ -41,6 +41,7 @@ import { createSwapClients } from "./swaps/clients.ts";
 import { SwapHoldings, multicallReader, solanaReader } from "./swaps/holdings.ts";
 import { createLifi } from "./swaps/lifi.ts";
 import { SwapOrders } from "./swaps/orders.ts";
+import { createSolanaSignatureStatus } from "./swaps/solana-status.ts";
 import { SwapTracker } from "./swaps/tracker.ts";
 import { attachSockets } from "./socket/sockets.ts";
 import { Payouts } from "./withdrawals/payouts.ts";
@@ -242,6 +243,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             clients: swapClients,
             bus,
             holdings: swapHoldings,
+            solanaStatus: createSolanaSignatureStatus(config.SOLANA_RPC_URLS),
             accounts,
             logger: logger.child({ component: "swap-tracker" }),
             pollMs: config.SWAPS_POLL_MS,
