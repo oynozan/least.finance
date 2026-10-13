@@ -256,6 +256,17 @@ test("the Solana fixture parses into one kind: solana transaction with its instr
     expect(checkQuote(quote, SOLANA_USDC_REQUEST, ALLOWED)).toBe(true);
 });
 
+test("uppercase hex instruction data from Relay is lowercased", async () => {
+    const body = JSON.parse(JSON.stringify(fixture("quote-solana-usdc")));
+    const item = body.steps[0].items[0].data.instructions[1];
+    item.data = "A1B2C3D40000000000000000";
+    const quote = await createRelay({ fetch: serving(body).fetch }).quote(SOLANA_USDC_REQUEST, signal());
+
+    const [tx] = quote.txs;
+    if (tx?.kind !== "solana") throw new Error("not a Solana transaction");
+    expect(tx.instructions[1]?.data).toBe("0xa1b2c3d40000000000000000");
+});
+
 test("supports accepts solana:SOL and solana:USDC", () => {
     const relay = createRelay({});
 

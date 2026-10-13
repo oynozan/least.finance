@@ -125,7 +125,7 @@ export function createRelay(options: { apiKey?: string; fetch?: typeof fetch; ba
                               kind: "solana",
                               instructions: data.instructions.map((ix) => ({
                                   ...ix,
-                                  data: (ix.data.startsWith("0x") ? ix.data : `0x${ix.data}`) as Hex,
+                                  data: (ix.data.startsWith("0x") ? ix.data : `0x${ix.data}`).toLowerCase() as Hex,
                               })),
                               lookupTables: data.addressLookupTableAddresses,
                           }

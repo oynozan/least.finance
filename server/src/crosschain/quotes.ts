@@ -19,27 +19,31 @@ function u64At(data: string, offset: number): bigint | null {
     return BigInt(`0x${(hex.match(/../g) as string[]).reverse().join("")}`);
 }
 
-/** The most a top-level System or Token transfer from `wallet` moves, in each program's own unit, by instruction tag. */
-function transferred(tx: SolanaTx, wallet: string): { system: bigint; token: bigint } {
+/** The total top-level System and Token transfers from `wallet` move across all transactions, in each program's own unit. */
+function transferred(txs: readonly SolanaTx[], wallet: string): { system: bigint; token: bigint } {
     let system = 0n;
     let token = 0n;
-    for (const { programId, keys, data } of tx.instructions) {
+    for (const { programId, keys, data: raw } of txs.flatMap((tx) => tx.instructions)) {
+        const data = raw.toLowerCase();
         if (programId === SYSTEM_PROGRAM && data.slice(2, 10) === "02000000" && keys[0]?.pubkey === wallet) {
-            system = max(system, u64At(data, 4));
+            system += u64At(data, 4) ?? 0n;
         } else if (programId === TOKEN_PROGRAM) {
             const tag = data.slice(2, 4);
             const authority = tag === "03" ? keys[2] : tag === "0c" ? keys[3] : undefined;
-            if (authority?.pubkey === wallet) token = max(token, u64At(data, 1));
+            if (authority?.pubkey === wallet) token += u64At(data, 1) ?? 0n;
         }
     }
     return { system, token };
 }
 
-const max = (a: bigint, b: bigint | null) => (b !== null && b > a ? b : a);
-
 /** Whether every instruction is from an allowed program and nothing top-level moves more of the wallet's funds than the deposit. */
-function solanaTxHolds(tx: SolanaTx, request: QuoteRequest, allowedPrograms: readonly string[], logger?: ErrorLog) {
-    const unlisted = tx.instructions.find((ix) => !allowedPrograms.includes(ix.programId));
+function solanaTxsHold(
+    txs: readonly SolanaTx[],
+    request: QuoteRequest,
+    allowedPrograms: readonly string[],
+    logger?: ErrorLog,
+) {
+    const unlisted = txs.flatMap((tx) => tx.instructions).find((ix) => !allowedPrograms.includes(ix.programId));
     if (unlisted) {
         logger?.error(
             { programId: unlisted.programId },
@@ -47,7 +51,7 @@ function solanaTxHolds(tx: SolanaTx, request: QuoteRequest, allowedPrograms: rea
         );
         return false;
     }
-    const { system, token } = transferred(tx, request.sender);
+    const { system, token } = transferred(txs, request.sender);
     const isSol = request.coin.mint === null;
     const ok = isSol ? system <= request.amount && token === 0n : token <= request.amount && system === 0n;
     if (!ok) logger?.error({ system, token }, "Refused a Solana quote that moves more than the deposit");
@@ -70,7 +74,8 @@ export function checkQuote(
     const solana = coin.chain === "solana";
     const sameWallet = solana ? quote.refundTo === request.refundTo : sameAddress(quote.refundTo, request.refundTo);
     const txsHold = solana
-        ? quote.txs.every((tx) => tx.kind === "solana" && solanaTxHolds(tx, request, allowedPrograms, logger))
+        ? quote.txs.every((tx): tx is SolanaTx => tx.kind === "solana") &&
+          solanaTxsHold(quote.txs as SolanaTx[], request, allowedPrograms, logger)
         : quote.txs.every((tx) => tx.kind === "evm" && tx.chainId === coin.chainId);
     return (
         quote.coin === coin.key &&

@@ -240,6 +240,34 @@ test("a Token transfer above the quoted amount is refused", () => {
     }
 });
 
+test("transfers from the wallet are summed across instructions and transactions", () => {
+    const full = systemTransfer(SOLANA_WALLET, 1_000_000_000n);
+    const fullToken = tokenTransfer("03", SOLANA_WALLET, 10_000_000n);
+    const split = (ixs: Ix[]) => ({ kind: "solana" as const, instructions: ixs, lookupTables: [] });
+
+    expect(checkQuote(solQuote([deposit, full, full]), solanaSol, ALLOWED)).toBe(false);
+    expect(checkQuote(solQuote([deposit, full]), solanaSol, ALLOWED)).toBe(true);
+    expect(checkQuote(solanaQuote([deposit, fullToken, fullToken]), solanaRequest, ALLOWED)).toBe(false);
+    const acrossTxs = solQuote([]);
+    acrossTxs.txs = [split([deposit, full]), split([full])];
+    expect(checkQuote(acrossTxs, solanaSol, ALLOWED)).toBe(false);
+});
+
+test("an uppercase-hex transfer above the quoted amount is refused", () => {
+    const upper = (ix: Ix): Ix => ({ ...ix, data: `0x${ix.data.slice(2).toUpperCase()}` });
+
+    expect(
+        checkQuote(solQuote([deposit, upper(systemTransfer(SOLANA_WALLET, 1_000_000_001n))]), solanaSol, ALLOWED),
+    ).toBe(false);
+    expect(
+        checkQuote(
+            solanaQuote([deposit, upper(tokenTransfer("0c", SOLANA_WALLET, 10_000_001n))]),
+            solanaRequest,
+            ALLOWED,
+        ),
+    ).toBe(false);
+});
+
 test("Solana addresses compare exactly, not case-insensitively", () => {
     const flipped = SOLANA_WALLET.toLowerCase();
 
