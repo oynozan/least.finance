@@ -178,6 +178,12 @@ export class MarketService {
         return { outcome, marketId: market.id, question: view.title };
     }
 
+    /** Every outcome token of the cached event, offered now or not; null when it isn't cached. */
+    tokensOf(eventId: string): ReadonlySet<string> | null {
+        const event = this.#events.get(eventId)?.value;
+        return event ? new Set(event.markets.flatMap((market) => market.clobTokenIds)) : null;
+    }
+
     /** When the cached event opened: its startDate, else createdAt, else null (also null when it isn't cached). */
     openedAt(eventId: string): Date | null {
         const event = this.#events.get(eventId)?.value;

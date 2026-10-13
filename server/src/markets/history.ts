@@ -46,7 +46,7 @@ export function thin<T>(points: readonly T[], max: number): T[] {
 
 type Deps = {
     data: Pick<PolymarketData, "priceHistory">;
-    markets: Pick<MarketService, "event" | "openedAt">;
+    markets: Pick<MarketService, "event" | "openedAt" | "tokensOf">;
     logger: Logger;
     now?: () => number;
 };
@@ -63,12 +63,11 @@ export class MarketHistory {
         this.#now = deps.now ?? Date.now;
     }
 
-    /** The asked tokens' lines in the order asked; null when the event or any token isn't offered now; rejects when Polymarket fails and a token has nothing read within HISTORY_STALE_MS. */
+    /** The asked tokens' lines in the order asked; null when the event isn't offered now or any token isn't one of its own; rejects when Polymarket fails and a token has nothing read within HISTORY_STALE_MS. */
     async view(eventId: string, tokenIds: string[]): Promise<MarketHistoryView | null> {
-        const event = await this.#deps.markets.event(eventId);
-        if (!event) return null;
-        const offered = new Set(event.outcomes.map((o) => o.tokenId));
-        if (!tokenIds.every((t) => offered.has(t))) return null;
+        if (!(await this.#deps.markets.event(eventId))) return null;
+        const held = this.#deps.markets.tokensOf(eventId);
+        if (!held || !tokenIds.every((t) => held.has(t))) return null;
 
         const now = this.#now();
         const wanted = [...new Set(tokenIds)];

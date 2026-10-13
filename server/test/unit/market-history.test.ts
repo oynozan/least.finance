@@ -72,6 +72,7 @@ function setup(outcomeIds = ["a", "b", "c"], openedAt: Date | null = ago(2 * HOU
         async event(id: string) {
             return id === "ev" ? ({ id, outcomes: outcomeIds.map((tokenId) => ({ tokenId })) } as any) : null;
         },
+        tokensOf: (id: string) => (id === "ev" ? new Set(outcomeIds) : null),
         openedAt: () => openedAt,
     };
     const history = new MarketHistory({ data, markets, logger, now: () => clock.now });

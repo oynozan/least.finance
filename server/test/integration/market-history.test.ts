@@ -130,6 +130,24 @@ describe("market history route", () => {
         expect(none.json.error.code).toBe("unavailable");
     });
 
+    // After the other multi tests, since the book it breaks stays broken
+    test("a token the books no longer offer still answers while its event holds it", async () => {
+        const { yesNo, multi } = stack.polymarket.fixtures.samples;
+        const tokens = await tokensOf(multi);
+        const drifting = tokens.at(-1)!;
+        stack.polymarket.setBook(drifting, { bid: 0.2, ask: 0.5 });
+        // The books are kept for 5 s, so a couple of minutes on reads the new one
+        vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 130_000 });
+
+        const { status, json } = await history(multi, [drifting]);
+        expect(status).toBe(200);
+        expect(json.outcomes[0].tokenId).toBe(drifting);
+        expect(json.outcomes[0].points.length).toBeGreaterThan(1);
+
+        const [yes] = await tokensOf(yesNo);
+        expect((await history(multi, [yes!])).status).toBe(404);
+    });
+
     test("the route is rate-limited like the other market routes", async () => {
         const { yesNo } = stack.polymarket.fixtures.samples;
         const [yes] = await tokensOf(yesNo);
