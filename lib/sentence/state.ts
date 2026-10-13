@@ -45,6 +45,16 @@ function withChosen<I, T extends Str, C>(chosen: Chosen, op: RuntimeOperation<I,
     };
 }
 
+/** The slots of an operation the person set, or whose shared term they set anywhere. */
+function chosenSlots<I, T extends Str, C>(state: SentenceState<T>, op: RuntimeOperation<I, T, C>): string[] {
+    return Object.entries(op.slots)
+        .filter(
+            ([slot, spec]) =>
+                state.chosen.slots[op.id]?.includes(slot) || (spec.term && state.chosen.terms.includes(spec.term)),
+        )
+        .map(([slot]) => slot);
+}
+
 function withTerms<T extends Str, C>(op: RuntimeOperation<unknown, T, C>, draft: Str, terms: Partial<T>): Partial<T> {
     const next: Partial<Str> = { ...terms };
     for (const [slot, spec] of Object.entries(op.slots)) {
@@ -74,7 +84,7 @@ function enter<I, T extends Str, C>(registry: Registry<I, T, C>, state: Sentence
         }
     }
 
-    next = op.normalize?.(next, { type: "enter", changed }, verb.fixed, ctx) ?? next;
+    next = op.normalize?.(next, { type: "enter", changed, chosen: chosenSlots(state, op) }, verb.fixed, ctx) ?? next;
     return next;
 }
 
@@ -131,30 +141,16 @@ export function reduce<I, T extends Str, C>(
     };
 }
 
-/** Each visited operation's draft rebuilt from its defaults with the person's choices put back; the same state when nothing moves. */
+/** The current operation's draft re-normalized for a changed context, so it re-fits only what the person didn't choose; the same state when nothing moves. */
 export function refit<I, T extends Str, C>(
     registry: Registry<I, T, C>,
     state: SentenceState<T>,
     ctx: C,
 ): SentenceState<T> {
-    const { op: current, verb } = findVerb(registry, state.verbId);
-    const drafts: Record<string, Str> = {};
-    let moved = false;
-    for (const op of registry.operations) {
-        const before = state.drafts[op.id];
-        if (!before) continue;
-        const kept = Object.entries(op.slots)
-            .filter(
-                ([slot, spec]) =>
-                    state.chosen.slots[op.id]?.includes(slot) || (spec.term && state.chosen.terms.includes(spec.term)),
-            )
-            .map(([slot]) => slot);
-        let draft: Str = { ...op.defaults(ctx) };
-        for (const slot of kept) draft[slot] = before[slot];
-        if (op === current) draft = op.normalize?.(draft, { type: "enter", changed: kept }, verb.fixed, ctx) ?? draft;
-        drafts[op.id] = draft;
-        moved ||= Object.keys(draft).some((key) => draft[key] !== before[key]);
-    }
-    if (!moved) return state;
-    return { ...state, drafts, terms: withTerms(current, drafts[current.id], state.terms) };
+    const { op, verb } = findVerb(registry, state.verbId);
+    const before = state.drafts[op.id];
+    if (!before || !op.normalize) return state;
+    const draft = op.normalize(before, { type: "refit", chosen: chosenSlots(state, op) }, verb.fixed, ctx);
+    if (Object.keys(draft).every((key) => draft[key] === before[key])) return state;
+    return { ...state, drafts: { ...state.drafts, [op.id]: draft }, terms: withTerms(op, draft, state.terms) };
 }

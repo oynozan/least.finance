@@ -24,6 +24,8 @@ type Values = {
     amountUSD: string;
 };
 
+const SOL = "SOL";
+
 /** Estimated network fee for the preview. */
 const NETWORK_FEE_USD = 0.03;
 
@@ -115,14 +117,17 @@ export const swap = operation({
     normalize: (next, cause, _fixed, ctx) => {
         const picked = cause.type === "slot" ? cause.slot : undefined;
         const entered = cause.type === "enter" ? cause.changed : [];
+        const chosen: readonly string[] = cause.type === "slot" ? [] : cause.chosen;
+        // After a pick every slot stays where it fits; on enter and refit only the person's choices do
+        const pinned = (slot: string) => cause.type === "slot" || chosen.includes(slot);
         // A carried coin that is the one being paid is paid for with another coin
-        const swapped = entered.includes("toToken") && next.fromToken === next.toToken;
+        const swapped = entered.includes("toToken") && next.fromToken === next.toToken && !chosen.includes("fromToken");
         const carried = entered.includes("toNetwork");
         const strayed = entered.includes("toToken") !== carried;
 
         // A coin the wallet doesn't hold is paid for with one it does
         const held =
-            cause.type === "enter" && !swapped
+            cause.type !== "slot" && !swapped
                 ? heldPair(ctx, next.fromToken, next.toToken)
                 : { fromToken: next.fromToken, toToken: next.toToken };
         const fromToken = swapped ? payableCoin(ctx, next.toToken) : held.fromToken;
@@ -130,10 +135,12 @@ export const swap = operation({
         const keepFrom =
             fromToken === next.fromToken &&
             picked !== "fromToken" &&
+            pinned("fromNetwork") &&
             networkFits(ctx, fromToken, next.fromNetwork, "pay");
         const fromNetwork = keepFrom ? next.fromNetwork : defaultPayNetwork(ctx, fromToken);
         const keepTo =
             picked !== "toToken" &&
+            pinned("toNetwork") &&
             (!swapped || carried) &&
             toToken === next.toToken &&
             networkFits(ctx, toToken, next.toNetwork, "receive", strayed);
@@ -153,6 +160,15 @@ export const swap = operation({
                 ? next.toNetwork
                 : defaultPayNetwork(ctx, cause.prev);
             return { ...repaired, fromToken: cause.prev, fromNetwork: flippedNetwork };
+        }
+        // Otherwise the receive coin moves unless the person chose it; the pay coin they chose never does
+        if (cause.type !== "slot" && !chosen.includes("toToken")) {
+            const other = [SOL, "ETH", QUOTE].find((symbol) => symbol !== fromToken) ?? QUOTE;
+            return {
+                ...repaired,
+                toToken: other,
+                toNetwork: defaultReceiveNetwork(ctx, other, { token: fromToken, network: fromNetwork }),
+            };
         }
         const payWith = payableCoin(ctx, toToken);
         return { ...repaired, fromToken: payWith, fromNetwork: defaultPayNetwork(ctx, payWith) };

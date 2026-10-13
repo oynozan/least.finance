@@ -410,6 +410,81 @@ test.describe("defaults follow the wallet", () => {
     });
 });
 
+test.describe("a refit keeps what the person chose", () => {
+    const held = (units: CoinUnits): TradeCtx => ({ catalog: CATALOG, holdings: null, wallet: wallet(units) });
+    const none: TradeCtx = { catalog: CATALOG, holdings: null, wallet: null };
+    const spread = held({ ETH: { ethereum: 1 }, SOL: { solana: 5 }, USDC: { base: 500 } });
+    const slot = (slot: string, value: string) => ({ type: "slot", slot, value }) as const;
+    const run = (ctx: TradeCtx, ...actions: ReturnType<typeof slot>[]) =>
+        actions.reduce((state, action) => reduce(TRADE, state, action, ctx), initialState(TRADE, "swap", ctx));
+    const after = (state: ReturnType<typeof initialState>, ctx: TradeCtx) =>
+        resolve(TRADE, refit(TRADE, state, ctx), ctx);
+
+    test("a pay coin and its network survive a holdings view", () => {
+        const state = run(none, slot("fromToken", "SOL"), slot("fromNetwork", "solana"));
+        expect(resolve(TRADE, state, none).text).toBe("I want to Swap my SOL to ETH for 10 USD.");
+        expect(after(state, spread).intent).toMatchObject({ fromToken: "SOL", fromNetwork: "solana", toToken: "ETH" });
+    });
+
+    test("a bridge with the receive side chosen survives a holdings view", () => {
+        const state = run(none, slot("toToken", "ETH"), slot("toNetwork", "base"));
+        expect(resolve(TRADE, state, none).intent).toMatchObject({
+            fromToken: "ETH",
+            fromNetwork: "ethereum",
+            toToken: "ETH",
+            toNetwork: "base",
+        });
+        expect(after(state, spread).intent).toMatchObject({
+            fromToken: "ETH",
+            fromNetwork: "ethereum",
+            toToken: "ETH",
+            toNetwork: "base",
+        });
+    });
+
+    test("Long SOL for 10 USD is unchanged by a holdings view", () => {
+        const state = reduce(TRADE, initialState(TRADE, "swap", none), { type: "verb", verbId: "long" }, none);
+        expect(resolve(TRADE, state, none).intent).toMatchObject({ type: "perp", asset: "SOL", collateralUSD: "10" });
+        const fitted = refit(TRADE, state, spread);
+        expect(resolve(TRADE, fitted, spread).intent).toMatchObject({
+            type: "perp",
+            asset: "SOL",
+            collateralUSD: "10",
+        });
+        expect(fitted.drafts.perp).toEqual(state.drafts.perp);
+    });
+
+    test("a chosen receive coin's unchosen network stays with that coin", () => {
+        const state = run(none, slot("toToken", "USDC"));
+        const before = resolve(TRADE, state, none).intent;
+        expect(before).toMatchObject({ toToken: "USDC" });
+        const ctx = held({ ETH: { ethereum: 1 } });
+        expect(after(state, ctx).intent).toMatchObject({ toToken: "USDC", toNetwork: "ethereum" });
+        expect(before).toMatchObject({ toNetwork: "ethereum" });
+    });
+
+    test("a pay network the person chose that becomes empty moves to the richest spendable one", () => {
+        const state = run(none, slot("fromNetwork", "base"));
+        const ctx = held({ ETH: { ethereum: 0.5, arbitrum: 2 } });
+        expect(after(state, ctx).intent).toMatchObject({ fromToken: "ETH", fromNetwork: "arbitrum" });
+    });
+
+    test("a unchosen network follows the wallet and a chosen coin picks its own richest network", () => {
+        const state = run(none, slot("fromToken", "USDC"));
+        const ctx = held({ ETH: { ethereum: 1 }, USDC: { base: 10, arbitrum: 90 } });
+        expect(after(state, ctx).intent).toMatchObject({ fromToken: "USDC", fromNetwork: "arbitrum" });
+    });
+
+    test("a leverage chosen before a refit survives a verb round trip", () => {
+        let state = reduce(TRADE, initialState(TRADE, "swap", none), { type: "verb", verbId: "long" }, none);
+        state = reduce(TRADE, state, slot("leverage", "10"), none);
+        state = refit(TRADE, state, spread);
+        state = reduce(TRADE, state, { type: "verb", verbId: "swap" }, spread);
+        state = reduce(TRADE, state, { type: "verb", verbId: "long" }, spread);
+        expect(resolve(TRADE, state, spread).intent).toMatchObject({ type: "perp", leverage: 10 });
+    });
+});
+
 test.describe("a wallet without ETH", () => {
     const held = (units: CoinUnits): TradeCtx => ({ catalog: CATALOG, holdings: null, wallet: wallet(units) });
     const slot = (slot: string, value: string) => ({ type: "slot", slot, value }) as const;

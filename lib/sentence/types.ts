@@ -148,9 +148,16 @@ export type Preview = {
     rows: PreviewRow[];
 };
 
-/** Why `normalize` is running: the verb was entered, or one slot changed. */
+/**
+ * Why `normalize` is running: the verb was entered, one slot changed, or the
+ * context changed under the current draft. `chosen` lists the slots the
+ * person set (or whose shared term they set), which normalize leaves alone
+ * while they still fit.
+ */
 export type Cause<K extends string> =
-    { type: "enter"; changed: readonly K[] } | { type: "slot"; slot: K; prev: string };
+    | { type: "enter"; changed: readonly K[]; chosen: readonly K[] }
+    | { type: "slot"; slot: K; prev: string }
+    | { type: "refit"; chosen: readonly K[] };
 
 export type VerbDef<F, V> = {
     id: string;

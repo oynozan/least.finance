@@ -97,14 +97,17 @@ export const spot = operation({
         const side = fixed.side === "sell" ? "pay" : "receive";
         const entered = cause.type === "enter" ? cause.changed : [];
         const strayed = entered.includes("token") !== entered.includes("network");
+        // After a pick the network stays where it fits; on enter and refit only a chosen one does
+        const pinned = cause.type === "slot" || cause.chosen.includes("network");
         // A coin the wallet doesn't hold is sold as the one it holds the most of
         const token =
-            cause.type === "enter" && side === "pay" && unheld(ctx, next.token)
+            cause.type !== "slot" && side === "pay" && unheld(ctx, next.token)
                 ? (largestHolding(ctx) ?? next.token)
                 : next.token;
         const keep =
             token === next.token &&
             !(cause.type === "slot" && cause.slot === "token") &&
+            pinned &&
             networkFits(ctx, token, next.network, side, strayed);
         if (keep) return next;
         const network = side === "pay" ? defaultPayNetwork(ctx, token) : defaultReceiveNetwork(ctx, token);
