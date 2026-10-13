@@ -537,12 +537,12 @@ test.describe("withdrawals", () => {
     test("a withdrawal upserts by id and ignores a stale update", () => {
         const sending = withdrawal(1);
         const sentView = withdrawal(1, { state: "sent", updatedAt: new Date(Date.UTC(2026, 8, 2)).toISOString() });
-        let state = run([{ type: "withdrawal", withdrawal: sending }], open());
+        let state = run([{ type: "withdrawal", withdrawal: sending, account: account("15", 2) }], open());
         expect(ready(state).withdrawals).toEqual([sending]);
         state = run(
             [
-                { type: "withdrawal", withdrawal: withdrawal(2) },
-                { type: "withdrawal", withdrawal: sentView },
+                { type: "withdrawal", withdrawal: withdrawal(2), account: account("15", 2) },
+                { type: "withdrawal", withdrawal: sentView, account: account("15", 2) },
             ],
             state,
         );
@@ -550,20 +550,50 @@ test.describe("withdrawals", () => {
             [oid(2), "sending"],
             [oid(1), "sent"],
         ]);
-        state = run([{ type: "withdrawal", withdrawal: sending }], state);
+        state = run([{ type: "withdrawal", withdrawal: sending, account: account("15", 2) }], state);
         expect(ready(state).withdrawals.find((w) => w.id === oid(1))?.state).toBe("sent");
     });
 
     test("a pending withdrawal lowers the balance until the server's view arrives", () => {
         let state = run([pendingWithdrawal(1, "10")], open("25", 1));
         expect(optimisticBalance(state)).toBe(toWei("15"));
-        state = run([{ type: "withdrawal", withdrawal: withdrawal(1) }], state);
+        state = run([{ type: "withdrawal", withdrawal: withdrawal(1), account: account("15", 2) }], state);
         expect(ready(state).pendingWithdrawals).toEqual([]);
-        // The view is in, the account isn't yet: still counted once
+        // The view brings the debited account: counted once
         expect(optimisticBalance(state)).toBe(toWei("15"));
-        // The account that includes the debit takes over
-        state = run([{ type: "credited", deposit: deposit(5, "1"), account: account("14", 3) }], state);
-        expect(optimisticBalance(state)).toBe(toWei("14"));
+    });
+
+    test("a sent withdrawal keeps the debit without a newer account", () => {
+        let state = run([pendingWithdrawal(1, "10")], open("25", 1));
+        state = run([{ type: "withdrawal", withdrawal: withdrawal(1), account: account("15", 2) }], state);
+        state = run(
+            [
+                {
+                    type: "withdrawal",
+                    withdrawal: withdrawal(1, { state: "sent", updatedAt: "2026-09-03T00:00:00.000Z" }),
+                    account: account("15", 2),
+                },
+            ],
+            state,
+        );
+        expect(optimisticBalance(state)).toBe(toWei("15"));
+    });
+
+    test("a failed withdrawal's refund shows even after later account events", () => {
+        let state = run([pendingWithdrawal(1, "10")], open("25", 1));
+        state = run([{ type: "withdrawal", withdrawal: withdrawal(1), account: account("15", 2) }], state);
+        state = run([{ type: "credited", deposit: deposit(5, "1"), account: account("16", 3) }], state);
+        state = run(
+            [
+                {
+                    type: "withdrawal",
+                    withdrawal: withdrawal(1, { state: "failed", updatedAt: "2026-09-03T00:00:00.000Z" }),
+                    account: account("26", 4),
+                },
+            ],
+            state,
+        );
+        expect(optimisticBalance(state)).toBe(toWei("26"));
     });
 
     test("a refused withdrawal leaves the pending list", () => {
@@ -574,7 +604,10 @@ test.describe("withdrawals", () => {
 
     test("a failed withdrawal doesn't lower the balance", () => {
         const failed = withdrawal(1, { state: "failed" });
-        const state = run([pendingWithdrawal(1), { type: "withdrawal", withdrawal: failed }], open("25", 1));
+        const state = run(
+            [pendingWithdrawal(1), { type: "withdrawal", withdrawal: failed, account: account("25", 2) }],
+            open("25", 1),
+        );
         expect(optimisticBalance(state)).toBe(toWei("25"));
     });
 

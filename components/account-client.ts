@@ -213,8 +213,8 @@ export class AccountClient {
             if (order.state !== "failed") return;
             this.#tradeNotice(order.side === "sell" ? SELL_FAILED_COPY : FAILURE_COPY[order.reason ?? "rejected"]);
         });
-        socket.on("withdrawal:update", ({ withdrawal }) => {
-            this.#dispatch({ type: "withdrawal", withdrawal });
+        socket.on("withdrawal:update", ({ withdrawal, account }) => {
+            this.#dispatch({ type: "withdrawal", withdrawal, account });
             if (withdrawal.state === "failed") this.#notify({ kind: "reverted", message: WITHDRAW_FAILED_COPY });
         });
         socket.on("position:settled", ({ position, account }) => {
@@ -390,7 +390,8 @@ export class AccountClient {
             .catch(() => null);
         if (this.#socket !== socket || !result) return "failed";
         if (result.ok) {
-            this.#dispatch({ type: "withdrawal", withdrawal: result.data });
+            const { account, ...withdrawal } = result.data;
+            this.#dispatch({ type: "withdrawal", withdrawal, account });
             return "sent";
         }
         this.#dispatch({ type: "withdraw-refused", requestId });

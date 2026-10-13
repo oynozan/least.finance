@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, inject, test } from "vitest";
 import { randomUUID } from "node:crypto";
 import { parseUnits } from "viem";
 import { toDecimal } from "../../src/db/money.ts";
-import type { Ack, WalletSession, WithdrawLimits, WithdrawalView } from "../../src/protocol.ts";
+import type { Ack, WalletSession, WithdrawLimits, WithdrawalPlaced, WithdrawalView } from "../../src/protocol.ts";
 import { startStack, type AppSocket, type Stack, type User } from "../support/stack.ts";
 
 const SOLANA = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
@@ -27,7 +27,7 @@ async function credit(user: User, usdc: string) {
 }
 
 const withdraw = (socket: AppSocket, to: string, amount: string, requestId: string = randomUUID()) =>
-    socket.timeout(5000).emitWithAck("withdraw:create", { requestId, amount, to }) as Promise<Ack<WithdrawalView>>;
+    socket.timeout(5000).emitWithAck("withdraw:create", { requestId, amount, to }) as Promise<Ack<WithdrawalPlaced>>;
 
 const nextUpdate = (socket: AppSocket, state: string) =>
     new Promise<WithdrawalView>((resolve) => {
@@ -45,17 +45,23 @@ test("withdrawing over the socket pays a linked wallet and pushes sending then s
     const { socket } = await bind(user);
     await credit(user, "10");
     const seen: string[] = [];
-    socket.on("withdrawal:update", ({ withdrawal }) => seen.push(withdrawal.state));
+    const balances: string[] = [];
+    socket.on("withdrawal:update", ({ withdrawal, account }) => {
+        seen.push(withdrawal.state);
+        balances.push(account.balance);
+    });
     const sent = nextUpdate(socket, "sent");
 
     const before = await stack.chain.client.getBalance({ address: user.wallet });
     const result = await withdraw(socket, user.wallet.toLowerCase(), "4.5");
     if (!result.ok) throw new Error(result.error.code);
     expect(result.data).toMatchObject({ amount: "4.5", to: user.wallet.toLowerCase(), state: "sending" });
+    expect(result.data.account.balance).toBe("5.5");
 
     const done = await sent;
     expect(done.txHash).toMatch(/^0x[0-9a-f]{64}$/);
     expect(seen).toEqual(["sending", "sent"]);
+    expect(balances).toEqual(["5.5", "5.5"]);
     const after = await stack.chain.client.getBalance({ address: user.wallet });
     expect(after - before).toBe(4_500_000_000_000_000_000n);
 });

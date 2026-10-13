@@ -87,7 +87,7 @@ export type OptimisticSell = {
     connection: number;
 };
 
-/** A withdrawal the server hasn't shown back yet, counted against the balance meanwhile. */
+/** A withdrawal the server hasn't answered yet, counted against the balance meanwhile. */
 export type PendingWithdrawal = {
     requestId: string;
     /** Wei. */
@@ -124,8 +124,6 @@ export type AccountState =
           withdrawals: WithdrawalView[];
           /** Newest first; counted against the balance until the server's view of the request arrives. */
           pendingWithdrawals: PendingWithdrawal[];
-          /** By withdrawal id: the account version held when the withdrawal arrived; the debit shows once a later one is. */
-          withdrawalSeen: Record<string, number>;
       };
 
 export type AccountAction =
@@ -152,7 +150,8 @@ export type AccountAction =
     | { type: "withdraw"; withdrawal: PendingWithdrawal }
     /** The server turned the withdrawal down. */
     | { type: "withdraw-refused"; requestId: string }
-    | { type: "withdrawal"; withdrawal: WithdrawalView };
+    /** The view comes with the account that has its debit or refund in. */
+    | { type: "withdrawal"; withdrawal: WithdrawalView; account: AccountView };
 
 export const initialAccountState: AccountState = { status: "idle" };
 
@@ -188,8 +187,6 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 pendingWithdrawals: (state.status === "ready" ? state.pendingWithdrawals : []).filter(
                     (p) => !action.session.withdrawals.some((w) => w.requestId === p.requestId),
                 ),
-                // The session's balance already has every one of them taken
-                withdrawalSeen: Object.fromEntries(action.session.withdrawals.map((w) => [w.id, account.version - 1])),
             });
         }
         case "order": {
@@ -291,15 +288,11 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
             const { withdrawal } = action;
             const held = state.withdrawals.find((w) => w.id === withdrawal.id);
             const pendingWithdrawals = state.pendingWithdrawals.filter((p) => p.requestId !== withdrawal.requestId);
-            if (held && held.updatedAt > withdrawal.updatedAt) return { ...state, pendingWithdrawals };
+            const next = withAccount({ ...state, pendingWithdrawals }, action.account);
+            if (held && held.updatedAt > withdrawal.updatedAt) return next;
             return {
-                ...state,
+                ...next,
                 withdrawals: [withdrawal, ...state.withdrawals.filter((w) => w.id !== withdrawal.id)].sort(newestFirst),
-                pendingWithdrawals,
-                withdrawalSeen: {
-                    ...state.withdrawalSeen,
-                    [withdrawal.id]: state.withdrawalSeen[withdrawal.id] ?? state.account.version,
-                },
             };
         }
         case "position-settled": {
@@ -406,14 +399,8 @@ export function optimisticBalance(state: AccountState): bigint | null {
         state.predictions.orders.filter((o) => o.state === "filled" || o.state === "failed").map((o) => o.requestId),
     );
     // A buy the server has is already debited in `account.balance`; a sale is credited only when it fills.
-    // A withdrawal that is sending takes its amount until an account newer than the one it arrived with shows the debit.
-    const owed = state.withdrawals.reduce(
-        (sum, w) =>
-            w.state === "sending" && state.account.version <= (state.withdrawalSeen[w.id] ?? 0)
-                ? sum + toWei(w.amount)
-                : sum,
-        state.pendingWithdrawals.reduce((sum, p) => sum + p.amount, BigInt(0)),
-    );
+    // A withdrawal the server has is already debited (or refunded) in `account.balance`; only unanswered ones are owed.
+    const owed = state.pendingWithdrawals.reduce((sum, p) => sum + p.amount, BigInt(0));
     const afterDeposits = state.pending.reduce((sum, p) => sum + p.amount, state.balance - owed);
     return state.optimistic.reduce((sum, t) => {
         if (t.side === "sell") return settled.has(t.requestId) ? sum : sum + t.proceedsWei;

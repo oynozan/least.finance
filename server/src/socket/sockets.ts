@@ -255,7 +255,9 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 const account = await boundAccount(socket);
                 const to = (await services.identity.authorizeWallet(socket.data.identity, input.to)) as Address;
                 const withdrawal = await services.withdrawals.create(account, { ...input, to });
-                return withdrawalView(withdrawal);
+                // Read after the debit, so it already has the amount taken
+                const held = await services.accounts.findById(account._id);
+                return { ...withdrawalView(withdrawal), account: accountView(held ?? account) };
             }),
         );
 
@@ -412,12 +414,14 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         });
     });
 
-    bus.on("withdrawal:updated", ({ withdrawal }) => {
+    bus.on("withdrawal:updated", ({ withdrawal, account }) => {
         enqueue(withdrawal.accountId.toHexString(), async () => {
             try {
                 const room = roomOf(withdrawal.accountId);
                 const owner = await services.accounts.findById(withdrawal.accountId);
-                const payload = { withdrawal: withdrawalView(withdrawal) };
+                const current = account ?? owner;
+                if (!current) return;
+                const payload = { withdrawal: withdrawalView(withdrawal), account: accountView(current) };
                 for (const socket of await io.in(room).fetchSockets()) {
                     if (socket.data.identity.userId === owner?.privyUserId) socket.emit("withdrawal:update", payload);
                     else socket.leave(room);

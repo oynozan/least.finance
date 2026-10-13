@@ -119,6 +119,9 @@ export type WithdrawalView = {
     updatedAt: string;
 };
 
+/** A withdrawal with the account as the server holds it once the debit or refund is in. */
+export type WithdrawalPlaced = WithdrawalView & { account: AccountView };
+
 /** What a withdrawal may be right now: `max` is the smaller of the balance and what the treasury can pay. */
 export type WithdrawLimits = { max: UsdcAmount; min: UsdcAmount };
 
@@ -212,7 +215,7 @@ export type ClientToServerEvents = {
     /** Takes the amount off the balance and pays it to a linked EVM wallet; a repeated `requestId` is the same withdrawal. */
     "withdraw:create": (
         payload: { requestId: string; amount: string; to: string },
-        ack: (result: Ack<WithdrawalView>) => void,
+        ack: (result: Ack<WithdrawalPlaced>) => void,
     ) => void;
     /** What a prediction buy would cost and return right now, or with a `positionId` what selling the position would pay. */
     "prediction:quote": (
@@ -233,7 +236,7 @@ export type ClientToServerEvents = {
 
 export type ServerToClientEvents = {
     /** A withdrawal changed state. */
-    "withdrawal:update": (payload: { withdrawal: WithdrawalView }) => void;
+    "withdrawal:update": (payload: { withdrawal: WithdrawalView; account: AccountView }) => void;
     "deposit:credited": (payload: { deposit: DepositView; account: AccountView }) => void;
     /** The account's coin balances, pushed after `account:open` and whenever a read finishes. */
     balances: (payload: BalancesView) => void;
