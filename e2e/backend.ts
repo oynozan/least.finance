@@ -100,5 +100,11 @@ export const fundTreasury = (usdc: string) => call<object>("/treasury/fund", { u
 /** The treasury's address and what it holds above its gas reserve, in USDC. */
 export const treasury = () => call<{ address: string; balance: string }>("/treasury", {});
 
-/** Makes the next payout broadcast fail with an out-of-gas error, so the withdrawal fails and refunds. */
-export const failNextPayout = () => call<object>("/withdrawals/fail-next", {}).then(() => undefined);
+/** Makes the next payout to `to` fail with an out-of-gas error, so the withdrawal fails and refunds. */
+export const failNextPayout = (to: string) => call<object>("/withdrawals/fail-next", { to }).then(() => undefined);
+
+/** Stops the server's deposit scan, so a deposit is credited only by the report the app sends. */
+export const pauseDepositScan = () => call<object>("/deposits/pause-scan", {}).then(() => undefined);
+
+/** Starts the deposit scan again; it catches up on what it missed. */
+export const resumeDepositScan = () => call<object>("/deposits/resume-scan", {}).then(() => undefined);

@@ -9,7 +9,7 @@ import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { ObjectId } from "mongodb";
 import { pino } from "pino";
-import { formatUnits, getAddress, isAddress, parseUnits, type Address, type Hex } from "viem";
+import { formatUnits, getAddress, isAddress, parseTransaction, parseUnits, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { createKeyring } from "../../src/accounts/keyring.ts";
 import { ARC_CHAIN_ID } from "../../src/chain/arc.ts";
@@ -91,13 +91,12 @@ const config = loadConfig({
     POLYMARKET_BUILDER_API_SECRET: "e2e",
     POLYMARKET_BUILDER_API_PASSPHRASE: "e2e",
 });
-let failNextPayout = false;
-/** Sends a signed payout to the chain, unless a test asked for the next one to fail. */
+/** Recipients whose next payout is made to fail, so a test only ever breaks its own. */
+const failPayoutsTo = new Set<string>();
+/** Sends a signed payout to the chain, unless a test asked for the next one to its recipient to fail. */
 async function broadcastPayout(rawTx: Hex): Promise<Hex> {
-    if (failNextPayout) {
-        failNextPayout = false;
-        throw new Error("insufficient funds for gas * price + value");
-    }
+    const to = parseTransaction(rawTx).to?.toLowerCase();
+    if (to && failPayoutsTo.delete(to)) throw new Error("insufficient funds for gas * price + value");
     const response = await fetch(emulator.url, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -379,9 +378,19 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
             balance: formatUnits(wei > TREASURY_GAS_RESERVE ? wei - TREASURY_GAS_RESERVE : 0n, 18),
         };
     },
-    /** Makes the next payout broadcast throw, as a treasury out of gas money would. */
-    "/withdrawals/fail-next": async () => {
-        failNextPayout = true;
+    /** Makes the next payout to `to` throw at broadcast, as a treasury out of gas money would. */
+    "/withdrawals/fail-next": async ({ to }) => {
+        failPayoutsTo.add(normalize(to).toLowerCase());
+        return {};
+    },
+    /** Stops the deposit scan, so a deposit reaches the account only through its own report. */
+    "/deposits/pause-scan": async () => {
+        await services.watcher.stop();
+        return {};
+    },
+    /** Starts the deposit scan again, from where it stopped. */
+    "/deposits/resume-scan": async () => {
+        services.watcher.start();
         return {};
     },
     "/account": async ({ address }) => {
