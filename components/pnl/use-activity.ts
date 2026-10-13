@@ -9,9 +9,11 @@ import {
     pendingBuyActivity,
     predictionActivity,
     swapActivity,
+    withdrawalActivity,
     type Activity,
 } from "@/lib/trade/activity";
 import { QUOTE } from "@/lib/trade/catalog";
+import { withdrawalEntries } from "@/components/history-entries";
 import { useAccount } from "@/components/account-provider";
 import { useTrade } from "@/components/trade/trade-provider";
 
@@ -68,12 +70,12 @@ function realPredictions({ positions, orders }: PositionsView, optimistic: reado
 }
 
 /**
- * Everything the account did, newest first: its deposits, swaps and predictions,
+ * Everything the account did, newest first: its deposits, withdrawals, swaps and predictions,
  * as the server holds them, plus buys still on their way.
  */
 export function useActivity(): ActivityState {
     const { wallet, catalog } = useTrade();
-    const { history, predictions, optimisticTrades, swaps } = useAccount();
+    const { history, predictions, optimisticTrades, swaps, withdrawals, pendingWithdrawals } = useAccount();
     const nowMs = useNow();
 
     const now = useMemo(() => (nowMs === null ? null : new Date(nowMs)), [nowMs]);
@@ -82,6 +84,17 @@ export function useActivity(): ActivityState {
         const deposits = history.map((row) =>
             depositActivity({ key: row.key, amountUSD: toUsdc(row.amount), at: row.at, pending: row.pending }),
         );
+        const payouts = withdrawalEntries(withdrawals, pendingWithdrawals)
+            .filter((w) => w.state !== "failed")
+            .map((w) =>
+                withdrawalActivity({
+                    id: w.key,
+                    amountUSD: toUsdc(w.amount),
+                    at: w.at,
+                    pending: w.state === "sending",
+                    to: w.to,
+                }),
+            );
         // A swap's size is what it paid at the coin's price, or nothing known without one.
         const priceOf = (symbol: string) =>
             symbol === QUOTE ? 1 : (catalog.tokens.find((t) => t.symbol === symbol)?.priceUSD ?? null);
@@ -89,8 +102,8 @@ export function useActivity(): ActivityState {
             const price = priceOf(order.from.token);
             return swapActivity(order, price === null ? null : Number(order.from.amount) * price);
         });
-        return [...deposits, ...trades, ...realPredictions(predictions, optimisticTrades)].sort(byNewest);
-    }, [now, history, predictions, optimisticTrades, swaps, catalog]);
+        return [...deposits, ...payouts, ...trades, ...realPredictions(predictions, optimisticTrades)].sort(byNewest);
+    }, [now, history, predictions, optimisticTrades, swaps, withdrawals, pendingWithdrawals, catalog]);
 
     if (wallet.status === "disconnected") return { status: "signed-out", connect: wallet.connect };
     if (wallet.status === "loading" || now === null || activity === null) return { status: "loading" };

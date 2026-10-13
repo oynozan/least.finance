@@ -25,7 +25,14 @@ import {
 } from "@/lib/trade/operations/shared";
 import { quoteRows } from "@/lib/trade/prediction-quote";
 import { TRADE } from "@/lib/trade/registry";
-import { balanceHistory, daysSince, depositActivity, predictionActivity, type Activity } from "@/lib/trade/activity";
+import {
+    balanceHistory,
+    daysSince,
+    depositActivity,
+    predictionActivity,
+    withdrawalActivity,
+    type Activity,
+} from "@/lib/trade/activity";
 import type { PositionView } from "@/server/src/protocol";
 import { HOLDINGS, LOADED_CATALOG as CATALOG, MARKETS, PRICES } from "./trade-fixtures";
 
@@ -860,6 +867,26 @@ test.describe("balance history", () => {
             activity.reduce((sum, a) => sum + a.change, 0),
             6,
         );
+    });
+
+    test("a withdrawal lowers that day's balance and isn't PnL", () => {
+        const to = "0x1234567890abcdef1234567890abcdef12345678";
+        const withdrawal = withdrawalActivity({ id: "w1", amountUSD: 50, at: at(1), pending: false, to });
+        expect(withdrawal).toMatchObject({
+            id: "withdrawal:w1",
+            kind: "withdrawal",
+            title: "Withdrawal",
+            detail: "USDC to 0x1234…5678",
+            amountUSD: 50,
+            change: -50,
+        });
+        const activity = [depositActivity({ key: "a", amountUSD: 500, at: at(3) }), withdrawal, ...closes];
+        const days = balanceHistory(activity, 7, now);
+        const day = days.at(-2)!;
+        expect(day.deposited).toBe(-50);
+        expect(day.pnl).toBe(0);
+        expect(day.realized).toBe(0);
+        expect(day.balance).toBeCloseTo(days.at(-3)!.balance - 50, 6);
     });
 
     test("fees alone don't count as a day's realized PnL", () => {

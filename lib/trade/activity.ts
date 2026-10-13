@@ -2,8 +2,9 @@ import { QUOTE } from "./catalog";
 import { formatUnits, formatUsdShort } from "./format";
 import type { PositionView, SwapOrderState, SwapOrderView } from "@/server/src/protocol";
 import { networkName } from "./networks";
+import { shortenAddress } from "@/components/wallet-data";
 
-export type ActivityKind = "deposit" | "swap" | "buy" | "sell" | "long" | "short" | "close" | "predict";
+export type ActivityKind = "deposit" | "withdrawal" | "swap" | "buy" | "sell" | "long" | "short" | "close" | "predict";
 
 /** One thing the account did, as the PnL page lists it. */
 export type Activity = {
@@ -18,7 +19,7 @@ export type Activity = {
     symbols: string[];
     /** Its size, in USD; null while a swapped coin has no price. */
     amountUSD: number | null;
-    /** What it did to the balance, in USD: a deposit adds itself, a close its realized PnL. */
+    /** What it did to the balance, in USD: a deposit adds itself, a withdrawal takes itself off, a close its realized PnL. */
     change: number;
     /** A deposit the server hasn't confirmed yet, or a buy it hasn't filled. */
     pending?: boolean;
@@ -37,6 +38,27 @@ export function depositActivity(deposit: { key: string; amountUSD: number; at: D
         amountUSD: deposit.amountUSD,
         change: deposit.amountUSD,
         pending: deposit.pending,
+    };
+}
+
+/** A withdrawal to a linked wallet, which takes its amount off the balance; `pending` until the server has paid it. */
+export function withdrawalActivity(withdrawal: {
+    id: string;
+    amountUSD: number;
+    at: Date;
+    pending: boolean;
+    to: string;
+}): Activity {
+    return {
+        id: `withdrawal:${withdrawal.id}`,
+        at: withdrawal.at,
+        kind: "withdrawal",
+        title: "Withdrawal",
+        detail: `${QUOTE} to ${shortenAddress(withdrawal.to)}`,
+        symbols: [QUOTE],
+        amountUSD: withdrawal.amountUSD,
+        change: -withdrawal.amountUSD,
+        pending: withdrawal.pending || undefined,
     };
 }
 
@@ -134,7 +156,7 @@ export type BalanceDay = {
     day: Date;
     /** At the end of the day. */
     balance: number;
-    /** Realized PnL and fees that day; deposits aren't PnL. */
+    /** Realized PnL and fees that day; deposits and withdrawals aren't PnL. */
     pnl: number;
     /** Just the PnL of positions closed that day, which says how the day went; fees alone don't. */
     realized: number;
@@ -157,7 +179,7 @@ export function balanceHistory(activity: readonly Activity[], days: number, now:
         for (const a of activity) {
             const t = a.at.getTime();
             if (t < start || t >= start + DAY) continue;
-            if (a.kind === "deposit") deposited += a.change;
+            if (a.kind === "deposit" || a.kind === "withdrawal") deposited += a.change;
             else pnl += a.change;
             if (a.kind === "close") realized += a.change;
         }

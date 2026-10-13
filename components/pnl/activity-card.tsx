@@ -28,7 +28,11 @@ const RESULT_TONE = { gain: "text-gain", loss: "text-loss", flat: "text-muted" }
 export function ActivityCard({ activity }: { activity: readonly Activity[] }) {
     const [filter, setFilter] = useState<Filter>("all");
     const rows = activity.filter((a) =>
-        filter === "all" ? true : filter === "deposits" ? a.kind === "deposit" : a.kind !== "deposit",
+        filter === "all"
+            ? true
+            : filter === "deposits"
+              ? a.kind === "deposit" || a.kind === "withdrawal"
+              : a.kind !== "deposit" && a.kind !== "withdrawal",
     );
 
     return (
@@ -123,7 +127,7 @@ function Result({ activity: a }: { activity: Activity }) {
     const change = Math.round(a.change * 100) / 100;
     if (change === 0) return <span className="text-muted">—</span>;
     // Gains and realized losses carry their tone; a fee alone stays quiet.
-    const tone = a.kind === "deposit" || a.kind === "close" ? trendOf(change) : "flat";
+    const tone = a.kind === "deposit" || a.kind === "withdrawal" || a.kind === "close" ? trendOf(change) : "flat";
     return <span className={RESULT_TONE[tone]}>{formatPnl(change)}</span>;
 }
 

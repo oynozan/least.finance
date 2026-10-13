@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { seedDeposits } from "./backend";
+import { fundTreasury, seedDeposits } from "./backend";
 import { trendingView } from "./polymarket";
 import { buyPredictions, predictionsToBuy } from "./positions";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
@@ -145,6 +145,35 @@ test("the balance is charted by day, and every operation is listed", async ({ pa
     await activity(page).getByRole("radio", { name: "Trades" }).click();
     await expect(rows(page)).toHaveCount(2);
     await expect(rows(page).filter({ hasText: "Deposit" })).toHaveCount(0);
+});
+
+test("the PnL feed lists a withdrawal under Deposits, and the chart drops by it", async ({ page, isMobile }) => {
+    test.skip(isMobile, "shares the treasury with the desktop run");
+    await fundTreasury("100000");
+    await seedDeposits(addressOf(page), [{ amount: "200", daysAgo: 1 }]);
+    await page.goto("/pnl");
+    await connect(page);
+    await expect(chart(page)).toHaveAttribute("aria-valuetext", /: \$200\.00$/);
+
+    await walletButton(page).click();
+    await sidebar(page).getByRole("button", { name: "Withdraw", exact: true }).click();
+    await sidebar(page).getByRole("textbox", { name: "Withdraw amount" }).fill("50");
+    await sidebar(page).getByRole("button", { name: "Withdraw", exact: true }).click();
+    await expect(sidebar(page).getByRole("button", { name: /^Balance/ })).toHaveAccessibleName(
+        "Balance $150.00, show deposits",
+    );
+    await page.keyboard.press("Escape");
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+
+    await expect(chart(page)).toHaveAttribute("aria-valuetext", /: \$150\.00$/);
+    const row = rows(page).filter({ hasText: "Withdrawal" });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("USDC to 0x");
+    await expect(row).toContainText("−$50.00");
+    await activity(page).getByRole("radio", { name: "Deposits" }).click();
+    await expect(rows(page)).toHaveCount(2);
+    await activity(page).getByRole("radio", { name: "Trades" }).click();
+    await expect(rows(page)).toHaveCount(0);
 });
 
 test("a real swap is listed on PnL without changing the balance", async ({ page }) => {
