@@ -1,4 +1,5 @@
 import type { OptimisticTrade, PositionView, PositionsView } from "@/lib/account/state";
+import { formatUnits } from "@/lib/trade/format";
 import { toUsdc } from "@/lib/account/state";
 import type { CoinSymbol } from "./coin-icons";
 
@@ -32,8 +33,9 @@ export type Position = LivePredictionPosition;
 /** The question a prediction bets on. */
 export const positionTitle = (p: Position) => p.question;
 
-/** "YES · 26.3 shares", or just the outcome while a buy waits for its fill. */
-export const positionDetail = (p: Position) => (p.shares ? `${p.outcome} · ${p.shares} shares` : p.outcome);
+/** "YES · 26.32 shares", or just the outcome while a buy waits for its fill. */
+export const positionDetail = (p: Position) =>
+    p.shares ? `${p.outcome} · ${formatUnits(Number(p.shares), "shares")}` : p.outcome;
 
 /** The shares a sale takes: floored to 0.01, as the exchange quantizes, without going through a float. */
 export function sellableShares(shares: string): number {

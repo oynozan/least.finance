@@ -54,11 +54,13 @@
 }
 
 .detail {
+    overflow: hidden;
     font-size: 13px;
     line-height: 1.3;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+    text-overflow: ellipsis;
 }
 
 .pnl {

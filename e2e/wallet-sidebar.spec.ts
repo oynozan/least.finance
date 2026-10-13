@@ -617,7 +617,7 @@ test("hovering a position reveals a close button in the PnL's color", async ({ p
         // Each row names the question, then its outcome with its shares and PnL, and what it's worth.
         const label = b.outcome.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         await expect(row).toContainText(
-            new RegExp(`${label} · [\\d.]+ shares · [+−]?\\$[\\d,]+\\.\\d\\d\\$[\\d,]+\\.\\d\\d`),
+            new RegExp(`${label} · [\\d.,]+ shares · [+−]?\\$[\\d,]+\\.\\d\\d\\$[\\d,]+\\.\\d\\d`),
         );
 
         const close = closeButton(page, b);
