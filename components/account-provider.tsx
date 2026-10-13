@@ -30,10 +30,20 @@ import type {
     PositionsView,
     QuoteView,
     SwapHoldingsView,
+    SwapOrderView,
+    SwapQuoteView,
+    SwapRequest,
 } from "@/server/src/protocol";
-import { AccountClient, type AccountSnapshot, type DepositNotice, type DepositResult } from "./account-client";
+import {
+    AccountClient,
+    type AccountSnapshot,
+    type DepositNotice,
+    type DepositResult,
+    type SwapResult,
+} from "./account-client";
 import { arc } from "./arc";
-import { linkedWallets } from "./arc-wallet";
+import { linkedWallets, solanaWalletAddress, useActiveWallet } from "./arc-wallet";
+import { useSolanaSigner } from "./solana-signer";
 import { walletEnabled } from "./wallet-provider";
 
 export type Account = {
@@ -50,6 +60,12 @@ export type Account = {
     swapHoldings: SwapHoldingsView | null;
     /** Asks the server to read those coins again; it skips a read within 15 s of the last. */
     refreshSwapHoldings: () => void;
+    /** The account's open swap orders and those settled in the last 7 days, newest first. */
+    swaps: SwapOrderView[];
+    /** What a swap would pay right now, with no order opened. */
+    quoteSwap: (req: SwapRequest) => Promise<SwapQuoteView | { error: ApiError }>;
+    /** Opens a swap order and has the wallet that pays sign it; `reviewedMin` is the minimum received the person saw. */
+    placeSwap: (req: SwapRequest, reviewedMin: string) => Promise<SwapResult>;
     /** Bridge orders still open, newest first. */
     orders: DepositOrderView[];
     /** What `amount` of `coin` would pay out on Arc, from the wallet the deposit uses. */
@@ -80,11 +96,14 @@ const IDLE: AccountSnapshot = {
     notice: null,
     balances: null,
     swapHoldings: null,
+    swaps: [],
     tradeNotice: null,
 };
 const NO_PREDICTIONS: PositionsView = { positions: [], orders: [] };
 const NO_OPTIMISTIC: OptimisticTrade[] = [];
 const UNAVAILABLE: ApiError = { code: "unavailable", message: "Predictions aren't available right now." };
+
+const NO_SWAPS: ApiError = { code: "unavailable", message: "Swaps aren't available right now." };
 
 const NO_WALLET: ApiError = { code: "bad_request", message: "Connect a wallet to deposit." };
 
@@ -108,6 +127,8 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     const [client] = useState(() => new AccountClient(API_URL));
     const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot, () => IDLE);
     const userId = user?.id;
+    const active = useActiveWallet();
+    const solanaSigner = useSolanaSigner(user ? solanaWalletAddress(user, active) : undefined);
 
     // The latest token getter, without reconnecting whenever its identity changes.
     const accessToken = useRef(getAccessToken);
@@ -177,9 +198,30 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         }
     };
 
+    const placeSwap = async (req: SwapRequest, reviewedMin: string): Promise<SwapResult> => {
+        // The wallet that pays signs: the linked EVM one, or the Solana one.
+        const paying = wallets.find((w) => w.address.toLowerCase() === req.wallet.toLowerCase());
+        try {
+            const evm = paying
+                ? {
+                      from: paying.address,
+                      provider: await paying.getEthereumProvider(),
+                      ensure: (id: number) => ensureNetwork(paying, id),
+                  }
+                : undefined;
+            return await client.placeSwap({ ...req, reviewedMin }, { evm, solana: solanaSigner });
+        } catch (error) {
+            return (error as { code?: unknown }).code === 4001
+                ? { status: "cancelled" }
+                : { status: "failed", message: NO_SWAPS.message };
+        }
+    };
+
     return (
         <Provide
             snapshot={snapshot}
+            quoteSwap={(req) => client.quoteSwap(req)}
+            placeSwap={placeSwap}
             deposit={deposit}
             quote={quote}
             depositCoin={depositCoin}
@@ -201,6 +243,8 @@ function Provide({
     deposit = async () => "failed",
     quote = async () => NO_WALLET,
     depositCoin = async () => "failed",
+    quoteSwap = async () => ({ error: NO_SWAPS }),
+    placeSwap = async () => ({ status: "failed", message: NO_SWAPS.message }),
     dismissNotice = () => undefined,
     refreshBalances = () => undefined,
     refreshSwapHoldings = () => undefined,
@@ -214,6 +258,8 @@ function Provide({
     deposit?: Account["deposit"];
     quote?: Account["quote"];
     depositCoin?: Account["depositCoin"];
+    quoteSwap?: Account["quoteSwap"];
+    placeSwap?: Account["placeSwap"];
     dismissNotice?: () => void;
     refreshBalances?: () => void;
     refreshSwapHoldings?: () => void;
@@ -235,6 +281,9 @@ function Provide({
         refreshBalances,
         swapHoldings: snapshot.swapHoldings,
         refreshSwapHoldings,
+        swaps: snapshot.swaps,
+        quoteSwap,
+        placeSwap,
         orders: state.status === "ready" ? state.orders : [],
         quote,
         depositCoin,

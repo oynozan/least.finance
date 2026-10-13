@@ -216,13 +216,14 @@ export async function mockPrivy(page: Page, alsoLinked: string[] = []) {
 export async function installSolanaWallet(page: Page, address: string) {
     const publicKey = Array.from(getAddressEncoder().encode(address as Address));
     await page.addInitScript(
-        ({ address, publicKey }) => {
+        ({ address, publicKey, SOLANA_SIGNATURE_BYTE }) => {
+            (window as unknown as { solanaSent: number[][] }).solanaSent = [];
             const chains = ["solana:mainnet"];
             const account = {
                 address,
                 publicKey: new Uint8Array(publicKey),
                 chains,
-                features: ["solana:signMessage"],
+                features: ["solana:signMessage", "solana:signAndSendTransaction"],
             };
             const wallet = {
                 version: "1.0.0",
@@ -244,6 +245,17 @@ export async function installSolanaWallet(page: Page, address: string) {
                         signMessage: async (...inputs: { message: Uint8Array }[]) =>
                             inputs.map(({ message }) => ({ signedMessage: message, signature: new Uint8Array(64) })),
                     },
+                    "solana:signAndSendTransaction": {
+                        version: "1.0.0",
+                        supportedTransactionVersions: ["legacy", 0],
+                        signAndSendTransaction: async (...inputs: { transaction: Uint8Array }[]) =>
+                            inputs.map(({ transaction }) => {
+                                (window as unknown as { solanaSent: number[][] }).solanaSent.push(
+                                    Array.from(transaction),
+                                );
+                                return { signature: new Uint8Array(64).fill(SOLANA_SIGNATURE_BYTE) };
+                            }),
+                    },
                 },
             };
             const register = () =>
@@ -255,9 +267,16 @@ export async function installSolanaWallet(page: Page, address: string) {
             window.addEventListener("wallet-standard:app-ready", register);
             register();
         },
-        { address, publicKey },
+        { address, publicKey, SOLANA_SIGNATURE_BYTE },
     );
 }
+
+/** Every byte of the signature the Solana wallet answers a send with, so tests know its base58 form. */
+export const SOLANA_SIGNATURE_BYTE = 7;
+
+/** The transactions the Solana wallet was asked to sign and send, as bytes. */
+export const solanaSent = (page: Page) =>
+    page.evaluate(() => (window as unknown as { solanaSent: number[][] }).solanaSent.map((tx) => Uint8Array.from(tx)));
 
 /** Arc's primary RPC and the two providers the app falls back to. */
 export const ARC_RPC = /^https:\/\/rpc\.(blockdaemon\.|drpc\.)?mainnet\.arc\.io\//;
@@ -386,8 +405,12 @@ export async function installWallet(page: Page, address = addressOf(page)) {
         let connected = false;
         const account = address;
         let chainId = "0x1";
-        const knownChains = new Set([chainId]);
+        // Arbitrum, Base, Optimism, Polygon and Avalanche: switchable, but their transactions are not on the test backend.
+        const swapChains = new Set(["0xa4b1", "0x2105", "0xa", "0x89", "0xa86a"]);
+        const knownChains = new Set([chainId, ...swapChains]);
         const testChains = new Set(["0x1", "0x38", "0x13b2"]);
+        const fakeHash = () =>
+            `0x${Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
         const state = window as unknown as WalletWindow;
         state.walletRequests = [];
         const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
@@ -459,6 +482,7 @@ export async function installWallet(page: Page, address = addressOf(page)) {
                         const behavior = state.nextSend;
                         state.nextSend = undefined;
                         if (behavior === "reject") throw fail(4001, "User rejected the request.");
+                        if (swapChains.has(chainId)) return fakeHash();
                         // Only Ethereum, BNB Chain and Arc are on the test backend.
                         if (!testChains.has(chainId))
                             throw fail(-32603, `The wallet is on chain ${chainId}, which the tests don't run.`);
@@ -475,6 +499,7 @@ export async function installWallet(page: Page, address = addressOf(page)) {
                         return result;
                     }
                     case "eth_getTransactionReceipt": {
+                        if (swapChains.has(chainId)) return { status: "0x1" };
                         if (!testChains.has(chainId)) return null;
                         const { result, error } = await state.sendToChain(method, params ?? [], parseInt(chainId, 16));
                         if (error) throw fail(-32603, error.message);

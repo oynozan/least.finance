@@ -15,8 +15,28 @@ import {
 } from "@/lib/account/state";
 import { sellableShares } from "@/components/wallet-data";
 import { dropAfterSend, loadCachedBalances, needsRefresh, saveCachedBalances } from "@/lib/account/balances";
+import {
+    clearUnreported,
+    dropHolding,
+    keepUnreported,
+    reportUnreported,
+    settleHoldings,
+    trackOrder,
+    type Tracking,
+} from "@/lib/account/swaps";
 import { loadCachedSwapHoldings, saveCachedSwapHoldings, validHoldings } from "@/lib/trade/wallet-holdings";
-import type { BalancesView, ClientToServerEvents, ServerToClientEvents, SwapHoldingsView } from "@/server/src/protocol";
+import { networkName, type NetworkCheck } from "@/lib/wallet/network";
+import type {
+    BalancesView,
+    ClientToServerEvents,
+    ServerToClientEvents,
+    SwapHoldingsView,
+    SwapOrderView,
+    SwapQuoteView,
+    SwapRequest,
+    SwapTxView,
+} from "@/server/src/protocol";
+import { arc } from "./arc";
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -41,12 +61,28 @@ export type BridgeWallet = {
     ensure(chainId: number): Promise<"ready" | "declined" | "switch_failed" | "wrong_network">;
 };
 
+/** What a swap needs from the wallets: the EVM one to send from, and the Solana one to sign with. */
+export type SwapSigner = {
+    evm?: { from: string; provider: WalletProvider; ensure(chainId: number): Promise<NetworkCheck> };
+    /** Signs, sends and returns the base58 signature of a Solana transaction. */
+    solana?: { address: string; signAndSend(tx: Uint8Array): Promise<string> };
+};
+
+/** How the wallet took a swap: sent (the server follows it), turned down, refused with a message, or on the wrong network. */
+export type SwapResult =
+    | { status: "sent"; order: SwapOrderView }
+    | { status: "cancelled" }
+    | { status: "failed"; message: string }
+    | { status: "switch_failed"; network: string };
+
 export type AccountSnapshot = {
     state: AccountState;
     notice: DepositNotice | null;
     balances: BalancesView | null;
     /** The coins the account's wallets hold on the swap networks; null until a snapshot (cached or pushed) is in. */
     swapHoldings: SwapHoldingsView | null;
+    /** The account's open swap orders and those settled in the last 7 days, newest first. */
+    swaps: SwapOrderView[];
     /** Why the last prediction didn't go through, or that it couldn't be sent. */
     tradeNotice: { message: string } | null;
 };
@@ -77,6 +113,10 @@ const CREDITED_NOTICE_MS = 5_000;
 const TRADE_NOTICE_MS = 8_000;
 const MAX_RETRY_MS = 30_000;
 
+const SWAPS_UNAVAILABLE = "Swaps aren't available right now.";
+const MAX_SWAPS = 50;
+const REJECTED_WORDING = /reject|declin|denied|cancel/i;
+
 const UNREACHABLE: ApiError = { code: "unavailable", message: "Couldn't reach the server. Retrying…" };
 /** Failures worth asking again about; the rest (a wallet that isn't the user's, say) won't change by retrying. */
 const RETRYABLE = new Set<ApiError["code"]>(["unavailable", "internal", "rate_limited"]);
@@ -95,6 +135,7 @@ export class AccountClient {
         notice: null,
         balances: null,
         swapHoldings: null,
+        swaps: [],
         tradeNotice: null,
     };
     readonly #listeners = new Set<() => void>();
@@ -108,6 +149,10 @@ export class AccountClient {
     #connection = 0;
     /** Deposits being confirmed right now, so a reconnect doesn't report one twice. */
     readonly #confirming = new Set<string>();
+    /** Swap orders whose hashes are being reported right now. */
+    readonly #reporting = new Set<string>();
+    /** The rows lowered for swaps still open, so a settled order puts back only its own. */
+    #tracking: Tracking = {};
 
     constructor(url: string) {
         this.#url = url;
@@ -181,9 +226,16 @@ export class AccountClient {
             const view = validHoldings(pushed);
             if (!view) return;
             if (this.#userId) saveCachedSwapHoldings(this.#userId, view);
+            // A read replaces every row, the ones this client changed included.
+            this.#tracking = {};
             this.#snapshot = { ...this.#snapshot, swapHoldings: view };
             this.#emit();
         });
+        socket.on("swaps", ({ orders }) => {
+            this.#snapshot = { ...this.#snapshot, swaps: orders };
+            this.#emit();
+        });
+        socket.on("swap:update", ({ order }) => this.#swapUpdated(order));
         socket.on("disconnect", (reason) => {
             // The server hung up (its token check expired); a fresh token brings it back.
             if (reason === "io server disconnect") socket.connect();
@@ -213,6 +265,8 @@ export class AccountClient {
                 if (state.status === "ready") {
                     for (const p of state.pending) void this.#confirm(socket, p.txHash, p.amount);
                 }
+                // Swap hashes the server never acknowledged are reported again.
+                void this.#reportSwapHashes(socket);
                 return;
             }
             const error = result?.error ?? UNREACHABLE;
@@ -233,13 +287,16 @@ export class AccountClient {
         this.#userId = null;
         this.#attempt = 0;
         this.#confirming.clear();
-        const { state, notice, balances, swapHoldings, tradeNotice } = this.#snapshot;
-        if (state.status !== "idle" || notice || balances || swapHoldings || tradeNotice) {
+        this.#reporting.clear();
+        this.#tracking = {};
+        const { state, notice, balances, swapHoldings, swaps, tradeNotice } = this.#snapshot;
+        if (state.status !== "idle" || notice || balances || swapHoldings || swaps.length || tradeNotice) {
             this.#snapshot = {
                 state: initialAccountState,
                 notice: null,
                 balances: null,
                 swapHoldings: null,
+                swaps: [],
                 tradeNotice: null,
             };
             this.#emit();
@@ -529,6 +586,170 @@ export class AccountClient {
         const socket = this.#socket;
         if (!socket?.connected || this.#snapshot.state.status !== "ready") return;
         socket.emit("swap:holdings:refresh", {}, () => undefined);
+    }
+
+    /** What a swap would pay right now, with no order opened. */
+    async quoteSwap(req: SwapRequest): Promise<SwapQuoteView | { error: ApiError }> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket) return { error: UNREACHABLE };
+        const result = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("swap:quote", req)
+            .catch(() => null);
+        if (!result) return { error: UNREACHABLE };
+        return result.ok ? result.data : { error: result.error };
+    }
+
+    /**
+     * Opens a swap order and has the wallet sign its transactions one by one, each once the one
+     * before has landed. After the last, the paid amount leaves the shown holdings and the hashes
+     * are reported; they are kept until the server acknowledges them.
+     */
+    async placeSwap(req: SwapRequest & { reviewedMin: string }, signer: SwapSigner): Promise<SwapResult> {
+        const socket = this.#socket;
+        const userId = this.#userId;
+        if (this.#snapshot.state.status !== "ready" || !socket || !userId) {
+            return { status: "failed", message: SWAPS_UNAVAILABLE };
+        }
+        const opened = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("swap:order", req)
+            .catch(() => null);
+        if (!opened) return { status: "failed", message: SWAPS_UNAVAILABLE };
+        if (!opened.ok) return { status: "failed", message: opened.error.message };
+        const { order, txs } = opened.data;
+        if (this.#socket !== socket) return { status: "failed", message: SWAPS_UNAVAILABLE };
+        this.#swapUpdated(order);
+
+        const hashes: string[] = [];
+        try {
+            for (const [i, tx] of txs.entries()) {
+                const sent = await this.#signSwapTx(tx, signer);
+                if (typeof sent !== "string") return sent;
+                hashes.push(sent);
+                if (i < txs.length - 1 && tx.kind === "evm" && signer.evm) {
+                    if (!(await this.#landed(signer.evm.provider, sent as Hex))) {
+                        return {
+                            status: "failed",
+                            message: `The swap failed, so your ${req.from.token} stayed in your wallet. Only the network fee was spent.`,
+                        };
+                    }
+                }
+            }
+        } catch (error) {
+            return this.#swapRefusal(error);
+        }
+        if (!hashes.length) return { status: "failed", message: SWAPS_UNAVAILABLE };
+
+        keepUnreported(userId, { orderId: order.id, txHashes: hashes });
+        if (this.#socket === socket) {
+            this.#tracking = trackOrder(this.#tracking, order.id, {
+                paid: {
+                    wallet: req.wallet,
+                    network: req.from.network,
+                    symbol: req.from.token,
+                    amount: order.from.amount,
+                },
+                receiver: req.receiver,
+                to: { network: req.to.network, symbol: req.to.token },
+            });
+            this.#changeHoldings((view) =>
+                dropHolding(view, {
+                    wallet: req.wallet,
+                    network: req.from.network,
+                    symbol: req.from.token,
+                    amount: order.from.amount,
+                }),
+            );
+            await this.#reportSwapHashes(socket);
+        }
+        return { status: "sent", order: this.#snapshot.swaps.find((o) => o.id === order.id) ?? order };
+    }
+
+    /** Has the wallet send one swap transaction and returns its hash, or why it didn't go. */
+    async #signSwapTx(tx: SwapTxView, signer: SwapSigner): Promise<string | SwapResult> {
+        if (tx.kind === "solana") {
+            if (!signer.solana) return { status: "failed", message: SWAPS_UNAVAILABLE };
+            const bytes = Uint8Array.from(atob(tx.data), (c) => c.charCodeAt(0));
+            return signer.solana.signAndSend(bytes);
+        }
+        const wallet = signer.evm;
+        if (!wallet) return { status: "failed", message: SWAPS_UNAVAILABLE };
+        const network = await wallet.ensure(tx.chainId);
+        if (network === "declined") return { status: "cancelled" };
+        if (network !== "ready") return { status: "switch_failed", network: networkName(tx.chainId) };
+        const hash = await wallet.provider.request({
+            method: "eth_sendTransaction",
+            params: [
+                {
+                    from: wallet.from,
+                    to: tx.to,
+                    data: tx.data,
+                    value: toHex(BigInt(tx.value)),
+                    chainId: toHex(tx.chainId),
+                    // Arc drops transactions under its minimum fee, so the fee is set here, never taken from the quote.
+                    ...(tx.chainId === arc.id
+                        ? { maxFeePerGas: toHex(MAX_FEE_PER_GAS), maxPriorityFeePerGas: toHex(PRIORITY_FEE_PER_GAS) }
+                        : {}),
+                },
+            ],
+        });
+        if (typeof hash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(hash)) {
+            return { status: "failed", message: SWAPS_UNAVAILABLE };
+        }
+        return hash;
+    }
+
+    /** A turned-down wallet prompt is a cancel; any other failure is a refusal with the generic copy. */
+    #swapRefusal(error: unknown): SwapResult {
+        const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+        const rejected = code === USER_REJECTED || (typeof message === "string" && REJECTED_WORDING.test(message));
+        return rejected ? { status: "cancelled" } : { status: "failed", message: SWAPS_UNAVAILABLE };
+    }
+
+    /** Reports the kept swap hashes; one the server answers for, either way, is no longer kept. */
+    async #reportSwapHashes(socket: AppSocket) {
+        const userId = this.#userId;
+        if (!userId) return;
+        await reportUnreported(userId, this.#reporting, async ({ orderId, txHashes }) => {
+            const result = await socket
+                .timeout(REPORT_TIMEOUT_MS)
+                .emitWithAck("swap:sent", { orderId, txHashes })
+                .catch(() => null);
+            if (this.#socket !== socket || !result) return false;
+            if (result.ok) {
+                this.#swapUpdated(result.data);
+                return true;
+            }
+            return !RETRYABLE.has(result.error.code);
+        });
+    }
+
+    /** Puts an order into the list and settles the holdings rows this client changed for it. */
+    #swapUpdated(order: SwapOrderView) {
+        const { swaps } = this.#snapshot;
+        const next = swaps.some((o) => o.id === order.id)
+            ? swaps.map((o) => (o.id === order.id ? order : o))
+            : [order, ...swaps].slice(0, MAX_SWAPS);
+        this.#snapshot = { ...this.#snapshot, swaps: next };
+        const { swapHoldings } = this.#snapshot;
+        if (swapHoldings && this.#tracking[order.id]) {
+            const settled = settleHoldings(swapHoldings, this.#tracking, order);
+            this.#tracking = settled.tracking;
+            this.#changeHoldings(() => settled.view);
+        }
+        if (order.txHashes.length > 0 && this.#userId) clearUnreported(this.#userId, order.id);
+        this.#emit();
+    }
+
+    /** Replaces the cached swap holdings with `change` applied; the next read corrects it. */
+    #changeHoldings(change: (view: SwapHoldingsView) => SwapHoldingsView) {
+        const { swapHoldings } = this.#snapshot;
+        if (!swapHoldings) return;
+        const view = change(swapHoldings);
+        if (this.#userId) saveCachedSwapHoldings(this.#userId, view);
+        this.#snapshot = { ...this.#snapshot, swapHoldings: view };
+        this.#emit();
     }
 
     /** Takes a sent amount out of the shown balance; the next read corrects it. */
