@@ -73,16 +73,29 @@ export class Sweeper {
     }
 
     /** Sweeps every deposit address ever assigned, for what the bus never mentioned. */
-    async sweepAll(): Promise<void> {
+    async sweepAll(signal?: AbortSignal): Promise<void> {
         const { collections, logger } = this.#deps;
         const counter = await collections.counters.findOne({ _id: DEPOSIT_INDEX });
         for (let index = 1; index <= (counter?.seq ?? 0); index++) {
+            if (signal?.aborted) return;
             try {
                 await this.sweep(index);
             } catch (error) {
                 logger.warn({ err: error, index }, "Sweep failed");
             }
         }
+    }
+
+    /** Rejects as soon as stop() is called, so a slow receipt can't hold shutdown. */
+    #abortable<T>(work: Promise<T>): Promise<T> {
+        const signal = this.#stop?.signal;
+        if (!signal) return work;
+        if (signal.aborted) return Promise.reject(new Error("Sweeper stopped"));
+        return new Promise<T>((resolve, reject) => {
+            const onAbort = () => reject(new Error("Sweeper stopped"));
+            signal.addEventListener("abort", onAbort, { once: true });
+            work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+        });
     }
 
     async #sweepNow(index: number): Promise<Hex | null> {
@@ -104,7 +117,7 @@ export class Sweeper {
             maxFeePerGas,
             maxPriorityFeePerGas: PRIORITY_FEE,
         });
-        const receipt = await client.waitForTransactionReceipt({ hash });
+        const receipt = await this.#abortable(client.waitForTransactionReceipt({ hash }));
         if (receipt.status !== "success") throw new Error(`Sweep ${hash} reverted`);
         return hash;
     }
@@ -112,7 +125,7 @@ export class Sweeper {
     async #run(signal: AbortSignal) {
         while (!signal.aborted) {
             try {
-                await this.sweepAll();
+                await this.sweepAll(signal);
             } catch (error) {
                 this.#deps.logger.warn({ err: error }, "Sweep pass failed");
             }
