@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { chartedOutcomes, historyTokens, lineColor } from "@/lib/trade/market-lines";
 import { chanceScale, formatPts, valueAt, withLiveEnd } from "@/lib/trade/chance-chart";
 import { drawable } from "@/components/trade/market-chart-card";
+import { createMarketHistoryStore } from "@/components/trade/market-history-store";
 import type { Outcome, PredictionMarket } from "@/lib/trade/catalog";
 
 function outcome(label: string, chance: number): Outcome {
@@ -148,4 +149,112 @@ test.describe("drawable", () => {
     test("one point is not a line", () => expect(drawable([line(1)])).toBe(false));
     test("some line with two points is", () => expect(drawable([line(1), line(2)])).toBe(true));
     test("no lines draw nothing", () => expect(drawable([])).toBe(false));
+});
+
+test.describe("the market history store", () => {
+    type Answer = { status?: number; body?: unknown };
+    function setup(answer: (tokens: string[]) => Answer = (tokens) => ({ body: lines(tokens) })) {
+        const urls: string[] = [];
+        let time = 1_000_000;
+        const fetch = (async (url: string) => {
+            urls.push(url);
+            const tokens = new URL(url).searchParams.get("outcomes")!.split(",");
+            const { status = 200, body } = answer(tokens);
+            return { ok: status === 200, status, json: async () => body };
+        }) as unknown as typeof globalThis.fetch;
+        const store = createMarketHistoryStore({ apiUrl: "http://api", fetch, now: () => time });
+        return { store, urls, advance: (ms: number) => (time += ms) };
+    }
+    const lines = (
+        tokens: string[],
+        points: unknown[] = [
+            [1, 0.2],
+            [2, 0.3],
+        ],
+    ) => ({
+        eventId: "1",
+        stepMs: 1,
+        readAt: "",
+        outcomes: tokens.map((tokenId) => ({ tokenId, points })),
+    });
+
+    test("one request reads both tokens and tells listeners once", async () => {
+        const { store, urls } = setup();
+        let told = 0;
+        store.subscribe(() => (told += 1));
+        await store.want("1", ["a", "b"]);
+        expect(urls).toEqual(["http://api/markets/1/history?outcomes=a,b"]);
+        expect([...store.getSnapshot().lines.keys()]).toEqual(["a", "b"]);
+        expect(told).toBe(1);
+    });
+
+    test("asks again only once a line is 3 minutes old", async () => {
+        const { store, urls, advance } = setup();
+        await store.want("1", ["a", "b"]);
+        advance(179_999);
+        await store.want("1", ["a", "b"]);
+        expect(urls).toHaveLength(1);
+        advance(1);
+        await store.want("1", ["a", "b"]);
+        expect(urls).toEqual([
+            "http://api/markets/1/history?outcomes=a,b",
+            "http://api/markets/1/history?outcomes=a,b",
+        ]);
+    });
+
+    test("a token already being read isn't asked for again", async () => {
+        const { store, urls } = setup();
+        const first = store.want("1", ["a", "b"]);
+        const second = store.want("1", ["a", "c"]);
+        await Promise.all([first, second]);
+        expect(urls).toEqual(["http://api/markets/1/history?outcomes=a,b", "http://api/markets/1/history?outcomes=c"]);
+    });
+
+    test("a 503 keeps the earlier lines and the next want tries again", async () => {
+        let fail = false;
+        const { store, urls, advance } = setup((tokens) => (fail ? { status: 503 } : { body: lines(tokens) }));
+        await store.want("1", ["a"]);
+        const before = store.getSnapshot();
+        advance(180_000);
+        fail = true;
+        await store.want("1", ["a"]);
+        expect(store.getSnapshot()).toBe(before);
+        await store.want("1", ["a"]);
+        expect(urls).toHaveLength(3);
+    });
+
+    test("a bad point is skipped, not its line", async () => {
+        const { store } = setup((tokens) => ({
+            body: lines(tokens, [[1, 0.2], [2, 1.5], ["x", 0.3], [3], [4, Number.NaN], [5, 0.4]]),
+        }));
+        await store.want("1", ["a"]);
+        expect(store.getSnapshot().lines.get("a")).toEqual([
+            [1, 0.2],
+            [5, 0.4],
+        ]);
+    });
+
+    test("an answer that isn't a history changes nothing", async () => {
+        const { store } = setup(() => ({ body: { outcomes: "nope" } }));
+        const before = store.getSnapshot();
+        await store.want("1", ["a"]);
+        expect(store.getSnapshot()).toBe(before);
+    });
+
+    test("points keep the order the server sent", async () => {
+        const { store } = setup((tokens) => ({
+            body: lines(tokens, [
+                [1, 0.1],
+                [2, 0.5],
+                [3, 0.2],
+            ]),
+        }));
+        await store.want("1", ["a"]);
+        expect(
+            store
+                .getSnapshot()
+                .lines.get("a")!
+                .map(([t]) => t),
+        ).toEqual([1, 2, 3]);
+    });
 });
