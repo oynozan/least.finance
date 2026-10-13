@@ -286,6 +286,21 @@ describe("following swaps", () => {
         expect((await state(waiting)).state).toBe("sent");
     });
 
+    test("a Solana swap still settles through LI.FI while the Solana RPC can't be reached", async () => {
+        const solana = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+        const order = await sent({
+            wallet: solana,
+            from: { token: "SOL", network: "solana", units: "1000000000", amount: "1" },
+            txHashes: ["6".repeat(88)],
+        });
+        status(order);
+        const solanaStatus = async (): Promise<{ failed: boolean } | null> => {
+            throw new Error("every Solana RPC failed");
+        };
+        await tracker({ solanaStatus }).tick();
+        expect((await state(order)).state).toBe("done");
+    });
+
     test("a FAILED status without addresses settles to failed, and one for another hash does not", async () => {
         const order = await sent();
         status(order, { status: "FAILED", substatus: "UNKNOWN_ERROR", fromAddress: undefined, toAddress: undefined });

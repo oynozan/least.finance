@@ -168,7 +168,7 @@ export class SwapTracker {
                 .getTransactionReceipt({ hash: hash as `0x${string}` })
                 .catch(() => null);
             if (receipt?.status === "reverted") return { state: "failed" };
-        } else if ((await this.#deps.solanaStatus(hash))?.failed) {
+        } else if ((await this.#deps.solanaStatus(hash).catch(() => null))?.failed) {
             return { state: "failed" };
         }
 
