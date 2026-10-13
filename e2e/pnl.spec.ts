@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seedDeposits } from "./backend";
 import { trendingView } from "./polymarket";
+import { buyPredictions, predictionsToBuy } from "./positions";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 
 const dock = (page: Page) => page.getByRole("navigation", { name: "Pages" });
@@ -103,6 +104,8 @@ test("the PnL page asks for a wallet until one is connected", async ({ page }) =
 test("the balance is charted by day, and every operation is listed", async ({ page, isMobile }) => {
     // Seeded before connecting, so the session loads it.
     await seedDeposits(addressOf(page), [{ amount: "500", daysAgo: 3 }]);
+    const bought = await predictionsToBuy(2);
+    await buyPredictions(addressOf(page), bought);
     await page.goto("/pnl");
     await connect(page);
     await expect(balance(page)).toBeVisible();
@@ -125,36 +128,41 @@ test("the balance is charted by day, and every operation is listed", async ({ pa
     await expect(chart(page)).toHaveAttribute("aria-valuemax", "7");
     await expect(balance(page)).toContainText("PnL over 7 days");
 
-    // The deposit is in the table with the trades, newest first.
+    // The deposit is in the table with the predictions, newest first.
     const deposit = rows(page).filter({ hasText: "Deposit" });
     await expect(deposit).toHaveCount(1);
     await expect(deposit).toContainText("+$500.00");
-    await expect(rows(page).filter({ hasText: "Swap ETH to SOL" }).first()).toBeVisible();
+    const predictions = bought.map((b) => `${b.outcome.label} on ${b.market.title}`);
+    await expect(rows(page)).toHaveCount(3);
+    for (const [i, title] of [...predictions].reverse().entries()) await expect(rows(page).nth(i)).toContainText(title);
+    await expect(rows(page).last()).toContainText("Deposit");
     if (!isMobile) await expect(activity(page).getByRole("columnheader", { name: "Result" })).toBeVisible();
     await shoot(page, "2-page");
 
     await activity(page).getByRole("radio", { name: "Deposits" }).click();
     await expect(rows(page)).toHaveCount(1);
     await activity(page).getByRole("radio", { name: "Trades" }).click();
+    await expect(rows(page)).toHaveCount(2);
     await expect(rows(page).filter({ hasText: "Deposit" })).toHaveCount(0);
-    expect(await rows(page).count()).toBeGreaterThan(10);
 });
 
-test("a trade confirmed in Review is listed as not sent", async ({ page }) => {
+test("a fresh account gets the empty chart and list, and a swap confirmed in Review adds nothing", async ({ page }) => {
     await page.goto("/");
     await connect(page);
     await dock(page).getByRole("button", { name: "Review" }).click();
     await sidebar(page).getByRole("button", { name: "Confirm swap" }).click();
+    await expect(sidebar(page)).toContainText("Trading isn't live yet, so nothing was sent.");
     await sidebar(page).getByRole("button", { name: "Done" }).click();
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
 
     await tile(page, "PnL").click();
-    const first = rows(page).first();
-    await expect(first).toContainText("Swap ETH to SOL");
-    await expect(first).toContainText("Not sent");
+    await expect(balance(page)).toContainText("No balance yet");
+    await expect(activity(page)).toContainText("Nothing here yet");
+    await expect(rows(page)).toHaveCount(0);
+    await shoot(page, "4-empty");
 });
 
-test("real predictions replace the mock ones, and a sale shows what it realized", async ({ page, isMobile }) => {
+test("a prediction and its sale are listed, with what the sale realized", async ({ page, isMobile }) => {
     const binary = (await trendingView()).markets.filter((m) => m.outcomes.length === 2);
     const { title } = binary[8]!;
     const outcome = binary[8]!.outcomes[0]!;
@@ -190,13 +198,15 @@ test("real predictions replace the mock ones, and a sale shows what it realized"
     const sold = rows(page).filter({ hasText: `Sold ${outcome.label} on ${title}` });
     await expect(sold).toHaveCount(1);
     await expect(sold).toContainText(/[+−]\$\d|—/);
-    // The mock predictions are gone; the other mock trades stay.
-    await expect(rows(page).filter({ hasText: "Will BTC reach $150K?" })).toHaveCount(0);
-    await expect(rows(page).filter({ hasText: "Swap ETH to SOL" }).first()).toBeVisible();
+    // The deposit, the buy and the sale: nothing else.
+    await expect(rows(page)).toHaveCount(3);
 });
 
 test("phones fit the PnL page without scrolling sideways", async ({ page, isMobile }) => {
     test.skip(!isMobile, "phone layout");
+    // A long question, so a row has to truncate.
+    await seedDeposits(addressOf(page), [{ amount: "500", daysAgo: 1 }]);
+    await buyPredictions(addressOf(page), await predictionsToBuy(1));
     await page.goto("/pnl");
     await connect(page);
     await expect(rows(page).first()).toBeVisible();

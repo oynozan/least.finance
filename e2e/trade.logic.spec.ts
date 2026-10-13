@@ -25,14 +25,7 @@ import {
 } from "@/lib/trade/operations/shared";
 import { quoteRows } from "@/lib/trade/prediction-quote";
 import { TRADE } from "@/lib/trade/registry";
-import {
-    balanceHistory,
-    confirmedActivity,
-    daysSince,
-    depositActivity,
-    mockTrades,
-    predictionActivity,
-} from "@/lib/trade/activity";
+import { balanceHistory, daysSince, depositActivity, predictionActivity, type Activity } from "@/lib/trade/activity";
 import type { PositionView } from "@/server/src/protocol";
 
 const connected: TradeCtx = { catalog: CATALOG, holdings: MOCK_HOLDINGS };
@@ -787,12 +780,30 @@ test.describe("the amount's dropdown", () => {
 test.describe("balance history", () => {
     const now = new Date(2026, 9, 9, 15, 0);
     const at = (daysAgo: number, hour = 12) => new Date(2026, 9, 9 - daysAgo, hour);
+    /** A row that moved the balance by `change`: a realized close, or a fee. */
+    const row = (id: string, kind: Activity["kind"], change: number, daysAgo: number): Activity => ({
+        id,
+        at: at(daysAgo),
+        kind,
+        title: id,
+        detail: "",
+        symbols: ["USDC"],
+        amountUSD: 100,
+        change,
+    });
+    const closes = [
+        row("c1", "close", 86.4, 21),
+        row("c2", "close", -54.2, 15),
+        row("c3", "close", 128.75, 10),
+        row("c4", "close", -112.3, 5),
+        row("c5", "close", 64.1, 2),
+    ];
 
     test("a bar a day, ending today, with deposits apart from PnL", () => {
         const activity = [
             depositActivity({ key: "a", amountUSD: 500, at: at(10) }),
             depositActivity({ key: "b", amountUSD: 100, at: at(2) }),
-            ...mockTrades(now).filter((a) => a.kind === "close"),
+            ...closes,
         ];
         const days = balanceHistory(activity, 7, now);
         expect(days).toHaveLength(7);
@@ -810,7 +821,7 @@ test.describe("balance history", () => {
     });
 
     test("fees alone don't count as a day's realized PnL", () => {
-        const trades = mockTrades(now);
+        const trades = [row("f1", "swap", -0.03, 29), row("f2", "buy", -1.2, 26), ...closes];
         const days = balanceHistory(trades, 30, now);
         const feeOnly = days.filter((d) => d.pnl !== 0 && d.realized === 0);
         expect(feeOnly.length).toBeGreaterThan(0);
@@ -890,20 +901,6 @@ test.describe("balance history", () => {
         const days = balanceHistory(predictionActivity(position({})), 7, now);
         expect(days.every((d) => d.realized === 0 && d.balance === 0)).toBe(true);
         expect(predictionActivity(position({}), true)[0]!.pending).toBe(true);
-    });
-
-    test("a trade confirmed in Review is listed but moves nothing", () => {
-        const confirmed = confirmedActivity(
-            { type: "perp", side: "long", asset: "BTC", leverage: 5, collateralUSD: "100" },
-            now,
-            "c",
-        );
-        expect(confirmed).toMatchObject({
-            title: "Long BTC 5x",
-            detail: "A $500 position",
-            change: 0,
-            simulated: true,
-        });
     });
 });
 

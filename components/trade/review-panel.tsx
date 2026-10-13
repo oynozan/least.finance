@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { MotionConfig, motion, type Variants } from "motion/react";
-import { confirmedTrades } from "@/lib/trade/activity";
 import { submitIntent } from "@/lib/trade/execute";
 import { quoteRows } from "@/lib/trade/prediction-quote";
 import type { QuoteView } from "@/server/src/protocol";
@@ -164,8 +163,6 @@ function ReviewBody({ onDone }: { onDone: () => void }) {
         }
         setSending(true);
         await submitIntent(view.intent);
-        // Listed on the PnL page, marked as not sent.
-        confirmedTrades.add(view.intent);
         setSending(false);
         setSent(intentKey);
     };

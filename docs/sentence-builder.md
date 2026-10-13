@@ -62,12 +62,14 @@ chain logos) are one case in `components/trade/trade-icons.tsx`.
 
 `/pnl` charts the balance by day (7 days, 30 days, or back to the first activity) and lists every
 operation under it. Pointing at a bar, or arrowing through them, rolls the figures to that day. The
-balance only moves with deposits, realized PnL and fees; a bar takes the gain or loss tone only when a
+balance only moves with deposits and realized PnL; a bar takes the gain or loss tone only when a
 position closed that day.
 
-The list is the account's real deposits, the trades confirmed in Review this session (marked "Not
-sent"), and a mock trade history (`lib/trade/activity.ts`) until trading is live, like the mock
-positions in the sidebar. The demo, without a wallet, uses mock deposits too.
+The list is what the server holds for the account (`components/pnl/use-activity.ts`): its deposits,
+and its predictions, each buy with what a sale, a win or a loss realized, plus buys still on their way
+(marked "Pending"). Swaps, buys, sells and perps aren't executed yet, so a trade confirmed in Review
+sends nothing and leaves no row. An account with nothing in it gets the empty states: "No balance yet"
+on the chart, "Nothing here yet" under it.
 
 ## Tests
 

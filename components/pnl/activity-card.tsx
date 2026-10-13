@@ -118,7 +118,6 @@ function Result({ activity: a }: { activity: Activity }) {
             </span>
         );
     }
-    if (a.simulated) return <span className="font-normal text-muted">Not sent</span>;
     const change = Math.round(a.change * 100) / 100;
     if (change === 0) return <span className="text-muted">—</span>;
     // Gains and realized losses carry their tone; a fee alone stays quiet.

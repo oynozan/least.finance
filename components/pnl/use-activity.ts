@@ -3,16 +3,7 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { toUsdc, type OptimisticTrade } from "@/lib/account/state";
 import type { PositionsView } from "@/server/src/protocol";
-import {
-    byNewest,
-    confirmedTrades,
-    depositActivity,
-    mockDeposits,
-    mockTrades,
-    pendingBuyActivity,
-    predictionActivity,
-    type Activity,
-} from "@/lib/trade/activity";
+import { byNewest, depositActivity, pendingBuyActivity, predictionActivity, type Activity } from "@/lib/trade/activity";
 import { useAccount } from "@/components/account-provider";
 import { useTrade } from "@/components/trade/trade-provider";
 
@@ -21,7 +12,6 @@ export type ActivityState =
     | { status: "signed-out"; connect: () => void }
     | { status: "ready"; activity: Activity[]; now: Date };
 
-const NONE: Activity[] = [];
 const MINUTE = 60_000;
 
 const subscribeMinute = (onChange: () => void) => {
@@ -70,36 +60,22 @@ function realPredictions({ positions, orders }: PositionsView, optimistic: reado
 }
 
 /**
- * Everything the account did, newest first: its deposits (the demo's are
- * mock), trades confirmed in Review this session, and mock trades until
- * trading is live.
+ * Everything the account did, newest first: its deposits and its predictions,
+ * as the server holds them, plus buys still on their way.
  */
 export function useActivity(): ActivityState {
     const { wallet } = useTrade();
     const { history, predictions, optimisticTrades } = useAccount();
-    const confirmed = useSyncExternalStore(confirmedTrades.subscribe, confirmedTrades.get, () => NONE);
     const nowMs = useNow();
 
     const now = useMemo(() => (nowMs === null ? null : new Date(nowMs)), [nowMs]);
     const activity = useMemo(() => {
         if (now === null) return null;
-        const deposits =
-            wallet.status === "demo"
-                ? mockDeposits(now)
-                : history.map((row) =>
-                      depositActivity({
-                          key: row.key,
-                          amountUSD: toUsdc(row.amount),
-                          at: row.at,
-                          pending: row.pending,
-                      }),
-                  );
-        // Signed in, the person's real predictions stand in for the mock ones.
-        const demo = wallet.status === "demo";
-        const mock = demo ? mockTrades(now) : mockTrades(now).filter((t) => t.kind !== "predict");
-        const real = demo ? [] : realPredictions(predictions, optimisticTrades);
-        return [...deposits, ...confirmed, ...real, ...mock].sort(byNewest);
-    }, [now, wallet.status, history, confirmed, predictions, optimisticTrades]);
+        const deposits = history.map((row) =>
+            depositActivity({ key: row.key, amountUSD: toUsdc(row.amount), at: row.at, pending: row.pending }),
+        );
+        return [...deposits, ...realPredictions(predictions, optimisticTrades)].sort(byNewest);
+    }, [now, history, predictions, optimisticTrades]);
 
     if (wallet.status === "disconnected") return { status: "signed-out", connect: wallet.connect };
     if (wallet.status === "loading" || now === null || activity === null) return { status: "loading" };
