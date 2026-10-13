@@ -58,6 +58,8 @@ type ChoiceSlotProps = {
     searchEmpty?: string;
     /** Shown in a card while a mouse hovers the pill, such as a coin's price chart. */
     preview?: ReactNode;
+    /** The hover card's width in px; 300 when left out. */
+    previewWidth?: number;
 };
 
 /** A pill that opens a picker; its label changes only once a choice is made. */
@@ -71,6 +73,7 @@ export function ChoiceSlot({
     onSearch,
     searchEmpty,
     preview,
+    previewWidth,
 }: ChoiceSlotProps) {
     const [open, setOpen] = useState(false);
     const button = useRef<HTMLButtonElement>(null);
@@ -126,6 +129,7 @@ export function ChoiceSlot({
             <HoverCard
                 open={!!preview && hover.shown && !open}
                 anchor={button}
+                width={previewWidth}
                 onPointerEnter={() => hover.card(true)}
                 onPointerLeave={() => hover.card(false)}
             >

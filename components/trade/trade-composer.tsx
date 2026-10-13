@@ -7,6 +7,7 @@ import type { TransactionIntent } from "@/lib/trade/intent";
 import { SentenceIcons } from "@/components/sentence/icons";
 import { Sentence } from "@/components/sentence/sentence";
 import { ChoiceSlot, NumberSlot } from "@/components/sentence/slots";
+import { QUESTION_CARD_WIDTH } from "./market-chart-card";
 import { renderTradeIcon } from "./trade-icons";
 
 type TradeComposerProps = {
@@ -131,6 +132,7 @@ export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview,
                         onSearch={search?.onQuery}
                         searchEmpty={search?.empty}
                         preview={preview}
+                        previewWidth={id === "marketId" ? QUESTION_CARD_WIDTH : undefined}
                     />
                 ) : (
                     <NumberSlot

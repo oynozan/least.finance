@@ -131,7 +131,7 @@ export function historyTokens(market: PredictionMarket, outcomeId: string | null
 
 ### Cards
 
-`components/trade/market-chart-card.tsx` has two exports. Both draw their chart 300 px wide, edge to edge, with the coin card's draw-in animation and pointer behaviour. The question card's header (image and question) was dropped so it fits a 720 px-tall screen; the pill under the card already shows both.
+`components/trade/market-chart-card.tsx` has two exports. The question card is 400 px wide so its legend names read whole; the outcome card is 300 px. Each draws its chart the full width of its card, edge to edge, with the coin card's draw-in animation and pointer behaviour. The question card's header (image and question) was dropped so it fits a 720 px-tall screen; the pill under the card already shows both.
 
 **`QuestionChartCard`**, top to bottom (about 223 px for 4 lines, about 192 px for one or two)
 - **Legend.** It leads: a 2×2 grid, each cell a color swatch, the name (truncated) and the % (NumberFlow, rolling to the pointed-at moment). One or two lines make a single row.

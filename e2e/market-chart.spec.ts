@@ -54,6 +54,8 @@ async function pickOutcome(page: Page, label: string) {
         .click();
     await expect(picker(page)).toBeHidden();
     await expect(outcomePill(page)).toContainText(label);
+    // Parks the pointer clear, so the wider question card doesn't open over the outcome pill
+    await page.mouse.move(5, 5);
 }
 
 let requests: string[];
@@ -91,12 +93,31 @@ test("the whole multi-outcome question card shows", async ({ page, isMobile }) =
     await expectWhole(page);
 });
 
+test("the multi-outcome question card is 400 px wide and every legend name reads whole", async ({ page, isMobile }) => {
+    test.skip(isMobile, "hover only");
+    await page.setViewportSize({ width: 1388, height: 736 });
+    await predict(page, samples.multi!);
+    await openCard(page, questionPill(page));
+    await expectWhole(page);
+    expect(Math.abs((await card(page).boundingBox())!.width - 400)).toBeLessThanOrEqual(1);
+    const names = await card(page)
+        .locator("[data-legend] > span:nth-child(2)")
+        .evaluateAll((els) =>
+            els.map((el) => ({ text: el.textContent ?? "", whole: el.scrollWidth <= el.clientWidth })),
+        );
+    expect(names).toHaveLength(4);
+    for (const name of names) if (name.text.length <= 16) expect(name, name.text).toMatchObject({ whole: true });
+    await page.screenshot({ path: "e2e/screenshots/wide-1388.png" });
+});
+
 test("the whole multi-outcome question card shows on a 1280 by 720 screen", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
     await page.setViewportSize({ width: 1280, height: 720 });
     await predict(page, samples.multi!);
     await openCard(page, questionPill(page));
     await expectWhole(page);
+    expect(Math.abs((await card(page).boundingBox())!.width - 400)).toBeLessThanOrEqual(1);
+    await page.screenshot({ path: "e2e/screenshots/wide-1280.png" });
 });
 
 test("a Yes/No question draws only YES", async ({ page, isMobile }) => {
@@ -129,6 +150,7 @@ test("the outcome pill shows only that outcome, with its chance and change", asy
     const shown = Number(await outcome.locator("[data-chance]").getAttribute("data-chance"));
     expect(Math.abs(shown - second!.chance)).toBeLessThan(0.005);
     await expect(outcome.locator("[data-change]")).toHaveAttribute("data-change", /^([+−]\d+(\.\d)? pts|0 pts)$/);
+    expect(Math.abs((await card(page).boundingBox())!.width - 300)).toBeLessThanOrEqual(1);
 });
 
 test("the whole outcome card shows", async ({ page, isMobile }) => {
@@ -166,6 +188,8 @@ test("pointing rolls the chances and says when", async ({ page, isMobile }) => {
     await expect(rest).toHaveCount(1);
     await expect(rest).not.toHaveText(/^Ends /);
     await expect.poll(() => first.getAttribute("data-chance")).not.toBe(before);
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: "e2e/screenshots/wide-pointing.png" });
 });
 
 test("the chart is read before the hover", async ({ page, isMobile }) => {

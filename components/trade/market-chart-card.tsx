@@ -8,14 +8,14 @@ import { chanceScale, chartDate, formatPts, valueAt, type ChancePoints } from "@
 import { chartedOutcomes, lineColor } from "@/lib/trade/market-lines";
 import { smoothPath } from "./chart-path";
 
-/** The chart's drawing width, the card's own: it runs to the card's edges and scales evenly with it. */
-const WIDTH = 300;
+/** The question card's width in px; the outcome card and the coin cards stay 300. */
+export const QUESTION_CARD_WIDTH = 400;
 /** Room above the line for the stroke. */
 const TOP = 10;
-/** The outcome card's drawing height, and its room below the line for the fill. */
-const OUTCOME_SHAPE = { height: 120, bottom: 26 };
+/** The outcome card's drawing size, and its room below the line for the fill; it runs to the card's edges. */
+const OUTCOME_SHAPE = { width: 300, height: 120, bottom: 26 };
 /** The question card's drawing height, with room below the lines only for their stroke and the rounded corners. */
-const QUESTION_SHAPE = { height: 106, bottom: 12 };
+const QUESTION_SHAPE = { width: QUESTION_CARD_WIDTH, height: 106, bottom: 12 };
 
 const TONE = {
     gain: "bg-gain/15 text-gain",
@@ -68,8 +68,8 @@ function Subtitle({ rest, date, className = "" }: { rest: string; date: string |
 
 type ChartProps = {
     lines: readonly ChartLine[];
-    /** The drawing's height and its room below the lines. */
-    shape: { height: number; bottom: number };
+    /** The drawing's size, the card's own, and its room below the lines. */
+    shape: { width: number; height: number; bottom: number };
     /** Whether the first line gets a fill down to the card's bottom edge. */
     fill: boolean;
     time: number | null;
@@ -78,7 +78,7 @@ type ChartProps = {
 
 /** The lines on one shared time axis and chance scale, with a crosshair and a dot per line while pointing. */
 function Chart({ lines, shape, fill, time, onTime }: ChartProps) {
-    const { height, bottom } = shape;
+    const { width, height, bottom } = shape;
     const reduce = useReducedMotion();
     // A bare name, so url(#…) needs no escaping
     const gradientId = useId().replace(/[^\w-]/g, "");
@@ -90,13 +90,13 @@ function Chart({ lines, shape, fill, time, onTime }: ChartProps) {
         const t0 = Math.min(...lines.filter((l) => l.points.length).map((l) => l.points[0]![0]));
         const t1 = Math.max(...all.map(([t]) => t));
         const { floor, span } = chanceScale(all.map(([, chance]) => chance));
-        const xOf = (t: number) => ((t - t0) / (t1 - t0 || 1)) * WIDTH;
+        const xOf = (t: number) => ((t - t0) / (t1 - t0 || 1)) * width;
         const yOf = (chance: number) => TOP + (1 - (chance - floor) / span) * (height - TOP - bottom);
         const paths = lines.map((line) =>
             line.points.length >= 2 ? smoothPath(line.points.map(([t, c]) => [xOf(t), yOf(c)] as const)) : null,
         );
         return { t0, t1, xOf, yOf, paths };
-    }, [lines, height, bottom]);
+    }, [lines, width, height, bottom]);
     if (!chart) return null;
 
     const point = (clientX: number) => {
@@ -111,7 +111,7 @@ function Chart({ lines, shape, fill, time, onTime }: ChartProps) {
     return (
         <svg
             ref={svg}
-            viewBox={`0 0 ${WIDTH} ${height}`}
+            viewBox={`0 0 ${width} ${height}`}
             className="block h-auto w-full cursor-crosshair overflow-visible"
             aria-hidden="true"
             data-chart=""
@@ -125,10 +125,10 @@ function Chart({ lines, shape, fill, time, onTime }: ChartProps) {
                 </linearGradient>
             </defs>
             {/* Catches the pointer over the whole chart, not only on the line */}
-            <rect width={WIDTH} height={height} fill="transparent" />
+            <rect width={width} height={height} fill="transparent" />
             {fill && chart.paths[0] && (
                 <motion.path
-                    d={`${chart.paths[0]}L${WIDTH},${height}L0,${height}Z`}
+                    d={`${chart.paths[0]}L${width},${height}L0,${height}Z`}
                     fill={`url(#${gradientId})`}
                     initial={reduce ? false : { opacity: 0 }}
                     animate={{ opacity: 1 }}
@@ -225,7 +225,7 @@ export function QuestionChartCard({ market, lines }: QuestionChartCardProps) {
                         <div
                             key={id}
                             data-legend={id}
-                            className="flex min-w-0 items-center gap-2 text-[15px] leading-snug"
+                            className="flex min-w-0 items-center gap-2 text-[14px] leading-snug"
                         >
                             <span
                                 aria-hidden="true"
