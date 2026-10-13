@@ -90,6 +90,12 @@ export const swapSent = z.object({
     txHashes: z.array(swapTxHash).min(1).max(4),
 });
 
+export const withdrawRequest = z.object({
+    requestId: z.uuid(),
+    amount: z.string().regex(/^\d+(\.\d{1,6})?$/, "an amount such as 12.5"),
+    to: z.string().trim().min(32).max(64),
+});
+
 /** Parses client input, turning a mismatch into a 400 that names the field. */
 export function parse<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
     const result = schema.safeParse(input ?? {});

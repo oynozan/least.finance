@@ -7,6 +7,7 @@ import type {
     PositionDoc,
     PredictionOrderDoc,
     SwapOrderDoc,
+    WithdrawalDoc,
 } from "./db/mongo.ts";
 import type { BalancesView, SwapHoldingsView } from "./protocol.ts";
 
@@ -25,6 +26,8 @@ type Events = {
     "prediction:updated": [{ order: PredictionOrderDoc; position: PositionDoc | null; account: AccountDoc }];
     /** Fired after a position is paid or lost at its market's resolution, once its transaction commits. */
     "position:settled": [{ position: PositionDoc; account: AccountDoc }];
+    /** Fired when a withdrawal is created or changes state. */
+    "withdrawal:updated": [{ withdrawal: WithdrawalDoc; account: AccountDoc | null }];
 };
 
 /** In-process events between the ledger and the sockets. */

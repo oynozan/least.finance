@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { AppError } from "../../src/errors.ts";
-import { coinWalletAmount, depositPage, depositReport, parse, sourceReport } from "../../src/validation.ts";
+import {
+    coinWalletAmount,
+    depositPage,
+    depositReport,
+    parse,
+    sourceReport,
+    withdrawRequest,
+} from "../../src/validation.ts";
 
 const hash = `0x${"AB".repeat(32)}`;
 const catchError = (fn: () => unknown) => {
@@ -88,5 +95,28 @@ describe("deposit order input", () => {
         expect(() => parse(sourceReport, { orderId: "nope", txHashes: [hash] })).toThrow(AppError);
         expect(() => parse(sourceReport, { orderId: "a".repeat(24), txHashes: [] })).toThrow(AppError);
         expect(() => parse(sourceReport, { orderId: "a".repeat(24), txHashes: Array(5).fill(hash) })).toThrow(AppError);
+    });
+
+    describe("withdrawRequest", () => {
+        const requestId = "3f0c2b1e-8d4a-4b6e-9c1d-2a5e7f9b0c3d";
+        const to = "0x1234567890123456789012345678901234567890";
+
+        it("accepts a UUID, an amount with up to 6 decimals and an address", () => {
+            expect(parse(withdrawRequest, { requestId, amount: "12.5", to: ` ${to} ` })).toEqual({
+                requestId,
+                amount: "12.5",
+                to,
+            });
+        });
+
+        it.each(["", "-1", "1e3", ".5", "1.", "1.1234567", "1,5"])("rejects the amount '%s'", (amount) => {
+            expect(() => parse(withdrawRequest, { requestId, amount, to })).toThrow(AppError);
+        });
+
+        it("rejects a request id that isn't a UUID and a short or long recipient", () => {
+            expect(() => parse(withdrawRequest, { requestId: "nope", amount: "1", to })).toThrow(AppError);
+            expect(() => parse(withdrawRequest, { requestId, amount: "1", to: "0x12" })).toThrow(AppError);
+            expect(() => parse(withdrawRequest, { requestId, amount: "1", to: "a".repeat(65) })).toThrow(AppError);
+        });
     });
 });
