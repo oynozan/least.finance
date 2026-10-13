@@ -1,0 +1,17 @@
+{
+	{$CADDY_GLOBAL_OPTIONS:}
+}
+
+(hsts) {
+	header Strict-Transport-Security "max-age=31536000"
+}
+
+{$SITE_HOST} {
+	import hsts
+	reverse_proxy web:3000
+}
+
+{$API_HOST} {
+	import hsts
+	reverse_proxy server:4500
+}

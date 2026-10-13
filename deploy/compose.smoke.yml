@@ -1,0 +1,17 @@
+# Local overrides for deploy/smoke.sh: Caddy's own CA (via smoke.env), spare ports, a stand-in Arc node and a throwaway Privy key.
+name: lf-smoke
+services:
+    caddy:
+        ports: !override
+            - "18080:80"
+            - "18443:443"
+    rpc:
+        image: node:26-slim
+        command: ["node", "/smoke-rpc.mjs"]
+        volumes:
+            - ./smoke-rpc.mjs:/smoke-rpc.mjs:ro
+    server:
+        environment:
+            PRIVY_VERIFICATION_KEY: ${SMOKE_PRIVY_PUBLIC_KEY:?set by smoke.sh}
+        depends_on:
+            - rpc

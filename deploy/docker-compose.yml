@@ -1,0 +1,110 @@
+# Run with: docker compose --env-file /etc/least-finance/server.env -f deploy/docker-compose.yml up -d --build
+x-service: &service
+    restart: unless-stopped
+    logging:
+        driver: json-file
+        options:
+            max-size: 10m
+            max-file: "5"
+
+services:
+    caddy:
+        <<: *service
+        image: caddy:2
+        ports:
+            - "80:80"
+            - "443:443"
+            - "443:443/udp"
+        environment:
+            SITE_HOST: ${SITE_HOST:-least.finance}
+            API_HOST: ${API_HOST:-api.least.finance}
+            CADDY_GLOBAL_OPTIONS: ${CADDY_GLOBAL_OPTIONS:-}
+        volumes:
+            - ./Caddyfile:/etc/caddy/Caddyfile:ro
+            - caddy-data:/data
+            - caddy-config:/config
+        depends_on:
+            - web
+            - server
+
+    web:
+        <<: *service
+        image: least-finance-web
+        build:
+            context: ..
+            dockerfile: deploy/web.Dockerfile
+            args:
+                NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set in the env file}
+                NEXT_PUBLIC_PRIVY_APP_ID: ${NEXT_PUBLIC_PRIVY_APP_ID:?set in the env file}
+                NEXT_PUBLIC_PRIVY_CLIENT_ID: ${NEXT_PUBLIC_PRIVY_CLIENT_ID:-}
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "node",
+                    "-e",
+                    "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+                ]
+            interval: 15s
+            timeout: 5s
+            start_period: 20s
+            retries: 5
+
+    server:
+        <<: *service
+        image: least-finance-server
+        build:
+            context: ..
+            dockerfile: deploy/server.Dockerfile
+        env_file: ${LF_ENV_FILE:-/etc/least-finance/server.env}
+        environment:
+            NODE_ENV: production
+            TRUST_PROXY: "1"
+            HOST: 0.0.0.0
+            PORT: "4500"
+            MONGODB_URI: mongodb://app:${MONGO_APP_PASSWORD:?set in the env file}@mongo:27017/${MONGODB_DB:-TradeEverything}?replicaSet=rs0&authSource=${MONGODB_DB:-TradeEverything}
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "node",
+                    "-e",
+                    "fetch('http://127.0.0.1:4500/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+                ]
+            interval: 15s
+            timeout: 5s
+            start_period: 20s
+            retries: 5
+        depends_on:
+            mongo:
+                condition: service_healthy
+
+    mongo:
+        <<: *service
+        image: mongo:7.0
+        entrypoint: ["bash", "/lf-mongo/entrypoint.sh"]
+        command: ["mongod", "--replSet", "rs0", "--keyFile", "/keys/keyfile", "--bind_ip_all"]
+        environment:
+            MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set in the env file}
+            MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?set in the env file}
+            MONGODB_DB: ${MONGODB_DB:-TradeEverything}
+        volumes:
+            - ./mongo:/lf-mongo:ro
+            - mongo-data:/data/db
+            - mongo-keyfile:/keys
+        healthcheck:
+            test:
+                - CMD-SHELL
+                - >-
+                    mongosh --quiet -u app -p "$$MONGO_APP_PASSWORD" --authenticationDatabase "$$MONGODB_DB" "$$MONGODB_DB"
+                    --eval "quit(db.hello().isWritablePrimary ? 0 : 1)"
+            interval: 5s
+            timeout: 10s
+            start_period: 20s
+            retries: 20
+
+volumes:
+    caddy-data:
+    caddy-config:
+    mongo-data:
+    mongo-keyfile:
