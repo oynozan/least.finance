@@ -465,31 +465,18 @@ test("Review opens the details in the sidebar, then confirms", async ({ page, is
     await expect(page.getByRole("complementary", { name: "Wallet" })).toBeVisible();
 });
 
-for (const [funded, blocked] of [
-    ["2400", true],
-    ["3500", false],
-] as const) {
-    test(`a buy of 3000 USD is ${blocked ? "blocked" : "allowed"} with ${funded} USDC in the wallet`, async ({
-        page,
-    }) => {
-        // Funded before connecting, so the sign-in's read sees it.
-        await fundSource(addressOf(page), "ethereum:USDC", funded);
-        await connect(page);
-        await pick(page, "Swap", /^Buy/);
-        // The slider tops out at the wallet's USDC once its coins are in.
-        await amountPill(page).click();
-        await expect(slider(page)).toHaveAttribute("aria-valuemax", funded);
-        await page.keyboard.press("Escape");
-        await expect(picker(page)).toBeHidden();
-        await setAmount(page, "3000");
-        if (blocked) {
-            await expect(review(page)).toHaveAttribute("aria-disabled", "true");
-            await expect(review(page)).toHaveAccessibleDescription("You have $2,400.00 USDC on Ethereum to spend.");
-        } else {
-            await expect(review(page)).not.toHaveAttribute("aria-disabled");
-        }
-    });
-}
+// The stack reads only Ethereum and BNB Chain, so most USDC networks are unread and Buy has no cap.
+test("a buy has no cap while a USDC network was never read", async ({ page }) => {
+    await fundSource(addressOf(page), "ethereum:USDC", "2400");
+    await connect(page);
+    await pick(page, "Swap", /^Buy/);
+    await amountPill(page).click();
+    await expect(slider(page)).toHaveAttribute("aria-valuemax", "10000");
+    await page.keyboard.press("Escape");
+    await expect(picker(page)).toBeHidden();
+    await setAmount(page, "3000");
+    await expect(review(page)).not.toHaveAttribute("aria-disabled");
+});
 
 test("the sentence is keyboard operable", async ({ page, isMobile }) => {
     test.skip(isMobile, "keyboard flow");
