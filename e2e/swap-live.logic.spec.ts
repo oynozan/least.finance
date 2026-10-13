@@ -4,7 +4,7 @@ import { initialState, reduce, refit, resolve } from "@/lib/sentence";
 import { CATALOG, TOKENS } from "@/lib/trade/catalog";
 import { heldOn, heldTotal, type CoinUnits, type TradeCtx } from "@/lib/trade/context";
 import { formatUsd } from "@/lib/trade/format";
-import { networkChoices } from "@/lib/trade/operations/shared";
+import { buyPayNetwork, networkChoices, usdcCap } from "@/lib/trade/operations/shared";
 import { loadCachedCatalog, toTokens } from "@/lib/trade/live-coins";
 import { TRADE } from "@/lib/trade/registry";
 import {
@@ -482,6 +482,43 @@ test.describe("a refit keeps what the person chose", () => {
         state = reduce(TRADE, state, { type: "verb", verbId: "swap" }, spread);
         state = reduce(TRADE, state, { type: "verb", verbId: "long" }, spread);
         expect(resolve(TRADE, state, spread).intent).toMatchObject({ type: "perp", leverage: 10 });
+    });
+});
+
+test.describe("Buy with a USDC network never read", () => {
+    const ctxOf = (units: CoinUnits, unread: NetworkId[]): TradeCtx => ({
+        catalog: CATALOG,
+        holdings: null,
+        wallet: wallet(units, unread),
+    });
+    const slot = (slot: string, value: string) => ({ type: "slot", slot, value }) as const;
+
+    test("has no cap, so no false claim of what is held", () => {
+        const some = ctxOf({ USDC: { base: 3 } }, ["arbitrum"]);
+        expect(usdcCap(some)).toBeUndefined();
+        const zero = ctxOf({}, ["arbitrum"]);
+        expect(usdcCap(zero)).toBeUndefined();
+        const big = reduce(TRADE, initialState(TRADE, "buy", some), slot("amountUSD", "500"), some);
+        expect(resolve(TRADE, big, some).blocking).toBeUndefined();
+        // Every network read: the cap is back
+        expect(usdcCap(ctxOf({ USDC: { base: 3 } }, []))).toMatchObject({ value: 3 });
+        expect(usdcCap(ctxOf({}, []))).toMatchObject({ value: 0 });
+    });
+
+    test("pays from a read network, the coin's own when its USDC covers the amount", () => {
+        const ctx = ctxOf({ USDC: { base: 100, ethereum: 500 } }, ["arbitrum"]);
+        expect(buyPayNetwork(ctx, "base", 50)).toBe("base");
+        expect(buyPayNetwork(ctx, "polygon", 50)).toBe("ethereum");
+        expect(buyPayNetwork(ctx, "arbitrum", 50)).toBeNull();
+    });
+
+    test("Spot re-defaults a network the person didn't choose and keeps one they did", () => {
+        const none: TradeCtx = { catalog: CATALOG, holdings: null, wallet: null };
+        const loaded = ctxOf({ LINK: { arbitrum: 10, base: 40 } }, []);
+        const sell = reduce(TRADE, initialState(TRADE, "sell", none), slot("token", "LINK"), none);
+        expect(resolve(TRADE, refit(TRADE, sell, loaded), loaded).intent).toMatchObject({ network: "base" });
+        const pinned = reduce(TRADE, sell, slot("network", "arbitrum"), none);
+        expect(resolve(TRADE, refit(TRADE, pinned, loaded), loaded).intent).toMatchObject({ network: "arbitrum" });
     });
 });
 

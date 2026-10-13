@@ -73,10 +73,11 @@ function usdcRows(ctx: TradeCtx): UsdcRow[] {
 const richest = (rows: UsdcRow[]) =>
     rows.reduce<UsdcRow | undefined>((best, row) => (!best || row.usd > best.usd ? row : best), undefined);
 
-/** Caps a purchase at the most USDC the wallet holds on one network, with no cap while unknown */
+/** Caps a purchase at the most USDC the wallet holds on one network, with no cap while any USDC network is unknown */
 export function usdcCap(ctx: TradeCtx): Bound | undefined {
-    const best = richest(usdcRows(ctx));
-    if (!best) return undefined;
+    const rows = usdcRows(ctx);
+    const best = richest(rows);
+    if (!best || rows.length < entriesOf(ctx, QUOTE).length) return undefined;
     return {
         value: best.usd,
         message:
