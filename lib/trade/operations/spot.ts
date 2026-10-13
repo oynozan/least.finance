@@ -78,7 +78,13 @@ export const spot = operation({
         amountUSD: usdAmount(
             (v: Values & Fixed, ctx) => ({
                 min: minimum(1),
-                max: v.side === "buy" ? usdcCap(ctx) : holdingCapOn(ctx, v.token, v.network),
+                // A coin the wallet can't sell is already blocked by its pill
+                max:
+                    v.side === "buy"
+                        ? usdcCap(ctx)
+                        : unheld(ctx, v.token)
+                          ? undefined
+                          : holdingCapOn(ctx, v.token, v.network),
             }),
             (v, ctx) => {
                 const price = priceOf(ctx, v.token);

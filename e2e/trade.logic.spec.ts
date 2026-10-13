@@ -362,7 +362,7 @@ test.describe("networks", () => {
             message: "That's more than your $1,604.56 of ETH on Base.",
             cta: "Not enough ETH",
         });
-        // A token has no gas reserve, and an empty network says so
+        // A token has no gas reserve, and a coin with only gas money is blocked on the coin
         const link = run(
             "sell",
             [slot("token", "LINK"), slot("amountUSD", "5000")],
@@ -371,7 +371,7 @@ test.describe("networks", () => {
         expect(link.view.blocking).toMatchObject({ message: "That's more than your $184.50 of LINK on Base." });
         const none = withWallet({ ETH: { base: 0.0001 } });
         expect(run("swap", [slot("amountUSD", "5")], none).view.blocking).toMatchObject({
-            message: "You don't hold any ETH on Base.",
+            message: "Pick a coin to swap from.",
         });
     });
 

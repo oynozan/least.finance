@@ -122,12 +122,20 @@ export function coinChoice(ctx: TradeCtx, coin: Token, options: { disabled?: str
     };
 }
 
-/** The coin other than the stablecoin that the wallet holds the most dollars of, if it holds any */
+/** Units of a coin the wallet can spend across the networks it has read, or null while none has been */
+function spendableTotal(ctx: TradeCtx, symbol: string): number | null {
+    const known = entriesOf(ctx, symbol)
+        .map(({ network }) => spendableOn(ctx, symbol, network))
+        .filter((units) => units !== null);
+    return known.length ? known.reduce((sum, units) => sum + units, 0) : null;
+}
+
+/** The coin other than the stablecoin that the wallet can spend the most dollars of, if it can spend any */
 export function largestHolding(ctx: TradeCtx): string | undefined {
     let best: string | undefined;
     let most = 0;
     for (const { symbol } of ctx.catalog.tokens) {
-        const value = symbol === QUOTE ? 0 : (heldTotal(ctx, symbol) ?? 0) * priceOf(ctx, symbol);
+        const value = symbol === QUOTE ? 0 : (spendableTotal(ctx, symbol) ?? 0) * priceOf(ctx, symbol);
         if (value > most) {
             best = symbol;
             most = value;
@@ -136,9 +144,15 @@ export function largestHolding(ctx: TradeCtx): string | undefined {
     return best;
 }
 
-/** Disables coins the wallet doesn't hold, only once a wallet is connected */
-export const unheld = (ctx: TradeCtx, symbol: string) =>
-    heldTotal(ctx, symbol) === 0 ? `You don't hold any ${symbol}` : undefined;
+/** Disables coins the wallet can't pay with: none held, or none above the gas kept back; only once a wallet is read */
+export function unheld(ctx: TradeCtx, symbol: string) {
+    const total = heldTotal(ctx, symbol);
+    if (total === null) return undefined;
+    const networks = entriesOf(ctx, symbol);
+    const spendable = networks.some(({ network }) => (spendableOn(ctx, symbol, network) ?? 0) > 0);
+    if (spendable || (total > 0 && !networks.length)) return undefined;
+    return total > 0 ? "Too little for gas" : `You don't hold any ${symbol}`;
+}
 
 /** Why a pay row can't be used: nothing there, or no more than the gas kept back; nothing while unknown */
 function payBlock(units: number | null, spendable: number | null) {

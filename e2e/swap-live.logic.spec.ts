@@ -536,6 +536,53 @@ test.describe("a wallet without ETH", () => {
         expect(typed.blocking).toMatchObject({ message: "Pick a coin to swap from." });
     });
 
+    test("a coin with only gas money is not held for paying", () => {
+        const ctx = held({ ETH: { ethereum: 0.001 }, USDC: { base: 500 } });
+        const swap = resolve(TRADE, initialState(TRADE, "swap", ctx), ctx);
+        expect(swap.text).toBe("I want to Swap my USDC to SOL for 10 USD.");
+        expect(swap.intent).toMatchObject({ fromToken: "USDC", fromNetwork: "base" });
+        const coins = swap.slots.fromToken;
+        const eth = coins.kind === "choice" && coins.choices.find((c) => c.value === "ETH");
+        expect(eth).toMatchObject({ disabled: "Too little for gas" });
+        const dogs = coins.kind === "choice" && coins.choices.find((c) => c.value === "DOGE");
+        expect(dogs).toMatchObject({ disabled: "You don't hold any DOGE" });
+        // Once ETH is spendable on any network it can pay again
+        const rich = held({ ETH: { ethereum: 0.001, base: 1 } });
+        expect(resolve(TRADE, initialState(TRADE, "swap", rich), rich).intent).toMatchObject({
+            fromToken: "ETH",
+            fromNetwork: "base",
+        });
+    });
+
+    test("Sell with nothing to sell blocks on the coin, not on an amount", () => {
+        for (const ctx of [held({}), held({ ETH: { ethereum: 0.001 } })]) {
+            const sell = resolve(TRADE, initialState(TRADE, "sell", ctx), ctx);
+            expect(sell.blocking).toMatchObject({ message: "Pick a coin.", cta: "Pick a coin" });
+            expect(sell.issues.some((issue) => issue.code === "max")).toBe(false);
+            const typed = resolve(
+                TRADE,
+                reduce(TRADE, initialState(TRADE, "sell", ctx), slot("amountUSD", "5000"), ctx),
+                ctx,
+            );
+            expect(typed.blocking).toMatchObject({ message: "Pick a coin." });
+        }
+    });
+
+    test("Sell skips networks never read when it looks for the largest holding", () => {
+        const networksOf = (symbol: string) => TOKENS.find((t) => t.symbol === symbol)!.networks.map((n) => n.network);
+        // A network ETH has and SOL doesn't, so SOL stays read and unheld
+        const unread = networksOf("ETH").find((id) => !networksOf("SOL").includes(id) && id !== "ethereum")!;
+        const ctx: TradeCtx = {
+            catalog: CATALOG,
+            holdings: null,
+            wallet: wallet({ LINK: { arbitrum: 10 }, ETH: { ethereum: 5 } }, [unread]),
+        };
+        // ETH has an unread network but 5 known ETH is worth more than 10 LINK
+        expect(resolve(TRADE, initialState(TRADE, "sell", ctx), ctx).intent).toMatchObject({ token: "ETH" });
+        const unknown: TradeCtx = { ...ctx, wallet: wallet({ LINK: { arbitrum: 10 } }, [unread]) };
+        expect(resolve(TRADE, initialState(TRADE, "sell", unknown), unknown).intent).toMatchObject({ token: "LINK" });
+    });
+
     test("Sell opens on the held coin worth the most, not on dollars", () => {
         const ctx = held({ LINK: { arbitrum: 40 }, DOGE: { bnb: 100 }, USDC: { base: 9000 } });
         expect(resolve(TRADE, initialState(TRADE, "sell", ctx), ctx).intent).toMatchObject({
