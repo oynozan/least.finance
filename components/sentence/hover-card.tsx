@@ -26,12 +26,27 @@ let lastClosedAt = -Infinity;
 /** Closes the card open now; opening another calls it, so only one shows at a time. */
 let closeOpen: { current: () => void } | null = null;
 
+/** Where the pointer last really was, so a hover the page's own change reports under a still pointer can be told from a move. */
+let pointerAt: { x: number; y: number } | null = null;
+let tracking = false;
+function trackPointer() {
+    if (tracking) return;
+    tracking = true;
+    const record = (event: PointerEvent) => {
+        pointerAt = { x: event.clientX, y: event.clientY };
+    };
+    for (const type of ["pointermove", "pointerdown", "pointerup"] as const)
+        window.addEventListener(type, record, { capture: true, passive: true });
+}
+
 /**
  * Hover intent for a pill and its card: open after a short hover (at once
  * right after another card closed), close a moment after the pointer is over
  * neither, and at once on Escape. The pill and the card report separately,
  * since Motion tells of the pill's hover ending a frame late: by then a quick
- * pointer may already be on the card.
+ * pointer may already be on the card. After the pill's picker closes, the
+ * card waits for the pointer to move: the browser reports a pointer resting
+ * on the pill as a fresh hover once the picker's overlay is gone.
  */
 export function useHoverIntent() {
     const [shown, setShown] = useState(false);
@@ -39,6 +54,8 @@ export function useHoverIntent() {
     const over = useRef({ pill: false, card: false });
     const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const close = useRef<() => void>(() => undefined);
+    /** Set while held after a picker closed: stops waiting for the pointer to move. */
+    const held = useRef<(() => void) | null>(null);
 
     const show = useCallback((next: boolean) => {
         clearTimeout(timer.current);
@@ -58,7 +75,7 @@ export function useHoverIntent() {
     const update = useCallback(() => {
         clearTimeout(timer.current);
         if (over.current.pill || over.current.card) {
-            if (isShown.current) return;
+            if (isShown.current || held.current) return;
             if (performance.now() - lastClosedAt < WARM_MS) show(true);
             else timer.current = setTimeout(() => show(true), OPEN_DELAY_MS);
         } else timer.current = setTimeout(() => show(false), isShown.current ? CLOSE_DELAY_MS : 0);
@@ -79,6 +96,26 @@ export function useHoverIntent() {
         [update],
     );
 
+    /** Hides the card until the pointer moves from where it rested, for when the pill's picker has just closed. */
+    const hold = useCallback(() => {
+        show(false);
+        held.current?.();
+        const from = pointerAt;
+        const onMove = (event: PointerEvent) => {
+            if (from && event.clientX === from.x && event.clientY === from.y) return;
+            release();
+            update();
+        };
+        const release = () => {
+            window.removeEventListener("pointermove", onMove, true);
+            held.current = null;
+        };
+        window.addEventListener("pointermove", onMove, { capture: true, passive: true });
+        held.current = release;
+    }, [show, update]);
+
+    useEffect(trackPointer, []);
+
     useEffect(() => {
         if (!shown) return;
         const onKeyDown = (event: KeyboardEvent) => {
@@ -91,12 +128,13 @@ export function useHoverIntent() {
     useEffect(
         () => () => {
             clearTimeout(timer.current);
+            held.current?.();
             if (closeOpen === close) closeOpen = null;
         },
         [],
     );
 
-    return { shown, pill, card, hide: useCallback(() => show(false), [show]) };
+    return { shown, pill, card, hold, hide: useCallback(() => show(false), [show]) };
 }
 
 const subscribe = () => () => {};

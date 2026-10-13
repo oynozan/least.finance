@@ -254,6 +254,28 @@ test("a market's pill shows its market chart, never a coin price card", async ({
     await expect(page.locator("[data-coin-card]")).toHaveCount(0);
 });
 
+test("after a coin's picker closes, a pointer resting on its pill opens no card until it moves", async ({
+    page,
+    isMobile,
+}) => {
+    test.skip(isMobile, "hover only");
+    const eth = coinPill(page, "ETH");
+    await openCard(page, eth);
+    await eth.click();
+    await expect(picker(page)).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(picker(page)).toBeHidden();
+    // The browser reports the still pointer as a fresh hover once the picker's overlay is gone
+    await page.waitForTimeout(600);
+    await expect(page.locator("[data-hover-card]")).toHaveCount(0);
+
+    // Moving over the pill is a hover again
+    const box = (await eth.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2 + 4, box.y + box.height / 2, { steps: 2 });
+    await expect(card(page)).toBeVisible();
+    await expect(card(page)).toContainText("Ethereum");
+});
+
 test("a tap on a phone opens the picker, never the card", async ({ page, isMobile }) => {
     test.skip(!isMobile, "touch only");
     await expect.poll(() => requests.filter((url) => url.includes("/prices/history")).length).toBe(1);

@@ -75,15 +75,20 @@ export function ChoiceSlot({
     const [open, setOpen] = useState(false);
     const button = useRef<HTMLButtonElement>(null);
     const hover = useHoverIntent();
+    const { hold } = hover;
     const pickerId = useId();
     const hintId = useId();
     const wasOpen = useRef(false);
 
     // Focus returns to the pill after the commit, so its new name is already in place.
+    // Its card waits for the pointer to move: one resting on the pill isn't a fresh hover.
     useLayoutEffect(() => {
-        if (wasOpen.current && !open) button.current?.focus({ preventScroll: true });
+        if (wasOpen.current && !open) {
+            button.current?.focus({ preventScroll: true });
+            hold();
+        }
         wasOpen.current = open;
-    }, [open]);
+    }, [open, hold]);
 
     const selected = view.selected && !view.selected.disabled ? view.selected : undefined;
     const companion = view.then;
