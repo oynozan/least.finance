@@ -349,10 +349,10 @@ test.describe("networks", () => {
             disabled: "Nothing here",
         });
         expect(rows.find((c) => c.value === "solana")?.description).toBe("Wormhole ETH");
-        // Receiving is never blocked by an empty row, and nothing known shows no amount
+        // Receiving is never blocked by an empty row, an empty row shows zero, and nothing known shows no amount
         const receive = networkChoices(wallet, "ETH", "receive");
         expect(receive.every((c) => !c.disabled)).toBe(true);
-        expect(receive.find((c) => c.value === "polygon")?.detail).toBeUndefined();
+        expect(receive.find((c) => c.value === "polygon")).toMatchObject({ detail: "0 ETH", subdetail: "$0.00" });
         expect(networkChoices(withWallet(null), "ETH", "pay")[0].detail).toBeUndefined();
         expect(networkName("bnb")).toBe("BNB Chain");
     });
@@ -399,6 +399,19 @@ test.describe("networks", () => {
         expect(heldTotal(disconnected, "ETH")).toBeNull();
         const over = run("swap", [slot("amountUSD", "5000")]).view;
         expect(over.blocking).toMatchObject({ message: "That's more than your $4,013.00 of ETH on Ethereum." });
+    });
+
+    test("a coin the wallet holds none of shows zero, not its price, and a wallet not read yet shows the price", () => {
+        const coin = (ctx: TradeCtx, symbol: string) => {
+            const slot = run("buy", [], ctx).view.slots.token;
+            return slot.kind === "choice" ? slot.choices.find((c) => c.value === symbol) : undefined;
+        };
+        const wallet = withWallet({ ETH: { ethereum: 1.5 } });
+        expect(coin(wallet, "ETH")).toMatchObject({ detail: "1.5 ETH", subdetail: "$4,815.60" });
+        expect(coin(wallet, "SOL")).toMatchObject({ detail: "0 SOL", subdetail: "$0.00" });
+        expect(coin(withWallet(null), "SOL")).toMatchObject({ detail: "$147.20" });
+        expect(coin(withWallet(null), "SOL")?.subdetail).toBeUndefined();
+        expect(coin(withWallet({}, ["solana"]), "SOL")).toMatchObject({ detail: "$147.20" });
     });
 
     test("a real wallet's rows replace plain holdings and sum across networks", () => {
@@ -774,9 +787,9 @@ test.describe("before the swap catalog prices the coins", () => {
 
     test("prices show as a dash, never as $0", () => {
         const swap = run("swap", [], unpriced).view;
-        // Held: the units, with no dollar value yet; not held: no price yet.
+        // Held: the units, with no dollar value yet; not held: zero units, with no dollar value yet.
         expect(choice(swap, "fromToken", "ETH")).toMatchObject({ detail: "1.25 ETH", subdetail: "—" });
-        expect(choice(swap, "toToken", "AVAX")).toMatchObject({ detail: "—" });
+        expect(choice(swap, "toToken", "AVAX")).toMatchObject({ detail: "0 AVAX", subdetail: "—" });
         expect(choice(swap, "toToken", "USDC")).toMatchObject({ detail: "2,400 USDC", subdetail: "$2,400.00" });
         expect(choice(run("long", [], unpriced).view, "asset", "BTC")).toMatchObject({ detail: "—, up to 50x" });
         const sell = run("sell", [], unpriced).view;

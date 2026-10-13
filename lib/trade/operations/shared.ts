@@ -113,7 +113,7 @@ export function spendCap(ctx: TradeCtx): Bound | undefined {
 /** "$12.40", or "—" while the price isn't known */
 const usdOrDash = (value: number | null) => (value === null ? "—" : formatUsd(value));
 
-/** A coin as a picker row with what you hold across networks once connected, else its price */
+/** A coin as a picker row with what you hold across networks once read, none included, else its price */
 export function coinChoice(ctx: TradeCtx, coin: Token, options: { disabled?: string } = {}): Choice {
     const units = heldTotal(ctx, coin.symbol);
     const price = priceOf(ctx, coin.symbol);
@@ -121,7 +121,7 @@ export function coinChoice(ctx: TradeCtx, coin: Token, options: { disabled?: str
         value: coin.symbol,
         label: coin.symbol,
         description: coin.name,
-        ...(units
+        ...(units !== null
             ? { detail: formatUnits(units, coin.symbol), subdetail: usdOrDash(price === null ? null : units * price) }
             : { detail: usdOrDash(price) }),
         icon: { set: "coin", id: coin.symbol },
@@ -185,7 +185,7 @@ export function networkChoices(
             value: entry.network,
             label: networkName(entry.network),
             description: entry.label,
-            ...(units
+            ...(units !== null
                 ? { detail: formatUnits(units, symbol), subdetail: usdOrDash(price === null ? null : units * price) }
                 : {}),
             icon: { set: "coin", id: symbol, badge: { set: "network", id: entry.network } },
