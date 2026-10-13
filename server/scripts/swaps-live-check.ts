@@ -11,6 +11,7 @@ import { base } from "viem/chains";
 import { checkQuote } from "../src/swaps/check.ts";
 import { COINS, NETWORKS, type CoinEntry, type NetworkId } from "../src/swaps/coins.ts";
 import { createLifi, LifiError, type LifiQuote } from "../src/swaps/lifi.ts";
+import { spendVerdict } from "./swaps-live-verdict.ts";
 
 const QUOTE_USD = 10;
 const SPEND_USD = 2;
@@ -200,7 +201,9 @@ async function spend(): Promise<number> {
             console.log(
                 `DONE ${status.substatus ?? ""} received ${status.receiving?.amount} ${status.receiving?.tokenSymbol}`,
             );
-            return 0;
+            const verdict = spendVerdict(status, to.address);
+            if (!verdict.done) console.error(`NOT DONE ${verdict.reason}`);
+            return verdict.done ? 0 : 1;
         }
         if (status.status === "FAILED" || status.status === "INVALID") {
             console.error(`FAILED ${status.status} ${status.substatus ?? ""}`);
