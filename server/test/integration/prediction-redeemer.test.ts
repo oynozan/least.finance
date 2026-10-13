@@ -15,6 +15,7 @@ let clock = 1_000_000;
 let h: Awaited<ReturnType<typeof predictionHarness>>;
 let redeemer: PredictionRedeemer;
 let reconciler: PredictionReconciler;
+let asked = 0;
 const logs: { level: number; msg: string; tokenId?: string; ledgerE6?: number; poolE6?: number }[] = [];
 const WARN = 40;
 const ERROR = 50;
@@ -236,7 +237,9 @@ test("reconciliation skips tokens with an in-flight order or an unconfirmed rede
     ]);
     await reconciler.tick();
     expect(mismatches(busy)).toHaveLength(1);
-    expect(mismatches(won)).toHaveLength(1);
+    // Tokens left behind a confirmed redemption are redeemed again instead of reported
+    expect(mismatches(won)).toHaveLength(0);
+    expect(await redemption(conditionId)).toMatchObject({ state: "pending", round: 2 });
 });
 
 test("the dust a sell leaves with the pool does not trip reconciliation, however many positions leave it", async () => {
@@ -482,4 +485,133 @@ test("a timed-out redeem is a failure, not a lost row", async () => {
         attempts: 1,
         lastError: "redeem timed out",
     });
+});
+
+test("a re-queued redemption submits a fresh transaction", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queue(conditionId);
+    await redeemer.tick();
+    const first = await redemption(conditionId);
+    h.trader.confirm(first.transactionId!);
+    await redeemer.tick();
+    const done = await redemption(conditionId);
+    expect(done.state).toBe("confirmed");
+    expect(done.confirmedAt?.getTime()).toBe(clock);
+
+    await h.database.collections.predictionRedemptions.updateOne(
+        { conditionId },
+        { $set: { state: "pending", transactionId: null, attempts: 0, nextAt: new Date(clock) }, $inc: { round: 1 } },
+    );
+    await redeemer.tick();
+    const second = await redemption(conditionId);
+    expect(second.state).toBe("submitted");
+    expect(second.transactionId).not.toBe(first.transactionId);
+    expect(redeemsOf(conditionId)).toHaveLength(2);
+});
+
+test("with no trader, an unconfirmed redemption asks for one, and runs once it is there", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queue(conditionId);
+    let trader: typeof h.trader | null = null;
+    const before = asked;
+    const lazy = new PredictionRedeemer({
+        collections: h.database.collections,
+        service: h.service,
+        trader: () => trader,
+        needTrader: () => {
+            asked++;
+            trader = h.trader;
+        },
+        logger: pino({ level: "silent" }),
+        intervalMs: 0,
+        now: () => clock,
+    });
+    await lazy.tick();
+    expect(asked).toBe(before + 1);
+    expect((await redemption(conditionId)).state).toBe("pending");
+    await lazy.tick();
+    expect(asked).toBe(before + 1);
+    expect((await redemption(conditionId)).state).toBe("submitted");
+});
+
+test("with no trader and nothing to redeem, none is asked for", async () => {
+    await h.database.collections.predictionRedemptions.updateMany({}, { $set: { state: "confirmed" } });
+    const before = asked;
+    const idle = new PredictionRedeemer({
+        collections: h.database.collections,
+        service: h.service,
+        trader: () => null,
+        needTrader: () => void asked++,
+        logger: pino({ level: "silent" }),
+        intervalMs: 0,
+        now: () => clock,
+    });
+    await idle.tick();
+    expect(asked).toBe(before);
+});
+
+async function confirmedRow(conditionId: string, round = 1) {
+    await h.database.collections.predictionRedemptions.updateMany({}, { $set: { state: "confirmed" } });
+    const now = new Date(clock);
+    await h.database.collections.predictionRedemptions.insertOne({
+        _id: new ObjectId(),
+        conditionId,
+        marketId: "mkt-1",
+        state: "confirmed",
+        transactionId: "tx-old",
+        attempts: 0,
+        nextAt: now,
+        lastError: null,
+        confirmedAt: new Date(clock - 1000),
+        round,
+        createdAt: now,
+        updatedAt: now,
+    });
+}
+
+test("holdings left behind a confirmed redemption re-queue it", async () => {
+    const token = `tok-${unique()}`;
+    const conditionId = `0xc-${token}`;
+    await position(token, 4_000_000n, "won");
+    await confirmedRow(conditionId);
+    h.trader.setHoldings([{ tokenId: token, sharesE6: 4_000_000n }]);
+    await reconciler.tick();
+    expect(await redemption(conditionId)).toMatchObject({ state: "pending", round: 2, transactionId: null });
+    expect(mismatches(token)).toHaveLength(0);
+});
+
+test("the re-queue is capped at 5 rounds, then logs an error", async () => {
+    const token = `tok-${unique()}`;
+    const conditionId = `0xc-${token}`;
+    await position(token, 4_000_000n, "won");
+    await confirmedRow(conditionId, 5);
+    h.trader.setHoldings([{ tokenId: token, sharesE6: 4_000_000n }]);
+    const mark = logs.length;
+    await reconciler.tick();
+    expect(await redemption(conditionId)).toMatchObject({ state: "confirmed", round: 5 });
+    expect(logs.slice(mark).filter((l) => l.msg === "Redemption leaves winning tokens behind")).toHaveLength(1);
+});
+
+test("holdings under the 0.1 share tolerance behind a confirmed redemption are ignored", async () => {
+    const token = `tok-${unique()}`;
+    const conditionId = `0xc-${token}`;
+    await position(token, 4_000_000n, "won");
+    await confirmedRow(conditionId);
+    h.trader.setHoldings([{ tokenId: token, sharesE6: 100_000n }]);
+    await reconciler.tick();
+    expect(await redemption(conditionId)).toMatchObject({ state: "confirmed", round: 1 });
+});
+
+test("with no trader, open positions make the reconciler ask for one", async () => {
+    await position(`tok-${unique()}`, 1_000_000n, "open");
+    const before = asked;
+    const idle = new PredictionReconciler({
+        collections: h.database.collections,
+        trader: () => null,
+        needTrader: () => void asked++,
+        logger: pino({ level: "silent" }),
+        intervalMs: 0,
+    });
+    await idle.tick();
+    expect(asked).toBe(before + 1);
 });

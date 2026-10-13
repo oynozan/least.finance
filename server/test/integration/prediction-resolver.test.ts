@@ -10,6 +10,7 @@ import { EVENT, predictionHarness, wei } from "../support/prediction-harness.ts"
 let h: Awaited<ReturnType<typeof predictionHarness>>;
 let fake: FakePolymarket;
 let resolver: PredictionResolver;
+let traderAsked = 0;
 beforeAll(async () => {
     h = await predictionHarness();
     fake = await startFakePolymarket();
@@ -20,6 +21,7 @@ beforeAll(async () => {
         bus: h.bus,
         logger: h.logger,
         resolveMs: 0,
+        needTrader: () => void traderAsked++,
     });
 });
 afterAll(async () => {
@@ -259,4 +261,90 @@ test("a resolved market beyond the first 100 open ones is still reached", async 
     expect((await positionOf(position._id))!.state).toBe("won");
     expect(await payoutRows(account)).toHaveLength(1);
     await h.database.collections.positions.deleteMany({ marketId: { $in: fillers } });
+});
+
+const redemptionOf = (m: { id: string }) =>
+    h.database.collections.predictionRedemptions.findOne({ conditionId: `0xcondition-${m.id}` }).then((row) => row!);
+
+/** Resolves the market, runs the resolver, and marks its redemption confirmed a minute ago. */
+async function confirmed(m: ReturnType<typeof market>, round = 1) {
+    await holder(m);
+    fake.resolve(m.id, ["1", "0"]);
+    await resolver.tick();
+    const at = new Date(Date.now() - 60_000);
+    await h.database.collections.predictionRedemptions.updateOne(
+        { conditionId: `0xcondition-${m.id}` },
+        { $set: { state: "confirmed", confirmedAt: at, round, transactionId: "tx-old", attempts: 3 } },
+    );
+    return at;
+}
+
+test("shares that appear after a confirmed redemption re-queue it", async () => {
+    const m = market();
+    const at = await confirmed(m);
+    const { account, position } = await holder(m);
+    await resolver.tick();
+
+    expect((await positionOf(position._id))!.state).toBe("won");
+    expect(await payoutRows(account)).toHaveLength(1);
+    const row = await redemptionOf(m);
+    expect(row).toMatchObject({ state: "pending", round: 2, transactionId: null, attempts: 0 });
+    expect(row.confirmedAt!.getTime()).toBe(at.getTime());
+    expect(row.nextAt.getTime()).toBeGreaterThan(at.getTime());
+});
+
+test("a confirmed redemption with nothing newer stays confirmed", async () => {
+    const m = market();
+    await confirmed(m);
+    await resolver.tick();
+    expect(await redemptionOf(m)).toMatchObject({ state: "confirmed", round: 1 });
+});
+
+test("a losing late position does not re-queue", async () => {
+    const m = market();
+    await confirmed(m);
+    const { position } = await holder(m, { token: "no" });
+    await resolver.tick();
+    expect((await positionOf(position._id))!.state).toBe("lost");
+    expect(await redemptionOf(m)).toMatchObject({ state: "confirmed", round: 1 });
+});
+
+test("a re-queue happens once per later buy, even from parallel passes", async () => {
+    const m = market();
+    await confirmed(m);
+    await holder(m);
+    await Promise.all([resolver.tick(), resolver.tick()]);
+    await resolver.tick();
+    expect(await redemptionOf(m)).toMatchObject({ state: "pending", round: 2 });
+});
+
+test("a confirmed row from before confirmedAt existed is judged by its update time", async () => {
+    const m = market();
+    await confirmed(m);
+    const old = new Date(Date.now() - 60_000);
+    await h.database.collections.predictionRedemptions.updateOne(
+        { conditionId: `0xcondition-${m.id}` },
+        { $unset: { confirmedAt: "", round: "" }, $set: { updatedAt: old } },
+    );
+    await holder(m);
+    await resolver.tick();
+    expect(await redemptionOf(m)).toMatchObject({ state: "pending", round: 2 });
+});
+
+test("queueing or re-queueing a redemption asks for the trader", async () => {
+    const m = market();
+    await holder(m);
+    fake.resolve(m.id, ["1", "0"]);
+    const before = traderAsked;
+    await resolver.tick();
+    expect(traderAsked).toBe(before + 1);
+
+    const n = market();
+    await confirmed(n);
+    const mid = traderAsked;
+    await resolver.tick();
+    expect(traderAsked).toBe(mid);
+    await holder(n);
+    await resolver.tick();
+    expect(traderAsked).toBe(mid + 1);
 });

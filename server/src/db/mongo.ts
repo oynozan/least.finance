@@ -193,6 +193,10 @@ export type PredictionRedemptionDoc = {
     previousTransactions?: string[];
     /** When the redemption first needed an operator. */
     stuckAt?: Date | null;
+    /** When the redemption last confirmed; rows from before it was recorded fall back to updatedAt. */
+    confirmedAt?: Date | null;
+    /** 1 for the first redemption, plus one for each re-queue after later shares; rows from before it was recorded count as 1. */
+    round?: number;
     createdAt: Date;
     updatedAt: Date;
 };

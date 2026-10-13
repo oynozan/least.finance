@@ -17,6 +17,8 @@ type Deps = {
     bus: Bus;
     logger: Logger;
     resolveMs: number;
+    /** Asks for the pool's trader to be connected when a redemption needs it. */
+    needTrader?: () => void;
     /** The clock, for tests. */
     now?: () => number;
 };
@@ -105,8 +107,15 @@ export class PredictionResolver {
 
         // Queued before paying, so a crash between the two can't leave tokens nobody redeems
         const conditionId = market.conditionId || open.find((p) => p.conditionId)?.conditionId;
-        if (conditionId) await this.#queueRedemption(conditionId, marketId);
-        else this.#deps.logger.error({ market: marketId }, "A resolved market has no condition to redeem");
+        if (conditionId) {
+            // Only winning shares need redeeming again
+            const winning = open.filter((p) => (payouts[market.clobTokenIds.indexOf(p.tokenId)] ?? 0n) > 0n);
+            const latestBuyAt = winning.reduce<Date | null>(
+                (latest, p) => (latest && latest > p.updatedAt ? latest : p.updatedAt),
+                null,
+            );
+            await this.#queueRedemption(conditionId, marketId, latestBuyAt);
+        } else this.#deps.logger.error({ market: marketId }, "A resolved market has no condition to redeem");
 
         for (const position of open) {
             const index = market.clobTokenIds.indexOf(position.tokenId);
@@ -126,9 +135,33 @@ export class PredictionResolver {
         }
     }
 
-    async #queueRedemption(conditionId: string, marketId: string) {
+    /** Queues the condition's redemption, and queues a confirmed one again when winning shares were bought after it confirmed. */
+    async #queueRedemption(conditionId: string, marketId: string, latestBuyAt: Date | null) {
         const now = new Date(this.#now());
-        await this.#deps.collections.predictionRedemptions.updateOne(
+        const { predictionRedemptions } = this.#deps.collections;
+        const requeued = latestBuyAt
+            ? await predictionRedemptions.updateOne(
+                  {
+                      conditionId,
+                      state: "confirmed",
+                      $expr: { $lt: [{ $ifNull: ["$confirmedAt", "$updatedAt"] }, latestBuyAt] },
+                  },
+                  [
+                      {
+                          $set: {
+                              state: "pending",
+                              transactionId: null,
+                              attempts: 0,
+                              nextAt: now,
+                              lastError: "re-queued: shares bought after the last redemption",
+                              updatedAt: now,
+                              round: { $add: [{ $ifNull: ["$round", 1] }, 1] },
+                          },
+                      },
+                  ],
+              )
+            : null;
+        const inserted = await predictionRedemptions.updateOne(
             { conditionId },
             {
                 $setOnInsert: {
@@ -139,12 +172,15 @@ export class PredictionResolver {
                     attempts: 0,
                     nextAt: now,
                     lastError: null,
+                    confirmedAt: null,
+                    round: 1,
                     createdAt: now,
                 },
                 $set: { updatedAt: now },
             },
             { upsert: true },
         );
+        if (inserted.upsertedCount > 0 || requeued?.modifiedCount) this.#deps.needTrader?.();
     }
 
     /** Moves one open position to won or lost and pays it, in one transaction; a position that moved or grew meanwhile is left for the next pass. */

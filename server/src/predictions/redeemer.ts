@@ -22,6 +22,8 @@ type Deps = {
     trader: () => PoolTrader | null;
     logger: Logger;
     intervalMs: number;
+    /** Asks for the pool's trader to be connected when a redemption is waiting for it. */
+    needTrader?: () => void;
     /** The clock, for tests. */
     now?: () => number;
 };
@@ -72,8 +74,13 @@ export class PredictionRedeemer {
 
     async #tick(): Promise<void> {
         const trader = this.#deps.trader();
-        if (!trader) return;
         const { predictionRedemptions } = this.#deps.collections;
+        if (!trader) {
+            if (await predictionRedemptions.countDocuments({ state: { $ne: "confirmed" } }, { limit: 1 })) {
+                this.#deps.needTrader?.();
+            }
+            return;
+        }
         const submitted = await predictionRedemptions.find({ state: "submitted" }).toArray();
         for (const row of submitted) {
             await this.#check(trader, row).catch((error: unknown) =>
@@ -164,6 +171,7 @@ export class PredictionRedeemer {
                     state: "confirmed",
                     lastError: reason && `confirmed by holdings: ${reason}`,
                     stuckAt: null,
+                    confirmedAt: new Date(this.#now()),
                     updatedAt: new Date(this.#now()),
                 },
             },

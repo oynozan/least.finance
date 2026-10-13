@@ -32,7 +32,7 @@ import { PredictionReconciler } from "./predictions/reconciler.ts";
 import { PredictionRedeemer } from "./predictions/redeemer.ts";
 import { PredictionResolver } from "./predictions/resolver.ts";
 import { PredictionTracker } from "./predictions/tracker.ts";
-import { traderNeeded, withTimeouts, type PoolTrader } from "./predictions/trader.ts";
+import { inFlight, traderNeeded, withTimeouts, type PoolTrader } from "./predictions/trader.ts";
 import { createPolymarketData } from "./markets/polymarket-data.ts";
 import { createDefiLlama } from "./prices/defillama.ts";
 import { PriceHistory } from "./prices/history.ts";
@@ -294,6 +294,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             bus,
             logger: predictionLogger,
             resolveMs: config.PREDICTIONS_RESOLVE_MS,
+            needTrader: () => ensureTrader(),
         });
         const predictionRedeemer = new PredictionRedeemer({
             collections,
@@ -301,30 +302,35 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             trader: () => trader,
             logger: predictionLogger,
             intervalMs: REDEEM_MS,
+            needTrader: () => ensureTrader(),
         });
         const predictionReconciler = new PredictionReconciler({
             collections,
             trader: () => trader,
             logger: predictionLogger,
             intervalMs: RECONCILE_MS,
+            needTrader: () => ensureTrader(),
         });
         // Orders a restart left placing never reached Polymarket; refund them before anyone can order
         await service.recover();
         let connecting: NodeJS.Timeout | null = null;
         let closed = false;
-        const connectTrader = () => {
-            createPolymarketTrader(config, predictionLogger).then(
-                (created) => {
-                    trader = withTimeouts(created, TRADER_CALL_MS);
-                    void service.refreshFloat().catch((error: unknown) => {
-                        predictionLogger.warn({ err: error }, "Couldn't read the pool's float");
-                    });
-                },
-                (error: unknown) => {
-                    predictionLogger.error({ err: error }, "Couldn't connect to Polymarket, retrying in a minute");
-                    if (!closed) connecting = setTimeout(connectTrader, TRADER_RETRY_MS);
-                },
-            );
+        const connectTrader = inFlight(async () => {
+            connecting = null;
+            try {
+                trader = withTimeouts(await createPolymarketTrader(config, predictionLogger), TRADER_CALL_MS);
+            } catch (error) {
+                predictionLogger.error({ err: error }, "Couldn't connect to Polymarket, retrying in a minute");
+                if (!closed) connecting = setTimeout(connectTrader, TRADER_RETRY_MS);
+                return;
+            }
+            void service.refreshFloat().catch((error: unknown) => {
+                predictionLogger.warn({ err: error }, "Couldn't read the pool's float");
+            });
+        });
+        // Connects the trader when a redemption or position needs it, once, and not while a retry is waiting
+        const ensureTrader = () => {
+            if (!trader && !connecting && !closed) connectTrader();
         };
         const services: Services = {
             config,
@@ -370,7 +376,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             collections.predictionOrders.countDocuments({ state: "posted" }),
             collections.predictionRedemptions.countDocuments({ state: { $ne: "confirmed" } }),
         ]);
-        if (traderNeeded(config, posted + redeeming) && !trader) connectTrader();
+        if (traderNeeded(config, posted + redeeming)) ensureTrader();
         // A bad secret is logged loudly, but the server keeps serving: wallets already connected carry on.
         void identity.checkApi();
 

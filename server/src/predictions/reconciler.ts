@@ -12,7 +12,14 @@ type Deps = {
     trader: () => PoolTrader | null;
     logger: Logger;
     intervalMs: number;
+    /** Asks for the pool's trader to be connected when positions are waiting on it. */
+    needTrader?: () => void;
+    /** The clock, for tests. */
+    now?: () => number;
 };
+
+/** A condition's redemption is queued again at most this many rounds when the pool still holds its tokens. */
+const MAX_ROUNDS = 5;
 
 /** A sell is signed to 2 decimals, so a closed position leaves what is under a step with the pool. */
 const SHARE_STEP_E6 = 10_000n;
@@ -54,8 +61,13 @@ export class PredictionReconciler {
 
     async tick(): Promise<void> {
         const trader = this.#deps.trader();
-        if (!trader) return;
         const { positions, predictionOrders, predictionRedemptions } = this.#deps.collections;
+        if (!trader) {
+            if (await positions.countDocuments({ state: { $in: ["open", "closing"] } }, { limit: 1 })) {
+                this.#deps.needTrader?.();
+            }
+            return;
+        }
         const [holdings, owed, sold, unsettled, unredeemed, redeemed] = await Promise.all([
             trader.holdings(),
             positions.find({ state: { $in: ["open", "closing"] } }).toArray(),
@@ -92,9 +104,56 @@ export class PredictionReconciler {
             const poolE6 = pool.get(tokenId) ?? 0n;
             const gap = ledgerE6 > poolE6 ? ledgerE6 - poolE6 : poolE6 - ledgerE6;
             if (gap <= TOLERANCE_E6) continue;
+            if (poolE6 > ledgerE6 && (await this.#requeueLeftover(tokenId, redeemedConditions))) continue;
             this.#deps.logger.error({ tokenId, ledgerE6, poolE6 }, "The pool's holdings don't match the positions");
         }
         const stuck = unredeemed.filter((row) => row.state === "stuck").length;
         if (stuck > 0) this.#deps.logger.error({ count: stuck }, "Redemptions are stuck");
+    }
+
+    /** Queues the confirmed redemption of a token's condition again because the pool still holds the token; false when no confirmed redemption explains it. */
+    async #requeueLeftover(tokenId: string, confirmed: Set<string>): Promise<boolean> {
+        const { positions, predictionOrders, predictionRedemptions } = this.#deps.collections;
+        const owner = (await positions.findOne({ tokenId })) ?? (await predictionOrders.findOne({ tokenId }));
+        if (!owner?.conditionId || !confirmed.has(owner.conditionId)) return false;
+        const now = new Date((this.#deps.now ?? Date.now)());
+        const queued = await predictionRedemptions.updateOne(
+            {
+                conditionId: owner.conditionId,
+                state: "confirmed",
+                $expr: {
+                    $and: [
+                        { $lt: [{ $ifNull: ["$round", 1] }, MAX_ROUNDS] },
+                        { $lt: [{ $ifNull: ["$confirmedAt", "$updatedAt"] }, now] },
+                    ],
+                },
+            },
+            [
+                {
+                    $set: {
+                        state: "pending",
+                        transactionId: null,
+                        attempts: 0,
+                        nextAt: now,
+                        lastError: "re-queued: the pool still holds the condition's tokens",
+                        updatedAt: now,
+                        round: { $add: [{ $ifNull: ["$round", 1] }, 1] },
+                    },
+                },
+            ],
+        );
+        if (queued.modifiedCount > 0) {
+            this.#deps.needTrader?.();
+            return true;
+        }
+        const row = await predictionRedemptions.findOne({ conditionId: owner.conditionId });
+        if (row?.state === "confirmed" && (row.round ?? 1) >= MAX_ROUNDS) {
+            this.#deps.logger.error(
+                { tokenId, condition: owner.conditionId },
+                "Redemption leaves winning tokens behind",
+            );
+            return true;
+        }
+        return false;
     }
 }

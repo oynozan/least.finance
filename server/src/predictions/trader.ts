@@ -71,3 +71,14 @@ export function withTimeouts(trader: PoolTrader, ms: number): PoolTrader {
         holdings: () => bounded(trader.holdings(), ms, "holdings"),
     };
 }
+
+/** Starts `run` unless a run is still in flight; reports whether it started one. */
+export function inFlight(run: () => Promise<void>): () => boolean {
+    let busy = false;
+    return () => {
+        if (busy) return false;
+        busy = true;
+        void run().finally(() => (busy = false));
+        return true;
+    };
+}
