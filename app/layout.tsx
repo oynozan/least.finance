@@ -20,7 +20,7 @@ const description = "Trade with one sentence: swap, buy, sell, go long or short,
 
 export const metadata: Metadata = {
     metadataBase: new URL("https://least.finance"),
-    title: { default: "Least Finance", template: "%s · Least Finance" },
+    title: { default: "Least Finance", template: "%s – Least Finance" },
     applicationName: "Least Finance",
     description,
     icons: {

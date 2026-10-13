@@ -78,10 +78,10 @@ export function ActivityCard({ activity }: { activity: readonly Activity[] }) {
                                         </span>
                                         <span className="truncate text-[14px] leading-snug text-muted">
                                             <span className="sm:hidden">
-                                                {a.amountUSD === null ? "—" : formatUsd(a.amountUSD)} ·{" "}
+                                                {a.amountUSD === null ? "—" : formatUsd(a.amountUSD)},{" "}
                                             </span>
                                             {a.detail}
-                                            <span className="md:hidden"> · {when.format(a.at)}</span>
+                                            <span className="md:hidden">, {when.format(a.at)}</span>
                                         </span>
                                     </div>
                                 </div>

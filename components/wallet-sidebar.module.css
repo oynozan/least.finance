@@ -660,9 +660,9 @@
     color: var(--muted);
 }
 
-/* A withdrawal's recipient stays whole; the status beside it shrinks and wraps. */
+/* A withdrawal's recipient stays whole, and its status keeps to the right edge; the status shrinks and wraps. */
 .withdrawalAmount {
-    flex: 0 0 auto;
+    flex: 1 0 auto;
 }
 
 .depositPending {

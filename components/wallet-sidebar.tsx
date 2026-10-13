@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import {
     AnimatePresence,
@@ -544,7 +544,7 @@ function DepositEntryRow({ row }: { row: DepositEntry }) {
                 +{formatUsd(toUsdc(row.amount))}
                 {row.origin && (
                     <span className={styles.depositOrigin}>
-                        {" · "}
+                        {" from "}
                         {row.origin.amount} {coinLabel(row.origin.coin)}
                     </span>
                 )}
@@ -555,7 +555,7 @@ function DepositEntryRow({ row }: { row: DepositEntry }) {
                     Pending
                 </span>
             ) : (
-                <span className={styles.depositWhen}>{formatWhen(row.at)}</span>
+                <When at={row.at} />
             )}
         </>
     );
@@ -568,7 +568,7 @@ function WithdrawalEntryRow({ row }: { row: WithdrawalEntry }) {
             <span className={`${styles.depositAmount} ${styles.withdrawalAmount}`}>
                 −{formatUsd(toUsdc(row.amount))}
                 <span className={styles.depositOrigin}>
-                    {" · to "}
+                    {" to "}
                     {shortenAddress(row.to)}
                 </span>
             </span>
@@ -577,11 +577,25 @@ function WithdrawalEntryRow({ row }: { row: WithdrawalEntry }) {
                     <span className={styles.pendingDot} aria-hidden="true" />
                     Sending
                 </span>
+            ) : row.state === "sent" ? (
+                <When at={row.at} />
             ) : (
-                <span className={styles.depositWhen}>{row.state === "sent" ? "Sent" : "Didn't go through"}</span>
+                <span className={styles.depositWhen}>Didn&apos;t go through</span>
             )}
         </>
     );
+}
+
+const subscribeMinute = (onChange: () => void) => {
+    const timer = setInterval(onChange, 60_000);
+    return () => clearInterval(timer);
+};
+const thisMinute = () => Math.floor(Date.now() / 60_000) * 60_000;
+
+/** How long ago, kept current while the row is on screen. */
+function When({ at }: { at: Date }) {
+    const minute = useSyncExternalStore(subscribeMinute, thisMinute, thisMinute);
+    return <span className={styles.depositWhen}>{formatWhen(at, minute)}</span>;
 }
 
 function statusTone(notice: DepositNotice | null, problem: string | null) {

@@ -215,7 +215,7 @@ export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: Depo
                             `${row.symbol} on ${row.chainName}` +
                             (row.amount !== null ? `, ${formatAmount(row.amount)} ${row.symbol}` : "") +
                             (row.usd !== null ? `, ${formatUsd(row.usd)}` : "") +
-                            (suffix ? ` · ${suffix}` : "");
+                            (suffix ? `, ${suffix}` : "");
                         return (
                             <motion.li key={key} variants={rowVariants}>
                                 <button
@@ -242,7 +242,7 @@ export function DepositCoins({ rows, wallets, onPick, onConnect, onClose }: Depo
                                         {row.symbol}
                                         <span className={styles.coinChain}>
                                             {row.chainName}
-                                            {suffix && ` · ${suffix}`}
+                                            {suffix && `, ${suffix}`}
                                         </span>
                                     </span>
                                     {row.amount !== null && (

@@ -162,7 +162,7 @@ test("a real swap is listed on PnL without changing the balance", async ({ page 
     await expect(balance(page)).toContainText("No balance yet");
     await expect(rows(page)).toHaveCount(1);
     await expect(rows(page).first()).toContainText("Swap ETH to USDC");
-    await expect(rows(page).first()).toContainText("Ethereum to Ethereum · On its way");
+    await expect(rows(page).first()).toContainText("Ethereum to Ethereum, on its way");
     await expect(rows(page).first()).toContainText("Pending");
     await shoot(page, "4-swap");
     await activity(page).getByRole("radio", { name: "Deposits" }).click();

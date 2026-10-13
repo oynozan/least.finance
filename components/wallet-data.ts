@@ -33,9 +33,9 @@ export type Position = LivePredictionPosition;
 /** The question a prediction bets on. */
 export const positionTitle = (p: Position) => p.question;
 
-/** "YES · 26.32 shares", or just the outcome while a buy waits for its fill. */
+/** "YES, 26.32 shares", or just the outcome while a buy waits for its fill. */
 export const positionDetail = (p: Position) =>
-    p.shares ? `${p.outcome} · ${formatUnits(Number(p.shares), "shares")}` : p.outcome;
+    p.shares ? `${p.outcome}, ${formatUnits(Number(p.shares), "shares")}` : p.outcome;
 
 /** The shares a sale takes: floored to 0.01, as the exchange quantizes, without going through a float. */
 export function sellableShares(shares: string): number {
@@ -196,9 +196,13 @@ export const trendOf = (pnl: number): Trend => (pnl > 0 ? "gain" : pnl < 0 ? "lo
 const dateFormat = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
 const relative = new Intl.RelativeTimeFormat("en-US", { numeric: "auto" });
 
-/** "today", "2 days ago", then a plain date past a week. */
-export function formatWhen(date: Date) {
-    const days = Math.round((date.getTime() - Date.now()) / 86_400_000);
+/** "now", "5m ago" and "3h ago" within a day, then "yesterday", "2 days ago", then a plain date past a week. */
+export function formatWhen(date: Date, now = Date.now()) {
+    const minutes = Math.floor((now - date.getTime()) / 60_000);
+    if (minutes < 1) return "now";
+    if (minutes < 60) return `${minutes}m ago`;
+    if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h ago`;
+    const days = Math.round((date.getTime() - now) / 86_400_000);
     if (days > -7) return relative.format(days, "day");
     return dateFormat.format(date);
 }

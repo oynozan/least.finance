@@ -87,7 +87,7 @@ export function PositionRow({ position, entranceDelay, market, onSell, ref }: Po
                 </span>
                 <span className={styles.detail}>
                     {positionDetail(position)}
-                    {worth && ` · ${formatPnl(worth.pnl)}`}
+                    {worth && `, ${formatPnl(worth.pnl)}`}
                 </span>
             </span>
             <span className={styles.pnl}>{liveText(position, worth?.value ?? null)}</span>

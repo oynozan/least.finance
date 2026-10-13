@@ -778,7 +778,7 @@ test.describe("before the swap catalog prices the coins", () => {
         expect(choice(swap, "fromToken", "ETH")).toMatchObject({ detail: "1.25 ETH", subdetail: "—" });
         expect(choice(swap, "toToken", "AVAX")).toMatchObject({ detail: "—" });
         expect(choice(swap, "toToken", "USDC")).toMatchObject({ detail: "2,400 USDC", subdetail: "$2,400.00" });
-        expect(choice(run("long", [], unpriced).view, "asset", "BTC")).toMatchObject({ detail: "— · up to 50x" });
+        expect(choice(run("long", [], unpriced).view, "asset", "BTC")).toMatchObject({ detail: "—, up to 50x" });
         const sell = run("sell", [], unpriced).view;
         expect(sell.preview.rows.find((r) => r.id === "pay")?.value).toBe("—");
         expect(JSON.stringify(sell.preview)).not.toMatch(/\$0\.00/);

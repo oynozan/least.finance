@@ -596,7 +596,7 @@ test("depositing adds to the history", async ({ page, isMobile }) => {
     const rows = sidebar(page).getByRole("list", { name: "History" }).getByRole("listitem");
     await expect(rows).toHaveCount(DEPOSITS + 1);
     await expect(rows.first()).toContainText("+$500.00");
-    await expect(rows.first()).toContainText("today", { timeout: 15_000 });
+    await expect(rows.first()).toContainText(/now|\d+m ago/, { timeout: 15_000 });
     await expect(rows.first()).not.toContainText("Pending");
     await expect(balanceButton(page)).toHaveAccessibleName(`Balance ${usd(HISTORY_TOTAL + 500)}, show deposits`);
 });
@@ -617,7 +617,7 @@ test("hovering a position reveals a close button in the PnL's color", async ({ p
         // Each row names the question, then its outcome with its shares and PnL, and what it's worth.
         const label = b.outcome.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         await expect(row).toContainText(
-            new RegExp(`${label} · [\\d.,]+ shares · [+−]?\\$[\\d,]+\\.\\d\\d\\$[\\d,]+\\.\\d\\d`),
+            new RegExp(`${label}, [\\d.,]+ shares, [+−]?\\$[\\d,]+\\.\\d\\d\\$[\\d,]+\\.\\d\\d`),
         );
 
         const close = closeButton(page, b);

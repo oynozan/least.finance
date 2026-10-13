@@ -122,9 +122,10 @@ test("withdrawing drops the balance at once and pays the wallet", async ({ page 
     await showHistory(page);
     const row = history(page)
         .getByRole("listitem")
-        .filter({ hasText: `−$50.00 · to ${short(wallet)}` });
+        .filter({ hasText: `−$50.00 to ${short(wallet)}` });
     await expect(row).toContainText("Sending");
-    await expect(row).toContainText("Sent", { timeout: 15_000 });
+    await expect(row).toContainText(/now|\d+m ago/, { timeout: 15_000 });
+    await expect(row).not.toContainText("Sending");
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $150.00, show deposits");
     await expect.poll(async () => (await arcBalance(wallet)) - before).toBe(ether(50));
 });

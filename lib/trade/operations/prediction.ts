@@ -58,7 +58,7 @@ export const prediction = operation({
                 (marketOf(ctx, v.marketId)?.outcomes ?? []).map((o): Choice => ({
                     value: o.id,
                     label: o.label,
-                    detail: `${formatCents(o.price)} · ${pct(o.chance)}% chance`,
+                    detail: `${formatCents(o.price)}, ${pct(o.chance)}% chance`,
                     tone: o.tone,
                     icon: isYesNo(o)
                         ? { set: "outcome", id: o.label.toLowerCase(), tone: o.tone }
@@ -87,7 +87,7 @@ export const prediction = operation({
                         value: m.id,
                         label: m.question,
                         short: m.short,
-                        detail: lead ? `${pct(lead.chance)}% ${lead.label} · ends ${m.closes}` : `Ends ${m.closes}`,
+                        detail: lead ? `${pct(lead.chance)}% ${lead.label}, ends ${m.closes}` : `Ends ${m.closes}`,
                         icon: m.image ? { set: "image", id: m.image } : { set: "coin", id: m.symbol },
                     };
                 });

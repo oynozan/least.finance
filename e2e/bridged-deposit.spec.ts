@@ -107,7 +107,7 @@ test("a bridged deposit shows each step and lands in the balance", async ({ page
     if (isMobile) await balanceOf(page).tap();
     else await balanceOf(page).hover();
     await expect(sidebarOf(page).getByRole("list", { name: "History" })).toContainText(
-        "+$300.00 · 0.1 ETH on Ethereum",
+        "+$300.00 from 0.1 ETH on Ethereum",
     );
 });
 

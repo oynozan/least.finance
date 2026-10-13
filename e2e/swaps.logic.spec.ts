@@ -247,7 +247,7 @@ test("a swap is an activity with the networks and the state, and no change to th
     expect(row).toMatchObject({
         kind: "swap",
         title: "Swap USDC to SOL",
-        detail: "Base to Solana · On its way",
+        detail: "Base to Solana, on its way",
         symbols: ["USDC", "SOL"],
         amountUSD: 10,
         change: 0,

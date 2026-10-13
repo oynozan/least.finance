@@ -69,7 +69,7 @@ export const perp = operation({
                         value: m.asset,
                         label: m.asset,
                         description: token(ctx, m.asset)?.name,
-                        detail: `${price === null ? "—" : formatUsd(price)} · up to ${m.maxLeverage}x`,
+                        detail: `${price === null ? "—" : formatUsd(price)}, up to ${m.maxLeverage}x`,
                         icon: { set: "coin", id: m.asset },
                     };
                 }),

@@ -79,7 +79,7 @@ export function swapActivity(order: SwapOrderView, amountUSD: number | null = nu
         at: new Date(order.createdAt),
         kind: "swap",
         title: `Swap ${order.from.token} to ${order.to.token}`,
-        detail: `${networkName(order.from.network)} to ${networkName(order.to.network)} · ${SWAP_STATE[order.state]}`,
+        detail: `${networkName(order.from.network)} to ${networkName(order.to.network)}, ${SWAP_STATE[order.state].toLowerCase()}`,
         symbols: [order.from.token, order.to.token],
         amountUSD,
         change: 0,

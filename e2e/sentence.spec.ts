@@ -364,7 +364,7 @@ test("the question picker is wide enough for whole questions", async ({ page, is
     }
     const [first] = (await trendingView()).markets;
     await expect(picker(page).getByRole("option", { name: first.title })).toHaveAccessibleDescription(
-        /^\d+% .+ · ends [A-Z][a-z]{2} \d{1,2}(, \d{4})?$/,
+        /^\d+% .+, ends [A-Z][a-z]{2} \d{1,2}(, \d{4})?$/,
     );
     await shoot(page, "markets");
 });

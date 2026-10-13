@@ -17,6 +17,8 @@ import {
     walletRequests,
 } from "./privy-mock";
 
+/** A row's time a moment after it lands. */
+const JUST_NOW = /now|\d+m ago/;
 const sidebar = (page: Page) => page.getByRole("complementary", { name: "Wallet" });
 const modal = (page: Page) => page.locator("#privy-modal-content");
 const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: /^Balance/ });
@@ -376,7 +378,7 @@ test("a deposit from outside the app shows up without reloading", async ({ page,
     const rows = deposits(page).getByRole("listitem");
     await expect(rows).toHaveCount(1);
     await expect(rows.first()).toContainText("+$75.00");
-    await expect(rows.first()).toContainText("today");
+    await expect(rows.first()).toContainText(JUST_NOW);
 });
 
 test("a deposit from outside adds to one made in the app", async ({ page, isMobile }) => {
@@ -416,7 +418,7 @@ test("a later visit with the same wallet finds the server's balance and history"
         const rows = deposits(visit).getByRole("listitem");
         await expect(rows).toHaveCount(1);
         await expect(rows.first()).toContainText("+$25.00");
-        await expect(rows.first()).toContainText("today");
+        await expect(rows.first()).toContainText(JUST_NOW);
     } finally {
         await later.close();
     }
@@ -443,7 +445,7 @@ test("two devices on the same wallet both see a deposit as it's credited", async
     }
 });
 
-test("a deposit that is still confirming shows as pending, then as today", async ({ page, isMobile }) => {
+test("a deposit that is still confirming shows as pending, then as just now", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
     await start(page);
     await dropNextSend(page);
@@ -454,7 +456,7 @@ test("a deposit that is still confirming shows as pending, then as today", async
     const top = deposits(page).getByRole("listitem").first();
     await expect(top).toContainText("+$15.00");
     await expect(top).toContainText("Pending");
-    await expect(top).not.toContainText("today");
+    await expect(top).not.toContainText(JUST_NOW);
 
     // Taken back when the transaction never shows up.
     await page.mouse.move(700, 700);
@@ -463,7 +465,7 @@ test("a deposit that is still confirming shows as pending, then as today", async
     await expect(deposits(page)).toHaveCount(0);
 });
 
-test("a confirmed deposit's row ends as today, not pending", async ({ page, isMobile }) => {
+test("a confirmed deposit's row ends as just now, not pending", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
     await start(page);
     await submit(page, "15");
@@ -472,7 +474,7 @@ test("a confirmed deposit's row ends as today, not pending", async ({ page, isMo
     await balanceButton(page).hover();
     const top = deposits(page).getByRole("listitem").first();
     await expect(top).toContainText("+$15.00");
-    await expect(top).toContainText("today");
+    await expect(top).toContainText(JUST_NOW);
     await expect(top).not.toContainText("Pending");
 });
 
