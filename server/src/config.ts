@@ -16,6 +16,19 @@ const list = (fallback: readonly string[]) =>
             return items.length > 0 ? items : [...fallback];
         });
 
+/** The public RPCs each chain falls back to when its variable is unset. */
+const DEFAULT_RPC_URLS = {
+    ARC_RPC_URLS,
+    ETHEREUM_RPC_URLS: ["https://ethereum-rpc.publicnode.com"],
+    BNB_RPC_URLS: ["https://bsc-dataseed.bnbchain.org"],
+    ARBITRUM_RPC_URLS: ["https://arb1.arbitrum.io/rpc"],
+    BASE_RPC_URLS: ["https://mainnet.base.org"],
+    OPTIMISM_RPC_URLS: ["https://mainnet.optimism.io"],
+    POLYGON_RPC_URLS: ["https://polygon.drpc.org"],
+    AVALANCHE_RPC_URLS: ["https://api.avax.network/ext/bc/C/rpc"],
+    SOLANA_RPC_URLS: ["https://api.mainnet-beta.solana.com"],
+} as const satisfies Record<string, readonly string[]>;
+
 /** An optional secret: left blank in the .env file, it's the same as unset. */
 const optionalKey = z
     .string()
@@ -55,7 +68,7 @@ const fields = z.object({
         .transform((key) => key?.replaceAll("\\n", "\n") || undefined),
     PRIVY_API_URL: z.url().optional(),
 
-    ARC_RPC_URLS: list(ARC_RPC_URLS),
+    ARC_RPC_URLS: list(DEFAULT_RPC_URLS.ARC_RPC_URLS),
     /** BIP-39 phrase every account's deposit address is derived from. Losing it loses the deposits. */
     DEPOSIT_MNEMONIC: z
         .string()
@@ -78,16 +91,16 @@ const fields = z.object({
     DEPOSIT_RECEIPT_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(30_000),
 
     /** RPCs for the chains deposits are bridged from, tried in order. */
-    ETHEREUM_RPC_URLS: list(["https://ethereum-rpc.publicnode.com"]),
-    BNB_RPC_URLS: list(["https://bsc-dataseed.bnbchain.org"]),
+    ETHEREUM_RPC_URLS: list(DEFAULT_RPC_URLS.ETHEREUM_RPC_URLS),
+    BNB_RPC_URLS: list(DEFAULT_RPC_URLS.BNB_RPC_URLS),
     /** RPCs for the other EVM networks swaps read wallets' holdings from, tried in order. */
-    ARBITRUM_RPC_URLS: list(["https://arb1.arbitrum.io/rpc"]),
-    BASE_RPC_URLS: list(["https://mainnet.base.org"]),
-    OPTIMISM_RPC_URLS: list(["https://mainnet.optimism.io"]),
-    POLYGON_RPC_URLS: list(["https://polygon.drpc.org"]),
-    AVALANCHE_RPC_URLS: list(["https://api.avax.network/ext/bc/C/rpc"]),
+    ARBITRUM_RPC_URLS: list(DEFAULT_RPC_URLS.ARBITRUM_RPC_URLS),
+    BASE_RPC_URLS: list(DEFAULT_RPC_URLS.BASE_RPC_URLS),
+    OPTIMISM_RPC_URLS: list(DEFAULT_RPC_URLS.OPTIMISM_RPC_URLS),
+    POLYGON_RPC_URLS: list(DEFAULT_RPC_URLS.POLYGON_RPC_URLS),
+    AVALANCHE_RPC_URLS: list(DEFAULT_RPC_URLS.AVALANCHE_RPC_URLS),
     /** RPCs for reading Solana wallets' balances, tried in order. */
-    SOLANA_RPC_URLS: list(["https://api.mainnet-beta.solana.com"]),
+    SOLANA_RPC_URLS: list(DEFAULT_RPC_URLS.SOLANA_RPC_URLS),
     RELAY_API_KEY: optionalKey,
     ACROSS_API_KEY: optionalKey,
     ACROSS_INTEGRATOR_ID: optionalKey,
@@ -145,7 +158,35 @@ const TRADING_SECRETS = [
     "POLYMARKET_BUILDER_API_PASSPHRASE",
 ] as const;
 
+const isHttpsPublicOrigin = (origin: string) => {
+    try {
+        const url = new URL(origin);
+        return url.protocol === "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    } catch {
+        return false;
+    }
+};
+
+const hasMongoCredentials = (uri: string) => /^mongodb(\+srv)?:\/\/[^/@\s]+@/.test(uri);
+
 const schema = fields.superRefine((config, context) => {
+    if (config.NODE_ENV === "production") {
+        const bad = config.CORS_ORIGINS.filter((origin) => !isHttpsPublicOrigin(origin));
+        if (bad.length > 0)
+            context.addIssue({
+                code: "custom",
+                path: ["CORS_ORIGINS"],
+                message: `must be public https:// origins in production, not ${bad.join(", ")}`,
+            });
+        if (config.TRUST_PROXY < 1)
+            context.addIssue({ code: "custom", path: ["TRUST_PROXY"], message: "must be 1 or more in production" });
+        if (!hasMongoCredentials(config.MONGODB_URI))
+            context.addIssue({
+                code: "custom",
+                path: ["MONGODB_URI"],
+                message: "must carry credentials (user:password@) in production",
+            });
+    }
     if (config.PREDICTIONS_TRADING !== "on") return;
     for (const name of TRADING_SECRETS) {
         if (!config[name])
@@ -161,4 +202,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (parsed.success) return parsed.data;
     const problems = parsed.error.issues.map((issue) => `  ${issue.path.join(".")}: ${issue.message}`);
     throw new Error(`Invalid environment:\n${problems.join("\n")}`);
+}
+
+/** One line per chain whose RPC list is still only the built-in public defaults. */
+export function publicRpcWarnings(config: Config): string[] {
+    return Object.entries(DEFAULT_RPC_URLS)
+        .filter(([name, defaults]) => {
+            const urls = config[name as keyof typeof DEFAULT_RPC_URLS];
+            return urls.length === defaults.length && urls.every((url, i) => url === defaults[i]);
+        })
+        .map(([name]) => `${name} is only the built-in public RPCs; set it to a dedicated provider`);
 }

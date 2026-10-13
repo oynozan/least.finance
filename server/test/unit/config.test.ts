@@ -1,6 +1,6 @@
 import { parseUnits } from "viem";
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../../src/config.ts";
+import { loadConfig, publicRpcWarnings } from "../../src/config.ts";
 
 const MNEMONIC = "test test test test test test test test test test test junk";
 const base = {
@@ -208,5 +208,78 @@ describe("loadConfig", () => {
 
     it("rejects an out-of-range port", () => {
         expect(() => load({ PORT: "70000" })).toThrow(/PORT/);
+    });
+});
+
+describe("production refusals", () => {
+    const safe = {
+        NODE_ENV: "production",
+        CORS_ORIGINS: "https://least.finance",
+        TRUST_PROXY: "1",
+        MONGODB_URI: "mongodb://app:pw@mongo:27017/?replicaSet=rs0",
+    };
+    const unsafe = {
+        CORS_ORIGINS: "https://least.finance,http://localhost:3000",
+        TRUST_PROXY: "0",
+        MONGODB_URI: "mongodb://mongo:27017",
+    };
+    const message = (extra: Record<string, string>) => {
+        try {
+            load(extra);
+        } catch (error) {
+            return (error as Error).message;
+        }
+        return "";
+    };
+
+    it("accepts safe production settings", () => {
+        expect(load(safe).NODE_ENV).toBe("production");
+    });
+
+    it("names every unsafe setting at once", () => {
+        const text = message({ ...safe, ...unsafe });
+        for (const name of ["CORS_ORIGINS", "TRUST_PROXY", "MONGODB_URI"]) expect(text).toContain(name);
+    });
+
+    it("refuses localhost, 127.0.0.1 and non-https origins", () => {
+        for (const origin of ["http://localhost:3000", "https://127.0.0.1", "http://least.finance", "least.finance"]) {
+            expect(message({ ...safe, CORS_ORIGINS: origin })).toContain("CORS_ORIGINS");
+        }
+    });
+
+    it("refuses a trusted proxy count of 0 and an unset one", () => {
+        expect(message({ ...safe, TRUST_PROXY: "0" })).toContain("TRUST_PROXY");
+        const rest: Record<string, string> = { ...safe };
+        delete rest.TRUST_PROXY;
+        expect(message(rest)).toContain("TRUST_PROXY");
+    });
+
+    it("accepts a Mongo URI with credentials, including srv, and refuses one without", () => {
+        expect(message({ ...safe, MONGODB_URI: "mongodb+srv://u:p@cluster.example.net/db" })).toBe("");
+        expect(message({ ...safe, MONGODB_URI: "mongodb+srv://cluster.example.net/db" })).toContain("MONGODB_URI");
+    });
+
+    it("changes nothing in development or test", () => {
+        for (const NODE_ENV of ["development", "test"]) expect(() => load({ ...unsafe, NODE_ENV })).not.toThrow();
+        expect(() => load(unsafe)).not.toThrow();
+    });
+});
+
+describe("publicRpcWarnings", () => {
+    it("names exactly the chains left on the built-in RPCs", () => {
+        expect(publicRpcWarnings(load())).toHaveLength(9);
+        const warnings = publicRpcWarnings(
+            load({ BASE_RPC_URLS: "https://rpc.example/base", ARC_RPC_URLS: "https://a" }),
+        );
+        expect(warnings).toHaveLength(7);
+        expect(warnings.join("\n")).not.toContain("BASE_RPC_URLS");
+        expect(warnings.join("\n")).not.toContain("ARC_RPC_URLS");
+        expect(warnings.join("\n")).toContain("SOLANA_RPC_URLS");
+    });
+
+    it("is empty when every chain has its own RPC", () => {
+        const names = ["ARC", "ETHEREUM", "BNB", "ARBITRUM", "BASE", "OPTIMISM", "POLYGON", "AVALANCHE", "SOLANA"];
+        const env = Object.fromEntries(names.map((name) => [`${name}_RPC_URLS`, `https://rpc.example/${name}`]));
+        expect(publicRpcWarnings(load(env))).toEqual([]);
     });
 });

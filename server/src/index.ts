@@ -1,9 +1,10 @@
-import { loadConfig } from "./config.ts";
+import { loadConfig, publicRpcWarnings } from "./config.ts";
 import { createLogger } from "./logger.ts";
 import { startServer, type RunningServer } from "./server.ts";
 
 const config = loadConfig();
 const logger = createLogger(config);
+for (const warning of publicRpcWarnings(config)) logger.warn(warning);
 
 let server: RunningServer | undefined;
 let stopping = false;
