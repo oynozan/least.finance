@@ -210,7 +210,19 @@ test.describe("the market history store", () => {
         expect(urls).toEqual(["http://api/markets/1/history?outcomes=a,b", "http://api/markets/1/history?outcomes=c"]);
     });
 
-    test("a 503 keeps the earlier lines and the next want tries again", async () => {
+    test("a failed read isn't asked again until 10 seconds have passed", async () => {
+        const { store, urls, advance } = setup(() => ({ status: 503 }));
+        await store.want("1", ["a"]);
+        await store.want("1", ["a"]);
+        advance(9_999);
+        await store.want("1", ["a"]);
+        expect(urls).toHaveLength(1);
+        advance(1);
+        await store.want("1", ["a"]);
+        expect(urls).toHaveLength(2);
+    });
+
+    test("a 503 keeps the earlier lines and the next want after the pause tries again", async () => {
         let fail = false;
         const { store, urls, advance } = setup((tokens) => (fail ? { status: 503 } : { body: lines(tokens) }));
         await store.want("1", ["a"]);
@@ -219,6 +231,7 @@ test.describe("the market history store", () => {
         fail = true;
         await store.want("1", ["a"]);
         expect(store.getSnapshot()).toBe(before);
+        advance(10_000);
         await store.want("1", ["a"]);
         expect(urls).toHaveLength(3);
     });

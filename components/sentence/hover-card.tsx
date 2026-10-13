@@ -140,7 +140,7 @@ const EDGE = 16;
 const TYPICAL_HEIGHT = 240;
 
 type Side = "above" | "below";
-type Placement = { left: number; top: number; width: number; side: Side; originX: number };
+type Placement = { left: number; top: number; width: number; side: Side; originX: number; maxHeight: number };
 
 function place(anchor: HTMLElement, width: number, height: number): Placement {
     const rect = anchor.getBoundingClientRect();
@@ -168,10 +168,13 @@ function place(anchor: HTMLElement, width: number, height: number): Placement {
             : room[other] >= height || room[other] > room[preferred]
               ? other
               : preferred;
-    const top = side === "above" ? rect.top - GAP - height : rect.bottom + GAP;
+    // A card taller than its side's room is cut short there, never laid over its pill
+    const shown = Math.min(height, Math.max(room[side], 0));
+    const top = side === "above" ? rect.top - GAP - shown : rect.bottom + GAP;
     return {
         left,
-        top: Math.max(Math.min(top, floor - height), ceiling),
+        top,
+        maxHeight: shown,
         width: w,
         side,
         // Grows out of the pill's middle, wherever the card was clamped to
@@ -180,7 +183,13 @@ function place(anchor: HTMLElement, width: number, height: number): Placement {
 }
 
 const samePlacement = (a: Placement | null, b: Placement) =>
-    !!a && a.left === b.left && a.top === b.top && a.width === b.width && a.side === b.side && a.originX === b.originX;
+    !!a &&
+    a.left === b.left &&
+    a.top === b.top &&
+    a.width === b.width &&
+    a.side === b.side &&
+    a.originX === b.originX &&
+    a.maxHeight === b.maxHeight;
 
 function Card({ anchor, width = 300, onPointerEnter, onPointerLeave, children }: HoverCardProps) {
     const isPresent = useIsPresent();
@@ -195,7 +204,7 @@ function Card({ anchor, width = 300, onPointerEnter, onPointerLeave, children }:
         const element = anchor.current;
         if (!element) return;
         const update = () => {
-            const next = place(element, width, card.current?.offsetHeight ?? TYPICAL_HEIGHT);
+            const next = place(element, width, card.current?.scrollHeight ?? TYPICAL_HEIGHT);
             setPlacement((current) => (samePlacement(current, next) ? current : next));
         };
         update();
@@ -222,6 +231,7 @@ function Card({ anchor, width = 300, onPointerEnter, onPointerLeave, children }:
                 left: placement?.left,
                 top: placement?.top,
                 width: placement?.width ?? width,
+                maxHeight: placement?.maxHeight,
                 transformOrigin: `${placement?.originX ?? width / 2}px ${above ? "100%" : "0%"}`,
                 visibility: placement ? undefined : "hidden",
                 // A leaving card never blocks the pill or card that replaces it.

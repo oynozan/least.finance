@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { failNextPolymarket } from "./backend";
 import { API, sampleView, samples } from "./polymarket";
 import { installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 import { picker, trade } from "./swap-flow";
@@ -159,10 +160,8 @@ test("opening the picker hides the card, and Escape closes it", async ({ page, i
 
 test("a history that can't be read shows no card", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
-    // Every read fails, since a pick re-reads whatever is missing
-    await page.route(`${API}/markets/*/history*`, (route) =>
-        route.fulfill({ status: 502, headers: { "access-control-allow-origin": "*" }, body: "{}" }),
-    );
+    // The pick's read-ahead takes the failure, and a failed read isn't retried within seconds
+    await failNextPolymarket("/batch-prices-history");
     await predict(page, samples.named!);
     await questionPill(page).hover();
     await page.waitForTimeout(500);

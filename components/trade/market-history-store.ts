@@ -9,6 +9,8 @@ export type MarketHistorySnapshot = {
 
 /** The server's own cache is fresh for this long, so asking sooner learns nothing. */
 const FRESH_MS = 180_000;
+/** After a failed read, a token isn't asked for again for this long. */
+const RETRY_MS = 10_000;
 
 const isPoint = (value: unknown): value is [number, number] =>
     Array.isArray(value) &&
@@ -43,6 +45,7 @@ export function createMarketHistoryStore(options: { apiUrl: string; fetch?: type
     let snapshot: MarketHistorySnapshot = { lines: new Map() };
     const readAt = new Map<string, number>();
     const reading = new Set<string>();
+    const failedAt = new Map<string, number>();
 
     return {
         subscribe(listener: () => void) {
@@ -50,11 +53,14 @@ export function createMarketHistoryStore(options: { apiUrl: string; fetch?: type
             return () => void listeners.delete(listener);
         },
         getSnapshot: () => snapshot,
-        /** Reads the tokens it has no line for, or a line older than 3 minutes, in one request; tokens already being read aren't asked again. */
+        /** Reads the tokens it has no line for, or a line older than 3 minutes, in one request; tokens already being read, or whose read failed in the last 10 seconds, aren't asked again. */
         async want(eventId: string, tokenIds: readonly string[]): Promise<void> {
             const time = now();
             const tokens = [...new Set(tokenIds)].filter(
-                (token) => !reading.has(token) && !(time - (readAt.get(token) ?? -Infinity) < FRESH_MS),
+                (token) =>
+                    !reading.has(token) &&
+                    !(time - (readAt.get(token) ?? -Infinity) < FRESH_MS) &&
+                    !(time - (failedAt.get(token) ?? -Infinity) < RETRY_MS),
             );
             if (tokens.length === 0) return;
             tokens.forEach((token) => reading.add(token));
@@ -63,7 +69,10 @@ export function createMarketHistoryStore(options: { apiUrl: string; fetch?: type
                     `${options.apiUrl}/markets/${eventId}/history?outcomes=${tokens.join(",")}`,
                 );
                 const read = response.ok ? toLines(await response.json()) : null;
-                if (!read || read.size === 0) return;
+                if (!read || read.size === 0) {
+                    tokens.forEach((token) => failedAt.set(token, time));
+                    return;
+                }
                 const lines = new Map(snapshot.lines);
                 for (const [token, points] of read) {
                     lines.set(token, points);
@@ -72,7 +81,8 @@ export function createMarketHistoryStore(options: { apiUrl: string; fetch?: type
                 snapshot = { lines };
                 listeners.forEach((listener) => listener());
             } catch {
-                // Offline or the server is down; the next want tries again.
+                // Offline or the server is down; a want after the pause tries again.
+                tokens.forEach((token) => failedAt.set(token, time));
             } finally {
                 tokens.forEach((token) => reading.delete(token));
             }

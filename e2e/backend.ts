@@ -103,6 +103,10 @@ export const treasury = () => call<{ address: string; balance: string }>("/treas
 /** Makes the next payout to `to` fail with an out-of-gas error, so the withdrawal fails and refunds. */
 export const failNextPayout = (to: string) => call<object>("/withdrawals/fail-next", { to }).then(() => undefined);
 
+/** Makes the next request our server sends Polymarket at `path` answer 500. */
+export const failNextPolymarket = (path: string) =>
+    call<object>("/polymarket/fail-next", { path }).then(() => undefined);
+
 /** Stops the server's deposit scan, so a deposit is credited only by the report the app sends. */
 export const pauseDepositScan = () => call<object>("/deposits/pause-scan", {}).then(() => undefined);
 
