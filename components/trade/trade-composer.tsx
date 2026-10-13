@@ -18,6 +18,8 @@ type TradeComposerProps = {
     onCoinOpen?: () => void;
     /** What a coin pill shows while hovered, such as its price chart; null for nothing. */
     coinPreview?: (symbol: string) => ReactNode;
+    /** What a prediction's question pill (no outcome) or outcome pill shows while hovered; null for nothing. */
+    marketPreview?: (marketId: string, outcomeId: string | null) => ReactNode;
 };
 
 /** The coin a slot's pill shows: a choice whose value is the coin it pictures (not a market with a coin's icon). */
@@ -52,7 +54,7 @@ function useAnnouncer() {
  * The trade sentence itself. Fully controlled: the view and dispatch come
  * from the shared trade state. The details live in the review sidebar.
  */
-export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview }: TradeComposerProps) {
+export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview, marketPreview }: TradeComposerProps) {
     const headingId = useId();
     const issueId = useId();
     const [typing, setTyping] = useState(false);
@@ -104,6 +106,19 @@ export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview 
         const slot = view.slots[id];
         const companion = slot.kind === "choice" ? slot.then : undefined;
         const coin = coinOf(slot);
+        const chosen = (slotId: string) => {
+            const other = view.slots[slotId];
+            return other?.kind === "choice" && other.value ? other.value : null;
+        };
+        const marketValue = chosen("marketId");
+        const outcomeValue = chosen("outcomeId");
+        const preview = coin
+            ? coinPreview?.(coin)
+            : id === "marketId" && marketValue
+              ? marketPreview?.(marketValue, null)
+              : id === "outcomeId" && marketValue && outcomeValue
+                ? marketPreview?.(marketValue, outcomeValue)
+                : undefined;
         return (
             <span data-slot={id} className="contents">
                 {slot.kind === "choice" ? (
@@ -115,7 +130,7 @@ export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview 
                         onOpen={companion && onCoinOpen}
                         onSearch={search?.onQuery}
                         searchEmpty={search?.empty}
-                        preview={coin ? coinPreview?.(coin) : undefined}
+                        preview={preview}
                     />
                 ) : (
                     <NumberSlot

@@ -300,6 +300,21 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
         polymarket.resolve(String(marketId), prices as string[]);
         return {};
     },
+    /** When an event opened, as an ISO time; null removes it. */
+    "/polymarket/opened": async ({ eventId, at }) => {
+        polymarket.setOpened(String(eventId), at ? new Date(String(at)) : null);
+        return {};
+    },
+    /** The points served for a token, `{ t: seconds, p: price }` each; null restores the generated ones. */
+    "/polymarket/history": async ({ tokenId, points }) => {
+        polymarket.setHistory(String(tokenId), points as { t: number; p: number }[] | null);
+        return {};
+    },
+    /** The next request to this Polymarket path answers 500. */
+    "/polymarket/fail-next": async ({ path }) => {
+        polymarket.failNext(path as Parameters<typeof polymarket.failNext>[0]);
+        return {};
+    },
     /** Serves LI.FI status for a sent swap's last hash; `receiving` names the coin and amount that arrived, the order's own by default. */
     "/lifi/status": async ({ txHash, status, substatus, receiving }) => {
         const hash = String(txHash);

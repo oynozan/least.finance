@@ -242,16 +242,16 @@ test("the card stays while the pointer crosses onto it, and Escape or a click pu
     await expect(card(page)).toHaveCount(0);
 });
 
-test("a market's pill shows no price card, though it has a coin's icon", async ({ page, isMobile }) => {
+test("a market's pill shows its market chart, never a coin price card", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
     await trade(page).getByRole("button", { name: "Swap", exact: true }).click();
     await picker(page)
         .getByRole("option", { name: /^Predict/ })
         .click();
     await expect(picker(page)).toBeHidden();
-    await trade(page).locator('[data-slot="marketId"] button').hover();
-    await page.waitForTimeout(500);
-    await expect(card(page)).toHaveCount(0);
+    await openCard(page, trade(page).locator('[data-slot="marketId"] button'));
+    await expect(card(page).locator('[data-market-card="question"]')).toBeVisible();
+    await expect(page.locator("[data-coin-card]")).toHaveCount(0);
 });
 
 test("a tap on a phone opens the picker, never the card", async ({ page, isMobile }) => {
