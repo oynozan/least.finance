@@ -42,6 +42,8 @@ export class FakeTrader implements PoolTrader {
     #lookups = new Map<string, LookupResult>();
     #transactions = new Map<string, Transaction>();
     #failRedeem = false;
+    #failCheck = false;
+    #hangRedeem = false;
     #holdings = new Map<string, bigint>();
 
     constructor(o: {
@@ -94,6 +96,16 @@ export class FakeTrader implements PoolTrader {
 
     failNextRedeem(): void {
         this.#failRedeem = true;
+    }
+
+    /** Makes every transaction lookup throw (or work again). */
+    failTransactionCheck(on = true): void {
+        this.#failCheck = on;
+    }
+
+    /** Makes the next redeem never answer. */
+    hangNextRedeem(): void {
+        this.#hangRedeem = true;
     }
 
     confirm(transactionId: string): void {
@@ -177,6 +189,10 @@ export class FakeTrader implements PoolTrader {
             this.#failRedeem = false;
             throw new Error("the relayer is busy");
         }
+        if (this.#hangRedeem) {
+            this.#hangRedeem = false;
+            return new Promise(() => undefined);
+        }
         this.redeems.push(conditionId);
         const transactionId = `tx-${this.redeems.length}-${conditionId}`;
         this.#transactions.set(transactionId, "pending");
@@ -184,6 +200,7 @@ export class FakeTrader implements PoolTrader {
     }
 
     async transaction(transactionId: string): Promise<Transaction> {
+        if (this.#failCheck) throw new Error("the relayer is unreachable");
         return this.#transactions.get(transactionId) ?? "pending";
     }
 

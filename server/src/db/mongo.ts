@@ -173,7 +173,7 @@ export type PositionDoc = {
     updatedAt: Date;
 };
 
-export type PredictionRedemptionState = "pending" | "submitted" | "confirmed" | "failed";
+export type PredictionRedemptionState = "pending" | "submitted" | "confirmed" | "failed" | "stuck";
 
 /** The pool's redemption of a resolved condition's tokens; one per condition. */
 export type PredictionRedemptionDoc = {
@@ -185,6 +185,14 @@ export type PredictionRedemptionDoc = {
     attempts: number;
     nextAt: Date;
     lastError: string | null;
+    /** When the current transactionId was recorded. */
+    submittedAt?: Date | null;
+    /** Consecutive failed lookups of the current transaction; any answer resets it. */
+    checkErrors?: number;
+    /** The abandoned transaction ids, the last 10, for the operator. */
+    previousTransactions?: string[];
+    /** When the redemption first needed an operator. */
+    stuckAt?: Date | null;
     createdAt: Date;
     updatedAt: Date;
 };

@@ -94,5 +94,7 @@ export class PredictionReconciler {
             if (gap <= TOLERANCE_E6) continue;
             this.#deps.logger.error({ tokenId, ledgerE6, poolE6 }, "The pool's holdings don't match the positions");
         }
+        const stuck = unredeemed.filter((row) => row.state === "stuck").length;
+        if (stuck > 0) this.#deps.logger.error({ count: stuck }, "Redemptions are stuck");
     }
 }

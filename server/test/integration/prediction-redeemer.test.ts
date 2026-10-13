@@ -5,9 +5,12 @@ import type { PositionDoc, PositionState, PredictionOrderDoc } from "../../src/d
 import { toDecimal } from "../../src/db/money.ts";
 import { PredictionReconciler } from "../../src/predictions/reconciler.ts";
 import { PredictionRedeemer } from "../../src/predictions/redeemer.ts";
+import { withTimeouts } from "../../src/predictions/trader.ts";
 import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
 
 const TEN_MINUTES = 600_000;
+const HOUR = 3_600_000;
+const SIX_HOURS = 21_600_000;
 let clock = 1_000_000;
 let h: Awaited<ReturnType<typeof predictionHarness>>;
 let redeemer: PredictionRedeemer;
@@ -40,6 +43,8 @@ let counter = 0;
 const unique = () => `${Date.now()}${counter++}`;
 
 async function queue(conditionId: string) {
+    // Redemptions left over from other tests would take the fake trader's one-shot failures
+    await h.database.collections.predictionRedemptions.updateMany({}, { $set: { state: "confirmed" } });
     const now = new Date(clock);
     await h.database.collections.predictionRedemptions.insertOne({
         _id: new ObjectId(),
@@ -103,7 +108,7 @@ test("a pending redemption is submitted, then confirmed", async () => {
     expect(h.trader.redeems.filter((c) => c === conditionId)).toHaveLength(1);
 });
 
-test("a failed redemption is retried after 10 minutes, then logged at error from the 6th attempt", async () => {
+test("a failed redemption is retried after 10 minutes, then logged at error from the 6th attempt, which waits an hour", async () => {
     const conditionId = `0xcond-${unique()}`;
     await queue(conditionId);
     const levels = () => logs.filter((l) => /redemption/i.test(l.msg)).map((l) => l.level);
@@ -114,11 +119,12 @@ test("a failed redemption is retried after 10 minutes, then logged at error from
         await redeemer.tick();
         const row = await redemption(conditionId);
         expect(row).toMatchObject({ state: "failed", attempts: attempt });
-        expect(row.nextAt.getTime()).toBe(clock + TEN_MINUTES);
+        const wait = attempt < 6 ? TEN_MINUTES : HOUR;
+        expect(row.nextAt.getTime()).toBe(clock + wait);
 
         // Not before its time
         const calls = h.trader.redeems.length;
-        clock += TEN_MINUTES - 1;
+        clock += wait - 1;
         await redeemer.tick();
         expect(h.trader.redeems).toHaveLength(calls);
         clock += 1;
@@ -264,4 +270,216 @@ test("the dust a sell leaves with the pool does not trip reconciliation, however
     h.trader.setHoldings([{ tokenId: TOKEN, sharesE6: 8_003_456n + 11n * 9_999n + 100_001n }]);
     await reconciler.tick();
     expect(mismatches(TOKEN)).toHaveLength(1);
+});
+
+const MINUTE = 60_000;
+const redeemsOf = (conditionId: string) => h.trader.redeems.filter((c) => c === conditionId);
+
+/** A queued redemption whose condition the pool still holds tokens of. */
+async function queueHeld(conditionId: string) {
+    const tokenId = `tok-${unique()}`;
+    await position(tokenId, 5_000_000n, "won", conditionId);
+    h.trader.setHoldings([{ tokenId, sharesE6: 5_000_000n }]);
+    await queue(conditionId);
+    return tokenId;
+}
+
+/** Fails the redeem `count` times, moving the clock to each retry but the last. */
+async function failRedeems(conditionId: string, count: number) {
+    const waits: number[] = [];
+    for (let i = 0; i < count; i++) {
+        h.trader.failNextRedeem();
+        await redeemer.tick();
+        const row = await redemption(conditionId);
+        waits.push(row.nextAt.getTime() - clock);
+        if (i < count - 1) clock = row.nextAt.getTime();
+    }
+    return waits;
+}
+
+test("a submitted redemption pending for 30 minutes gets a fresh transaction", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queueHeld(conditionId);
+    await redeemer.tick();
+    const first = await redemption(conditionId);
+    expect(first.state).toBe("submitted");
+    expect(first.submittedAt?.getTime()).toBe(clock);
+
+    clock += 29 * MINUTE;
+    await redeemer.tick();
+    expect((await redemption(conditionId)).transactionId).toBe(first.transactionId);
+
+    clock += 2 * MINUTE;
+    await redeemer.tick();
+    const second = await redemption(conditionId);
+    expect(redeemsOf(conditionId)).toHaveLength(2);
+    expect(second).toMatchObject({ state: "submitted", attempts: 1, previousTransactions: [first.transactionId] });
+    expect(second.transactionId).not.toBe(first.transactionId);
+    expect(second.submittedAt?.getTime()).toBe(clock);
+});
+
+test("an old transaction that lands after the abandon changes nothing", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queueHeld(conditionId);
+    await redeemer.tick();
+    const first = await redemption(conditionId);
+    clock += 31 * MINUTE;
+    await redeemer.tick();
+    const second = await redemption(conditionId);
+
+    h.trader.confirm(first.transactionId!);
+    await redeemer.tick();
+    expect((await redemption(conditionId)).state).toBe("submitted");
+
+    h.trader.confirm(second.transactionId!);
+    await redeemer.tick();
+    await redeemer.tick();
+    expect(await redemption(conditionId)).toMatchObject({ state: "confirmed", transactionId: second.transactionId });
+    expect(redeemsOf(conditionId)).toHaveLength(2);
+});
+
+test("holdings showing the tokens gone confirm the redemption instead of resubmitting", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queueHeld(conditionId);
+    await redeemer.tick();
+    clock += 31 * MINUTE;
+    h.trader.setHoldings([]);
+    await redeemer.tick();
+    const row = await redemption(conditionId);
+    expect(row.state).toBe("confirmed");
+    expect(row.lastError).toMatch(/^confirmed by holdings/);
+    expect(redeemsOf(conditionId)).toHaveLength(1);
+});
+
+test("ten failed lookups in a row expire the transaction, and one good answer resets the count", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queueHeld(conditionId);
+    await redeemer.tick();
+    const first = await redemption(conditionId);
+
+    h.trader.failTransactionCheck();
+    for (let i = 0; i < 3; i++) await redeemer.tick();
+    expect((await redemption(conditionId)).checkErrors).toBe(3);
+    h.trader.failTransactionCheck(false);
+    await redeemer.tick();
+    expect((await redemption(conditionId)).checkErrors).toBe(0);
+
+    h.trader.failTransactionCheck();
+    for (let i = 0; i < 9; i++) await redeemer.tick();
+    expect(await redemption(conditionId)).toMatchObject({ state: "submitted", checkErrors: 9 });
+    await redeemer.tick();
+    h.trader.failTransactionCheck(false);
+    const row = await redemption(conditionId);
+    expect(row).toMatchObject({ state: "submitted", attempts: 1, previousTransactions: [first.transactionId] });
+    expect(row.transactionId).not.toBe(first.transactionId);
+    expect(redeemsOf(conditionId)).toHaveLength(2);
+});
+
+test("a redeem that keeps failing backs off 10 min, 1 h, then 6 h", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queue(conditionId);
+    const waits = await failRedeems(conditionId, 10);
+    expect(waits).toEqual([...Array(5).fill(TEN_MINUTES), ...Array(4).fill(HOUR), SIX_HOURS]);
+});
+
+test("the tenth failure moves the row to stuck and logs at error", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queue(conditionId);
+    await failRedeems(conditionId, 9);
+    const ninth = await redemption(conditionId);
+    expect(ninth.state).toBe("failed");
+    clock = ninth.nextAt.getTime();
+    const before = logs.length;
+    h.trader.failNextRedeem();
+    await redeemer.tick();
+    const row = await redemption(conditionId);
+    expect(row).toMatchObject({ state: "stuck", attempts: 10 });
+    expect(row.stuckAt?.getTime()).toBe(clock);
+    const stuck = logs.slice(before).filter((l) => l.msg === "Redemption stuck: needs an operator");
+    expect(stuck).toHaveLength(1);
+    expect(stuck[0]).toMatchObject({ level: ERROR, condition: conditionId, attempts: 10 });
+});
+
+test("a stuck redemption is retried every 6 hours and recovers to confirmed", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queue(conditionId);
+    await failRedeems(conditionId, 10);
+    const stuckAt = (await redemption(conditionId)).stuckAt;
+    expect(stuckAt).toBeTruthy();
+
+    // Not before its time
+    clock += SIX_HOURS - 1;
+    await redeemer.tick();
+    expect(redeemsOf(conditionId)).toHaveLength(0);
+    clock += 1;
+
+    const before = logs.length;
+    h.trader.failNextRedeem();
+    await redeemer.tick();
+    const again = await redemption(conditionId);
+    expect(again).toMatchObject({ state: "stuck", attempts: 11 });
+    expect(again.stuckAt).toEqual(stuckAt);
+    expect(again.nextAt.getTime()).toBe(clock + SIX_HOURS);
+    expect(logs.slice(before).some((l) => l.level === ERROR && l.msg === "Redemption stuck: needs an operator")).toBe(
+        true,
+    );
+
+    clock += SIX_HOURS;
+    await redeemer.tick();
+    const submitted = await redemption(conditionId);
+    expect(submitted.state).toBe("submitted");
+    h.trader.confirm(submitted.transactionId!);
+    await redeemer.tick();
+    expect(await redemption(conditionId)).toMatchObject({ state: "confirmed", stuckAt: null });
+    expect(logs.some((l) => l.msg === "Redemption recovered")).toBe(true);
+});
+
+test("stuck redemptions are reported on each reconciler pass, and the redeemer logs them at most every 10 minutes", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queue(conditionId);
+    await failRedeems(conditionId, 10);
+    h.trader.setHoldings([]);
+
+    const before = logs.length;
+    await reconciler.tick();
+    await reconciler.tick();
+    const reported = (msg: string) => logs.slice(before).filter((l) => l.level === ERROR && l.msg === msg);
+    expect(reported("Redemptions are stuck")).toHaveLength(2);
+
+    const mark = logs.length;
+    await redeemer.tick();
+    await redeemer.tick();
+    expect(logs.slice(mark).filter((l) => l.msg === "Redemptions are stuck")).toHaveLength(0);
+    clock += 11 * MINUTE;
+    await redeemer.tick();
+    await redeemer.tick();
+    expect(logs.slice(mark).filter((l) => l.msg === "Redemptions are stuck")).toHaveLength(1);
+});
+
+test("two redeemer ticks in parallel submit once", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queue(conditionId);
+    await Promise.all([redeemer.tick(), redeemer.tick()]);
+    expect(redeemsOf(conditionId)).toHaveLength(1);
+    expect((await redemption(conditionId)).state).toBe("submitted");
+});
+
+test("a timed-out redeem is a failure, not a lost row", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queue(conditionId);
+    const bounded = new PredictionRedeemer({
+        collections: h.database.collections,
+        service: h.service,
+        trader: () => withTimeouts(h.trader, 20),
+        logger: pino({ level: "silent" }),
+        intervalMs: 0,
+        now: () => clock,
+    });
+    h.trader.hangNextRedeem();
+    await bounded.tick();
+    expect(await redemption(conditionId)).toMatchObject({
+        state: "failed",
+        attempts: 1,
+        lastError: "redeem timed out",
+    });
 });
