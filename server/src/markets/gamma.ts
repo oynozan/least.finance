@@ -46,6 +46,8 @@ export const gammaEvent = z.object({
     image: z.string().nullish(),
     icon: z.string().nullish(),
     endDate: z.string().nullish(),
+    startDate: z.string().nullish(),
+    createdAt: z.string().nullish(),
     volume24hr: decimal.nullish(),
     // A market that fails its schema is skipped, so one odd prop never costs the whole event
     markets: z.array(gammaMarket.nullable().catch(null)).transform((markets) => markets.filter((m) => m !== null)),

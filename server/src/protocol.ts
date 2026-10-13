@@ -291,6 +291,19 @@ export type MarketView = {
 export type TrendingView = { markets: MarketView[]; maxOrderUSD: number | null; readAt: string | null };
 export type MarketSearchView = { query: string; markets: MarketView[] };
 
+/** One outcome's chance over the market's life, oldest first, as [unix ms, chance 0–1]; empty when Polymarket has none. */
+export type OutcomeHistoryView = { tokenId: string; points: [number, number][] };
+
+export type MarketHistoryView = {
+    eventId: string;
+    /** About how far apart the points are, in ms. */
+    stepMs: number;
+    /** In the order the tokens were asked for. */
+    outcomes: OutcomeHistoryView[];
+    /** When Polymarket was last read for the oldest of these lines (ISO 8601). */
+    readAt: string;
+};
+
 export type PredictionFailure = "price_moved" | "market_closed" | "unavailable" | "rejected";
 
 export type PredictionOrderView = {

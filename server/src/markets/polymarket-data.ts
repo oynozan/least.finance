@@ -3,8 +3,12 @@ import { z } from "zod";
 import { gammaEvent, gammaMarket, type GammaEvent, type GammaMarket } from "./gamma.ts";
 
 const TIMEOUT_MS = 5_000;
+const HISTORY_TIMEOUT_MS = 8_000;
 
 export type Book = { bestBid: number | null; bestAsk: number | null; minOrderSize: number | null };
+
+export type HistoryQuery = { interval: "1d" | "max"; fidelity: number };
+export type RawPoint = { t: number; p: number };
 
 export interface PolymarketData {
     topEvents(): Promise<GammaEvent[]>;
@@ -14,6 +18,8 @@ export interface PolymarketData {
     /** One market by ID, open or closed; null when Polymarket has no such market. */
     market(id: string): Promise<GammaMarket | null>;
     books(tokenIds: string[]): Promise<Map<string, Book>>;
+    /** Each token's points as Polymarket answers them; a token it has nothing for is absent. */
+    priceHistory(tokenIds: string[], query: HistoryQuery): Promise<Map<string, RawPoint[]>>;
 }
 
 const level = z.object({ price: z.coerce.number().finite() });
@@ -25,6 +31,7 @@ const bookResponse = z.array(
         min_order_size: z.coerce.number().finite().nullish(),
     }),
 );
+const historyResponse = z.object({ history: z.record(z.string(), z.array(z.unknown())) });
 const searchResponse = z.object({ events: z.array(z.unknown()).nullish() });
 
 // One odd event shouldn't cost the rest of the list
@@ -46,8 +53,14 @@ export function createPolymarketData(options: {
 }): PolymarketData {
     const { gammaUrl, clobUrl, fetch: call = fetch, logger } = options;
 
-    async function send(base: string, path: string, init: RequestInit = {}, allowMissing = false): Promise<unknown> {
-        const response = await call(`${base}${path}`, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    async function send(
+        base: string,
+        path: string,
+        init: RequestInit = {},
+        allowMissing = false,
+        timeoutMs = TIMEOUT_MS,
+    ): Promise<unknown> {
+        const response = await call(`${base}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
         if (response.status === 200) return response.json();
         if (allowMissing && response.status === 404) return null;
         throw new Error(`Polymarket answered ${response.status} to ${path}`);
@@ -96,6 +109,30 @@ export function createPolymarketData(options: {
                 });
             }
             return books;
+        },
+
+        async priceHistory(tokenIds, query) {
+            const body = await send(
+                clobUrl,
+                "/batch-prices-history",
+                {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ markets: tokenIds, interval: query.interval, fidelity: query.fidelity }),
+                },
+                false,
+                HISTORY_TIMEOUT_MS,
+            );
+            const histories = new Map<string, RawPoint[]>();
+            for (const [token, items] of Object.entries(historyResponse.parse(body).history)) {
+                const points: RawPoint[] = [];
+                for (const item of items) {
+                    const { t, p } = (item ?? {}) as { t?: unknown; p?: unknown };
+                    if (typeof t === "number" && typeof p === "number") points.push({ t, p });
+                }
+                histories.set(token, points);
+            }
+            return histories;
         },
     };
 }

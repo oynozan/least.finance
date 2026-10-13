@@ -178,6 +178,16 @@ export class MarketService {
         return { outcome, marketId: market.id, question: view.title };
     }
 
+    /** When the cached event opened: its startDate, else createdAt, else null (also null when it isn't cached). */
+    openedAt(eventId: string): Date | null {
+        const event = this.#events.get(eventId)?.value;
+        for (const text of [event?.startDate, event?.createdAt]) {
+            const date = text ? new Date(text) : null;
+            if (date && !Number.isNaN(date.getTime())) return date;
+        }
+        return null;
+    }
+
     async #read(id: string): Promise<MarketView | null> {
         const now = this.#now();
         const missing = this.#unknown.get(id);
