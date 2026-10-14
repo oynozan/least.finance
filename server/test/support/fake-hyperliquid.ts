@@ -25,6 +25,8 @@ export type FakeOrder = {
     sz: string;
     reduceOnly: boolean;
     cloid: string | null;
+    /** The time after which the signed order is void, when it carries one. */
+    expiresAfter: number | null;
 };
 export type FakeAccountView = {
     freeE6: bigint;
@@ -405,6 +407,7 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
                 sz: order!.s as string,
                 reduceOnly: order!.r as boolean,
                 cloid: (order!.c as string | undefined) ?? null,
+                expiresAfter: typeof body.expiresAfter === "number" ? body.expiresAfter : null,
             });
             if (forced === "drop") return;
             return send(response, { status: "ok", response: { type: "order", data: { statuses: [status] } } });

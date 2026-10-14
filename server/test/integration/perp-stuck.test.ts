@@ -118,3 +118,72 @@ test("a sweep Hyperliquid refuses is re-planned with a fresh nonce and the credi
         true,
     );
 });
+
+test("a duplicate answer after a refused send with the same nonce is not taken as landed", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.fake.refusalConsumesNonce(true);
+    h.fake.nextOrder({ partial: "0.003" });
+    h.fake.nextUsdSend(2, "refuse");
+    h.fake.nextUsdSend(3, "refuse");
+
+    const { order } = await h.place(account);
+    await h.until(async () => (await h.orderOf(order._id)).state === "sweeping" && !h.service.submitting(order._id));
+    const stuck = await h.orderOf(order._id);
+    const masterBefore = h.fake.account(h.master)!.freeE6;
+    expect((await h.state(account._id)).kinds).toEqual(["deposit", "perp_open"]);
+
+    // The stored nonce was used up by the refusal, so the repeat answers duplicate
+    await h.service.retrySweep(stuck);
+
+    const done = await h.orderOf(order._id);
+    expect(done.state).toBe("filled");
+    const swept = BigInt(done.steps.sweepE6 as string);
+    expect(h.fake.account(h.master)!.freeE6 - masterBefore).toBe(swept);
+    expect(fromDecimal(done.credited!)).toBe(swept * 10n ** 12n);
+    const toMaster = h.fake.usdSends.filter((send) => send.to === h.master);
+    expect(toMaster).toHaveLength(1);
+    expect(toMaster[0]!.amountE6).toBe(swept);
+});
+
+test("an order missing on the first lookup stays posted until its expiry, then settles from fills", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.fake.nextOrder("drop");
+    const { order } = await h.place(account);
+    await h.until(async () => (await h.orderOf(order._id)).state === "posted" && !h.service.submitting(order._id));
+    h.fake.hideOrderStatus(true);
+    const posted = await h.orderOf(order._id);
+    const expiresAt = posted.steps.expiresAt as Date;
+    expect(h.fake.orders[0]!.expiresAfter).toBe(expiresAt.getTime());
+    expect(expiresAt.getTime() - (posted.steps.postedAt as Date).getTime()).toBe(30_000);
+
+    await h.service.settlePosted(posted);
+    expect((await h.orderOf(order._id)).state).toBe("posted");
+    h.clock.at += 34_000;
+    await h.service.settlePosted(posted);
+    expect((await h.orderOf(order._id)).state).toBe("posted");
+
+    h.clock.at += 2_000;
+    await h.service.settlePosted(posted);
+    const done = await h.orderOf(order._id);
+    expect(done.state).toBe("filled");
+    expect(await h.database.collections.perpPositions.countDocuments({ accountId: account._id })).toBe(1);
+    expect(h.fake.account(await h.addressOf(account._id))!.positions).toHaveLength(1);
+    const s = await h.state(account._id);
+    expect(s.sum).toBe(s.balance);
+    expect(s.balance).toBeLessThan(wei("1000"));
+});
+
+test("an order the exchange refuses after its expiry is not placed", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.clock.at -= 120_000;
+
+    const { order } = await h.place(account);
+    const done = await h.settled(order._id);
+
+    expect(done.state).toBe("rejected");
+    expect(h.fake.account(await h.addressOf(account._id))!.positions).toHaveLength(0);
+    expect((await h.state(account._id)).balance).toBe(wei("1000"));
+});

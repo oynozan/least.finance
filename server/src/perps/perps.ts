@@ -35,6 +35,9 @@ const IN_FLIGHT: PerpOrderState[] = ["placing", "funding", "posted", "sweeping"]
 const CLOSING: PerpOrderState[] = ["placing", "posted", "sweeping"];
 const SIZE_EPSILON = 1e-9;
 const WEI_PER_E6 = 1_000_000_000_000n;
+/** How long Hyperliquid honours a posted order, and how much longer a missing one is given to show up. */
+const ORDER_LIFE_MS = 30_000;
+const MISSING_GRACE_MS = 5_000;
 /** A transfer nonce older than this may be past Hyperliquid's acceptance window. */
 const NONCE_LIFE_MS = 24 * 3_600_000;
 
@@ -81,6 +84,13 @@ const cloidOf = (id: ObjectId) => `0x${id.toHexString().padStart(32, "0")}`;
 const reservedOf = (order: PerpOrderDoc) => BigInt(order.steps.reservedE6 as string);
 const minE6 = (a: bigint, b: bigint) => (a < b ? a : b);
 const px = (value: number, figures = 7) => String(Number(value.toPrecision(figures)));
+
+/** When Hyperliquid stops accepting a posted order; an order posted before the expiry was stored gets the same span. */
+const expiryOf = (order: PerpOrderDoc) =>
+    (
+        (order.steps.expiresAt as Date | undefined) ??
+        new Date(((order.steps.postedAt as Date | undefined) ?? order.createdAt).getTime() + ORDER_LIFE_MS)
+    ).getTime();
 
 const retainedOf = (account: PerpAccountDoc | null) => (account?.retainedE6 ? fromDecimal(account.retainedE6) : 0n);
 
@@ -454,14 +464,17 @@ export class PerpService {
             market.szDecimals,
         );
         await this.#deps.client.updateLeverage(signer, order.asset, order.leverage);
+        const postedAt = new Date(this.#now());
+        const expiresAt = new Date(postedAt.getTime() + ORDER_LIFE_MS);
         const posted = await perpOrders.findOneAndUpdate(
             { _id: order._id, state: "funding" },
             {
                 $set: {
                     state: "posted",
                     limitPx,
-                    "steps.postedAt": new Date(this.#now()),
-                    updatedAt: new Date(this.#now()),
+                    "steps.postedAt": postedAt,
+                    "steps.expiresAt": expiresAt,
+                    updatedAt: postedAt,
                 },
             },
             { returnDocument: "after" },
@@ -477,6 +490,7 @@ export class PerpService {
                 sz: order.sizeCoin,
                 reduceOnly: false,
                 cloid: order.cloid,
+                expiresAfter: expiresAt.getTime(),
             })
             .catch((error: unknown) => {
                 this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "The order post failed");
@@ -499,6 +513,12 @@ export class PerpService {
         const status = await this.#deps.client.orderStatus(this.#deps.keyring.perpAddressAt(fresh.index), fresh.cloid);
         if (status.kind === "open") return;
         if (status.kind === "filled") return this.#onFill(fresh, status);
+        if (status.kind === "missing") {
+            // A lookup that finds nothing is final only once the order can no longer be accepted
+            if (this.#now() < expiryOf(fresh) + MISSING_GRACE_MS) return;
+            const found = await this.#filledBy(fresh);
+            if (found) return this.#onFill(fresh, found);
+        }
         const message =
             status.kind === "rejected"
                 ? rejectionMessage(status.message)
@@ -506,6 +526,17 @@ export class PerpService {
                   ? PERP_MESSAGES.silent
                   : PERP_MESSAGES.priceMoved;
         await this.#onNoFill(fresh, message);
+    }
+
+    /** What an order's fills add up to, from Hyperliquid's record by cloid; null when none filled. */
+    async #filledBy(order: PerpOrderDoc): Promise<{ totalSz: string; avgPx: string } | null> {
+        const fills = (
+            await this.#deps.client.fills(this.#deps.keyring.perpAddressAt(order.index), order.createdAt.getTime())
+        ).filter((f) => f.cloid === order.cloid);
+        const size = fills.reduce((sum, f) => sum + Number(f.sizeCoin), 0);
+        if (size <= 0) return null;
+        const cost = fills.reduce((sum, f) => sum + Number(f.sizeCoin) * Number(f.px), 0);
+        return { totalSz: clean(size.toFixed(8)), avgPx: clean((cost / size).toFixed(8)) };
     }
 
     /** Sweeps the unused collateral back to the master and books the position at what really filled. */
@@ -976,13 +1007,16 @@ export class PerpService {
         const id = order._id.toHexString();
         this.#submitting.add(id);
         try {
+            const postedAt = new Date(this.#now());
+            const expiresAt = new Date(postedAt.getTime() + ORDER_LIFE_MS);
             const posted = await this.#deps.collections.perpOrders.findOneAndUpdate(
                 { _id: order._id, state: "placing" },
                 {
                     $set: {
                         state: "posted",
-                        "steps.postedAt": new Date(this.#now()),
-                        updatedAt: new Date(this.#now()),
+                        "steps.postedAt": postedAt,
+                        "steps.expiresAt": expiresAt,
+                        updatedAt: postedAt,
                     },
                 },
                 { returnDocument: "after" },
@@ -997,6 +1031,7 @@ export class PerpService {
                     sz: order.sizeCoin,
                     reduceOnly: true,
                     cloid: order.cloid,
+                    expiresAfter: expiresAt.getTime(),
                 })
                 .catch((error: unknown) => {
                     this.#deps.logger.error({ err: error, order: id }, "The close post failed");
@@ -1028,17 +1063,9 @@ export class PerpService {
         const status = await this.#deps.client.orderStatus(address, fresh.cloid);
         if (status.kind === "open") return;
         if (status.kind === "filled") return this.#onCloseFill(fresh, status);
-        const fills = (await this.#deps.client.fills(address, fresh.createdAt.getTime())).filter(
-            (f) => f.cloid === fresh.cloid,
-        );
-        const size = fills.reduce((sum, f) => sum + Number(f.sizeCoin), 0);
-        if (size > 0) {
-            const cost = fills.reduce((sum, f) => sum + Number(f.sizeCoin) * Number(f.px), 0);
-            return this.#onCloseFill(fresh, {
-                totalSz: clean(size.toFixed(8)),
-                avgPx: clean((cost / size).toFixed(8)),
-            });
-        }
+        if (status.kind === "missing" && this.#now() < expiryOf(fresh) + MISSING_GRACE_MS) return;
+        const found = await this.#filledBy(fresh);
+        if (found) return this.#onCloseFill(fresh, found);
         await this.#onCloseRejected(fresh, ["posted"], status.kind === "rejected" ? status.message : "no fill");
     }
 
