@@ -7,6 +7,7 @@ import type { ApiError } from "@/lib/account/state";
 import {
     NO_FEED,
     NO_PAGES,
+    bodyState,
     feedReducer,
     firstPage,
     itemKey,
@@ -462,6 +463,16 @@ test.describe("pages", () => {
         expect(after).toBe(loaded);
     });
 
+    test("a reset forgets every filter's pages", () => {
+        const loaded: FeedState = {
+            all: { items: [d(1)], next: "c1", loaded: true },
+            trades: { items: [d(2)], next: null, loaded: true },
+            deposits: { items: [d(3)], next: "c3", loaded: true },
+        };
+        expect(feedReducer(loaded, { type: "reset" })).toBe(NO_FEED);
+        expect(feedReducer(NO_FEED, { type: "reset" })).toBe(NO_FEED);
+    });
+
     test("the empty states are not loaded and hold no rows", () => {
         expect(NO_PAGES).toEqual({ items: [], next: null, loaded: false });
         expect(Object.keys(NO_FEED).sort()).toEqual(["all", "deposits", "trades"]);
@@ -491,6 +502,31 @@ test.describe("matchesFilter", () => {
             "close",
             "predict",
         ]);
+    });
+});
+
+test.describe("bodyState", () => {
+    const filters = ["all", "trades", "deposits"] as const;
+
+    test("bodyState is rows whenever rows exist", () => {
+        for (const filter of filters)
+            for (const loaded of [false, true])
+                for (const more of [false, true]) expect(bodyState({ filter, loaded, more, rows: 1 })).toBe("rows");
+    });
+
+    test("bodyState is busy until the first page answers", () => {
+        for (const filter of filters)
+            for (const more of [false, true]) expect(bodyState({ filter, loaded: false, more, rows: 0 })).toBe("busy");
+    });
+
+    test("bodyState is nothing or no-deposits only once loaded with no more pages", () => {
+        expect(bodyState({ filter: "all", loaded: true, more: false, rows: 0 })).toBe("nothing");
+        expect(bodyState({ filter: "trades", loaded: true, more: false, rows: 0 })).toBe("nothing");
+        expect(bodyState({ filter: "deposits", loaded: true, more: false, rows: 0 })).toBe("no-deposits");
+    });
+
+    test("with more pages and nothing listed bodyState is busy, never nothing", () => {
+        for (const filter of filters) expect(bodyState({ filter, loaded: true, more: true, rows: 0 })).toBe("busy");
     });
 });
 

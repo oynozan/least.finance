@@ -32,7 +32,7 @@ export function PnlScreen() {
                                     animate={{ opacity: 1, y: 0, scale: 1 }}
                                     transition={{ ...rise, delay: 0.08 }}
                                 >
-                                    <ActivityCard activity={state.activity} />
+                                    <ActivityCard live={state.activity} />
                                 </motion.div>
                             </>
                         ) : state.status === "signed-out" ? (

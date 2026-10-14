@@ -63,20 +63,26 @@ chain logos) are one case in `components/trade/trade-icons.tsx`.
 
 ## The PnL page
 
-`/pnl` charts the balance by day (7 days, 30 days, or back to the first activity) and lists every
-operation under it. Pointing at a bar, or arrowing through them, rolls the figures to that day. The
-balance only moves with deposits and realized PnL; a bar takes the gain or loss tone only when a
-position closed that day.
+`/pnl` charts the balance and lists every operation under it. The chart comes from the server's
+`pnl:series` in day, week or month bars (7 days and 30 days by day, All by day, week or month as the
+history grows), with correct balances for any history age. Pointing at a bar, or arrowing through
+them, rolls the figures to that bar. The balance only moves with deposits and realized PnL; a bar
+takes the gain or loss tone only when a position closed in it.
 
-The list is what the server holds for the account (`components/pnl/use-activity.ts`): its deposits,
-and its predictions, each buy with what a sale, a win or a loss realized, plus buys still on their way
-(marked "Pending"). Swaps, buys, sells and perps aren't executed yet, so a trade confirmed in Review
-sends nothing and leaves no row. An account with nothing in it gets the empty states: "No balance yet"
-on the chart, "Nothing here yet" under it.
+The table lists the account's deposits, withdrawals, swaps, predictions (each buy with what a sale, a
+win or a loss realized) and perps, newest first (`components/pnl/use-activity.ts` for the live rows,
+`components/pnl/use-activity-feed.ts` for the pages). The live rows come from the account snapshot,
+with buys still on their way marked "Pending"; the server's `activity:list` pages lie under them, and
+"Show older" under the last row loads one older page at a time until the whole history is shown. The
+filter chips are applied on the server. Until the first page answers the card shows no empty message.
+An account with nothing in it gets the empty states: "No balance yet" on the chart, "Nothing here yet"
+under it.
 
 ## Tests
 
-- `npm run test:logic`: the engine and operations, no browser (`e2e/trade.logic.spec.ts`).
+- `npm run test:logic`: the engine and operations, no browser (`e2e/trade.logic.spec.ts`), the PnL
+  chart, labels and series store (`e2e/pnl-chart.logic.spec.ts`, `e2e/pnl-series.logic.spec.ts`) and the
+  Activity card's history pages, overlay and body states (`e2e/activity-pages.logic.spec.ts`).
 - `npm run test:e2e`: the sentence in Chrome on desktop and a phone (`e2e/sentence.spec.ts`), and the
   dock and the PnL page (`e2e/pnl.spec.ts`).
 

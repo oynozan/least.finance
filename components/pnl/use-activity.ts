@@ -14,7 +14,7 @@ import {
     withdrawalActivity,
     type Activity,
 } from "@/lib/trade/activity";
-import { QUOTE } from "@/lib/trade/catalog";
+import { QUOTE, type Catalog } from "@/lib/trade/catalog";
 import { withdrawalEntries } from "@/components/history-entries";
 import { useAccount } from "@/components/account-provider";
 import { useTrade } from "@/components/trade/trade-provider";
@@ -31,12 +31,16 @@ const subscribeMinute = (onChange: () => void) => {
     return () => clearInterval(timer);
 };
 /** The current minute, in the browser only: dates are relative to it, so the server leaves them out. */
-const useNow = () =>
+export const useNow = () =>
     useSyncExternalStore(
         subscribeMinute,
         () => Math.floor(Date.now() / MINUTE) * MINUTE,
         () => null,
     );
+
+/** A coin's price in USD from the catalog: 1 for the quote coin, null when it has none. */
+export const priceIn = (catalog: Catalog) => (symbol: string) =>
+    symbol === QUOTE ? 1 : (catalog.tokens.find((t) => t.symbol === symbol)?.priceUSD ?? null);
 
 /** Positions as their rows, plus the part sales and the buys still on their way. */
 function realPredictions({ positions, orders }: PositionsView, optimistic: readonly OptimisticTrade[]): Activity[] {
@@ -108,8 +112,7 @@ export function useActivity(): ActivityState {
                 }),
             );
         // A swap's size is what it paid at the coin's price, or nothing known without one.
-        const priceOf = (symbol: string) =>
-            symbol === QUOTE ? 1 : (catalog.tokens.find((t) => t.symbol === symbol)?.priceUSD ?? null);
+        const priceOf = priceIn(catalog);
         const trades = swaps.map((order) => {
             const price = priceOf(order.from.token);
             return swapActivity(order, price === null ? null : Number(order.from.amount) * price);

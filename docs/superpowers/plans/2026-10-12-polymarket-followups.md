@@ -125,7 +125,7 @@ These are the minor findings from the task reviews and the whole-phase reviews o
 
 ## Known gaps
 
-- The server keeps settled positions for 35 days, so the PnL page's "all time" range misses older predictions.
+- Fixed by the all-time PnL work: the PnL page reads `pnl:series` and `activity:list`, so the 35-day trim only affects the sidebar.
 - The merge migration's twin-position case with a sale in flight across a restart is not handled. Merges can't happen for new accounts under one account per person.
 - These assumptions are unconfirmed until the owner runs `server/scripts/polymarket-live-check.ts`:
     - the computed order hash equals Polymarket's order ID

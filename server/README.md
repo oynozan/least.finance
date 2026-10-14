@@ -106,21 +106,24 @@ A market with no opening date is read at `interval=max`, `fidelity=60`. All the 
 
 The handshake carries `auth: { token }`; a token that expires gets `session:expired` and a disconnect, and the client reconnects with a fresh one. Every event takes an acknowledgement and answers `{ ok: true, data } | { ok: false, error }`.
 
-| Event                                         |                                                                                                                                                                 |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `account:open` `{}`                           | Binds the socket to the person's account (opening it) and answers like the HTTP route.                                                                          |
-| `deposits:list` `{ before?, limit? }`         | A page of deposits.                                                                                                                                             |
-| `deposit:submit` `{ txHash }`                 | Like the HTTP route.                                                                                                                                            |
-| `deposit:credited` (server → client)          | `{ deposit, account }`, for each deposit as it's credited.                                                                                                      |
-| `balances:refresh` `{}`                       | Reads the person's wallets again, silently: answers `{ read }`, and `read` is false within 30 s of the last read. A wallet not read yet is read at once.        |
-| `balances` (server → client)                  | `{ readAt, rows }`: every supported coin in every linked wallet. Pushed after `account:open` and after each read, to every socket of the account.               |
-| `deposit:quote` `{ coin, amount, wallet }`    | What the coin would pay in USDC on Arc, with no order opened. 30 a minute per user. The wallet must be linked to the person.                                    |
-| `deposit:order` `{ coin, amount, wallet }`    | Opens a bridge order paying the account's Arc address and refunding the wallet; answers `{ order, txs }`, the transactions the wallet signs.                    |
-| `deposit:source` `{ orderId, txHashes }`      | Reports the sent hashes: a created order becomes sent, and a repeat changes nothing.                                                                            |
-| `deposit:progress` (server → client)          | `{ order }`, whenever an order of the account changes.                                                                                                          |
-| `withdraw:limits` `{}`                        | `{ max, min }`: `max` is the smaller of the balance and what the treasury can pay now.                                                                          |
-| `withdraw:create` `{ requestId, amount, to }` | Takes `amount` off the balance and pays it to a linked EVM wallet; answers the withdrawal. A repeated `requestId` is the same withdrawal. 10 a minute per user. |
-| `withdrawal:update` (server → client)         | `{ withdrawal }`, when a withdrawal is created and each time it changes: `sending`, then `sent` or `failed` (the balance is refunded).                          |
+| Event                                          |                                                                                                                                                                 |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `account:open` `{}`                            | Binds the socket to the person's account (opening it) and answers like the HTTP route.                                                                          |
+| `deposits:list` `{ before?, limit? }`          | A page of deposits.                                                                                                                                             |
+| `deposit:submit` `{ txHash }`                  | Like the HTTP route.                                                                                                                                            |
+| `deposit:credited` (server → client)           | `{ deposit, account }`, for each deposit as it's credited.                                                                                                      |
+| `balances:refresh` `{}`                        | Reads the person's wallets again, silently: answers `{ read }`, and `read` is false within 30 s of the last read. A wallet not read yet is read at once.        |
+| `balances` (server → client)                   | `{ readAt, rows }`: every supported coin in every linked wallet. Pushed after `account:open` and after each read, to every socket of the account.               |
+| `deposit:quote` `{ coin, amount, wallet }`     | What the coin would pay in USDC on Arc, with no order opened. 30 a minute per user. The wallet must be linked to the person.                                    |
+| `deposit:order` `{ coin, amount, wallet }`     | Opens a bridge order paying the account's Arc address and refunding the wallet; answers `{ order, txs }`, the transactions the wallet signs.                    |
+| `deposit:source` `{ orderId, txHashes }`       | Reports the sent hashes: a created order becomes sent, and a repeat changes nothing.                                                                            |
+| `deposit:progress` (server → client)           | `{ order }`, whenever an order of the account changes.                                                                                                          |
+| `withdraw:limits` `{}`                         | `{ max, min }`: `max` is the smaller of the balance and what the treasury can pay now.                                                                          |
+| `withdraw:create` `{ requestId, amount, to }`  | Takes `amount` off the balance and pays it to a linked EVM wallet; answers the withdrawal. A repeated `requestId` is the same withdrawal. 10 a minute per user. |
+| `withdrawal:update` (server → client)          | `{ withdrawal }`, when a withdrawal is created and each time it changes: `sending`, then `sent` or `failed` (the balance is refunded).                          |
+| `pnl:series` `{ tz }`                          | The balance by day, week or month for 7D, 30D and All, with the days cut in the zone `tz`. 30 a minute per user.                                                |
+| `pnl:changed` (server → client)                | No payload: something that moves the series happened, so the client asks again.                                                                                 |
+| `activity:list` `{ before?, limit?, filter? }` | A page of the whole history, newest first. 60 a minute per user.                                                                                                |
 
 A failed network keeps its last values in `rows` (a coin never read has a null amount). Solana balances are read from `SOLANA_RPC_URLS` (the Ethereum and BNB Chain ones from `ETHEREUM_RPC_URLS` and `BNB_RPC_URLS`), so a production deployment should list a paid endpoint first: the public one rate-limits.
 
@@ -168,6 +171,7 @@ It opens an account, deposits `ARC_LIVE_AMOUNT` USDC from that key on Arc Mainne
 - `src/deposits/`: crediting (`ledger.ts`), the chain scan (`watcher.ts`, `registry.ts`), and reported deposits and history (`deposits.ts`).
 - `src/crosschain/`: coins, quotes and bridge providers, balances on other chains, and deposit orders (`orders.ts`).
 - `src/chain/`: Arc's chain definition and reading its transfer logs.
+- `src/pnl/`: the PnL series and the paged activity history.
 - `src/db/`: collections, indexes and money conversions.
 
 Collections in the `TradeEverything` database: `accounts`, `deposits`, `ledger` (every balance change), `deposit_orders` (bridged deposits), `cursors` (how far the scan has got) and `counters`.

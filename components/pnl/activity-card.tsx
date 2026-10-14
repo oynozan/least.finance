@@ -2,13 +2,14 @@
 
 import { useState } from "react";
 import { motion, type Transition } from "motion/react";
+import { bodyState } from "@/lib/pnl/activity-pages";
 import type { Activity } from "@/lib/trade/activity";
 import { formatUsd } from "@/lib/trade/format";
+import type { ActivityFilter } from "@/server/src/protocol";
 import { CoinIcon } from "@/components/coin-icons";
 import { Segmented } from "@/components/segmented";
 import { formatPnl, trendOf } from "@/components/wallet-data";
-
-type Filter = "all" | "trades" | "deposits";
+import { useActivityFeed } from "./use-activity-feed";
 
 const FILTERS = [
     { value: "all", label: "All" },
@@ -24,16 +25,11 @@ const when = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", 
 
 const RESULT_TONE = { gain: "text-gain", loss: "text-loss", flat: "text-muted" } as const;
 
-/** Every operation, newest first, with what it did to the balance. */
-export function ActivityCard({ activity }: { activity: readonly Activity[] }) {
-    const [filter, setFilter] = useState<Filter>("all");
-    const rows = activity.filter((a) =>
-        filter === "all"
-            ? true
-            : filter === "deposits"
-              ? a.kind === "deposit" || a.kind === "withdrawal"
-              : a.kind !== "deposit" && a.kind !== "withdrawal",
-    );
+/** Every operation, newest first, with what it did to the balance: the live rows over the server's pages, older ones on request. */
+export function ActivityCard({ live }: { live: readonly Activity[] }) {
+    const [filter, setFilter] = useState<ActivityFilter>("all");
+    const { rows, loaded, more, loadingMore, loadMore } = useActivityFeed(filter, live);
+    const body = bodyState({ filter, loaded, more, rows: rows.length });
 
     return (
         <section aria-labelledby="activity-title" className="rounded-[34px] bg-panel p-2.5 sm:p-3">
@@ -99,15 +95,31 @@ export function ActivityCard({ activity }: { activity: readonly Activity[] }) {
                     ))}
                 </tbody>
             </table>
+            {/* The message's own height with no text, while history may still come */}
+            {body === "busy" && (
+                <p aria-busy="true" className="px-[18px] py-10 text-center text-[15px] text-muted">
+                    {"\u00a0"}
+                </p>
+            )}
             {/* Gone at once when rows come, so it never sits under them while they rise in */}
-            {rows.length === 0 && (
+            {(body === "nothing" || body === "no-deposits") && (
                 <motion.p
                     className="px-[18px] py-10 text-center text-[15px] text-muted"
                     initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                 >
-                    {filter === "deposits" ? "No deposits yet" : "Nothing here yet"}
+                    {body === "no-deposits" ? "No deposits yet" : "Nothing here yet"}
                 </motion.p>
+            )}
+            {more && (
+                <button
+                    type="button"
+                    className="mx-auto mt-1 mb-2 block h-10 cursor-pointer rounded-full px-5 text-[15px] font-medium text-muted outline-2 outline-offset-2 outline-transparent transition-colors duration-150 hover:text-foreground focus-visible:outline-solid disabled:cursor-default disabled:opacity-60 disabled:hover:text-muted"
+                    disabled={loadingMore}
+                    onClick={loadMore}
+                >
+                    Show older
+                </button>
             )}
         </section>
     );

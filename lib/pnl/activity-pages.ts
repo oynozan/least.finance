@@ -50,9 +50,11 @@ export const NO_FEED: FeedState = { all: NO_PAGES, trades: NO_PAGES, deposits: N
 
 export type FeedAction =
     | { type: "first"; filter: ActivityFilter; page: ActivityPage }
-    | { type: "older"; filter: ActivityFilter; before: string; page: ActivityPage };
+    | { type: "older"; filter: ActivityFilter; before: string; page: ActivityPage }
+    | { type: "reset" };
 
 export function feedReducer(state: FeedState, action: FeedAction): FeedState {
+    if (action.type === "reset") return NO_FEED;
     const current = state[action.filter];
     const next =
         action.type === "first" ? firstPage(current, action.page) : olderPage(current, action.before, action.page);
@@ -83,4 +85,19 @@ export function overlay(o: {
         byId.set(a.id, a);
     }
     return [...byId.values()].filter((a) => !o.hidden.has(a.id)).sort(byNewest);
+}
+
+/** How long a first page that failed waits before it is asked for again */
+export const RETRY_MS = 3000;
+
+/** What the table's body shows: the rows, a quiet placeholder while history may still come, or an empty message */
+export function bodyState(o: {
+    filter: ActivityFilter;
+    loaded: boolean;
+    more: boolean;
+    rows: number;
+}): "rows" | "busy" | "nothing" | "no-deposits" {
+    if (o.rows > 0) return "rows";
+    if (!o.loaded || o.more) return "busy";
+    return o.filter === "deposits" ? "no-deposits" : "nothing";
 }
