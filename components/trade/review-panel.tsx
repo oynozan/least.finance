@@ -6,6 +6,7 @@ import { MotionConfig, motion, type Variants } from "motion/react";
 import { submitIntent } from "@/lib/trade/execute";
 import type { TradeCtx } from "@/lib/trade/context";
 import { formatUnits } from "@/lib/trade/format";
+import type { TransactionIntent } from "@/lib/trade/intent";
 import { networkName } from "@/lib/trade/networks";
 import { quoteRows as perpQuoteRows } from "@/lib/trade/perp-quote";
 import { quoteRows } from "@/lib/trade/prediction-quote";
@@ -193,12 +194,14 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const refused = account.tradeNotice?.message ?? null;
     if (accepted && refused && refused !== refusal) setRefusal(refused);
     const [quoted, setQuoted] = useState<QuoteView | null>(null);
-    const intentKey = JSON.stringify(view.intent);
+    // A confirmed perp's own pending position blocks its sentence, so the review keeps the intent while the sentence is unchanged.
+    const [kept, setKept] = useState<{ text: string; intent: TransactionIntent } | null>(null);
+    const intent = view.intent ?? (kept && kept.text === view.text ? kept.intent : null);
+    const intentKey = JSON.stringify(intent);
     // A change to the sentence after confirming starts the review over.
     const done = sent !== null && sent === intentKey;
     const notice = view.blocking ?? view.issues.find((issue) => issue.severity === "warning");
 
-    const intent = view.intent;
     // A swap, buy or sell is real once signed in: LI.FI quotes it and the person's own wallet signs it.
     const swapIntent = isSwapIntent(intent) ? intent : null;
     const { swapHoldings, signers, connected, swaps, state: accountState } = account;
@@ -395,6 +398,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             // Offline changes nothing; the person is told so here.
             if (!result.sent) setRefusal(OFFLINE_COPY);
             setAccepted(result.sent);
+            setKept({ text: view.text, intent: perp });
             setSent(intentKey);
             return;
         }

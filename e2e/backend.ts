@@ -123,3 +123,18 @@ export const failNextBurn = () => call<object>("/withdrawals/fail-next-burn", {}
 /** Has Circle report a person's newest Solana withdrawal as minted on Solana. */
 export const forwardWithdrawal = (address: string, forwardTxHash: string) =>
     call<object>("/iris/forward", { address, forwardTxHash }).then(() => undefined);
+
+/** Moves a Hyperliquid mark price, in dollars. */
+export const setPerpMark = (asset: string, px: number) =>
+    call<object>("/perp/mark", { asset, px }).then(() => undefined);
+
+/** The next Hyperliquid order: "fill", "hold" (never answered), "drop" (applied, reply lost), or `{ reject }` / `{ partial }`. */
+export const nextPerpOrder = (next: "fill" | "hold" | "drop" | { reject: string } | { partial: string }) =>
+    call<object>("/perp/next-order", { next }).then(() => undefined);
+
+/** Has Hyperliquid liquidate the position the person who owns `address` holds on `asset`. */
+export const liquidatePerp = (address: string, asset: string) =>
+    call<object>("/perp/liquidate", { address, asset }).then(() => undefined);
+
+/** While on, the fake Hyperliquid refuses the server's usdSend transfers. */
+export const failPerpUsdSend = (on: boolean) => call<object>("/perp/fail-usdsend", { on }).then(() => undefined);

@@ -511,6 +511,9 @@ export type PerpOrderView = {
     id: string;
     requestId: string;
     kind: "open" | "close";
+    asset: string;
+    side: "long" | "short";
+    leverage: number;
     state: string;
     /** The message the person is shown when the order didn't go through or only partly did. */
     reason: string | null;

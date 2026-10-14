@@ -41,6 +41,9 @@ const order = (requestId: string, over: Partial<PerpOrderView> = {}): PerpOrderV
     id: "o1",
     requestId,
     kind: "open",
+    asset: "BTC",
+    side: "long",
+    leverage: 5,
     state: "filled",
     reason: null,
     positionId: "p1",
@@ -260,6 +263,49 @@ test.describe("placing a perp", () => {
         } finally {
             await stack.stop();
         }
+    });
+
+    test("a page reload while held rebuilds the pending position from the in-flight order", () => {
+        const held = order(REQ, { state: "posted", positionId: null, filledSizeCoin: null });
+        const session = {
+            type: "session" as const,
+            session: {
+                account: account("200", 2),
+                deposits: { items: [], next: null },
+                rules: { chainId: 5042, minDeposit: "0.01" },
+                orders: [],
+                withdrawals: [],
+                solana: { deposits: false, withdrawals: false },
+            },
+        };
+        const loaded = [{ type: "connecting" as const }, session].reduce(accountReducer, initialAccountState);
+        const state = accountReducer(loaded, {
+            type: "perpsSnapshot",
+            perps: { positions: [], orders: [held] },
+            connection: 1,
+        });
+        if (state.status !== "ready") throw new Error("not ready");
+        expect(state.perps.positions).toMatchObject([
+            { id: `pending:${REQ}`, asset: "BTC", side: "long", leverage: 5, collateralUSD: "100", entryPx: null },
+        ]);
+        // A second snapshot doesn't add it twice, and the rejection takes it away.
+        const again = accountReducer(state, {
+            type: "perpsSnapshot",
+            perps: { positions: [], orders: [held] },
+            connection: 1,
+        });
+        if (again.status !== "ready") throw new Error("not ready");
+        expect(again.perps.positions).toHaveLength(1);
+        const rejected = accountReducer(again, {
+            type: "perp",
+            update: {
+                order: { ...held, state: "rejected", updatedAt: at(9) },
+                position: null,
+                account: account("300", 3),
+            },
+        });
+        if (rejected.status !== "ready") throw new Error("not ready");
+        expect(rejected.perps.positions).toEqual([]);
     });
 
     test("offline at confirm shows the offline message and changes nothing", () => {

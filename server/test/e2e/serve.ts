@@ -101,6 +101,7 @@ const config = loadConfig({
     SOLANA_DEPOSITS: "on",
     SOLANA_WITHDRAWALS: "on",
     PREDICTIONS_TRADING: "on",
+    PERPS_TRADING: "on",
     PREDICTIONS_RESOLVE_MS: "300",
     POLYMARKET_POOL_KEY: `0x${"1".repeat(64)}`,
     POLYMARKET_BUILDER_API_KEY: "e2e",
@@ -147,7 +148,11 @@ await services.markets.tick();
 await services.swapCatalog.tick();
 await services.predictions.refreshFloat();
 const chain = chainHelpers(anvil.url);
-const treasuryAddress = createKeyring(config.DEPOSIT_MNEMONIC).operator().address;
+const keyring = createKeyring(config.DEPOSIT_MNEMONIC);
+const treasuryAddress = keyring.operator().address;
+// The perps float: the master Hyperliquid account holds plenty, and the service reads it.
+hyperliquid.fund(keyring.perpAddressAt(0), parseUnits("1000000", 6));
+await services.perps.refreshFloat();
 const fundTreasury = (usdc: string) =>
     chain.client.setBalance({ address: treasuryAddress, value: parseUnits(usdc, 18) + TREASURY_GAS_RESERVE });
 // Withdrawals in the specs never meet a short treasury.
@@ -346,6 +351,30 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
     /** The next request to this Polymarket path answers 500. */
     "/polymarket/fail-next": async ({ path }) => {
         polymarket.failNext(path as Parameters<typeof polymarket.failNext>[0]);
+        return {};
+    },
+    /** Moves a Hyperliquid mark, which the server's next market read and quotes follow. */
+    "/perp/mark": async ({ asset, px }) => {
+        hyperliquid.setMark(String(asset), Number(px));
+        return {};
+    },
+    /** The next Hyperliquid order behaves this way: "fill", "hold" (never answered, never applied), "drop" (applied, reply lost), or `{ reject }` / `{ partial }`. */
+    "/perp/next-order": async ({ next }) => {
+        hyperliquid.nextOrder(next as Parameters<typeof hyperliquid.nextOrder>[0]);
+        return {};
+    },
+    /** Has Hyperliquid liquidate the person's position on an asset. */
+    "/perp/liquidate": async ({ address, asset }) => {
+        const account = await services.accounts.find(userIdOf(normalize(address)));
+        if (!account) throw new Error("No account");
+        const row = await services.database.collections.perpAccounts.findOne({ accountId: account._id });
+        if (!row) throw new Error("No Hyperliquid account");
+        hyperliquid.liquidate(row.address, String(asset));
+        return {};
+    },
+    /** Makes the fake refuse the server's usdSend transfers (funding and sweeps) while on. */
+    "/perp/fail-usdsend": async ({ on }) => {
+        hyperliquid.failUsdSend(Boolean(on));
         return {};
     },
     /** Serves LI.FI status for a sent swap's last hash; `receiving` names the coin and amount that arrived, the order's own by default. */

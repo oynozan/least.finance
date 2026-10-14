@@ -118,6 +118,29 @@ export type OptimisticPerp = {
 /** The id of the position shown while its open is in flight. */
 export const pendingPerpId = (requestId: string) => `pending:${requestId}`;
 
+/** The row of an open still in flight when the page loaded, which has no quote to show. */
+const pendingPerpOf = (order: PerpOrderView): PerpPositionView => ({
+    id: pendingPerpId(order.requestId),
+    asset: order.asset,
+    side: order.side,
+    leverage: order.leverage,
+    sizeCoin: order.requestedSizeCoin,
+    entryPx: null,
+    collateralUSD: order.collateralUSD,
+    liquidationPx: null,
+    markPx: null,
+    unrealizedPnlUSD: "0",
+    cumFundingUSD: "0",
+    state: "open",
+    proceedsUSD: null,
+    notice: null,
+    openedAt: order.createdAt,
+    settledAt: null,
+    updatedAt: order.updatedAt,
+});
+
+const IN_FLIGHT_PERP = new Set(["placing", "funding", "posted", "sweeping"]);
+
 export const isPendingPerp = (position: { id: string }) => position.id.startsWith("pending:");
 
 export type AccountState =
@@ -367,7 +390,18 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
             const kept = state.perps.positions.filter(
                 (p) => !shown.has(p.id) && (pendingIds.has(p.id) || named.has(p.id)),
             );
-            return { ...state, optimisticPerps, perps: { orders, positions: [...kept, ...positions] } };
+            // An open still in flight after a reload has no row yet, so one is rebuilt from the order.
+            const have = new Set([...kept, ...positions].map((p) => p.id));
+            const rebuilt = orders
+                .filter(
+                    (o) =>
+                        o.kind === "open" &&
+                        !o.positionId &&
+                        IN_FLIGHT_PERP.has(o.state) &&
+                        !have.has(pendingPerpId(o.requestId)),
+                )
+                .map(pendingPerpOf);
+            return { ...state, optimisticPerps, perps: { orders, positions: [...rebuilt, ...kept, ...positions] } };
         }
         case "withdraw":
             if (state.status !== "ready") return state;
