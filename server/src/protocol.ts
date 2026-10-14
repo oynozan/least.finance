@@ -608,3 +608,24 @@ export type SwapOrderView = {
     createdAt: string;
     updatedAt: string;
 };
+
+export type PnlUnit = "day" | "week" | "month";
+
+/** One bar of the balance chart, where start is the bucket's first local date as YYYY-MM-DD */
+export type PnlPoint = {
+    start: string;
+    /** The running total at the end of the bucket */
+    balance: UsdcAmount;
+    /** Realized PnL inside the bucket */
+    pnl: UsdcAmount;
+    /** Deposits minus withdrawals inside the bucket */
+    net: UsdcAmount;
+};
+
+export type PnlRangeKey = "7D" | "30D" | "All";
+
+export type PnlSeries = {
+    /** The zone the days were cut in, "UTC" when the one asked for was not a zone name */
+    tz: string;
+    ranges: Record<PnlRangeKey, { unit: PnlUnit; points: PnlPoint[] }>;
+};
