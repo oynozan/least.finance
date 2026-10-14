@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AnimatePresence, motion, type Transition } from "motion/react";
+import { motion, type Transition } from "motion/react";
 import type { Activity } from "@/lib/trade/activity";
 import { formatUsd } from "@/lib/trade/format";
 import { CoinIcon } from "@/components/coin-icons";
@@ -99,18 +99,16 @@ export function ActivityCard({ activity }: { activity: readonly Activity[] }) {
                     ))}
                 </tbody>
             </table>
-            <AnimatePresence>
-                {rows.length === 0 && (
-                    <motion.p
-                        className="px-[18px] py-10 text-center text-[15px] text-muted"
-                        initial={{ opacity: 0, y: 8 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0 }}
-                    >
-                        {filter === "deposits" ? "No deposits yet" : "Nothing here yet"}
-                    </motion.p>
-                )}
-            </AnimatePresence>
+            {/* Gone at once when rows come, so it never sits under them while they rise in */}
+            {rows.length === 0 && (
+                <motion.p
+                    className="px-[18px] py-10 text-center text-[15px] text-muted"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                >
+                    {filter === "deposits" ? "No deposits yet" : "Nothing here yet"}
+                </motion.p>
+            )}
         </section>
     );
 }

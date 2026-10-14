@@ -209,6 +209,46 @@ test("a prediction and its sale are listed, with what the sale realized", async 
     await expect(rows(page)).toHaveCount(3);
 });
 
+/** The Activity card's height on every frame for a while after a click on a filter, from the click on. */
+const heightsAfterPicking = (page: Page, filter: string) =>
+    activity(page).evaluate(async (section, filter) => {
+        const button = [...section.querySelectorAll<HTMLElement>('[role="radio"]')].find(
+            (radio) => radio.textContent === filter,
+        )!;
+        const seen: number[] = [section.getBoundingClientRect().height];
+        button.click();
+        const until = performance.now() + 900;
+        while (performance.now() < until) {
+            await new Promise(requestAnimationFrame);
+            seen.push(section.getBoundingClientRect().height);
+        }
+        return seen;
+    }, filter);
+
+test("switching the activity filter never stretches the card past where it ends up", async ({ page }) => {
+    // Deposits only, so Trades has nothing and shows its empty state
+    await seedDeposits(addressOf(page), [
+        { amount: "500", daysAgo: 2 },
+        { amount: "200", daysAgo: 1 },
+    ]);
+    await page.goto("/pnl");
+    await connect(page);
+    await expect(rows(page)).toHaveCount(2);
+
+    for (const [filter, shown] of [
+        ["Trades", 0],
+        ["All", 2],
+        ["Trades", 0],
+        ["Deposits", 2],
+    ] as const) {
+        const heights = await heightsAfterPicking(page, filter);
+        await expect(rows(page)).toHaveCount(shown);
+        const [before, after] = [heights[0]!, heights.at(-1)!];
+        // It moves from one height to the other, never past both: a leaving empty state can't sit under new rows
+        expect(Math.max(...heights), `to ${filter}`).toBeLessThanOrEqual(Math.max(before, after) + 1);
+    }
+});
+
 test("phones fit the PnL page without scrolling sideways", async ({ page, isMobile }) => {
     test.skip(!isMobile, "phone layout");
     // A long question, so a row has to truncate.
