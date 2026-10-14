@@ -117,6 +117,22 @@ describe("perp events", () => {
         expect(results.slice(0, 10).filter((r) => !r.ok && r.error.code === "rate_limited")).toHaveLength(0);
     });
 
+    test("perp:close acks and pushes perp:update with the settled position", async () => {
+        const { socket, updates } = await person();
+        await socket.timeout(5000).emitWithAck("perp:order", payload());
+        await expect.poll(() => updates.find((u) => u.order.state === "filled")).toBeTruthy();
+        const positionId = updates.find((u) => u.order.state === "filled")!.position!.id;
+
+        const acked = (await socket
+            .timeout(5000)
+            .emitWithAck("perp:close", { requestId: randomUUID(), positionId })) as Ack<{ order: PerpOrderView }>;
+        expect(acked).toMatchObject({ ok: true, data: { order: { kind: "close", state: "placing" } } });
+        await expect.poll(() => updates.find((u) => u.order.kind === "close" && u.order.state === "done")).toBeTruthy();
+        const settled = updates.find((u) => u.order.kind === "close" && u.order.state === "done")!;
+        expect(settled.position).toMatchObject({ id: positionId, state: "closed" });
+        expect(settled.order.creditedUSD).not.toBeNull();
+    });
+
     test("bind emits perps", async () => {
         const first = await person();
         const acked = (await first.socket

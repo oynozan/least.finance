@@ -415,12 +415,12 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
         socket.on("perp:close", (payload, ack) =>
             reply(ack, async () => {
-                parse(perpClose, payload);
+                const input = parse(perpClose, payload);
                 await perpOrders.consume(socket.data.identity.userId).catch(() => {
                     throw new AppError("rate_limited", "Too many orders. Try again shortly.");
                 });
-                await boundAccount(socket);
-                throw new AppError("unavailable", "Couldn't close right now. Your position is still open.");
+                const closed = await services.perps.close(await boundAccount(socket), input);
+                return { order: perpOrderView(closed.order) };
             }),
         );
     });

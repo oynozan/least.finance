@@ -32,6 +32,7 @@ export const perpPositionView = (position: PerpPositionDoc): PerpPositionView =>
     cumFundingUSD: position.snapshot ? formatE6(fromDecimal(position.snapshot.cumFundingE6)) : "0",
     state: position.state,
     proceedsUSD: position.proceeds ? formatUsdc(fromDecimal(position.proceeds)) : null,
+    notice: position.state === "open" ? position.closeReason : null,
     openedAt: position.openedAt.toISOString(),
     settledAt: position.settledAt?.toISOString() ?? null,
     updatedAt: position.updatedAt.toISOString(),

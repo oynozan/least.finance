@@ -31,6 +31,7 @@ import { MarketService } from "./markets/markets.ts";
 import { withPerpTimeouts, type HyperliquidClient } from "./perps/client.ts";
 import { PerpMarkets } from "./perps/markets.ts";
 import { PerpService } from "./perps/perps.ts";
+import { PerpTracker } from "./perps/tracker.ts";
 import { createNktkasClient } from "./perps/nktkas-client.ts";
 import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
@@ -324,6 +325,14 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             config,
         });
         perpMarkets.setMaxOrderUSD(() => perps.maxOrderUSD());
+        const perpTracker = new PerpTracker({
+            service: perps,
+            client: perpClient,
+            collections,
+            config,
+            logger: logger.child({ component: "perp-tracker" }),
+            bus,
+        });
         const sweeper = new Sweeper({
             client,
             keyring,
@@ -433,6 +442,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         priceHistory.start();
         perpMarkets.start();
         perps.start();
+        perpTracker.start();
         swapTracker.start();
         predictionTracker.start();
         predictionResolver.start();
@@ -465,6 +475,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await swapTracker.stop();
                 await swapCatalog.stop();
                 await priceHistory.stop();
+                await perpTracker.stop();
                 await perps.stop();
                 await perpMarkets.stop();
                 await markets.stop();

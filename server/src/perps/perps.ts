@@ -17,10 +17,10 @@ import { e6ToWei, formatE6, fromDecimal, toDecimal, weiToE6 } from "../db/money.
 import type { Ledger } from "../deposits/ledger.ts";
 import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
-import type { PerpOrderRequest, PerpQuoteRequest, PerpQuoteView, PerpsView } from "../protocol.ts";
+import type { PerpCloseRequest, PerpOrderRequest, PerpQuoteRequest, PerpQuoteView, PerpsView } from "../protocol.ts";
 import type { Level } from "../predictions/trader.ts";
 import { formatUsdShort } from "../predictions/views.ts";
-import { nextNonce, type HyperliquidClient } from "./client.ts";
+import { nextNonce, type AccountState, type Fill, type HyperliquidClient } from "./client.ts";
 import { ACTIVATION_E6, NOTHING_SPENT, PerpFloat } from "./float.ts";
 import { leverageBound, limitPrice, liquidationPrice, meetsMinimum, ourFeeOf, sizeFor } from "./math.ts";
 import type { PerpMarkets } from "./markets.ts";
@@ -32,6 +32,9 @@ const FEE_READ_MS = 60_000;
 const SETTLED_KEEP_MS = 35 * 24 * 3_600_000;
 const AMOUNT = /^\d+(\.\d{1,6})?$/;
 const IN_FLIGHT: PerpOrderState[] = ["placing", "funding", "posted", "sweeping"];
+const CLOSING: PerpOrderState[] = ["placing", "posted", "sweeping"];
+const SIZE_EPSILON = 1e-9;
+const WEI_PER_E6 = 1_000_000_000_000n;
 
 export const PERP_MESSAGES = {
     off: "Long and short aren't available right now.",
@@ -40,10 +43,15 @@ export const PERP_MESSAGES = {
     rejected: `This position couldn't be opened right now. ${NOTHING_SPENT}`,
     minCollateral: "Positions start at $10.",
     minPosition: "A position starts at $11. Raise the collateral or the leverage.",
+    closeFailed: "Couldn't close right now. Your position is still open.",
+    tooSmall: "Too small to close right now.",
 };
 
 type Outcome =
     { kind: "filled"; sizeCoin: string; avgPx: string; feeE6: string } | { kind: "rejected"; message: string };
+
+type CloseOutcome =
+    { kind: "closed"; sizeCoin: string; avgPx: string; feeE6: string } | { kind: "outside"; liquidation: boolean };
 
 type Deps = {
     collections: Collections;
@@ -55,7 +63,12 @@ type Deps = {
     logger: Logger;
     config: Pick<
         Config,
-        "PERPS_TRADING" | "PERPS_FLOAT_USD" | "PERPS_SLIPPAGE_BPS" | "PERPS_MAX_LEVERAGE" | "PERPS_FEE_BPS"
+        | "PERPS_TRADING"
+        | "PERPS_FLOAT_USD"
+        | "PERPS_SLIPPAGE_BPS"
+        | "PERPS_CLOSE_SLIPPAGE_BPS"
+        | "PERPS_MAX_LEVERAGE"
+        | "PERPS_FEE_BPS"
     >;
     /** The clock, for tests. */
     now?: () => number;
@@ -674,10 +687,10 @@ export class PerpService {
             .catch((error: unknown) => this.#deps.logger.warn({ err: error }, "Couldn't read the Hyperliquid float"));
     }
 
-    async #emit(order: PerpOrderDoc): Promise<void> {
+    async #emit(order: PerpOrderDoc, position: PerpPositionDoc | null = null): Promise<void> {
         try {
             const account = await this.#deps.collections.accounts.findOne({ _id: order.accountId });
-            if (account) this.#deps.bus.emit("perp:updated", { order, position: null, account });
+            if (account) this.#deps.bus.emit("perp:updated", { order, position, account });
         } catch (error) {
             this.#deps.logger.warn({ err: error }, "Couldn't announce a perp order");
         }
@@ -701,6 +714,492 @@ export class PerpService {
                     "Couldn't recover a perp order",
                 );
             }
+        }
+        const closing = await this.#deps.collections.perpOrders
+            .find({ kind: "close", state: { $in: CLOSING } })
+            .toArray();
+        for (const order of closing) {
+            await this.settleClose(order).catch((error: unknown) =>
+                this.#deps.logger.error(
+                    { err: error, order: order._id.toHexString() },
+                    "Couldn't recover a perp close",
+                ),
+            );
+        }
+    }
+
+    /** Finishes an open order's stored sweep; a repeat, or an order that moved on, does nothing. */
+    async retrySweep(order: PerpOrderDoc): Promise<void> {
+        const fresh = await this.#deps.collections.perpOrders.findOne({ _id: order._id });
+        if (fresh?.kind === "open" && fresh.state === "sweeping") await this.#finishSweep(fresh);
+    }
+
+    /** The last mark the market sync saw for an asset. */
+    markOf(asset: string): number | null {
+        return this.#deps.markets.byAsset(asset)?.markPx ?? null;
+    }
+
+    /** Closes a whole position with a reduce-only IOC; trading being off doesn't matter, and a repeat is the same close. */
+    async close(account: AccountDoc, req: PerpCloseRequest): Promise<{ order: PerpOrderDoc }> {
+        const { perpOrders, perpPositions } = this.#deps.collections;
+        const known = await perpOrders.findOne({ accountId: account._id, requestId: req.requestId });
+        if (known) return { order: known };
+        if (this.#stopped) throw new AppError("unavailable", PERP_MESSAGES.closeFailed);
+        const position = await perpPositions.findOne({ _id: new ObjectId(req.positionId), accountId: account._id });
+        if (!position) throw new AppError("not_found", "That position wasn't found.");
+        const live = await this.#closeInFlight(position);
+        if (live) return { order: live };
+        if (position.state !== "open") throw new AppError("position_busy", "That position is already closed.");
+        const market = this.#deps.markets.byAsset(position.asset);
+        if (!market) throw new AppError("unavailable", PERP_MESSAGES.closeFailed);
+
+        const now = new Date(this.#now());
+        const _id = new ObjectId();
+        const order: PerpOrderDoc = {
+            _id,
+            accountId: account._id,
+            requestId: req.requestId,
+            kind: "close",
+            index: position.index,
+            asset: position.asset,
+            side: position.side,
+            leverage: position.leverage,
+            collateral: position.collateral,
+            notionalE6: toDecimal(BigInt(Math.round(Number(position.sizeCoin) * market.markPx * 1e6))),
+            sizeCoin: position.sizeCoin,
+            cloid: cloidOf(_id),
+            limitPx: limitPrice(
+                market.markPx,
+                position.side,
+                "close",
+                this.#deps.config.PERPS_CLOSE_SLIPPAGE_BPS,
+                market.szDecimals,
+            ),
+            state: "placing",
+            steps: { positionId: position._id.toHexString() },
+            fill: null,
+            credited: null,
+            reason: null,
+            createdAt: now,
+            updatedAt: now,
+        };
+        try {
+            const moved = await this.#deps.ledger.runInTransaction(async (session) => {
+                const closing = await perpPositions.findOneAndUpdate(
+                    { _id: position._id, state: "open" },
+                    { $set: { state: "closing", closeReason: null, updatedAt: now } },
+                    { session, returnDocument: "after" },
+                );
+                if (!closing) return null;
+                await perpOrders.insertOne(order, { session });
+                return closing;
+            });
+            if (!moved) {
+                const other = await this.#closeInFlight(position);
+                if (other) return { order: other };
+                throw new AppError("position_busy", "That position is already closed.");
+            }
+        } catch (error) {
+            if (!isDuplicateKey(error)) throw error;
+            const again = await perpOrders.findOne({ accountId: account._id, requestId: req.requestId });
+            if (!again) throw error;
+            return { order: again };
+        }
+        void this.#driveClose(order).catch((error: unknown) =>
+            this.#deps.logger.error({ err: error, order: _id.toHexString() }, "Couldn't close a perp position"),
+        );
+        return { order };
+    }
+
+    /** The close of ours that is still moving for a position, if any. */
+    #closeInFlight(position: PerpPositionDoc): Promise<PerpOrderDoc | null> {
+        return this.#deps.collections.perpOrders.findOne({
+            accountId: position.accountId,
+            kind: "close",
+            "steps.positionId": position._id.toHexString(),
+            state: { $in: CLOSING },
+        });
+    }
+
+    /** Posts the reduce-only order; an answer that doesn't settle it leaves the order posted for the tracker. */
+    async #driveClose(order: PerpOrderDoc): Promise<void> {
+        const id = order._id.toHexString();
+        this.#submitting.add(id);
+        try {
+            const posted = await this.#deps.collections.perpOrders.findOneAndUpdate(
+                { _id: order._id, state: "placing" },
+                {
+                    $set: {
+                        state: "posted",
+                        "steps.postedAt": new Date(this.#now()),
+                        updatedAt: new Date(this.#now()),
+                    },
+                },
+                { returnDocument: "after" },
+            );
+            if (!posted) return;
+            void this.#emitClose(posted);
+            const result = await this.#deps.client
+                .order(this.#deps.keyring.perpSignerAt(order.index), {
+                    asset: order.asset,
+                    isBuy: order.side === "short",
+                    px: order.limitPx,
+                    sz: order.sizeCoin,
+                    reduceOnly: true,
+                    cloid: order.cloid,
+                })
+                .catch((error: unknown) => {
+                    this.#deps.logger.error({ err: error, order: id }, "The close post failed");
+                    return { kind: "unknown" } as const;
+                });
+            try {
+                if (result.kind === "filled" && Number(result.totalSz) > 0) await this.#onCloseFill(posted, result);
+                else if (result.kind === "filled") await this.#onCloseRejected(posted, ["posted"], "no fill");
+                else if (result.kind === "rejected") await this.#onCloseRejected(posted, ["posted"], result.message);
+            } catch (error) {
+                this.#deps.logger.error({ err: error, order: id }, "Couldn't settle a posted close");
+            }
+        } finally {
+            this.#submitting.delete(id);
+        }
+    }
+
+    /** Settles a close from where it stands: an unsent one is undone, a posted one is judged from Hyperliquid's record, a swept one finishes its sweep. */
+    async settleClose(order: PerpOrderDoc): Promise<void> {
+        const fresh = await this.#deps.collections.perpOrders.findOne({ _id: order._id });
+        if (!fresh || fresh.kind !== "close") return;
+        if (fresh.state === "sweeping") return this.#finishCloseSweep(fresh);
+        if (fresh.state === "placing") {
+            if (!this.submitting(fresh._id)) await this.#onCloseRejected(fresh, ["placing"], "never sent");
+            return;
+        }
+        if (fresh.state !== "posted") return;
+        const address = this.#deps.keyring.perpAddressAt(fresh.index);
+        const status = await this.#deps.client.orderStatus(address, fresh.cloid);
+        if (status.kind === "open") return;
+        if (status.kind === "filled") return this.#onCloseFill(fresh, status);
+        const fills = (await this.#deps.client.fills(address, fresh.createdAt.getTime())).filter(
+            (f) => f.cloid === fresh.cloid,
+        );
+        const size = fills.reduce((sum, f) => sum + Number(f.sizeCoin), 0);
+        if (size > 0) {
+            const cost = fills.reduce((sum, f) => sum + Number(f.sizeCoin) * Number(f.px), 0);
+            return this.#onCloseFill(fresh, {
+                totalSz: clean(size.toFixed(8)),
+                avgPx: clean((cost / size).toFixed(8)),
+            });
+        }
+        await this.#onCloseRejected(fresh, ["posted"], status.kind === "rejected" ? status.message : "no fill");
+    }
+
+    /** A close that filled: a partial one shrinks the position, a whole one sweeps the account back to the master first. */
+    async #onCloseFill(order: PerpOrderDoc, fill: { totalSz: string; avgPx: string }): Promise<void> {
+        const { perpPositions } = this.#deps.collections;
+        const position = await perpPositions.findOne({ _id: new ObjectId(order.steps.positionId as string) });
+        if (!position || position.state !== "closing") return;
+        const address = this.#deps.keyring.perpAddressAt(order.index);
+        const sizeCoin = clean(fill.totalSz);
+        const avgPx = clean(fill.avgPx);
+        const feeE6 = await this.#feeOf(order, address, Number(sizeCoin) * Number(avgPx));
+        if (Number(sizeCoin) < Number(order.sizeCoin) - SIZE_EPSILON)
+            return this.#closePartly(order, position, { sizeCoin, avgPx, feeE6 });
+        const state = await this.#deps.client.state(address);
+        // The free balance is only this position's while no other order is moving money on the address
+        if (await this.#sharesAddress(order.index, order._id)) return;
+        const sweep = await this.#sweepable(order.index, state);
+        const moved = await this.#startCloseSweep(
+            order,
+            ["posted"],
+            { kind: "closed", sizeCoin, avgPx, feeE6: feeE6.toString() },
+            sweep,
+        );
+        if (moved) await this.#finishCloseSweep(moved);
+    }
+
+    async #closePartly(
+        order: PerpOrderDoc,
+        position: PerpPositionDoc,
+        fill: { sizeCoin: string; avgPx: string; feeE6: bigint },
+    ): Promise<void> {
+        const { perpOrders, perpPositions } = this.#deps.collections;
+        const done = await this.#deps.ledger.runInTransaction(async (session) => {
+            const at = new Date(this.#now());
+            const moved = await perpOrders.findOneAndUpdate(
+                { _id: order._id, state: "posted" },
+                {
+                    $set: {
+                        state: "done",
+                        fill: { sizeCoin: fill.sizeCoin, avgPx: fill.avgPx, feeE6: toDecimal(fill.feeE6) },
+                        reason: `Closed part of your ${order.asset} position. Press Close again for the rest.`,
+                        updatedAt: at,
+                    },
+                },
+                { session, returnDocument: "after" },
+            );
+            if (!moved) return null;
+            const left = clean((Number(order.sizeCoin) - Number(fill.sizeCoin)).toFixed(8));
+            const reopened = await perpPositions.findOneAndUpdate(
+                { _id: position._id },
+                { $set: { state: "open", sizeCoin: left, closeReason: null, updatedAt: at } },
+                { session, returnDocument: "after" },
+            );
+            return { order: moved, position: reopened };
+        });
+        if (done) void this.#emit(done.order, done.position);
+    }
+
+    /** Puts a position back to open after a close that didn't happen; a venue refusal for being too small is kept on the position. */
+    async #onCloseRejected(order: PerpOrderDoc, from: PerpOrderState[], message: string): Promise<void> {
+        const { perpOrders, perpPositions } = this.#deps.collections;
+        const tooSmall = /minimum value|too small/i.test(message);
+        const reason = tooSmall ? PERP_MESSAGES.tooSmall : PERP_MESSAGES.closeFailed;
+        const done = await this.#deps.ledger.runInTransaction(async (session) => {
+            const at = new Date(this.#now());
+            const moved = await perpOrders.findOneAndUpdate(
+                { _id: order._id, state: { $in: from } },
+                { $set: { state: "rejected", reason, updatedAt: at } },
+                { session, returnDocument: "after" },
+            );
+            if (!moved) return null;
+            const reopened = await perpPositions.findOneAndUpdate(
+                { _id: new ObjectId(order.steps.positionId as string), state: "closing" },
+                { $set: { state: "open", closeReason: tooSmall ? reason : null, updatedAt: at } },
+                { session, returnDocument: "after" },
+            );
+            return { order: moved, position: reopened };
+        });
+        if (!done) return;
+        this.#deps.logger[tooSmall ? "error" : "warn"](
+            { order: order._id.toHexString(), message },
+            tooSmall ? "Hyperliquid refused to close a position as too small" : "A perp close didn't go through",
+        );
+        void this.#emit(done.order, done.position);
+    }
+
+    async #emitClose(order: PerpOrderDoc): Promise<void> {
+        const position = await this.#deps.collections.perpPositions.findOne({
+            _id: new ObjectId(order.steps.positionId as string),
+        });
+        await this.#emit(order, position);
+    }
+
+    /** The free balance minus the fees of ours that stay on the address; the rest is the person's. */
+    async #sweepable(index: number, state: AccountState | null): Promise<bigint> {
+        const filled = await this.#deps.collections.perpOrders.find({ index, kind: "open", state: "filled" }).toArray();
+        const rate = this.#deps.config.PERPS_FEE_BPS / 10_000;
+        const kept = filled.reduce((sum, o) => sum + ourFeeOf(fromDecimal(o.notionalE6), rate), 0n);
+        const free = (state?.withdrawableE6 ?? 0n) - kept;
+        return free > 0n ? free : 0n;
+    }
+
+    /** Whether another order is moving money on this order's address, so its free balance isn't only ours to sweep. */
+    async #sharesAddress(index: number, id: ObjectId): Promise<boolean> {
+        return (
+            (await this.#deps.collections.perpOrders.countDocuments(
+                {
+                    index,
+                    _id: { $ne: id },
+                    $or: [
+                        { kind: "open", state: { $in: IN_FLIGHT } },
+                        { kind: "close", state: { $in: ["posted", "sweeping"] }, _id: { $lt: id } },
+                    ],
+                },
+                { limit: 1 },
+            )) > 0
+        );
+    }
+
+    /** Stores what the sweep will move and credit, with its nonce, before anything is sent, so a restart repeats it exactly. */
+    async #startCloseSweep(
+        order: PerpOrderDoc,
+        from: PerpOrderState[],
+        outcome: CloseOutcome,
+        sweepE6: bigint,
+    ): Promise<PerpOrderDoc | null> {
+        const nonce = sweepE6 > 0n ? nextNonce(this.#deps.keyring.perpAddressAt(order.index)) : null;
+        const moved = await this.#deps.collections.perpOrders.findOneAndUpdate(
+            { _id: order._id, state: { $in: from } },
+            {
+                $set: {
+                    state: "sweeping",
+                    "steps.outcome": outcome,
+                    "steps.sweepE6": sweepE6.toString(),
+                    "steps.sweepNonce": nonce,
+                    updatedAt: new Date(this.#now()),
+                },
+            },
+            { returnDocument: "after" },
+        );
+        if (moved) void this.#emitClose(moved);
+        return moved;
+    }
+
+    /** Sends the stored sweep and, once the master has the money, credits it and settles the position. A repeat does nothing. */
+    async #finishCloseSweep(order: PerpOrderDoc): Promise<void> {
+        const { perpOrders, perpPositions, accounts } = this.#deps.collections;
+        const outcome = order.steps.outcome as CloseOutcome;
+        const sweepE6 = BigInt(order.steps.sweepE6 as string);
+        if (sweepE6 > 0n) {
+            try {
+                const sent = await this.#deps.client.usdSend(
+                    this.#deps.keyring.perpSignerAt(order.index),
+                    this.#master,
+                    sweepE6,
+                    order.steps.sweepNonce as number,
+                );
+                if (sent.kind === "rejected") throw new Error(sent.message);
+            } catch (error) {
+                this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "A sweep to the master failed");
+                return;
+            }
+        }
+
+        const creditWei = e6ToWei(sweepE6);
+        const positionId = new ObjectId(order.steps.positionId as string);
+        const liquidated = outcome.kind === "outside" && outcome.liquidation;
+        const done = await this.#deps.ledger.runInTransaction(async (session) => {
+            const at = new Date(this.#now());
+            const moved = await perpOrders.findOneAndUpdate(
+                { _id: order._id, state: "sweeping" },
+                {
+                    $set: {
+                        state: "done",
+                        credited: toDecimal(creditWei),
+                        updatedAt: at,
+                        ...(outcome.kind === "closed"
+                            ? {
+                                  fill: {
+                                      sizeCoin: outcome.sizeCoin,
+                                      avgPx: outcome.avgPx,
+                                      feeE6: toDecimal(BigInt(outcome.feeE6)),
+                                  },
+                              }
+                            : {
+                                  reason: `Your ${order.asset} ${order.side} was ${liquidated ? "liquidated" : "closed"}.`,
+                              }),
+                    },
+                },
+                { session, returnDocument: "after" },
+            );
+            if (!moved) return null;
+            const before = await perpPositions.findOne({ _id: positionId }, { session });
+            if (!before) throw new Error("The position vanished");
+            const position = await perpPositions.findOneAndUpdate(
+                { _id: positionId, active: true },
+                {
+                    $set: {
+                        state: liquidated ? "liquidated" : "closed",
+                        active: false,
+                        proceeds: toDecimal(creditWei),
+                        realizedPnl: toDecimal((creditWei - fromDecimal(before.collateral)) / WEI_PER_E6),
+                        closeReason: liquidated
+                            ? "liquidated"
+                            : outcome.kind === "outside"
+                              ? "closed_outside"
+                              : "closed",
+                        settledAt: at,
+                        updatedAt: at,
+                    },
+                },
+                { session, returnDocument: "after" },
+            );
+            const account =
+                creditWei > 0n
+                    ? await this.#deps.ledger.creditInSession(
+                          session,
+                          order.accountId,
+                          creditWei,
+                          "perp_close",
+                          order._id,
+                      )
+                    : await accounts.findOne({ _id: order.accountId }, { session });
+            if (!account) throw new Error("The account vanished");
+            return { order: moved, position, account };
+        });
+        if (!done) return;
+        this.#deps.logger.info(
+            { order: order._id.toHexString(), position: positionId.toHexString() },
+            "Perp close settled",
+        );
+        this.#deps.bus.emit("perp:updated", done);
+        void this.#float
+            .refresh()
+            .catch((error: unknown) => this.#deps.logger.warn({ err: error }, "Couldn't read the Hyperliquid float"));
+    }
+
+    /** Settles a position that is gone or smaller on Hyperliquid with no close of ours in flight, from the fills and the account state read for it. */
+    async settleOutside(position: PerpPositionDoc, fills: Fill[], state: AccountState | null): Promise<void> {
+        const { perpOrders, perpPositions } = this.#deps.collections;
+        const fresh = await perpPositions.findOne({ _id: position._id });
+        if (!fresh || fresh.state !== "open" || !fresh.active) return;
+        if (await this.#closeInFlight(fresh)) return;
+        const mine = new Map(fills.filter((f) => f.asset === fresh.asset).map((f) => [f.tid, f]));
+        const liquidation = [...mine.values()].some((f) => f.liquidation);
+        const real = state?.positions.find((p) => p.asset === fresh.asset);
+        if (real) {
+            if (Number(real.sizeCoin) >= Number(fresh.sizeCoin) - SIZE_EPSILON) return;
+            const shrunk = await perpPositions.findOneAndUpdate(
+                { _id: fresh._id, state: "open" },
+                { $set: { sizeCoin: clean(real.sizeCoin), updatedAt: new Date(this.#now()) } },
+                { returnDocument: "after" },
+            );
+            this.#deps.logger.warn(
+                { position: fresh._id.toHexString(), liquidation },
+                "A position shrank outside the app",
+            );
+            const opened = await perpOrders.findOne({
+                accountId: fresh.accountId,
+                "steps.positionId": fresh._id.toHexString(),
+            });
+            if (shrunk && opened) void this.#emit(opened, shrunk);
+            return;
+        }
+        const _id = new ObjectId();
+        // A later id than any order, so every close still sweeping this address goes first
+        if (await this.#sharesAddress(fresh.index, _id)) return;
+        const sweep = await this.#sweepable(fresh.index, state);
+        const at = new Date(this.#now());
+        const order: PerpOrderDoc = {
+            _id,
+            accountId: fresh.accountId,
+            requestId: `outside:${fresh._id.toHexString()}`,
+            kind: "close",
+            index: fresh.index,
+            asset: fresh.asset,
+            side: fresh.side,
+            leverage: fresh.leverage,
+            collateral: fresh.collateral,
+            notionalE6: toDecimal(0n),
+            sizeCoin: fresh.sizeCoin,
+            cloid: cloidOf(_id),
+            limitPx: "",
+            state: "sweeping",
+            steps: {
+                positionId: fresh._id.toHexString(),
+                outcome: { kind: "outside", liquidation } satisfies CloseOutcome,
+                sweepE6: sweep.toString(),
+                sweepNonce: sweep > 0n ? nextNonce(this.#deps.keyring.perpAddressAt(fresh.index)) : null,
+            },
+            fill: null,
+            credited: null,
+            reason: null,
+            createdAt: at,
+            updatedAt: at,
+        };
+        try {
+            const claimed = await this.#deps.ledger.runInTransaction(async (session) => {
+                const moved = await perpPositions.findOneAndUpdate(
+                    { _id: fresh._id, state: "open" },
+                    { $set: { state: "closing", updatedAt: at } },
+                    { session },
+                );
+                if (!moved) return false;
+                await perpOrders.insertOne(order, { session });
+                return true;
+            });
+            if (claimed) await this.#finishCloseSweep(order);
+        } catch (error) {
+            if (!isDuplicateKey(error)) throw error;
         }
     }
 
