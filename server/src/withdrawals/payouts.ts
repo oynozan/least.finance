@@ -147,8 +147,8 @@ export class Payouts {
                 } else await this.#pay(withdrawal);
             } catch (error) {
                 logger.warn({ err: error, withdrawalId: withdrawal._id.toHexString() }, "Payout failed, will retry");
-                // Later items would sign with a nonce this unsent one still owns.
-                if (unreachable(error)) return;
+                // Whatever this withdrawal signed may be unsent, so later ones must not sign above it.
+                return;
             }
         }
     }

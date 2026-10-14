@@ -333,6 +333,27 @@ test("an approve receipt that times out holds back later withdrawals until the e
     expect(await chain.getBalance({ address: later.to })).toBe(wei("1"));
 });
 
+test("a Solana approve broadcast that fails opaquely and is unseen stops the pass, so a later withdrawal signs nothing", async () => {
+    await isolated();
+    const first = await seedSolana("5");
+    const later = await seedSolana("2");
+    const payouts = worker({
+        broadcast: async () => {
+            throw new Error("txpool is full");
+        },
+    });
+
+    await payouts.tick();
+
+    expect((await stateOf(first.withdrawal._id)).solana!.approveRawTx).not.toBeNull();
+    expect((await stateOf(later.withdrawal._id)).solana).toMatchObject({
+        approveNonce: null,
+        approveRawTx: null,
+        burnNonce: null,
+        burnRawTx: null,
+    });
+});
+
 test("a burn mined and then Iris down for a long time never refunds and stays forwarding", async () => {
     await isolated();
     const { account, withdrawal } = await seedSolana("6");

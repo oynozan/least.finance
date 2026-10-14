@@ -203,6 +203,22 @@ test("an unreachable broadcast stops the pass, so a later withdrawal never reuse
     expect(await chain.getBalance({ address: b.to })).toBe(wei("2"));
 });
 
+test("an opaque broadcast error with the transaction unseen stops the pass, so a later withdrawal signs nothing", async () => {
+    const a = await seedWithdrawal("2");
+    const b = await seedWithdrawal("2");
+    const payouts = worker({
+        broadcast: async () => {
+            throw new Error("txpool is full");
+        },
+    });
+
+    await payouts.tick();
+
+    expect((await stateOf(a.withdrawal._id)).rawTx).not.toBeNull();
+    expect(await stateOf(b.withdrawal._id)).toMatchObject({ rawTx: null, nonce: null });
+    await database.collections.withdrawals.deleteMany({ _id: { $in: [a.withdrawal._id, b.withdrawal._id] } });
+});
+
 test("a signed transaction whose nonce another transaction took is signed again, not awaited forever", async () => {
     const { withdrawal, to } = await seedWithdrawal("2");
     const first = worker({ broadcast: async () => "0x" as Hex });
