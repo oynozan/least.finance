@@ -497,11 +497,18 @@ describe("wrap_idle", () => {
         const h = await open({ treasuryUsdc: "0" });
         h.trader.setDerived({ derived: OTHER_WALLET });
         const row = await h.queue({ kind: "wrap_idle" });
+        const saved = { ...FLOWS };
+        // The start path alone is under test, so the wrap itself is stood in
+        Object.assign(FLOWS, { "wrap_idle:wrapping": async () => undefined });
+        try {
+            await h.rebalancer.tick();
 
-        await h.rebalancer.tick();
-
-        expect(await h.rowOf(row._id)).toMatchObject({ state: "wrapping", active: true });
-        expect(h.iris.requests()).toEqual([]);
+            expect(await h.rowOf(row._id)).toMatchObject({ state: "wrapping", active: true });
+            expect(h.iris.requests()).toEqual([]);
+        } finally {
+            for (const key of Object.keys(FLOWS)) delete FLOWS[key];
+            Object.assign(FLOWS, saved);
+        }
     });
 });
 

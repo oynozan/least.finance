@@ -22,6 +22,10 @@ import type { PoolTrader } from "./trader.ts";
 const TICK_MS = 2_000;
 /** How often a row in a slow state is followed. */
 const SLOW_MS = 30_000;
+/** How often the pool wallet is read for idle native USDC. */
+const IDLE_EVERY_MS = 10 * 60_000;
+/** Idle native USDC above this is warned about. */
+const IDLE_WARN_E6 = 1_000_000n;
 /** The states whose rows hold a move that needs the trader, so `sending` (Payouts') is not among the flow states. */
 const OPEN_STATES: PoolRebalanceState[] = ["queued", "sending", "submitting", "forwarding", "wrapping", "stuck"];
 const FLOW_STATES: PoolRebalanceState[] = ["submitting", "forwarding", "wrapping", "stuck"];
@@ -62,8 +66,11 @@ export class PoolRebalancer {
     readonly #now: () => number;
     readonly #log: HourlyLog;
     readonly #pendingSend = new Set<string>();
+    readonly #irisSeen = new Map<string, unknown>();
     /** When each slow row was last followed, by `id:state`. */
     #followedAt = new Map<string, number>();
+    /** When the pool wallet was last read for idle USDC. */
+    #idleReadAt = 0;
     /** The configured pool wallet, once the derived-wallet check passed in this process. */
     #wallet: Address | null = null;
     #stop: AbortController | null = null;
@@ -142,6 +149,25 @@ export class PoolRebalancer {
             await flow(ctx, row).catch((error: unknown) => this.#failed(row, error, "A pool rebalance step failed"));
         }
         this.#followedAt = followed;
+        const open = new Set(rows.map((row) => row._id.toString()));
+        for (const id of this.#irisSeen.keys()) if (!open.has(id)) this.#irisSeen.delete(id);
+        await this.#warnOnIdleUsdc(trader);
+    }
+
+    /** Every 10 minutes reads the wallet's native USDC and warns hourly when over $1 with no row wrapping it. */
+    async #warnOnIdleUsdc(trader: PoolTrader) {
+        const now = this.#now();
+        if (now - this.#idleReadAt < IDLE_EVERY_MS) return;
+        this.#idleReadAt = now;
+        try {
+            const idle = await trader.usdcBalanceE6();
+            if (idle <= IDLE_WARN_E6) return;
+            if ((await this.#deps.collections.poolRebalances.countDocuments({ state: "wrapping" }, { limit: 1 })) > 0)
+                return;
+            this.#log.once("idle-usdc", "warn", { usdcUSD: formatE6(idle) }, "Native USDC is idle in the pool wallet");
+        } catch (error) {
+            this.#log.once("idle-read", "warn", { err: error }, "Couldn't read the idle USDC in the pool wallet");
+        }
     }
 
     #failed(row: PoolRebalanceDoc, error: unknown, message = "A pool rebalance start failed") {
@@ -165,6 +191,7 @@ export class PoolRebalancer {
             now: this.#now,
             config,
             log: this.#log,
+            irisSeen: this.#irisSeen,
             move: async (row, to, patch = {}) => {
                 const moved = await stateChange(collections, row, to, patch, new Date(this.#now()));
                 if (moved) announce(ctx, moved, row.state);
