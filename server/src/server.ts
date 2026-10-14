@@ -41,6 +41,7 @@ import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
 import { PredictionReconciler } from "./predictions/reconciler.ts";
 import { PredictionRedeemer } from "./predictions/redeemer.ts";
+import { PoolRebalancer, poolRowsOpen } from "./predictions/rebalancer.ts";
 import { RelayerGate } from "./predictions/relayer-gate.ts";
 import { PredictionResolver } from "./predictions/resolver.ts";
 import { PredictionTracker } from "./predictions/tracker.ts";
@@ -393,6 +394,25 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             needTrader: () => ensureTrader(),
             gate: relayerGate,
         });
+        // The worker exists only with its switch on; off, a queued row is never decided
+        const poolRebalancer =
+            config.POOL_REBALANCE === "on"
+                ? new PoolRebalancer({
+                      collections,
+                      ledger,
+                      withdrawals,
+                      service,
+                      trader: () => trader,
+                      needTrader: () => ensureTrader(),
+                      treasury: keyring.operator().address,
+                      iris,
+                      limiter: irisLimiter,
+                      gate: relayerGate,
+                      bus,
+                      logger: logger.child({ component: "pool-rebalancer" }),
+                      config,
+                  })
+                : null;
         const predictionReconciler = new PredictionReconciler({
             collections,
             trader: () => trader,
@@ -473,12 +493,14 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         predictionResolver.start();
         predictionRedeemer.start();
         predictionReconciler.start();
-        // Posted orders and unconfirmed redemptions need the trader even once trading is switched off
-        const [posted, redeeming] = await Promise.all([
+        poolRebalancer?.start();
+        // Posted orders, unconfirmed redemptions and open pool moves need the trader even once trading is switched off
+        const [posted, redeeming, moving] = await Promise.all([
             collections.predictionOrders.countDocuments({ state: "posted" }),
             collections.predictionRedemptions.countDocuments({ state: { $ne: "confirmed" } }),
+            poolRebalancer ? poolRowsOpen(collections) : 0,
         ]);
-        if (traderNeeded(config, posted + redeeming)) ensureTrader();
+        if (traderNeeded(config, posted + redeeming + moving)) ensureTrader();
         // A bad secret is logged loudly, but the server keeps serving: wallets already connected carry on.
         void identity.checkApi();
 
@@ -493,6 +515,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 service.stopOrders();
                 perps.stopOrders();
                 if (connecting) clearTimeout(connecting);
+                await poolRebalancer?.stop();
                 await predictionReconciler.stop();
                 await predictionRedeemer.stop();
                 await predictionResolver.stop();
