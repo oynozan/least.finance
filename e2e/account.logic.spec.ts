@@ -420,6 +420,23 @@ test.describe("derived values", () => {
         expect(rows.every((r) => !r.pending)).toBe(true);
     });
 
+    test("a credited history row carries the deposit id and a pending one has none", () => {
+        const state = run([sent(9, "7.5")], open("25", 1, [deposit(2, "2"), deposit(1, "3")]));
+        const rows = historyRows(state);
+        expect(rows.map((r) => r.id)).toEqual([undefined, oid(2), oid(1)]);
+        expect("id" in rows[0]!).toBe(false);
+        const multi = historyRows(
+            open("3", 1, [
+                deposit(3, "1", { id: oid(4), txHash: hash(3), logIndex: 7 }),
+                deposit(3, "2", { id: oid(3), txHash: hash(3), logIndex: 2 }),
+            ]),
+        );
+        expect(multi.map((r) => [r.key, r.id])).toEqual([
+            [`${hash(3)}:7`, oid(4)],
+            [`${hash(3)}:2`, oid(3)],
+        ]);
+    });
+
     test("a multi-log transaction is keyed by hash and log index", () => {
         const items = [
             deposit(3, "1", { id: oid(4), txHash: hash(3), logIndex: 7 }),

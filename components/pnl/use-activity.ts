@@ -9,6 +9,7 @@ import {
     pendingBuyActivity,
     perpActivity,
     predictionActivity,
+    saleActivity,
     swapActivity,
     withdrawalActivity,
     type Activity,
@@ -37,11 +38,13 @@ const useNow = () =>
         () => null,
     );
 
-/** Positions as their rows, plus the buys still on their way. */
+/** Positions as their rows, plus the part sales and the buys still on their way. */
 function realPredictions({ positions, orders }: PositionsView, optimistic: readonly OptimisticTrade[]): Activity[] {
     const rows = positions.flatMap((p) => predictionActivity(p));
     const placed = new Set(orders.map((o) => o.requestId));
     for (const o of orders) {
+        const sale = saleActivity(o);
+        if (sale) rows.push(sale);
         if (o.side !== "buy" || (o.state !== "placing" && o.state !== "posted")) continue;
         rows.push(
             pendingBuyActivity({
@@ -86,7 +89,12 @@ export function useActivity(): ActivityState {
     const activity = useMemo(() => {
         if (now === null) return null;
         const deposits = history.map((row) =>
-            depositActivity({ key: row.key, amountUSD: toUsdc(row.amount), at: row.at, pending: row.pending }),
+            depositActivity({
+                key: row.id ?? row.key,
+                amountUSD: toUsdc(row.amount),
+                at: row.at,
+                pending: row.pending,
+            }),
         );
         const payouts = withdrawalEntries(withdrawals, pendingWithdrawals)
             .filter((w) => w.state !== "failed")

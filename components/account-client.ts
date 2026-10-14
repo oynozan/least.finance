@@ -32,6 +32,8 @@ import { loadCachedSwapHoldings, saveCachedSwapHoldings, validHoldings } from "@
 import { networkName, type NetworkCheck } from "@/lib/wallet/network";
 import { resetPnlStores } from "@/lib/pnl/series-store";
 import type {
+    ActivityFilter,
+    ActivityPage,
     BalancesView,
     ClientToServerEvents,
     PerpOrderRequest,
@@ -435,6 +437,18 @@ export class AccountClient {
         const result = await socket
             .timeout(CONNECT_TIMEOUT_MS)
             .emitWithAck("pnl:series", { tz })
+            .catch(() => null);
+        if (!result) return UNREACHABLE;
+        return result.ok ? result.data : result.error;
+    }
+
+    /** One page of the account's history under `filter`, the one after the cursor `before` or the newest */
+    async loadActivityPage(req: { before?: string; filter: ActivityFilter }): Promise<ActivityPage | ApiError> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket || this.#bound !== socket) return UNREACHABLE;
+        const result = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("activity:list", { filter: req.filter, ...(req.before ? { before: req.before } : {}) })
             .catch(() => null);
         if (!result) return UNREACHABLE;
         return result.ok ? result.data : result.error;

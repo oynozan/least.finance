@@ -28,6 +28,8 @@ import { API_URL } from "@/lib/api";
 import type { Signers } from "@/lib/trade/swap-request";
 import { ensureNetwork } from "@/lib/wallet/network";
 import type {
+    ActivityFilter,
+    ActivityPage,
     CoinBalance,
     DepositOrderView,
     DepositQuoteView,
@@ -116,6 +118,8 @@ export type Account = {
     pnl: AccountSnapshot["pnl"];
     /** The balance and PnL series with its days cut in the zone `tz`. */
     loadPnlSeries: (tz: string) => Promise<PnlSeries | ApiError>;
+    /** One page of the account's history under `filter`, the one after the cursor `before` or the newest */
+    loadActivityPage: (req: { before?: string; filter: ActivityFilter }) => Promise<ActivityPage | ApiError>;
     /** The account's recent withdrawals, newest first. */
     withdrawals: WithdrawalView[];
     /** Withdrawals asked for that the server hasn't shown back yet, newest first. */
@@ -311,6 +315,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             placePerp={(req, quote) => client.placePerp(req, quote)}
             closePerp={(positionId) => client.closePerp(positionId)}
             loadPnlSeries={(tz) => client.loadPnlSeries(tz)}
+            loadActivityPage={(req) => client.loadActivityPage(req)}
             withdrawLimits={() => client.withdrawLimits()}
             withdrawQuote={(amount, to) => client.withdrawQuote(amount, to)}
             withdraw={(amount, to, reviewedFee) => client.withdraw(amount, to, reviewedFee)}
@@ -340,6 +345,7 @@ function Provide({
     placePerp = (req) => ({ requestId: req.requestId, sent: false }),
     closePerp = async () => undefined,
     loadPnlSeries = async () => UNAVAILABLE_PNL,
+    loadActivityPage = async () => UNAVAILABLE_PNL,
     withdrawLimits = async () => UNAVAILABLE_WITHDRAW,
     withdrawQuote = async () => UNAVAILABLE_WITHDRAW,
     withdraw = async () => "failed",
@@ -364,6 +370,7 @@ function Provide({
     placePerp?: Account["placePerp"];
     closePerp?: Account["closePerp"];
     loadPnlSeries?: Account["loadPnlSeries"];
+    loadActivityPage?: Account["loadActivityPage"];
     withdrawLimits?: Account["withdrawLimits"];
     withdrawQuote?: Account["withdrawQuote"];
     withdraw?: Account["withdraw"];
@@ -404,6 +411,7 @@ function Provide({
         closePerp,
         pnl: snapshot.pnl,
         loadPnlSeries,
+        loadActivityPage,
         withdrawals: state.status === "ready" ? state.withdrawals : NO_WITHDRAWALS,
         pendingWithdrawals: state.status === "ready" ? state.pendingWithdrawals : NO_PENDING_WITHDRAWALS,
         withdrawLimits,

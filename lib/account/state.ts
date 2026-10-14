@@ -583,6 +583,8 @@ export type HistoryRow = {
      * credited; a transaction that credited more than once adds the log index.
      */
     key: string;
+    /** The deposit document's id, absent on a pending row */
+    id?: string;
     /** Wei. */
     amount: bigint;
     at: Date;
@@ -600,6 +602,7 @@ export function historyRows(state: AccountState): HistoryRow[] {
         ...state.pending.map((p) => ({ key: p.txHash, amount: p.amount, at: new Date(p.sentAt), pending: true })),
         ...state.deposits.map((d) => ({
             key: (perTx.get(d.txHash) ?? 0) > 1 ? `${d.txHash}:${d.logIndex}` : d.txHash,
+            id: d.id,
             amount: toWei(d.amount),
             at: new Date(d.creditedAt),
             pending: false,

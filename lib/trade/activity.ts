@@ -1,6 +1,13 @@
 import { QUOTE } from "./catalog";
 import { formatUnits, formatUsdShort } from "./format";
-import type { PerpPositionView, PositionView, SwapOrderState, SwapOrderView } from "@/server/src/protocol";
+import type {
+    ActivityItem,
+    PerpPositionView,
+    PositionView,
+    PredictionOrderView,
+    SwapOrderState,
+    SwapOrderView,
+} from "@/server/src/protocol";
 import { networkName } from "./networks";
 import { shortenAddress } from "@/components/wallet-data";
 
@@ -160,6 +167,24 @@ export function perpActivity(position: PerpPositionView, optimistic = false): Ac
     return rows;
 }
 
+/** The row for a sell that left its position open, or null for an order with no soldPart */
+export function saleActivity(order: PredictionOrderView): Activity | null {
+    const part = order.soldPart;
+    if (!part) return null;
+    const cost = Number(part.costUSD);
+    const proceeds = Number(part.proceedsUSD);
+    return {
+        id: `sale:${order.id}`,
+        at: new Date(part.at),
+        kind: "close",
+        title: `Sold part of ${order.outcome} on ${order.question}`,
+        detail: `${formatUnits(Number(order.shares ?? 0), "shares")}, ${formatUsdShort(proceeds)} back`,
+        symbols: [QUOTE],
+        amountUSD: cost,
+        change: proceeds - cost,
+    };
+}
+
 /** A buy the server hasn't filled yet. */
 export function pendingBuyActivity(buy: {
     id: string;
@@ -180,6 +205,48 @@ export function pendingBuyActivity(buy: {
         change: 0,
         pending: true,
     };
+}
+
+/** The row of a position for one of its parts, or null when it has none */
+const partOf = (rows: Activity[], part: "open" | "settle") => rows.find((r) => r.id.endsWith(`:${part}`)) ?? null;
+
+const SWAP_PRICE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The row for one item of a server history page, or null when the item has no such row */
+export function activityFromItem(
+    item: ActivityItem,
+    ctx: { now: Date; priceOf: (symbol: string) => number | null },
+): Activity | null {
+    switch (item.kind) {
+        case "deposit":
+            return depositActivity({
+                key: item.deposit.id,
+                amountUSD: Number(item.deposit.amount),
+                at: new Date(item.deposit.creditedAt),
+            });
+        case "withdrawal": {
+            const w = item.withdrawal;
+            return withdrawalActivity({
+                id: w.requestId,
+                amountUSD: Number(w.amount),
+                at: new Date(w.createdAt),
+                pending: w.state === "sending",
+                to: w.to,
+            });
+        }
+        case "swap": {
+            // The order keeps no dollar size, so only a recent one is priced, at the coin's price now
+            const recent = ctx.now.getTime() - Date.parse(item.order.createdAt) <= SWAP_PRICE_WINDOW_MS;
+            const price = recent ? ctx.priceOf(item.order.from.token) : null;
+            return swapActivity(item.order, price === null ? null : Number(item.order.from.amount) * price);
+        }
+        case "prediction":
+            return partOf(predictionActivity(item.position), item.part);
+        case "perp":
+            return partOf(perpActivity(item.position), item.part);
+        case "sale":
+            return saleActivity(item.order);
+    }
 }
 
 /** Newest first. */
