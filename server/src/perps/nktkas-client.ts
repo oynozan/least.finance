@@ -216,3 +216,30 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
         },
     };
 }
+
+/** A signed withdrawal of the signer's perps dollars to an EVM address through Circle's forwarding data; used only by the operator's rebalance script. */
+export async function sendToEvmWithData(o: {
+    url: string;
+    signer: HDAccount;
+    to: string;
+    amountE6: bigint;
+    destinationChainId: number;
+    gasLimit: number;
+    data: string;
+    nonce: number;
+}): Promise<void> {
+    const transport = new HttpTransport({
+        apiUrl: o.url,
+        isTestnet: new URL(o.url).hostname.includes("testnet"),
+    });
+    await new ExchangeClient({ transport, wallet: o.signer, nonceManager: () => o.nonce }).sendToEvmWithData({
+        token: "USDC",
+        amount: formatUnits(o.amountE6, 6),
+        sourceDex: "",
+        destinationRecipient: o.to,
+        addressEncoding: "hex",
+        destinationChainId: o.destinationChainId,
+        gasLimit: o.gasLimit,
+        data: o.data,
+    });
+}

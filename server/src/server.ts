@@ -32,6 +32,7 @@ import { withPerpTimeouts, type HyperliquidClient } from "./perps/client.ts";
 import { PerpMarkets } from "./perps/markets.ts";
 import { PerpService } from "./perps/perps.ts";
 import { PerpTracker } from "./perps/tracker.ts";
+import { PerpReconciler, arcHoldings } from "./perps/reconciler.ts";
 import { createNktkasClient } from "./perps/nktkas-client.ts";
 import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
@@ -333,6 +334,14 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             logger: logger.child({ component: "perp-tracker" }),
             bus,
         });
+        const perpReconciler = new PerpReconciler({
+            collections,
+            client: perpClient,
+            keyring,
+            config,
+            logger: logger.child({ component: "perp-reconciler" }),
+            arcAssets: arcHoldings({ client, treasury: keyring.operator().address, collections }),
+        });
         const sweeper = new Sweeper({
             client,
             keyring,
@@ -443,6 +452,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         perpMarkets.start();
         perps.start();
         perpTracker.start();
+        perpReconciler.start();
         swapTracker.start();
         predictionTracker.start();
         predictionResolver.start();
@@ -475,6 +485,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await swapTracker.stop();
                 await swapCatalog.stop();
                 await priceHistory.stop();
+                await perpReconciler.stop();
                 await perpTracker.stop();
                 await perps.stop();
                 await perpMarkets.stop();
