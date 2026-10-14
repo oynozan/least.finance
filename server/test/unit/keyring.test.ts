@@ -29,4 +29,26 @@ describe("keyring", () => {
         expect(keyring.operator().address).toBe(mnemonicToAccount(MNEMONIC, { addressIndex: 0 }).address);
         expect(() => keyring.signerAt(0)).toThrow(/Bad deposit index/);
     });
+
+    it("a perp address never equals a deposit address", () => {
+        const deposits = new Set<string>();
+        for (let i = 0; i <= 50; i++) {
+            if (i > 0) deposits.add(keyring.addressAt(i));
+        }
+        deposits.add(keyring.operator().address.toLowerCase());
+        for (let i = 0; i <= 50; i++) expect(deposits.has(keyring.perpAddressAt(i))).toBe(false);
+    });
+
+    it("perpAddressAt(0) is the master and differs from operator()", () => {
+        expect(keyring.perpAddressAt(0)).toBe(keyring.perpSignerAt(0).address.toLowerCase());
+        expect(keyring.perpAddressAt(0)).not.toBe(keyring.operator().address.toLowerCase());
+        expect(keyring.perpAddressAt(0)).toBe(
+            mnemonicToAccount(MNEMONIC, { accountIndex: 1, addressIndex: 0 }).address.toLowerCase(),
+        );
+    });
+
+    it.each([-1, 1.5])("perpSignerAt rejects %s", (index) => {
+        expect(() => keyring.perpSignerAt(index)).toThrow(/Bad perp index/);
+        expect(() => keyring.perpAddressAt(index)).toThrow(/Bad perp index/);
+    });
 });

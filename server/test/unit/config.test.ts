@@ -67,6 +67,32 @@ describe("loadConfig", () => {
         expect(config.POLYMARKET_POOL_KEY).toBe(key);
     });
 
+    it("perps defaults", () => {
+        const config = load();
+        expect(config.PERPS_TRADING).toBe("off");
+        expect(config.PERPS_FLOAT_USD).toBe(200);
+        expect(config.PERPS_SLIPPAGE_BPS).toBe(100);
+        expect(config.PERPS_CLOSE_SLIPPAGE_BPS).toBe(300);
+        expect(config.PERPS_MAX_LEVERAGE).toBe(20);
+        expect(config.PERPS_FEE_BPS).toBe(0);
+        expect(config.PERPS_RECONCILE_TOLERANCE_USD).toBe(5);
+        expect(config.HYPERLIQUID_API_URL).toBe("https://api.hyperliquid.xyz");
+    });
+
+    it("PERPS_TRADING=on needs no extra secret", () => {
+        expect(load({ PERPS_TRADING: "on" }).PERPS_TRADING).toBe("on");
+    });
+
+    it("PERPS_FEE_BPS=1000 is refused", () => {
+        expect(() => load({ PERPS_FEE_BPS: "1000" })).toThrow(/PERPS_FEE_BPS/);
+        expect(load({ PERPS_FEE_BPS: "999" }).PERPS_FEE_BPS).toBe(999);
+    });
+
+    it("PERPS_MAX_LEVERAGE stays within 1 to 50", () => {
+        expect(() => load({ PERPS_MAX_LEVERAGE: "0" })).toThrow(/PERPS_MAX_LEVERAGE/);
+        expect(() => load({ PERPS_MAX_LEVERAGE: "51" })).toThrow(/PERPS_MAX_LEVERAGE/);
+    });
+
     it("Solana switches are off by default", () => {
         const config = load();
         expect(config.SOLANA_DEPOSITS).toBe("off");

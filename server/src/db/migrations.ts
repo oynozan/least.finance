@@ -44,7 +44,19 @@ export async function mergeAccountsByPerson(client: MongoClient, collections: Co
 /** Moves one account into another in a single transaction, so the ledger stays double-entry. */
 async function mergeInto(
     client: MongoClient,
-    { accounts, deposits, ledger, depositOrders, predictionOrders, positions, swapOrders, withdrawals }: Collections,
+    {
+        accounts,
+        deposits,
+        ledger,
+        depositOrders,
+        predictionOrders,
+        positions,
+        swapOrders,
+        withdrawals,
+        perpAccounts,
+        perpOrders,
+        perpPositions,
+    }: Collections,
     into: AccountDoc["_id"],
     from: AccountDoc["_id"],
 ) {
@@ -98,6 +110,10 @@ async function mergeInto(
             await predictionOrders.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
             await swapOrders.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
             await withdrawals.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
+            // Perp positions key on their own address index, so they never collide and each stays closable from its address.
+            await perpAccounts.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
+            await perpOrders.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
+            await perpPositions.updateMany({ accountId: from }, { $set: { accountId: into } }, { session });
             await movePositions(positions, into, from, now, session);
             return true;
         });

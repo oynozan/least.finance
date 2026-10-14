@@ -84,7 +84,7 @@ export class Ledger {
         session: ClientSession,
         accountId: ObjectId,
         wei: bigint,
-        kind: "prediction_buy" | "withdrawal",
+        kind: "prediction_buy" | "withdrawal" | "perp_open",
         refId: ObjectId,
     ): Promise<AccountDoc> {
         if (wei <= 0n) throw new Error(`A debit must be over zero, not ${wei}`);
@@ -105,7 +105,13 @@ export class Ledger {
         session: ClientSession,
         accountId: ObjectId,
         wei: bigint,
-        kind: "prediction_refund" | "prediction_sell" | "prediction_payout" | "withdrawal_refund",
+        kind:
+            | "prediction_refund"
+            | "prediction_sell"
+            | "prediction_payout"
+            | "withdrawal_refund"
+            | "perp_refund"
+            | "perp_close",
         refId: ObjectId,
     ): Promise<AccountDoc> {
         if (wei <= 0n) throw new Error(`A credit must be over zero, not ${wei}`);

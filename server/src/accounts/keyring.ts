@@ -12,6 +12,10 @@ export type Keyring = {
     signerAt(index: number): HDAccount;
     /** The treasury: index 0, which no account's deposit address uses. */
     operator(): HDAccount;
+    /** Index 0 is the Hyperliquid master float account; the path differs from the deposits'. */
+    perpSignerAt(index: number): HDAccount;
+    /** Lowercase. */
+    perpAddressAt(index: number): Address;
 };
 
 export function createKeyring(mnemonic: string): Keyring {
@@ -21,9 +25,15 @@ export function createKeyring(mnemonic: string): Keyring {
         if (!Number.isSafeInteger(index) || index < 1) throw new Error(`Bad deposit index: ${index}`);
         return hdKeyToAccount(root, { addressIndex: index });
     };
+    const perpSignerAt = (index: number) => {
+        if (!Number.isSafeInteger(index) || index < 0) throw new Error(`Bad perp index: ${index}`);
+        return hdKeyToAccount(root, { accountIndex: 1, addressIndex: index });
+    };
     return {
         addressAt: (index) => signerAt(index).address.toLowerCase() as Address,
         signerAt,
         operator: () => hdKeyToAccount(root, { addressIndex: 0 }),
+        perpSignerAt,
+        perpAddressAt: (index) => perpSignerAt(index).address.toLowerCase() as Address,
     };
 }

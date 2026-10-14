@@ -267,6 +267,79 @@ test("merging two open positions on one token sums them instead of failing", asy
     expect(await positions.countDocuments({ accountId: a.id, state: { $in: ["open", "closing"] } })).toBe(2);
 });
 
+const perpAccountDoc = (accountId: ObjectId, index: number) => ({
+    _id: new ObjectId(),
+    accountId,
+    index,
+    address: newAddress(),
+    activatedAt: null,
+    createdAt: new Date(),
+});
+const perpOrderDoc = (accountId: ObjectId, requestId: string, index: number) => ({
+    _id: new ObjectId(),
+    accountId,
+    requestId,
+    kind: "open",
+    index,
+    asset: "BTC",
+    state: "filled",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+});
+const perpPositionDoc = (accountId: ObjectId, index: number, asset: string) => ({
+    _id: new ObjectId(),
+    accountId,
+    index,
+    asset,
+    active: true,
+    state: "open",
+    openedAt: new Date(),
+    updatedAt: new Date(),
+});
+
+test("merging accounts re-points perp orders, positions and accounts to the survivor", async () => {
+    const did = newDid();
+    let a!: Seed;
+    const account = perpAccountDoc(new ObjectId(), 7);
+    const order = perpOrderDoc(new ObjectId(), "r1", 7);
+    const position = perpPositionDoc(new ObjectId(), 7, "BTC");
+    const running = await boot(async (db) => {
+        a = await seedAccount(db, did, "3");
+        const b = await seedAccount(db, did, "2");
+        account.accountId = order.accountId = position.accountId = b.id;
+        const database = mongo.db(db);
+        await database.collection("perp_accounts").insertOne(account as never);
+        await database.collection("perp_orders").insertOne(order as never);
+        await database.collection("perp_positions").insertOne(position as never);
+    });
+
+    const { perpAccounts, perpOrders, perpPositions } = collections(running);
+    expect((await perpAccounts.findOne({ _id: account._id }))?.accountId.equals(a.id)).toBe(true);
+    expect((await perpOrders.findOne({ _id: order._id }))?.accountId.equals(a.id)).toBe(true);
+    expect((await perpPositions.findOne({ _id: position._id }))?.accountId.equals(a.id)).toBe(true);
+});
+
+test("a merge never collides two open positions", async () => {
+    const did = newDid();
+    let a!: Seed;
+    const keep = perpPositionDoc(new ObjectId(), 5, "BTC");
+    const other = perpPositionDoc(new ObjectId(), 9, "BTC");
+    const running = await boot(async (db) => {
+        a = await seedAccount(db, did, "3");
+        const b = await seedAccount(db, did, "2");
+        keep.accountId = a.id;
+        other.accountId = b.id;
+        await mongo
+            .db(db)
+            .collection("perp_positions")
+            .insertMany([keep, other] as never);
+    });
+
+    const { perpPositions } = collections(running);
+    expect(await perpPositions.countDocuments({ accountId: a.id, state: "open" })).toBe(2);
+    expect((await perpPositions.findOne({ _id: other._id }))?.index).toBe(9);
+});
+
 test("accounts without a Privy user aren't merged together", async () => {
     const did = newDid();
     let orphans!: Seed[];

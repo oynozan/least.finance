@@ -83,7 +83,10 @@ export type LedgerEntryDoc = {
         | "prediction_sell"
         | "prediction_payout"
         | "withdrawal"
-        | "withdrawal_refund";
+        | "withdrawal_refund"
+        | "perp_open"
+        | "perp_refund"
+        | "perp_close";
     /** Signed wei. */
     amount: Decimal128;
     balanceAfter: Decimal128;
@@ -157,6 +160,109 @@ export type PoolFloatDoc = {
     /** E6 spent by fills that the last read may not show yet. */
     unreadFillsE6: Decimal128;
     updatedAt: Date;
+};
+
+/** A person's Hyperliquid account; index 0 of the same path is the master float, which has no row. */
+export type PerpAccountDoc = {
+    _id: ObjectId;
+    accountId: ObjectId;
+    /** The `perpIndex` the address derives from. */
+    index: number;
+    /** Lowercase. */
+    address: string;
+    activatedAt: Date | null;
+    createdAt: Date;
+};
+
+export type PerpOrderState = "placing" | "funding" | "posted" | "sweeping" | "filled" | "rejected" | "done";
+
+/** One open or close request; an open holds `collateral` wei of the balance until it settles. */
+export type PerpOrderDoc = {
+    _id: ObjectId;
+    accountId: ObjectId;
+    /** The client's UUID; a repeat of (accountId, requestId) is the same order. */
+    requestId: string;
+    kind: "open" | "close";
+    /** The perp index of the address that trades. */
+    index: number;
+    asset: string;
+    side: "long" | "short";
+    leverage: number;
+    /** Wei. */
+    collateral: Decimal128;
+    notionalE6: Decimal128;
+    sizeCoin: string;
+    /** 0x followed by 32 hex digits, derived from `_id`. */
+    cloid: string;
+    limitPx: string;
+    state: PerpOrderState;
+    /** Progress marks and the stored transfer nonces that make a restart repeat a step safely. */
+    steps: Record<string, unknown>;
+    fill: { sizeCoin: string; avgPx: string; feeE6: Decimal128 } | null;
+    /** Wei put back on the balance. */
+    credited: Decimal128 | null;
+    reason: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+};
+
+export type PerpPositionState = "open" | "closing" | "closed" | "liquidated";
+
+export type PerpPositionDoc = {
+    _id: ObjectId;
+    accountId: ObjectId;
+    index: number;
+    asset: string;
+    side: "long" | "short";
+    leverage: number;
+    sizeCoin: string;
+    entryPx: string;
+    /** Wei. */
+    collateral: Decimal128;
+    /** E6 entry fee Hyperliquid took. */
+    openedFee: Decimal128;
+    state: PerpPositionState;
+    /** True while the state is `open` or `closing`; the unique open-position key rests on it. */
+    active: boolean;
+    /** Wei credited when the position settled. */
+    proceeds: Decimal128 | null;
+    /** E6. */
+    realizedPnl: Decimal128 | null;
+    closeReason: string | null;
+    /** The last poll, for the sidebar. */
+    snapshot?: {
+        markPx: string;
+        unrealizedPnlE6: Decimal128;
+        liquidationPx: string | null;
+        cumFundingE6: Decimal128;
+        at: Date;
+    };
+    openedAt: Date;
+    settledAt: Date | null;
+    updatedAt: Date;
+};
+
+/** The master Hyperliquid float, one document, shaped like the pool's. */
+export type PerpFloatDoc = {
+    _id: "hyperliquid";
+    /** E6 withdrawable from the last read. */
+    balanceE6: Decimal128;
+    balanceAt: Date;
+    /** E6 reserved by orders that haven't moved their margin. */
+    heldE6: Decimal128;
+    /** E6 spent by fills that the last read may not show yet. */
+    unreadFillsE6: Decimal128;
+    updatedAt: Date;
+};
+
+/** Money moving between the Arc treasury and the master float, counted as ours while in flight. */
+export type PerpRebalanceDoc = {
+    _id: ObjectId;
+    direction: "arc_to_hl" | "hl_to_arc";
+    amountE6: Decimal128;
+    state: "sent" | "arrived";
+    txHash: string;
+    createdAt: Date;
 };
 
 export type PositionState = "open" | "closing" | "closed" | "won" | "lost";
@@ -296,6 +402,11 @@ export type Collections = {
     depositOrders: Collection<DepositOrderDoc>;
     predictionOrders: Collection<PredictionOrderDoc>;
     poolFloat: Collection<PoolFloatDoc>;
+    perpAccounts: Collection<PerpAccountDoc>;
+    perpOrders: Collection<PerpOrderDoc>;
+    perpPositions: Collection<PerpPositionDoc>;
+    perpFloat: Collection<PerpFloatDoc>;
+    perpRebalances: Collection<PerpRebalanceDoc>;
     positions: Collection<PositionDoc>;
     predictionRedemptions: Collection<PredictionRedemptionDoc>;
     withdrawals: Collection<WithdrawalDoc>;
@@ -330,6 +441,11 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             depositOrders: db.collection("deposit_orders"),
             predictionOrders: db.collection("prediction_orders"),
             poolFloat: db.collection("pool_float"),
+            perpAccounts: db.collection("perp_accounts"),
+            perpOrders: db.collection("perp_orders"),
+            perpPositions: db.collection("perp_positions"),
+            perpFloat: db.collection("perp_float"),
+            perpRebalances: db.collection("perp_rebalances"),
             positions: db.collection("positions"),
             predictionRedemptions: db.collection("prediction_redemptions"),
             withdrawals: db.collection("withdrawals"),
@@ -367,6 +483,9 @@ async function ensureIndexes({
     withdrawals,
     swapOrders,
     swapIps,
+    perpAccounts,
+    perpOrders,
+    perpPositions,
 }: Collections) {
     await Promise.all([
         accounts.createIndexes([
@@ -428,6 +547,25 @@ async function ensureIndexes({
             { key: { state: 1, updatedAt: 1 }, name: "state_updated" },
         ]),
         swapIps.createIndexes([{ key: { expiresAt: 1 }, name: "expires", expireAfterSeconds: 0 }]),
+        perpAccounts.createIndexes([
+            { key: { index: 1 }, name: "index_unique", unique: true },
+            { key: { address: 1 }, name: "address_unique", unique: true },
+            { key: { accountId: 1 }, name: "account" },
+        ]),
+        perpOrders.createIndexes([
+            { key: { accountId: 1, requestId: 1 }, name: "request_unique", unique: true },
+            { key: { state: 1, updatedAt: 1 }, name: "state_updated" },
+        ]),
+        perpPositions.createIndexes([
+            { key: { accountId: 1, openedAt: 1 }, name: "account_positions" },
+            { key: { state: 1, updatedAt: 1 }, name: "state_updated" },
+            {
+                key: { index: 1, asset: 1 },
+                name: "open_unique",
+                unique: true,
+                partialFilterExpression: { active: true },
+            },
+        ]),
     ]);
 }
 

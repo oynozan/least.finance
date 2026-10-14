@@ -138,3 +138,36 @@ test("a debit or credit of zero or less throws and writes nothing", async () => 
     expect(state.version).toBe(1);
     expect(state.rows).toHaveLength(1);
 });
+
+test("perp_open debits once and a repeated (kind, refId) is refused", async () => {
+    const id = await seedAccount("10");
+    const refId = new ObjectId();
+    const open = () =>
+        ledger.runInTransaction((session) => ledger.debitInSession(session, id, wei("4"), "perp_open", refId));
+
+    await open();
+    const error = await open().catch((e: unknown) => e);
+    expect(isDuplicateKey(error)).toBe(true);
+    const state = await ledgerState(id);
+    expect(state.balance).toBe(wei("6"));
+    expect(state.rows.filter((row) => row.kind === "perp_open")).toHaveLength(1);
+    expect(state.sum).toBe(state.balance);
+});
+
+test.each(["perp_refund", "perp_close"] as const)(
+    "%s credits once and a repeated (kind, refId) is refused",
+    async (kind) => {
+        const id = await seedAccount("1");
+        const refId = new ObjectId();
+        const credit = () =>
+            ledger.runInTransaction((session) => ledger.creditInSession(session, id, wei("2"), kind, refId));
+
+        await credit();
+        const error = await credit().catch((e: unknown) => e);
+        expect(isDuplicateKey(error)).toBe(true);
+        const state = await ledgerState(id);
+        expect(state.balance).toBe(wei("3"));
+        expect(state.rows.filter((row) => row.kind === kind)).toHaveLength(1);
+        expect(state.sum).toBe(state.balance);
+    },
+);

@@ -171,6 +171,21 @@ const fields = z.object({
     PREDICTIONS_POLL_MS: z.coerce.number().int().min(100).default(2_000),
     /** How often open positions' markets are checked for a resolution. */
     PREDICTIONS_RESOLVE_MS: z.coerce.number().int().min(100).default(60_000),
+
+    /** Real orders go to Hyperliquid only while this is on. */
+    PERPS_TRADING: z.enum(["on", "off"]).default("off"),
+    HYPERLIQUID_API_URL: z.url().default("https://api.hyperliquid.xyz"),
+    /** The master Hyperliquid float; warnings fire well under and over it. */
+    PERPS_FLOAT_USD: z.coerce.number().positive().default(200),
+    /** How far past the mark an opening order may fill, in basis points. */
+    PERPS_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(9_999).default(100),
+    /** How far past the mark a closing order may fill, in basis points. */
+    PERPS_CLOSE_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(9_999).default(300),
+    PERPS_MAX_LEVERAGE: z.coerce.number().int().min(1).max(50).default(20),
+    /** Our fee as basis points of a position's notional, kept from the collateral. */
+    PERPS_FEE_BPS: z.coerce.number().int().min(0).max(999).default(0),
+    /** How far the master's Hyperliquid balance may differ from the books before it's flagged. */
+    PERPS_RECONCILE_TOLERANCE_USD: z.coerce.number().min(0).default(5),
 });
 
 const TRADING_SECRETS = [
