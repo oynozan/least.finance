@@ -81,3 +81,50 @@ test("an unwind on a second asset never sweeps the first order's money", async (
     expect(s.balance).toBe(wei("900"));
     expect(s.sum).toBe(s.balance);
 });
+
+test("a refused funding re-send waits for the original to land, then sweeps it back once", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.fake.nextUsdSend(1, { late: 900 });
+    h.fake.nextUsdSend(2, "refuse");
+
+    const { order } = await h.place(account);
+    await h.until(async () => !h.service.submitting(order._id));
+    await sleep(1200);
+    const address = await h.addressOf(account._id);
+
+    expect((await h.orderOf(order._id)).state).toBe("funding");
+    expect(h.fake.account(address)!.freeE6).toBe(e6("100"));
+
+    h.clock.at += 61_000;
+    await h.service.settleStuck(await h.orderOf(order._id));
+
+    expect((await h.orderOf(order._id)).state).toBe("rejected");
+    const s = await h.state(account._id);
+    expect(s.kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
+    expect(s.balance).toBe(wei("1000"));
+    expect(s.sum).toBe(s.balance);
+    expect(h.fake.account(address)!.freeE6).toBe(0n);
+    expect(h.fake.account(h.master)!.freeE6).toBe(e6("499"));
+});
+
+test("a refused funding re-send with nothing in the ledger refunds in full once the original is old", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.fake.nextUsdSend(1, "lose");
+    h.fake.nextUsdSend(2, "refuse");
+
+    const { order } = await h.place(account);
+    await h.until(async () => !h.service.submitting(order._id));
+    expect((await h.orderOf(order._id)).state).toBe("funding");
+
+    h.clock.at += 61_000;
+    h.fake.nextUsdSend(1, "refuse");
+    await h.service.settleStuck(await h.orderOf(order._id));
+
+    expect((await h.orderOf(order._id)).state).toBe("rejected");
+    const s = await h.state(account._id);
+    expect(s.kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
+    expect(s.balance).toBe(wei("1000"));
+    expect(h.fake.account(h.master)!.freeE6).toBe(e6("500"));
+});

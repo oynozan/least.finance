@@ -48,6 +48,7 @@ async function main() {
     }
 
     // 1 to 3: funding a fresh address
+    const startedAt = Date.now();
     const sent = await client.usdSend(keyring.perpSignerAt(0), person, FUND_E6, nextNonce(master));
     await pause(2_000);
     const [masterAfter, personAfter] = [await free(master), await free(person)];
@@ -74,6 +75,15 @@ async function main() {
     observed(
         "11. Does a refused send use up its nonce (duplicate after a refusal means yes)",
         `over the balance ${JSON.stringify(over)}, then a valid send with the same nonce ${JSON.stringify(valid)}`,
+    );
+
+    // 12: the transfer records a duplicate answer and an unknown funding send are confirmed against
+    const records = await client.transfers(master, startedAt);
+    observed(
+        "12. Transfer records as the server reads them (expect the funding send and each accepted $1 send to the person)",
+        records.length
+            ? records.map((t) => `${t.from} -> ${t.to} ${usd(t.amountE6)} at ${t.time}`).join("\n    ")
+            : "none read",
     );
 
     // Open

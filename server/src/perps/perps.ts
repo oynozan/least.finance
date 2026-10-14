@@ -38,6 +38,8 @@ const WEI_PER_E6 = 1_000_000_000_000n;
 /** How long Hyperliquid honours a posted order, and how much longer a missing one is given to show up. */
 const ORDER_LIFE_MS = 30_000;
 const MISSING_GRACE_MS = 5_000;
+/** How long an unanswered funding send may still land, so a refused re-send isn't final before it. */
+const FUNDING_LAND_MS = 60_000;
 /** The least time between two reads that both show a position gone: the fastest poll. */
 const GONE_AGAIN_MS = 5_000;
 /** A transfer nonce older than this may be past Hyperliquid's acceptance window. */
@@ -634,8 +636,10 @@ export class PerpService {
         try {
             const sent = await this.#deps.client.usdSend(master, address, collateral, order.steps.fundNonce as number);
             if (sent.kind === "ok") return true;
-            if (sent.kind === "rejected") return false;
-            return await this.#landed(master.address, address, collateral, order.steps.sentAt as Date);
+            const sentAt = order.steps.sentAt as Date;
+            if (await this.#landed(master.address, address, collateral, sentAt)) return true;
+            if (sent.kind === "duplicate") return false;
+            return this.#now() - sentAt.getTime() < FUNDING_LAND_MS ? null : false;
         } catch (error) {
             this.#deps.logger.warn(
                 { err: error, order: order._id.toHexString() },
