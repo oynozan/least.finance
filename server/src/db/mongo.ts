@@ -269,6 +269,72 @@ export type PerpRebalanceDoc = {
     createdAt: Date;
 };
 
+export type PoolDirection = "arc_to_polygon" | "polygon_to_arc";
+
+export type PoolRebalanceState =
+    "queued" | "sending" | "submitting" | "forwarding" | "wrapping" | "done" | "failed" | "stuck";
+
+/** One USDC move between the Arc treasury and the pool, where only a `state` change touches `updatedAt`, never `attempts`, `nextAt`, `iris.checkedAt` or the signed-transaction fields. */
+export type PoolRebalanceDoc = {
+    _id: ObjectId;
+    kind: "move" | "wrap_idle";
+    /** Null for a `wrap_idle` row. */
+    direction: PoolDirection | null;
+    source: "auto" | "operator";
+    reason: "low" | "high" | "operator";
+    /** E6 USDC; 0 for a `wrap_idle` row. */
+    amountE6: Decimal128;
+    /** E6; the most the CCTP burn may pay in fees. */
+    maxFeeE6: Decimal128;
+    /** E6 pUSD reserved from the pool's free float by a `polygon_to_arc` move. */
+    reservedE6: Decimal128;
+    /** True while queued, sending, submitting, forwarding or wrapping, and absent once the row ends. */
+    active?: true;
+    state: PoolRebalanceState;
+    attempts: number;
+    nextAt: Date | null;
+    lastError: string | null;
+    /** For an `arc_to_polygon` burn, the pool wallet it mints to. */
+    mintRecipient: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+    doneAt: Date | null;
+    /** When an operator marked a stuck row done or failed. */
+    resolvedAt: Date | null;
+    arc: {
+        approveNonce: number | null;
+        approveRawTx: string | null;
+        approveTxHash: string | null;
+        burnNonce: number | null;
+        burnRawTx: string | null;
+        burnTxHash: string | null;
+    };
+    polygon: {
+        /** Set before the relayer batch is sent, so a restart never sends it twice. */
+        attemptedAt: Date | null;
+        relayerTransactionId: string | null;
+        /** When the drain batch reached a final state. */
+        relayerFinalAt: Date | null;
+        burnTxHash: string | null;
+        burnLogSeen: boolean | null;
+        wrapAttemptedAt: Date | null;
+        wrapTransactionId: string | null;
+        wrapSubmittedAt: Date | null;
+        /** When the wrap batch reached a final state. */
+        wrapFinalAt: Date | null;
+        /** E6 native USDC the wrap batch was sent with. */
+        mintedE6: Decimal128 | null;
+        /** E6 pUSD the pool held when the wrap batch was sent. */
+        balanceBeforeE6: Decimal128 | null;
+    };
+    iris: {
+        checkedAt: Date | null;
+        forwardTxHash: string | null;
+        feeExecutedE6: Decimal128 | null;
+        delayReason: string | null;
+    };
+};
+
 export type PositionState = "open" | "closing" | "closed" | "won" | "lost";
 
 export type PositionDoc = {
@@ -411,6 +477,7 @@ export type Collections = {
     perpPositions: Collection<PerpPositionDoc>;
     perpFloat: Collection<PerpFloatDoc>;
     perpRebalances: Collection<PerpRebalanceDoc>;
+    poolRebalances: Collection<PoolRebalanceDoc>;
     positions: Collection<PositionDoc>;
     predictionRedemptions: Collection<PredictionRedemptionDoc>;
     withdrawals: Collection<WithdrawalDoc>;
@@ -450,6 +517,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             perpPositions: db.collection("perp_positions"),
             perpFloat: db.collection("perp_float"),
             perpRebalances: db.collection("perp_rebalances"),
+            poolRebalances: db.collection("pool_rebalances"),
             positions: db.collection("positions"),
             predictionRedemptions: db.collection("prediction_redemptions"),
             withdrawals: db.collection("withdrawals"),
@@ -490,6 +558,7 @@ async function ensureIndexes({
     perpAccounts,
     perpOrders,
     perpPositions,
+    poolRebalances,
 }: Collections) {
     await Promise.all([
         accounts.createIndexes([
@@ -569,6 +638,12 @@ async function ensureIndexes({
                 unique: true,
                 partialFilterExpression: { active: true },
             },
+        ]),
+        poolRebalances.createIndexes([
+            { key: { state: 1, createdAt: 1 }, name: "state_created" },
+            { key: { direction: 1, createdAt: 1 }, name: "direction_created" },
+            // At most one move is active at a time, whatever the worker or the script does.
+            { key: { active: 1 }, name: "one_active", unique: true, partialFilterExpression: { active: true } },
         ]),
     ]);
 }

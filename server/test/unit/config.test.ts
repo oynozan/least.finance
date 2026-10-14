@@ -10,6 +10,13 @@ const base = {
     DEPOSIT_MNEMONIC: MNEMONIC,
 };
 const load = (extra: Record<string, string> = {}) => loadConfig({ ...base, ...extra });
+const SECRETS = {
+    POLYMARKET_POOL_KEY: `0x${"1".repeat(64)}`,
+    POLYMARKET_BUILDER_API_KEY: "k",
+    POLYMARKET_BUILDER_API_SECRET: "s",
+    POLYMARKET_BUILDER_API_PASSPHRASE: "p",
+};
+const TRADING_SECRETS = Object.keys(SECRETS);
 
 describe("loadConfig", () => {
     it("names every missing required variable in one error", () => {
@@ -65,6 +72,75 @@ describe("loadConfig", () => {
             POLYMARKET_BUILDER_API_PASSPHRASE: "p",
         });
         expect(config.POLYMARKET_POOL_KEY).toBe(key);
+    });
+
+    it("PREDICTIONS_TRADING=on still names its four secrets", () => {
+        let message = "";
+        try {
+            load({ PREDICTIONS_TRADING: "on" });
+        } catch (error) {
+            message = (error as Error).message;
+        }
+        for (const name of TRADING_SECRETS) expect(message).toContain(`${name}: required when PREDICTIONS_TRADING=on`);
+        expect(message).not.toContain("POOL_REBALANCE=on");
+    });
+
+    it("pool rebalancing defaults", () => {
+        const config = load();
+        expect(config.POOL_REBALANCE).toBe("off");
+        expect(config.POOL_REBALANCE_MAX_MOVE_USD).toBe(100);
+        expect(config.POOL_REBALANCE_MAX_DAY_USD).toBe(300);
+        expect(config.POOL_REBALANCE_ARC_RESERVE_USD).toBe(100);
+        expect(config.POOL_REBALANCE_MIN_MOVE_USD).toBe(10);
+        expect(config.POOL_REBALANCE_PAUSE_MIN).toBe(5);
+    });
+
+    it("POOL_REBALANCE=on without the pool key and builder secrets names each missing one, with trading off", () => {
+        let message = "";
+        try {
+            load({ POOL_REBALANCE: "on" });
+        } catch (error) {
+            message = (error as Error).message;
+        }
+        for (const name of TRADING_SECRETS) expect(message).toContain(`${name}: required when POOL_REBALANCE=on`);
+        expect(message).not.toContain("PREDICTIONS_TRADING=on");
+    });
+
+    it("POOL_REBALANCE=on with the four secrets loads", () => {
+        const config = load({ POOL_REBALANCE: "on", ...SECRETS });
+        expect(config.POOL_REBALANCE).toBe("on");
+        expect(config.PREDICTIONS_TRADING).toBe("off");
+        expect(config.POLYMARKET_POOL_KEY).toBe(SECRETS.POLYMARKET_POOL_KEY);
+    });
+
+    it("both switches on name both in each missing secret's message", () => {
+        expect(() => load({ POOL_REBALANCE: "on", PREDICTIONS_TRADING: "on" })).toThrow(
+            /POLYMARKET_POOL_KEY: required when PREDICTIONS_TRADING=on and POOL_REBALANCE=on/,
+        );
+    });
+
+    it("a minimum move above the maximum move is refused", () => {
+        expect(() => load({ POOL_REBALANCE_MIN_MOVE_USD: "50", POOL_REBALANCE_MAX_MOVE_USD: "40" })).toThrow(
+            /POOL_REBALANCE_MIN_MOVE_USD/,
+        );
+        const config = load({ POOL_REBALANCE_MIN_MOVE_USD: "40", POOL_REBALANCE_MAX_MOVE_USD: "40" });
+        expect(config.POOL_REBALANCE_MIN_MOVE_USD).toBe(40);
+    });
+
+    it("pool rebalancing limits: the reserve and the pause may be 0, the moves and the day total may not", () => {
+        const config = load({ POOL_REBALANCE_ARC_RESERVE_USD: "0", POOL_REBALANCE_PAUSE_MIN: "0" });
+        expect(config.POOL_REBALANCE_ARC_RESERVE_USD).toBe(0);
+        expect(config.POOL_REBALANCE_PAUSE_MIN).toBe(0);
+        for (const name of [
+            "POOL_REBALANCE_MAX_MOVE_USD",
+            "POOL_REBALANCE_MAX_DAY_USD",
+            "POOL_REBALANCE_MIN_MOVE_USD",
+        ]) {
+            expect(() => load({ [name]: "0" })).toThrow(new RegExp(name));
+        }
+        expect(() => load({ POOL_REBALANCE_ARC_RESERVE_USD: "-1" })).toThrow(/POOL_REBALANCE_ARC_RESERVE_USD/);
+        expect(() => load({ POOL_REBALANCE_PAUSE_MIN: "-1" })).toThrow(/POOL_REBALANCE_PAUSE_MIN/);
+        expect(() => load({ POOL_REBALANCE: "maybe" })).toThrow(/POOL_REBALANCE/);
     });
 
     it("perps defaults", () => {

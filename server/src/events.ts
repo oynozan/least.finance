@@ -6,6 +6,7 @@ import type {
     DepositOrderDoc,
     PerpOrderDoc,
     PerpPositionDoc,
+    PoolRebalanceDoc,
     PositionDoc,
     PredictionOrderDoc,
     SwapOrderDoc,
@@ -32,6 +33,8 @@ type Events = {
     "position:settled": [{ position: PositionDoc; account: AccountDoc }];
     /** Fired when a withdrawal is created or changes state. */
     "withdrawal:updated": [{ withdrawal: WithdrawalDoc; account: AccountDoc | null }];
+    /** Fired when a pool rebalance is queued or changes state. */
+    "pool-rebalance:updated": [{ rebalance: PoolRebalanceDoc }];
 };
 
 /** In-process events between the ledger and the sockets. */

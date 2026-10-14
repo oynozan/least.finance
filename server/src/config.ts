@@ -172,6 +172,19 @@ const fields = z.object({
     /** How often open positions' markets are checked for a resolution. */
     PREDICTIONS_RESOLVE_MS: z.coerce.number().int().min(100).default(60_000),
 
+    /** The pool rebalancer moves money between the Arc treasury and the pool only while this is on. */
+    POOL_REBALANCE: z.enum(["on", "off"]).default("off"),
+    /** The largest single move, in dollars. */
+    POOL_REBALANCE_MAX_MOVE_USD: z.coerce.number().positive().default(100),
+    /** The most that may move from Arc to Polygon in 24 hours, in dollars. */
+    POOL_REBALANCE_MAX_DAY_USD: z.coerce.number().positive().default(300),
+    /** What the treasury keeps after a top-up, on top of pending withdrawals and gas, in dollars. */
+    POOL_REBALANCE_ARC_RESERVE_USD: z.coerce.number().min(0).default(100),
+    /** The smallest automatic move, in dollars. */
+    POOL_REBALANCE_MIN_MOVE_USD: z.coerce.number().positive().default(10),
+    /** Minutes to wait after a move before deciding again. */
+    POOL_REBALANCE_PAUSE_MIN: z.coerce.number().min(0).default(5),
+
     /** Real orders go to Hyperliquid only while this is on. */
     PERPS_TRADING: z.enum(["on", "off"]).default("off"),
     HYPERLIQUID_API_URL: z.url().default("https://api.hyperliquid.xyz"),
@@ -224,10 +237,19 @@ const schema = fields.superRefine((config, context) => {
                 message: "must carry credentials (user:password@) in production",
             });
     }
-    if (config.PREDICTIONS_TRADING !== "on") return;
+    if (config.POOL_REBALANCE_MIN_MOVE_USD > config.POOL_REBALANCE_MAX_MOVE_USD)
+        context.addIssue({
+            code: "custom",
+            path: ["POOL_REBALANCE_MIN_MOVE_USD"],
+            message: "must not be above POOL_REBALANCE_MAX_MOVE_USD",
+        });
+    const switches = (["PREDICTIONS_TRADING", "POOL_REBALANCE"] as const)
+        .filter((name) => config[name] === "on")
+        .map((name) => `${name}=on`);
+    if (switches.length === 0) return;
     for (const name of TRADING_SECRETS) {
         if (!config[name])
-            context.addIssue({ code: "custom", path: [name], message: "required when PREDICTIONS_TRADING=on" });
+            context.addIssue({ code: "custom", path: [name], message: `required when ${switches.join(" and ")}` });
     }
 });
 
