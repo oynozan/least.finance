@@ -16,6 +16,7 @@ import { concatHex, formatUnits, keccak256, pad, parseGwei, parseUnits, toHex, t
 import { createKeyring } from "../src/accounts/keyring.ts";
 import { ARC_CHAIN_ID, MIN_BASE_FEE, createArcClient } from "../src/chain/arc.ts";
 import { loadConfig } from "../src/config.ts";
+import { feeUnits } from "../src/crosschain/iris.ts";
 import { connectDatabase, type PerpRebalanceDoc } from "../src/db/mongo.ts";
 import { fromDecimal, toDecimal, weiToE6 } from "../src/db/money.ts";
 import { FORWARD_HOOK_DATA, ARC_USDC_ERC20, TOKEN_MESSENGER_V2, encodeApprove } from "../src/withdrawals/cctp-burn.ts";
@@ -73,9 +74,8 @@ type FeeRow = { finalityThreshold?: number; minimumFee?: number; forwardFee?: Re
 export function maxFeeOf(amountE6: bigint, row: FeeRow): bigint {
     const quoted = row.forwardFee?.high;
     if (quoted === undefined) throw new Error("Circle quoted no forwarding fee");
-    const asUnits = (value: number) => BigInt(Math.ceil(Number.isInteger(value) ? value : value * 1e6));
     const protocol = (amountE6 * BigInt(Math.ceil((row.minimumFee ?? 0) * 100))) / 1_000_000n + 1n;
-    return asUnits(Number(quoted)) + protocol;
+    return feeUnits(quoted) + protocol;
 }
 
 const BURN_ABI = parseAbi([

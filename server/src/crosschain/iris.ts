@@ -3,6 +3,7 @@ import type { Hex } from "viem";
 /** Circle's CCTP domain numbers. */
 const ARC_DOMAIN = 26;
 const SOLANA_DOMAIN = 5;
+const POLYGON_DOMAIN = 7;
 /** The attestation speed the burn waits for: standard finality. */
 const STANDARD_FINALITY = 2000;
 /** USDC has 6 decimals on Circle's side and 18 in the ledger. */
@@ -11,14 +12,21 @@ const WEI_PER_UNIT = 10n ** 12n;
 export type IrisMessage = {
     status: "pending" | "complete" | "failed";
     forwardTxHash: string | null;
+    /** The fee Circle took from the mint, in USDC units (6 decimals); null while the message has no executed fee. */
+    feeExecutedE6: bigint | null;
+    /** Why Circle holds the message back (for example `insufficient_fee`); null when it doesn't. */
+    delayReason: string | null;
     raw: unknown;
 };
 
+/** A quoted forward fee in USDC wei and the protocol's fee in basis points (fractions allowed). */
+export type ForwardFee = { med: bigint; high: bigint; minimumFeeBps: number };
+
 export type Iris = {
-    /** The forward fee of a burn on Arc minted on Solana, in USDC wei. */
-    forwardFee(input: { from: 26; to: 5; setup: boolean }): Promise<{ med: bigint; high: bigint }>;
+    /** The forward fee of a burn from one domain to another (`setup` also creates the Solana account), in USDC wei. */
+    forwardFee(input: { from: number; to: number; setup?: boolean }): Promise<ForwardFee>;
     /** The forward fee of a burn on Solana minted on Arc, in USDC wei. */
-    depositFee(): Promise<{ med: bigint; high: bigint }>;
+    depositFee(): Promise<ForwardFee>;
     /** What Circle reports for the message a burn produced (a hash on EVM, a signature on Solana); null while it has none. */
     message(input: { domain: number; burnTxHash: Hex | string }): Promise<IrisMessage | null>;
 };
@@ -34,7 +42,19 @@ export class IrisError extends Error {
     }
 }
 
-type FeeRow = { finalityThreshold?: number; forwardFee?: Record<string, number | string> };
+type FeeRow = { finalityThreshold?: number; minimumFee?: number; forwardFee?: Record<string, number | string> };
+
+/** A fee Iris quoted in USDC units: a whole number is 6-decimal units, a fraction is dollars, and dollars round up to a unit. */
+export function feeUnits(value: number | string): bigint {
+    const text = String(value);
+    const match = /^(\d+)(?:\.(\d+))?$/.exec(text);
+    if (!match) throw new Error(`Not a fee amount: ${text}`);
+    const [, whole, fraction = ""] = match;
+    if (/^0*$/.test(fraction)) return BigInt(whole!);
+    const micros = fraction.padEnd(6, "0");
+    const roundUp = /[1-9]/.test(micros.slice(6)) ? 1n : 0n;
+    return BigInt(whole!) * 1_000_000n + BigInt(micros.slice(0, 6)) + roundUp;
+}
 
 export function createIris(options: { baseUrl: string; fetch?: typeof fetch; timeoutMs?: number }): Iris {
     const { fetch: send = fetch, timeoutMs = 10_000 } = options;
@@ -58,10 +78,12 @@ export function createIris(options: { baseUrl: string; fetch?: typeof fetch; tim
     }
 
     const toWei = (value: number | string | undefined) => {
-        if (value === undefined || !/^\d+(\.\d+)?$/.test(String(value))) {
-            throw new IrisError("unavailable", "Iris gave no forward fee");
+        try {
+            if (value === undefined) throw new Error("No fee");
+            return feeUnits(value) * WEI_PER_UNIT;
+        } catch (error) {
+            throw new IrisError("unavailable", "Iris gave no forward fee", { cause: error });
         }
-        return BigInt(Math.ceil(Number(value))) * WEI_PER_UNIT;
     };
 
     async function fees(path: string) {
@@ -71,7 +93,11 @@ export function createIris(options: { baseUrl: string; fetch?: typeof fetch; tim
             ? (rows.find((r) => r.finalityThreshold === STANDARD_FINALITY) ?? rows[0])
             : undefined;
         if (!row?.forwardFee) throw new IrisError("unavailable", "Iris gave no forward fee");
-        return { med: toWei(row.forwardFee.med), high: toWei(row.forwardFee.high) };
+        const bps = row.minimumFee ?? 0;
+        if (typeof bps !== "number" || !Number.isFinite(bps) || bps < 0) {
+            throw new IrisError("unavailable", "Iris gave an unreadable protocol fee");
+        }
+        return { med: toWei(row.forwardFee.med), high: toWei(row.forwardFee.high), minimumFeeBps: bps };
     }
 
     return {
@@ -86,9 +112,13 @@ export function createIris(options: { baseUrl: string; fetch?: typeof fetch; tim
                 typeof found.forwardTxHash === "string" && found.forwardTxHash ? found.forwardTxHash : null;
             const state = String(found.forwardState ?? "").toUpperCase();
             const status = forwardTxHash ? "complete" : state === "FAILED" ? "failed" : "pending";
-            return { status, forwardTxHash, raw: found };
+            const delayReason = typeof found.delayReason === "string" && found.delayReason ? found.delayReason : null;
+            const executed = (found.decodedMessage as { decodedMessageBody?: { feeExecuted?: unknown } } | undefined)
+                ?.decodedMessageBody?.feeExecuted;
+            const feeExecutedE6 = /^\d+$/.test(String(executed)) ? BigInt(String(executed)) : null;
+            return { status, forwardTxHash, feeExecutedE6, delayReason, raw: found };
         },
     };
 }
 
-export { ARC_DOMAIN, SOLANA_DOMAIN };
+export { ARC_DOMAIN, POLYGON_DOMAIN, SOLANA_DOMAIN };

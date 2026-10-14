@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { expect, test } from "vitest";
 import { requireTestnet } from "../../scripts/live-check-guards.ts";
-import { buildHookData, markArrived, planRebalance, recordIfMined } from "../../scripts/perps-rebalance.ts";
+import { buildHookData, markArrived, maxFeeOf, planRebalance, recordIfMined } from "../../scripts/perps-rebalance.ts";
 
 test("planRebalance refuses to leave the treasury below the withdrawal need", () => {
     const base = { direction: "arc-to-hl" as const, amountE6: 100_000_000n };
@@ -69,4 +69,17 @@ test("arrived marks a sent rebalance and only a sent one", async () => {
     expect(JSON.stringify(updates[0])).toContain('"state":"sent"');
     expect(JSON.stringify(updates[0])).toContain('"$set":{"state":"arrived"}');
     await expect(markArrived(collection as never, "nope")).rejects.toThrow(/id/i);
+});
+
+test("maxFeeOf reads whole numbers as units and fractions as dollars through feeUnits", () => {
+    const row = (high: number | string, minimumFee?: number) => ({ forwardFee: { high }, minimumFee });
+    // The protocol part is the basis points of the amount plus one unit
+    expect(maxFeeOf(10_000_000n, row(150_000))).toBe(150_001n);
+    expect(maxFeeOf(10_000_000n, row(0.15))).toBe(150_001n);
+    expect(maxFeeOf(10_000_000n, row("0.15"))).toBe(150_001n);
+    expect(maxFeeOf(10_000_000n, row(150_000, 1))).toBe(151_001n);
+    // A fraction with float noise in its product is not pushed up a unit
+    expect(maxFeeOf(10_000_000n, row(0.015626))).toBe(15_627n);
+    expect(() => maxFeeOf(10_000_000n, {})).toThrow(/no forwarding fee/);
+    expect(() => maxFeeOf(10_000_000n, row("abc"))).toThrow();
 });

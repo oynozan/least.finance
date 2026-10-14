@@ -1,4 +1,15 @@
-import { concatHex, encodeFunctionData, pad, parseAbi, toHex, type Address, type Hex } from "viem";
+import {
+    concatHex,
+    encodeFunctionData,
+    isAddress,
+    isAddressEqual,
+    pad,
+    parseAbi,
+    toHex,
+    zeroAddress,
+    type Address,
+    type Hex,
+} from "viem";
 import { SOLANA_DOMAIN } from "../crosschain/iris.ts";
 import { solanaBytes32 } from "./solana-recipient.ts";
 
@@ -56,6 +67,44 @@ export function encodeBurn(input: {
             input.setup ? setupHookData(input.wallet) : FORWARD_HOOK_DATA,
         ],
     });
+}
+
+/** A burn minted by Circle's forwarder to an address on an EVM chain, 32-byte padded as the mint recipient. */
+export function encodeBurnToEvm(input: {
+    amount6: bigint;
+    domain: number;
+    recipient: Address;
+    maxFee6: bigint;
+    burnToken?: Address;
+}): Hex {
+    if (!isAddress(input.recipient) || isAddressEqual(input.recipient, zeroAddress)) {
+        throw new Error("The mint recipient isn't a usable address");
+    }
+    return encodeFunctionData({
+        abi,
+        functionName: "depositForBurnWithHook",
+        args: [
+            input.amount6,
+            input.domain,
+            pad(input.recipient, { size: 32 }),
+            input.burnToken ?? ARC_USDC_ERC20,
+            pad("0x", { size: 32 }),
+            input.maxFee6,
+            MIN_FINALITY_THRESHOLD,
+            FORWARD_HOOK_DATA,
+        ],
+    });
+}
+
+/** The most Circle may take for a burn: three times the high forwarding fee (at least $0.10 more), plus the protocol's basis points, always below the amount. */
+export function maxFeeWithHeadroom(input: { amount6: bigint; high6: bigint; minimumFeeBps: number }): bigint {
+    if (input.amount6 <= 0n) throw new Error("The amount must be above zero");
+    if (!Number.isFinite(input.minimumFeeBps) || input.minimumFeeBps < 0) throw new Error("Bad protocol fee rate");
+    const forwarding = input.high6 * 3n > input.high6 + 100_000n ? input.high6 * 3n : input.high6 + 100_000n;
+    const hundredthsOfBps = BigInt(Math.ceil(Number((input.minimumFeeBps * 100).toFixed(6))));
+    const protocol = (input.amount6 * hundredthsOfBps + 999_999n) / 1_000_000n;
+    const fee = forwarding + protocol;
+    return fee < input.amount6 ? fee : input.amount6 - 1n;
 }
 
 /** Wei to ERC-20 units, exactly; dust below a unit can't be burned. */
