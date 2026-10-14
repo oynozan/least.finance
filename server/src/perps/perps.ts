@@ -35,6 +35,8 @@ const IN_FLIGHT: PerpOrderState[] = ["placing", "funding", "posted", "sweeping"]
 const CLOSING: PerpOrderState[] = ["placing", "posted", "sweeping"];
 const SIZE_EPSILON = 1e-9;
 const WEI_PER_E6 = 1_000_000_000_000n;
+/** A transfer nonce older than this may be past Hyperliquid's acceptance window. */
+const NONCE_LIFE_MS = 24 * 3_600_000;
 
 export const PERP_MESSAGES = {
     off: "Long and short aren't available right now.",
@@ -79,6 +81,8 @@ const cloidOf = (id: ObjectId) => `0x${id.toHexString().padStart(32, "0")}`;
 const reservedOf = (order: PerpOrderDoc) => BigInt(order.steps.reservedE6 as string);
 const minE6 = (a: bigint, b: bigint) => (a < b ? a : b);
 const px = (value: number, figures = 7) => String(Number(value.toPrecision(figures)));
+
+const retainedOf = (account: PerpAccountDoc | null) => (account?.retainedE6 ? fromDecimal(account.retainedE6) : 0n);
 
 const busy = (asset: string) => new AppError("position_busy", `You already hold a ${asset} position. Close it first.`);
 
@@ -637,6 +641,7 @@ export class PerpService {
                         "steps.outcome": outcome,
                         "steps.sweepE6": sweepE6.toString(),
                         "steps.sweepNonce": nonce,
+                        "steps.sweepAt": new Date(this.#now()),
                         "steps.creditE6": creditE6.toString(),
                         updatedAt: new Date(this.#now()),
                     },
@@ -665,26 +670,85 @@ export class PerpService {
         return { order: claimed ?? order, float };
     }
 
-    /** Sends the stored sweep and, once the master has the money, credits it and settles the order. A repeat does nothing. */
-    async #finishSweep(order: PerpOrderDoc): Promise<void> {
-        const { perpOrders, perpPositions, accounts } = this.#deps.collections;
-        const outcome = order.steps.outcome as Outcome;
+    /** Sends an order's stored sweep and returns the order once the master has the money; a refused sweep is re-planned and sent once more, and one that can't be judged now returns null. */
+    async #pay(order: PerpOrderDoc, replanned = false): Promise<PerpOrderDoc | null> {
         const sweepE6 = BigInt(order.steps.sweepE6 as string);
-        const creditWei = e6ToWei(BigInt(order.steps.creditE6 as string));
-        if (sweepE6 > 0n) {
-            try {
-                const sent = await this.#deps.client.usdSend(
-                    this.#deps.keyring.perpSignerAt(order.index),
-                    this.#master,
-                    sweepE6,
-                    order.steps.sweepNonce as number,
-                );
-                if (sent.kind === "rejected") throw new Error(sent.message);
-            } catch (error) {
-                this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "A sweep to the master failed");
-                return;
+        if (sweepE6 <= 0n) return order;
+        const signer = this.#deps.keyring.perpSignerAt(order.index);
+        const nonce = order.steps.sweepNonce as number;
+        const since = (order.steps.sweepAt as Date | undefined) ?? order.createdAt;
+        try {
+            let landed: boolean;
+            if (this.#now() - nonce > NONCE_LIFE_MS)
+                landed = await this.#landed(signer.address, this.#master, sweepE6, since);
+            else {
+                const sent = await this.#deps.client.usdSend(signer, this.#master, sweepE6, nonce);
+                landed =
+                    sent.kind === "ok" ||
+                    (sent.kind === "duplicate" && (await this.#landed(signer.address, this.#master, sweepE6, since)));
             }
+            if (landed) return order;
+            // A re-planned sweep is sent once now; if it is refused too, the tracker plans it again
+            if (replanned) return null;
+            const next = await this.#replan(order);
+            return next ? await this.#pay(next, true) : null;
+        } catch (error) {
+            this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "A sweep to the master failed");
+            return null;
         }
+    }
+
+    /** Re-reads the address after a sweep that did not land and stores what it can pay now with a fresh nonce; what was owed to other orders stays. */
+    async #replan(order: PerpOrderDoc): Promise<PerpOrderDoc | null> {
+        const { perpOrders, perpAccounts } = this.#deps.collections;
+        const address = this.#deps.keyring.perpAddressAt(order.index);
+        const [state, account, others] = await Promise.all([
+            this.#deps.client.state(address),
+            perpAccounts.findOne({ index: order.index }),
+            perpOrders
+                .find({
+                    index: order.index,
+                    _id: { $ne: order._id },
+                    state: { $in: ["funding", "posted", "sweeping"] },
+                })
+                .toArray(),
+        ]);
+        const owed = others.reduce((sum, o) => {
+            if (o.state === "sweeping") return sum + BigInt(o.steps.sweepE6 as string);
+            return o.kind === "open" ? sum + weiToE6(fromDecimal(o.collateral)) : sum;
+        }, 0n);
+        const outcome = order.steps.outcome as Outcome | CloseOutcome;
+        const pending = outcome.kind === "filled" ? BigInt((order.steps.ourFeeE6 as string | undefined) ?? "0") : 0n;
+        const free = (state?.withdrawableE6 ?? 0n) - retainedOf(account) - pending - owed;
+        const stored = BigInt(order.steps.sweepE6 as string);
+        const amount = free > 0n ? minE6(stored, free) : 0n;
+        const next = await perpOrders.findOneAndUpdate(
+            { _id: order._id, state: "sweeping", "steps.sweepNonce": order.steps.sweepNonce },
+            {
+                $set: {
+                    "steps.sweepE6": amount.toString(),
+                    "steps.sweepNonce": amount > 0n ? nextNonce(address) : null,
+                    "steps.sweepAt": new Date(this.#now()),
+                    ...(order.kind === "open" ? { "steps.creditE6": amount.toString() } : {}),
+                    updatedAt: new Date(this.#now()),
+                },
+            },
+            { returnDocument: "after" },
+        );
+        this.#deps.logger.error(
+            { order: order._id.toHexString(), plannedE6: stored.toString(), nowE6: amount.toString() },
+            "A sweep to the master was refused and is re-planned",
+        );
+        return next;
+    }
+
+    /** Sends the stored sweep and, once the master has the money, credits it and settles the order. A repeat does nothing. */
+    async #finishSweep(stored: PerpOrderDoc): Promise<void> {
+        const { perpOrders, perpPositions, accounts } = this.#deps.collections;
+        const order = await this.#pay(stored);
+        if (!order) return;
+        const outcome = order.steps.outcome as Outcome;
+        const creditWei = e6ToWei(BigInt(order.steps.creditE6 as string));
 
         const collateral = fromDecimal(order.collateral);
         const positionId = new ObjectId();
@@ -782,8 +846,7 @@ export class PerpService {
             .toArray();
         for (const order of stuck) {
             try {
-                if (order.state === "placing") await this.#unwind(order, PERP_MESSAGES.silent, "no");
-                else if (order.state === "funding") await this.#unwind(order, PERP_MESSAGES.silent, "maybe");
+                if (order.state === "placing" || order.state === "funding") await this.settleStuck(order);
                 else if (order.state === "posted") await this.settlePosted(order);
                 else await this.retrySweep(order);
             } catch (error) {
@@ -804,6 +867,13 @@ export class PerpService {
                 ),
             );
         }
+    }
+
+    /** Settles an open order that never posted and that nothing in this process is still driving: it is refunded once its funding is certain. */
+    async settleStuck(order: PerpOrderDoc): Promise<void> {
+        if (order.kind !== "open" || this.submitting(order._id)) return;
+        if (order.state === "placing") await this.#unwind(order, PERP_MESSAGES.silent, "no");
+        else if (order.state === "funding") await this.#unwind(order, PERP_MESSAGES.silent, "maybe");
     }
 
     /** Finishes an open order's stored sweep; a repeat, or an order that moved on, does nothing. */
@@ -987,9 +1057,9 @@ export class PerpService {
         const feeE6 = await this.#feeOf(order, address, Number(sizeCoin) * Number(avgPx));
         if (Number(sizeCoin) < Number(order.sizeCoin) - SIZE_EPSILON)
             return this.#closePartly(order, position, { sizeCoin, avgPx, feeE6 });
-        const state = await this.#deps.client.state(address);
         // The free balance is only this position's while no other order is moving money on the address
         if (await this.#sharesAddress(order.index, order._id)) return;
+        const state = await this.#deps.client.state(address);
         const sweep = await this.#sweepable(order.index, state);
         const moved = await this.#startCloseSweep(
             order,
@@ -1109,6 +1179,7 @@ export class PerpService {
                     "steps.outcome": outcome,
                     "steps.sweepE6": sweepE6.toString(),
                     "steps.sweepNonce": nonce,
+                    "steps.sweepAt": new Date(this.#now()),
                     updatedAt: new Date(this.#now()),
                 },
             },
@@ -1119,26 +1190,12 @@ export class PerpService {
     }
 
     /** Sends the stored sweep and, once the master has the money, credits it and settles the position. A repeat does nothing. */
-    async #finishCloseSweep(order: PerpOrderDoc): Promise<void> {
+    async #finishCloseSweep(stored: PerpOrderDoc): Promise<void> {
         const { perpOrders, perpPositions, accounts } = this.#deps.collections;
+        const order = await this.#pay(stored);
+        if (!order) return;
         const outcome = order.steps.outcome as CloseOutcome;
-        const sweepE6 = BigInt(order.steps.sweepE6 as string);
-        if (sweepE6 > 0n) {
-            try {
-                const sent = await this.#deps.client.usdSend(
-                    this.#deps.keyring.perpSignerAt(order.index),
-                    this.#master,
-                    sweepE6,
-                    order.steps.sweepNonce as number,
-                );
-                if (sent.kind === "rejected") throw new Error(sent.message);
-            } catch (error) {
-                this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "A sweep to the master failed");
-                return;
-            }
-        }
-
-        const creditWei = e6ToWei(sweepE6);
+        const creditWei = e6ToWei(BigInt(order.steps.sweepE6 as string));
         const positionId = new ObjectId(order.steps.positionId as string);
         const liquidated = outcome.kind === "outside" && outcome.liquidation;
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
@@ -1267,6 +1324,7 @@ export class PerpService {
                 outcome: { kind: "outside", liquidation } satisfies CloseOutcome,
                 sweepE6: sweep.toString(),
                 sweepNonce: sweep > 0n ? nextNonce(this.#deps.keyring.perpAddressAt(fresh.index)) : null,
+                sweepAt: at,
             },
             fill: null,
             credited: null,

@@ -53,7 +53,7 @@ test("the hold is released exactly once on fill, on reject and on recovery", asy
 
     h.crashAt("usdSend", 1, "after");
     const stuck = (await h.place(c)).order;
-    await h.until(async () => (await h.orderOf(stuck._id)).state === "funding");
+    await h.until(async () => (await h.orderOf(stuck._id)).state === "funding" && h.crashed());
     expect(await h.heldE6()).toBe(wei("101") / 10n ** 12n);
     await h.build().recover();
     await h.settled(stuck._id);

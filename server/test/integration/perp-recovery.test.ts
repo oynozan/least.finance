@@ -31,7 +31,7 @@ test("after the debit", async () => {
     const account = await h.seedAccount("1000");
     h.crashAt("usdSend", 1, "before");
     const { order } = await h.place(account);
-    await h.until(async () => (await h.orderOf(order._id)).state === "funding");
+    await h.until(async () => (await h.orderOf(order._id)).state === "funding" && h.crashed());
 
     await h.build().recover();
     const done = await h.settled(order._id);

@@ -171,6 +171,8 @@ export type PerpAccountDoc = {
     /** Lowercase. */
     address: string;
     activatedAt: Date | null;
+    /** E6 of our fees kept on the address; the free balance above it is the person's. Absent counts as zero. */
+    retainedE6?: Decimal128;
     createdAt: Date;
 };
 

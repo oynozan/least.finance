@@ -45,7 +45,7 @@ export async function perpHarness(o: { trading?: "on" | "off"; feeBps?: number }
 
     const calls = new Map<Method, number>();
     const failing = new Set<Method>();
-    const crash: { next: Crash | null } = { next: null };
+    const crash: { next: Crash | null; hit: boolean } = { next: null, hit: false };
     const real = createNktkasClient({ url: fake.url, timeoutMs: CALL_MS + 100 });
     const guarded = Object.fromEntries(
         (Object.keys(real) as Method[]).map((method) => [
@@ -64,6 +64,7 @@ export async function perpHarness(o: { trading?: "on" | "off"; feeBps?: number }
                 const count = (calls.get(method) ?? 0) + 1;
                 calls.set(method, count);
                 const mine = crash.next && crash.next.method === method && crash.next.nth === count ? crash.next : null;
+                if (mine) crash.hit = true;
                 if (mine?.when === "before") return new Promise(() => undefined);
                 const result = await (timed[method] as (...a: unknown[]) => Promise<unknown>)(...args);
                 if (mine?.when === "after") return new Promise(() => undefined);
@@ -186,8 +187,11 @@ export async function perpHarness(o: { trading?: "on" | "off"; feeBps?: number }
         /** Freezes whichever service makes the nth call to `method` from now, before or after the call reaches Hyperliquid. */
         crashAt(method: Method, nth: number, when: "before" | "after") {
             calls.clear();
+            crash.hit = false;
             crash.next = { method, nth, when };
         },
+        /** Whether the service the last `crashAt` chose has made its call and been frozen. */
+        crashed: () => crash.hit,
         failing,
         lines,
         master,

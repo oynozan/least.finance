@@ -126,8 +126,7 @@ test("a failed sweep credits nothing and leaves the order sweeping", async () =>
     const position = await held(h, account);
     h.fake.failUsdSend(true);
     const { order } = await closeOf(h, account, position);
-    await h.until(async () => (await h.orderOf(order._id)).state === "sweeping");
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await h.until(async () => (await h.orderOf(order._id)).state === "sweeping" && !h.service.submitting(order._id));
 
     expect((await h.state(account._id)).kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
     expect((await positionOf(h, position._id)).state).toBe("closing");

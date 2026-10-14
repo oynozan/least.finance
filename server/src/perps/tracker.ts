@@ -21,6 +21,10 @@ const BUDGET_CAP = 120;
 const STATE_WEIGHT = 2;
 const FILLS_WEIGHT = 20;
 const ORDER_WEIGHT = 2;
+/** `orderStatus` reads the order and, in the adapter, the user's fills. */
+const ORDER_LOOKUP_WEIGHT = 22;
+/** An open order that never posted is judged by this long after its last change. */
+const STUCK_MS = 60_000;
 /** A close still placing this long after it was made was never sent. */
 const PLACING_GIVE_UP_MS = 60_000;
 const ORDER_RETRY_MS = 5_000;
@@ -35,6 +39,13 @@ type Deps = {
     /** The clock, for tests. */
     now?: () => number;
 };
+
+/** What following an order costs at most: a posted one reads its status, its fills and the account. */
+function weightOf(order: PerpOrderDoc): number {
+    if (order.state === "posted") return ORDER_LOOKUP_WEIGHT + FILLS_WEIGHT + STATE_WEIGHT;
+    if (order.state === "sweeping") return ORDER_WEIGHT + STATE_WEIGHT;
+    return order.kind === "open" ? ORDER_LOOKUP_WEIGHT : ORDER_WEIGHT;
+}
 
 /** Races a lookup against the stop signal, so a hung call can't hold shutdown. */
 function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
@@ -100,6 +111,7 @@ export class PerpTracker {
 
     /** One pass at time `at`: the orders in doubt, then the addresses that are due. */
     async pass(at: number, signal?: AbortSignal): Promise<void> {
+        this.#refill(at);
         await this.#orders(at, signal);
         await this.#positions(at, signal);
     }
@@ -109,6 +121,11 @@ export class PerpTracker {
             .find({
                 $or: [
                     { kind: "open", state: { $in: ["posted", "sweeping"] } },
+                    {
+                        kind: "open",
+                        state: { $in: ["placing", "funding"] },
+                        updatedAt: { $lt: new Date(this.#now() - STUCK_MS) },
+                    },
                     { kind: "close", state: { $in: ["placing", "posted", "sweeping"] } },
                 ],
             })
@@ -126,8 +143,10 @@ export class PerpTracker {
             )
                 continue;
             if (at - (this.#orderAt.get(key) ?? -Infinity) < ORDER_RETRY_MS) continue;
+            const weight = weightOf(order);
+            if (this.#budget < weight) continue;
             this.#orderAt.set(key, at);
-            this.#spend(ORDER_WEIGHT);
+            this.#spend(weight);
             try {
                 await abortable(this.#settle(order), signal);
             } catch (error) {
@@ -140,6 +159,7 @@ export class PerpTracker {
     #settle(order: PerpOrderDoc): Promise<void> {
         const { service } = this.#deps;
         if (order.kind === "close") return service.settleClose(order);
+        if (order.state === "placing" || order.state === "funding") return service.settleStuck(order);
         return order.state === "posted" ? service.settlePosted(order) : service.retrySweep(order);
     }
 
@@ -147,12 +167,15 @@ export class PerpTracker {
         this.#budget -= weight;
     }
 
-    async #positions(at: number, signal: AbortSignal | undefined): Promise<void> {
+    #refill(at: number): void {
         this.#budget = Math.min(
             BUDGET_CAP,
             this.#budget + ((at - (this.#budgetAt ?? at)) / 60_000) * BUDGET_PER_MINUTE,
         );
         this.#budgetAt = at;
+    }
+
+    async #positions(at: number, signal: AbortSignal | undefined): Promise<void> {
         const positions = await this.#deps.collections.perpPositions.find({ active: true }).toArray();
         if (positions.length === 0) return;
         const byIndex = new Map<number, PerpPositionDoc[]>();
