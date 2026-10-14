@@ -17,6 +17,8 @@ export type TradeCtx = {
     wallet?: WalletHoldings | null;
     /** The most one prediction may spend; a number only while signed in with trading live. */
     maxOrderUSD?: number | null;
+    /** Whether Long and Short can open positions: the server's markets have loaded and its order limit is set. */
+    perpTrading?: { maxOrderUSD: number | null; loaded: boolean };
 };
 
 /**

@@ -11,6 +11,7 @@ import type { SolanaRpc } from "./crosschain/solana.ts";
 import type { Bus } from "./events.ts";
 import type { MarketHistory } from "./markets/history.ts";
 import type { MarketService } from "./markets/markets.ts";
+import type { PerpMarkets } from "./perps/markets.ts";
 import type { PredictionService } from "./predictions/predictions.ts";
 import type { PriceHistory } from "./prices/history.ts";
 import type { Sessions } from "./sessions.ts";
@@ -36,6 +37,7 @@ export type Services = {
     solana: SolanaRpc;
     markets: MarketService;
     marketHistory: MarketHistory;
+    perpMarkets: PerpMarkets;
     predictions: PredictionService;
     priceHistory: PriceHistory;
     swapCatalog: SwapCatalog;

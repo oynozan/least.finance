@@ -444,6 +444,15 @@ export type SwapCatalogView = {
     readAt: string | null;
 };
 
+/** A perp market as the picker shows it; `maxLeverage` is already capped by the server's own limit. */
+export type PerpMarketView = { asset: string; markPx: string; maxLeverage: number; fundingRate: string };
+
+export type PerpMarketsView = {
+    markets: PerpMarketView[];
+    /** The most one order may take from the float right now, in dollars; null while trading is off. */
+    maxOrderUSD: string | null;
+};
+
 /** How far back a price history reaches; its points are 15 minutes, 1 hour, 6 hours, 1 day and 1 day apart. */
 export type PriceRange = "1d" | "7d" | "30d" | "90d" | "1y";
 

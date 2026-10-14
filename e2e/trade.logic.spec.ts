@@ -84,8 +84,8 @@ test.describe("sentences", () => {
         expect(short.blocking).toEqual({
             code: "unavailable",
             severity: "error",
-            message: "Long and short aren't available yet.",
-            cta: "Not available yet",
+            message: "Long and short aren't available right now.",
+            cta: "Not available right now",
         });
         expect(run("predict").view.intent).toEqual({
             type: "prediction",

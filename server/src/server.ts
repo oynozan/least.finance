@@ -28,6 +28,9 @@ import { DepositWatcher } from "./deposits/watcher.ts";
 import { Bus } from "./events.ts";
 import { MarketHistory } from "./markets/history.ts";
 import { MarketService } from "./markets/markets.ts";
+import { withPerpTimeouts, type HyperliquidClient } from "./perps/client.ts";
+import { PerpMarkets } from "./perps/markets.ts";
+import { createNktkasClient } from "./perps/nktkas-client.ts";
 import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
 import { PredictionReconciler } from "./predictions/reconciler.ts";
@@ -60,6 +63,9 @@ const RECONCILE_MS = 600_000;
 /** Short of the tracker giving up on a missing post, so a hung post is still followed up. */
 const TRADER_CALL_MS = 30_000;
 
+/** Bounds each Hyperliquid call; an order that outlasts it is left for the tracker. */
+const PERP_CALL_MS = 10_000;
+
 export type RunningServer = {
     /** Where it's listening, e.g. http://127.0.0.1:4000. */
     url: string;
@@ -82,6 +88,8 @@ type Overrides = {
     bridges?: BridgeProvider[];
     /** Stands in for the pool's Polymarket trader. */
     trader?: PoolTrader;
+    /** Stands in for Hyperliquid. */
+    hyperliquid?: HyperliquidClient;
     /** Sends the signed payout transactions; tests wrap it to cut a broadcast short. */
     payoutBroadcast?: (rawTx: Hex) => Promise<Hex>;
     /** The clock the balance and holdings refresh limits run on. */
@@ -295,6 +303,14 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             llama: createDefiLlama({ url: config.DEFILLAMA_COINS_URL }),
             logger: logger.child({ component: "prices" }),
         });
+        const perpClient =
+            overrides.hyperliquid ??
+            withPerpTimeouts(createNktkasClient({ url: config.HYPERLIQUID_API_URL }), PERP_CALL_MS);
+        const perpMarkets = new PerpMarkets({
+            client: perpClient,
+            config,
+            logger: logger.child({ component: "perps" }),
+        });
         const sweeper = new Sweeper({
             client,
             keyring,
@@ -378,6 +394,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             solana,
             markets,
             marketHistory,
+            perpMarkets,
             predictions: service,
             priceHistory,
             swapCatalog,
@@ -398,6 +415,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         markets.start();
         swapCatalog.start();
         priceHistory.start();
+        perpMarkets.start();
         swapTracker.start();
         predictionTracker.start();
         predictionResolver.start();
@@ -429,6 +447,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await swapTracker.stop();
                 await swapCatalog.stop();
                 await priceHistory.stop();
+                await perpMarkets.stop();
                 await markets.stop();
                 await tracker.stop();
                 await watcher.stop();

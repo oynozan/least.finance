@@ -42,12 +42,13 @@ export const TOKENS: Token[] = COINS.map((coin) => ({
 /** The stablecoin that pays for buys, perp collateral and predictions. */
 export const QUOTE = "USDC";
 
-/** A coin Long and Short offer, with the most leverage its picker allows; no perp venue is connected yet. */
+/** A coin Long and Short offer, with the most leverage its picker allows. */
 export type PerpMarket = {
     asset: string;
     maxLeverage: number;
 };
 
+/** The fallback list, used until the server's markets load and in demo mode. */
 export const PERP_MARKETS: PerpMarket[] = [
     { asset: "BTC", maxLeverage: 50 },
     { asset: "ETH", maxLeverage: 50 },

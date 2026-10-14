@@ -140,6 +140,11 @@ export function createApp(services: Services): express.Express {
         res.json(services.swapCatalog.view());
     });
 
+    // Public: the markets and their leverage caps are the same for everyone.
+    app.get("/perps/markets", noStore, limit(120, 60_000), (_req, res) => {
+        res.json(services.perpMarkets.view());
+    });
+
     // Public: the same for everyone, and it's only DefiLlama's data. The browser never calls DefiLlama itself.
     app.get("/prices/history", noStore, limit(120, 60_000), async (req, res) => {
         const { range, coins } = parse(priceHistory, req.query);

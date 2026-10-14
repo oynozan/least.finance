@@ -20,6 +20,7 @@ import { startArcEmulator, type ArcEmulator, type EmulatorOptions } from "./arc-
 import { fakePoolTrader, type FakeTrader } from "./fake-trader.ts";
 import { FakeBridge } from "./fake-bridge.ts";
 import { startFakeIris, type FakeIris } from "./fake-iris.ts";
+import { startFakeHyperliquid, type FakeHyperliquid } from "./fake-hyperliquid.ts";
 import { startFakeDefiLlama, type FakeDefiLlama } from "./fake-defillama.ts";
 import { startFakeLifi, type FakeLifi } from "./fake-lifi.ts";
 import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
@@ -120,6 +121,8 @@ export type Stack = {
     lifi: FakeLifi;
     /** The DefiLlama stand-in the server reads price history from. */
     llama: FakeDefiLlama;
+    /** The Hyperliquid stand-in the server reads perp markets from. */
+    hyperliquid: FakeHyperliquid;
     chain: ChainHelpers;
     /** The server's treasury address, where withdrawals are paid from. */
     treasury: Address;
@@ -181,6 +184,7 @@ export async function startStack({
     const polymarket = await startFakePolymarket();
     const lifi = await startFakeLifi({ prices: SWAP_PRICES });
     const llama = await startFakeDefiLlama({ prices: SWAP_PRICES });
+    const hyperliquid = await startFakeHyperliquid();
     const privy = await startFakePrivy();
     const emulator = await startArcEmulator(anvilUrl, emulatorOptions);
     const config = loadConfig({
@@ -206,6 +210,7 @@ export async function startStack({
         POLYMARKET_CLOB_URL: polymarket.url,
         LIFI_URL: lifi.url,
         DEFILLAMA_COINS_URL: llama.url,
+        HYPERLIQUID_API_URL: hyperliquid.url,
         ...env,
     });
     const rates = { ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 };
@@ -230,6 +235,7 @@ export async function startStack({
     await server.services.markets.tick();
     await server.services.swapCatalog.tick();
     await server.services.priceHistory.tick();
+    await server.services.perpMarkets.tick();
     await server.services.predictions.refreshFloat();
     const chain = chainHelpers(anvilUrl);
     const sockets: AppSocket[] = [];
@@ -248,6 +254,7 @@ export async function startStack({
         trader,
         lifi,
         llama,
+        hyperliquid,
         chain,
         treasury,
         async fundTreasury(usdc) {
@@ -286,6 +293,7 @@ export async function startStack({
             await polymarket.stop();
             await lifi.stop();
             await llama.stop();
+            await hyperliquid.stop();
             await privy.stop();
         },
     };

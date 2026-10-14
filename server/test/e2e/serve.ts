@@ -28,6 +28,7 @@ import { startArcEmulator } from "../support/arc-emulator.ts";
 import { FakeBridge } from "../support/fake-bridge.ts";
 import { fakePoolTrader, type Behavior } from "../support/fake-trader.ts";
 import { startFakeDefiLlama } from "../support/fake-defillama.ts";
+import { startFakeHyperliquid } from "../support/fake-hyperliquid.ts";
 import { startFakeLifi } from "../support/fake-lifi.ts";
 import { startFakePolymarket } from "../support/fake-polymarket.ts";
 import { startFakePrivy } from "../support/fake-privy.ts";
@@ -69,6 +70,7 @@ const emulator = await startArcEmulator(anvil.url);
 const polymarket = await startFakePolymarket();
 const lifi = await startFakeLifi({ prices: SWAP_PRICES });
 const llama = await startFakeDefiLlama({ prices: SWAP_PRICES });
+const hyperliquid = await startFakeHyperliquid();
 const privy = await startFakePrivy(PRIVY_APP_ID);
 const config = loadConfig({
     NODE_ENV: "test",
@@ -95,6 +97,7 @@ const config = loadConfig({
     POLYMARKET_CLOB_URL: polymarket.url,
     LIFI_URL: lifi.url,
     DEFILLAMA_COINS_URL: llama.url,
+    HYPERLIQUID_API_URL: hyperliquid.url,
     SOLANA_DEPOSITS: "on",
     SOLANA_WITHDRAWALS: "on",
     PREDICTIONS_TRADING: "on",
@@ -525,6 +528,7 @@ async function stop() {
         polymarket.stop(),
         lifi.stop(),
         llama.stop(),
+        hyperliquid.stop(),
         mongo.stop(),
     ]);
     process.exit(0);

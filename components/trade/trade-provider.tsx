@@ -6,10 +6,17 @@ import type { MarketView } from "@/server/src/protocol";
 import type { SentenceAction, SentenceView } from "@/lib/sentence";
 import { API_URL } from "@/lib/api";
 import { CATALOG, QUOTE, TOKENS, type Catalog } from "@/lib/trade/catalog";
-import type { WalletHoldings } from "@/lib/trade/context";
+import type { TradeCtx, WalletHoldings } from "@/lib/trade/context";
 import type { TransactionIntent } from "@/lib/trade/intent";
 import { toTokens } from "@/lib/trade/live-coins";
 import { toPredictionMarket } from "@/lib/trade/markets";
+import {
+    getPerpMarkets,
+    perpMarketsOf,
+    perpMaxOrderUSD,
+    subscribePerpMarkets,
+    watchPerpMarkets,
+} from "@/lib/trade/perp-markets-store";
 import { walletHoldings } from "@/lib/trade/wallet-holdings";
 import { useAccount } from "@/components/account-provider";
 import { depositWalletAddress, solanaWalletAddress, useActiveWallet } from "@/components/arc-wallet";
@@ -81,7 +88,7 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
     const { ready, authenticated, user } = usePrivy();
     const { login } = useLogin();
     const { balance, predictions, swapHoldings, refreshSwapHoldings } = useAccount();
-    const { catalog, store, search, maxOrderUSD, known } = useLiveCatalog();
+    const { catalog, store, search, maxOrderUSD, perpTrading, known } = useLiveCatalog();
     const active = useActiveWallet();
     // The wallets that will sign: the active EVM one for the eight EVM networks, the active Solana one (else the first linked) for Solana.
     const evm = user ? depositWalletAddress(user, active) : undefined;
@@ -141,6 +148,7 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             store={store}
             search={search}
             maxOrderUSD={maxOrderUSD}
+            perpTrading={perpTrading}
             known={known}
             refreshHoldings={refreshSwapHoldings}
         >
@@ -157,6 +165,7 @@ function useLiveCatalog(): {
     store: MarketsStore;
     search: MarketSearch;
     maxOrderUSD: number | null;
+    perpTrading: NonNullable<TradeCtx["perpTrading"]>;
     known: ReadonlyMap<string, MarketView>;
 } {
     const [store] = useState(() => createMarketsStore({ apiUrl: API_URL }));
@@ -171,6 +180,13 @@ function useLiveCatalog(): {
     }, [coins]);
     const { view: coinsView } = useSyncExternalStore(coins.subscribe, coins.getSnapshot, coins.getSnapshot);
     const tokens = useMemo(() => toTokens(coinsView, TOKENS), [coinsView]);
+    useEffect(() => watchPerpMarkets(), []);
+    const perpView = useSyncExternalStore(subscribePerpMarkets, getPerpMarkets, getPerpMarkets);
+    const perpMarkets = useMemo(() => perpMarketsOf(perpView), [perpView]);
+    const perpTrading = useMemo(
+        () => ({ maxOrderUSD: perpMaxOrderUSD(perpView), loaded: perpView !== null }),
+        [perpView],
+    );
     const { trending, query, results, answered, searchFailed, loading, known, maxOrderUSD } = useSyncExternalStore(
         store.subscribe,
         store.getSnapshot,
@@ -184,11 +200,12 @@ function useLiveCatalog(): {
         return {
             ...CATALOG,
             tokens,
+            perps: perpMarkets,
             // A search with no matches lists the trending questions under its notice.
             markets: (results?.length ? results : trending).map((m) => toPredictionMarket(m, new Date())),
             findMarket: view,
         };
-    }, [tokens, trending, results, known]);
+    }, [tokens, perpMarkets, trending, results, known]);
     const answeredNow = query !== "" && answered === query;
     const empty = !answeredNow
         ? undefined
@@ -203,7 +220,7 @@ function useLiveCatalog(): {
         () => ({ onQuery: store.search, empty, loading: waiting }),
         [store, empty, waiting],
     );
-    return { catalog, store, search, maxOrderUSD, known };
+    return { catalog, store, search, maxOrderUSD, perpTrading, known };
 }
 
 function Provide({
@@ -214,6 +231,7 @@ function Provide({
     store,
     search,
     maxOrderUSD = null,
+    perpTrading,
     known = NO_KNOWN,
     refreshHoldings,
     children,
@@ -226,11 +244,12 @@ function Provide({
     store: MarketsStore;
     search: MarketSearch;
     maxOrderUSD?: number | null;
+    perpTrading?: TradeCtx["perpTrading"];
     known?: ReadonlyMap<string, MarketView>;
     refreshHoldings?: () => void;
     children: ReactNode;
 }) {
-    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, walletCoins);
+    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, walletCoins, perpTrading);
     const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;
     const marketId = watched?.kind === "choice" && watched.value ? watched.value : null;
     useEffect(() => {

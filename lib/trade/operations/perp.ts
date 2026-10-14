@@ -9,12 +9,12 @@ type Side = "long" | "short";
 type Values = { asset: string; leverage: string; collateralUSD: string };
 type Fixed = { side: Side };
 
-/** No perp venue is connected, so nothing can be opened yet; the sentence still builds. */
+/** Trading is off or the server hasn't answered; the sentence still builds. */
 const UNAVAILABLE = {
     code: "unavailable",
     severity: "error",
-    message: "Long and short aren't available yet.",
-    cta: "Not available yet",
+    message: "Long and short aren't available right now.",
+    cta: "Not available right now",
 } as const;
 
 const market = (ctx: TradeCtx, asset: string) => ctx.catalog.perps.find((m) => m.asset === asset);
@@ -118,7 +118,7 @@ export const perp = operation({
         const leverage = clampLeverage(ctx, next.asset, next.leverage);
         return leverage === next.leverage ? next : { ...next, leverage };
     },
-    check: () => [UNAVAILABLE],
+    check: (_v, ctx) => (ctx.perpTrading?.loaded && ctx.perpTrading.maxOrderUSD !== null ? [] : [UNAVAILABLE]),
     toIntent: (v): Extract<TransactionIntent, { type: "perp" }> => ({
         type: "perp",
         side: v.side,
