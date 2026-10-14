@@ -251,7 +251,7 @@ test("an account missing at the quote and present at create takes the cheaper pa
 
     const first = newWallet();
     const quoted = await withdrawals.quoteSolana(account, { amount: "10", to: first });
-    expect(quoted).toEqual({ fee: wei("0.286"), receive: wei("9.714"), setup: true });
+    expect(quoted).toEqual({ fee: wei("0.286"), receive: wei("9.714"), setup: true, setupFee: wei("0.159") });
     rpc.setAccount(await usdcAccountOf(first), { owner: TOKEN, lamports: 2_039_280n });
     const cheaper = await withdrawals.create(account, request(first, "10", { reviewedFee: "0.286" }));
     expect(cheaper.solana).toMatchObject({ setup: false });

@@ -268,8 +268,16 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 }
                 const account = await boundAccount(socket);
                 const to = await services.identity.authorizeWallet(socket.data.identity, input.to);
-                const { fee, receive, setup } = await services.withdrawals.quoteSolana(account, { ...input, to });
-                return { fee: formatUsdc(fee), receive: formatUsdc(receive), setup };
+                const { fee, receive, setup, setupFee } = await services.withdrawals.quoteSolana(account, {
+                    ...input,
+                    to,
+                });
+                return {
+                    fee: formatUsdc(fee),
+                    receive: formatUsdc(receive),
+                    setup,
+                    setupFee: setupFee === null ? null : formatUsdc(setupFee),
+                };
             }),
         );
 

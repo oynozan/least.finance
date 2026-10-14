@@ -16,7 +16,14 @@ import {
 import { sameWallet as sameAddress } from "@/lib/account/balances";
 import { toUsdc, type HistoryRow, type PendingWithdrawal } from "@/lib/account/state";
 import type { ApiError, DepositQuoteView } from "@/lib/account/state";
-import type { CoinBalance, DepositOrderView, MarketView, WithdrawLimits, WithdrawalView } from "@/server/src/protocol";
+import type {
+    CoinBalance,
+    DepositOrderView,
+    MarketView,
+    WithdrawLimits,
+    WithdrawQuote,
+    WithdrawalView,
+} from "@/server/src/protocol";
 import type { DepositNotice, DepositResult } from "./account-client";
 import { useAccount } from "./account-provider";
 import {
@@ -33,7 +40,13 @@ import { DepositButton } from "./deposit-button";
 import { DepositCoins } from "./deposit-coins";
 import { coinLabel } from "./deposit-coins-catalog";
 import { DepositForm } from "./deposit-form";
-import { mergeEntries, withdrawalEntries, type DepositEntry, type WithdrawalEntry } from "./history-entries";
+import {
+    mergeEntries,
+    withdrawalEntries,
+    withdrawalProgress,
+    type DepositEntry,
+    type WithdrawalEntry,
+} from "./history-entries";
 import { DepositProgress, isOutcome, isRunning, shownOrder } from "./deposit-progress";
 import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { NetworkLogo } from "./network-icons";
@@ -214,9 +227,12 @@ function SignedInWallet() {
                 }}
                 withdrawals={account.withdrawals}
                 pendingWithdrawals={account.pendingWithdrawals}
-                evmWallets={linked.filter((w) => w.kind === "evm").map((w) => w.address)}
-                withdrawTo={user ? depositWalletAddress(user, active) : undefined}
+                withdrawWallets={linked.filter(
+                    (w) => w.kind === "evm" || (account.state.status === "ready" && account.state.solana.withdrawals),
+                )}
+                withdrawTo={active.address ?? (user ? depositWalletAddress(user, active) : undefined)}
                 withdrawLimits={account.withdrawLimits}
+                withdrawQuote={account.withdrawQuote}
                 onWithdraw={account.withdraw}
                 onStartWithdraw={account.dismissNotice}
             />
@@ -292,11 +308,16 @@ type WalletSectionProps = {
     /** The account's recent withdrawals, newest first, and the ones not answered yet. */
     withdrawals: WithdrawalView[];
     pendingWithdrawals: PendingWithdrawal[];
-    /** The linked EVM wallets, and the one a withdrawal goes to unless another is picked. */
-    evmWallets: string[];
+    /** The linked wallets a withdrawal can go to, and the one in use, which is paid unless another is picked. */
+    withdrawWallets: Wallet[];
     withdrawTo: string | undefined;
     withdrawLimits: () => Promise<WithdrawLimits | ApiError>;
-    onWithdraw: (amount: string, to: string) => Promise<"sent" | "refused" | "failed">;
+    withdrawQuote: (amount: string, to: string) => Promise<WithdrawQuote | ApiError>;
+    onWithdraw: (
+        amount: string,
+        to: string,
+        reviewedFee?: string,
+    ) => Promise<"sent" | "refused" | "failed" | "changed">;
     onStartWithdraw: () => void;
 };
 
@@ -321,9 +342,10 @@ function WalletSection({
     onConnect,
     withdrawals,
     pendingWithdrawals,
-    evmWallets,
+    withdrawWallets,
     withdrawTo,
     withdrawLimits,
+    withdrawQuote,
     onWithdraw,
     onStartWithdraw,
 }: WalletSectionProps) {
@@ -417,9 +439,10 @@ function WalletSection({
                 />
             ) : withdrawing ? (
                 <WithdrawForm
-                    wallets={evmWallets}
+                    wallets={withdrawWallets}
                     defaultTo={withdrawTo}
                     limits={withdrawLimits}
+                    quote={withdrawQuote}
                     onSubmit={onWithdraw}
                     onConnect={() => onConnect("evm")}
                     onClose={() => {
@@ -563,6 +586,7 @@ function DepositEntryRow({ row }: { row: DepositEntry }) {
 }
 
 function WithdrawalEntryRow({ row }: { row: WithdrawalEntry }) {
+    const progress = withdrawalProgress(row);
     return (
         <>
             <CoinIcon symbol="USDC" className={styles.depositCoin} />
@@ -573,10 +597,10 @@ function WithdrawalEntryRow({ row }: { row: WithdrawalEntry }) {
                     {shortenAddress(row.to)}
                 </span>
             </span>
-            {row.state === "sending" ? (
+            {progress ? (
                 <span className={`${styles.depositWhen} ${styles.depositPending}`}>
                     <span className={styles.pendingDot} aria-hidden="true" />
-                    Sending
+                    {progress}
                 </span>
             ) : row.state === "sent" ? (
                 <When at={row.at} />

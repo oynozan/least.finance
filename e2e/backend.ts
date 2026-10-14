@@ -116,3 +116,10 @@ export const pauseDepositScan = () => call<object>("/deposits/pause-scan", {}).t
 
 /** Starts the deposit scan again; it catches up on what it missed. */
 export const resumeDepositScan = () => call<object>("/deposits/resume-scan", {}).then(() => undefined);
+
+/** Makes the next burn of a Solana withdrawal fail at broadcast, so the withdrawal is refunded. */
+export const failNextBurn = () => call<object>("/withdrawals/fail-next-burn", {}).then(() => undefined);
+
+/** Has Circle report a person's newest Solana withdrawal as minted on Solana. */
+export const forwardWithdrawal = (address: string, forwardTxHash: string) =>
+    call<object>("/iris/forward", { address, forwardTxHash }).then(() => undefined);

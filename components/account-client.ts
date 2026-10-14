@@ -37,6 +37,7 @@ import type {
     SwapQuoteView,
     SwapRequest,
     SwapTxView,
+    WithdrawQuote,
 } from "@/server/src/protocol";
 import { buildDepositTransaction } from "@/lib/account/solana-tx";
 import { arc } from "./arc";
@@ -390,18 +391,35 @@ export class AccountClient {
         return result.ok ? result.data : result.error;
     }
 
+    /** What a withdrawal of `amount` to the Solana wallet `to` would cost and deliver; nothing is taken. */
+    async withdrawQuote(amount: string, to: string): Promise<WithdrawQuote | ApiError> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        const result = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("withdraw:quote", { amount, to })
+            .catch(() => null);
+        if (!result) return UNREACHABLE;
+        return result.ok ? result.data : result.error;
+    }
+
     /**
-     * Withdraws `amount` USDC to `to` and counts it at once. A refusal rolls it back with the server's message;
-     * a missing answer leaves it counted, since the server may have taken it.
+     * Withdraws `amount` USDC to `to` and counts it at once; `reviewedFee` is the fee the person saw for a Solana wallet.
+     * A refusal rolls it back with the server's message; "changed" means the fee rose past what was shown, nothing was
+     * taken and the person is asked again; a missing answer leaves it counted, since the server may have taken it.
      */
-    async withdraw(amount: string, to: string): Promise<"sent" | "refused" | "failed"> {
+    async withdraw(
+        amount: string,
+        to: string,
+        reviewedFee?: string,
+    ): Promise<"sent" | "refused" | "failed" | "changed"> {
         const socket = this.#socket;
         if (this.#snapshot.state.status !== "ready" || !socket?.connected) return "failed";
         const requestId = crypto.randomUUID();
         this.#dispatch({ type: "withdraw", withdrawal: { requestId, amount: toWei(amount), to, at: Date.now() } });
         const result = await socket
             .timeout(REPORT_TIMEOUT_MS)
-            .emitWithAck("withdraw:create", { requestId, amount, to })
+            .emitWithAck("withdraw:create", { requestId, amount, to, ...(reviewedFee ? { reviewedFee } : {}) })
             .catch(() => null);
         if (this.#socket !== socket || !result) return "failed";
         if (result.ok) {
@@ -410,6 +428,7 @@ export class AccountClient {
             return "sent";
         }
         this.#dispatch({ type: "withdraw-refused", requestId });
+        if (result.error.code === "quote_changed") return "changed";
         this.#notify({ kind: "reverted", message: result.error.message });
         return "refused";
     }

@@ -106,10 +106,16 @@ const config = loadConfig({
 });
 /** Recipients whose next payout is made to fail, so a test only ever breaks its own. */
 const failPayoutsTo = new Set<string>();
+/** Set when the next burn of a Solana withdrawal is to fail at broadcast. */
+let failNextBurn = false;
 /** Sends a signed payout to the chain, unless a test asked for the next one to its recipient to fail. */
 async function broadcastPayout(rawTx: Hex): Promise<Hex> {
     const to = parseTransaction(rawTx).to?.toLowerCase();
     if (to && failPayoutsTo.delete(to)) throw new Error("insufficient funds for gas * price + value");
+    if (to === TOKEN_MESSENGER_V2.toLowerCase() && failNextBurn) {
+        failNextBurn = false;
+        throw new Error("insufficient funds for gas * price + value");
+    }
     const response = await fetch(emulator.url, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -189,7 +195,8 @@ async function seed(address: string, deposits: Seeded[]) {
                     logIndex: 0,
                     blockNumber: 0,
                     blockHash: `0x${"0".repeat(64)}`,
-                    from: address.toLowerCase(),
+                    // A deposit's sender is an Ethereum address, so a Solana person's comes from nowhere in particular.
+                    from: isSolanaAddress(address) ? `0x${"0".repeat(40)}` : address.toLowerCase(),
                     to: account.depositAddress,
                     amount: toDecimal(wei),
                     source: "scan",
@@ -422,6 +429,23 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
     /** Makes the next payout to `to` throw at broadcast, as a treasury out of gas money would. */
     "/withdrawals/fail-next": async ({ to }) => {
         failPayoutsTo.add(normalize(to).toLowerCase());
+        return {};
+    },
+    /** Makes the next burn of a Solana withdrawal throw at broadcast, as a treasury out of gas money would. */
+    "/withdrawals/fail-next-burn": async () => {
+        failNextBurn = true;
+        return {};
+    },
+    /** Has Circle report the newest Solana withdrawal of a person's account as minted on Solana, as `forwardTxHash`. */
+    "/iris/forward": async ({ address, forwardTxHash }) => {
+        const account = await services.accounts.find(userIdOf(normalize(address)));
+        if (!account) throw new Error("No account");
+        const found = await services.database.collections.withdrawals.findOne(
+            { accountId: account._id, network: "solana", "solana.burnTxHash": { $ne: null } },
+            { sort: { _id: -1 } },
+        );
+        if (!found?.solana?.burnTxHash) throw new Error("No burn yet");
+        iris.setForwarded(found.solana.burnTxHash, String(forwardTxHash));
         return {};
     },
     /** Stops the deposit scan, so a deposit reaches the account only through its own report. */

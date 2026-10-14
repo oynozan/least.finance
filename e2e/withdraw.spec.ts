@@ -9,7 +9,7 @@ import {
     resumeDepositScan,
     seedDeposits,
 } from "./backend";
-import { addressOf, installSolanaWallet, installWallet, mockArcRpc, mockPrivy, pickWallet } from "./privy-mock";
+import { addressOf, installSolanaWallet, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 
 // The treasury is shared by the whole backend: every test that withdraws or sets it lives in this file, which runs
 // one test at a time and only on desktop, so nothing withdraws meanwhile. A payout made to fail belongs to its
@@ -175,34 +175,7 @@ test("with two EVM wallets, the picked one is paid", async ({ page }) => {
     expect((await arcBalance(first)) - firstBefore).toBe(BigInt(0));
 });
 
-/** Signs in with Phantom, with the page's MetaMask there to link. */
-async function signInWithSolana(page: Page) {
-    const address = randomSolanaAddress();
-    const evm = randomAddress();
-    pickWallet(page, address);
-    await installSolanaWallet(page, address);
-    await installWallet(page, evm);
-    await mockPrivy(page);
-    await mockArcRpc(page, 100, evm);
-    await page.goto("/");
-    await page.getByRole("button", { name: "Connect wallet" }).click();
-    await modal(page).getByRole("button", { name: "Phantom" }).click();
-    await waitForAccount(page, "$0.00");
-}
-
-test("a Solana-only person is asked to connect an EVM wallet", async ({ page }) => {
-    await signInWithSolana(page);
-    await withdrawButton(page).click();
-    await expect(sidebar(page).getByRole("radiogroup", { name: "Withdraw to" })).toHaveCount(0);
-    await sidebar(page).getByRole("button", { name: "Connect an EVM wallet" }).click();
-    await expect(modal(page).getByRole("button", { name: "MetaMask" })).toBeVisible();
-    await modal(page).getByRole("button", { name: "MetaMask" }).click();
-    await expect(sidebar(page).getByRole("button", { name: "Connect an EVM wallet" })).toHaveCount(0, {
-        timeout: 10_000,
-    });
-});
-
-test("the wallet in use is Solana with an EVM wallet linked: the EVM wallet is the default, and the maximum is the credited balance", async ({
+test("the wallet in use is Solana with an EVM wallet linked: Solana is the default, and the maximum is the credited balance", async ({
     page,
 }) => {
     // Once held, a deposit's report never reaches the server: it stays pending and the balance counts it.
@@ -259,8 +232,10 @@ test("the wallet in use is Solana with an EVM wallet linked: the EVM wallet is t
         await expect(balanceButton(page)).toHaveAccessibleName("Balance $105.00, show deposits");
         await sidebar(page).getByRole("button", { name: "Max" }).click();
         await expect(amountField(page)).toHaveValue("100");
-        // The one EVM wallet is the recipient: no picker, and it is the one paid.
-        await expect(sidebar(page).getByRole("radiogroup", { name: "Withdraw to" })).toHaveCount(0);
+        // The wallet in use is picked to begin with; the EVM wallet is picked to be paid.
+        const picker = sidebar(page).getByRole("radiogroup", { name: "Withdraw to" });
+        await expect(picker.getByRole("radio", { name: short(solana) })).toBeChecked();
+        await picker.getByRole("radio", { name: short(evm) }).click();
         await sidebar(page).getByRole("button", { name: "Withdraw", exact: true }).click();
         await expect.poll(async () => (await arcBalance(evm)) - before).toBe(ether(100));
     } finally {
@@ -304,16 +279,6 @@ test("Escape on a recipient row closes only the form", async ({ page }) => {
     await picker.getByRole("radio", { name: short(addressOf(page)) }).focus();
     await page.keyboard.press("Escape");
     await expect(amountField(page)).toHaveCount(0);
-    await expect(withdrawButton(page)).toBeFocused();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
-});
-
-test("Escape on the Connect an EVM wallet row closes only the form", async ({ page }) => {
-    await signInWithSolana(page);
-    await withdrawButton(page).click();
-    await sidebar(page).getByRole("button", { name: "Connect an EVM wallet" }).focus();
-    await page.keyboard.press("Escape");
-    await expect(sidebar(page).getByRole("button", { name: "Connect an EVM wallet" })).toHaveCount(0);
     await expect(withdrawButton(page)).toBeFocused();
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
 });

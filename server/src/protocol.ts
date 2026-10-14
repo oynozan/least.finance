@@ -148,7 +148,13 @@ export type WithdrawalView = {
 export type WithdrawalPlaced = WithdrawalView & { account: AccountView };
 
 /** What a withdrawal to a Solana wallet would cost and what arrives. */
-export type WithdrawQuote = { fee: UsdcAmount; receive: UsdcAmount; setup: boolean };
+export type WithdrawQuote = {
+    fee: UsdcAmount;
+    receive: UsdcAmount;
+    setup: boolean;
+    /** The part of `fee` that creates the recipient's USDC account; null when `setup` is false or it couldn't be read. */
+    setupFee: UsdcAmount | null;
+};
 
 /** What a withdrawal may be right now: `max` is the smaller of the balance and what the treasury can pay. */
 export type WithdrawLimits = { max: UsdcAmount; min: UsdcAmount };

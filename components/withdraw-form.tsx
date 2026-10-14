@@ -1,18 +1,26 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { motion, useAnimate, useReducedMotion, type Transition } from "motion/react";
 import type { ApiError } from "@/lib/account/state";
-import type { WithdrawLimits } from "@/server/src/protocol";
+import {
+    floorFor,
+    pickerRows,
+    quoteLines,
+    showsConnect,
+    WithdrawQuoter,
+    type WithdrawWallet,
+} from "@/lib/account/withdraw-form";
+import type { WithdrawLimits, WithdrawQuote } from "@/server/src/protocol";
 import { MAX_DECIMALS, cleanAmount, normalizeAmount } from "./deposit-form";
 import { CloseIcon, PlusIcon } from "./icons";
 import { NetworkLogo } from "./network-icons";
-import { formatUsd, shortenAddress } from "./wallet-data";
+import { formatUsd } from "./wallet-data";
 import styles from "./wallet-sidebar.module.css";
 
 const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 };
 
-// Withdrawals always pay out on Arc.
+// EVM wallets are paid on Arc.
 const ARC = 5042;
 
 // Arrow keys move the picked recipient, wrapping at the ends.
@@ -22,19 +30,23 @@ const OVER_MAX = "That's more than you can withdraw right now.";
 /** How long after a failed limits read the form asks again. */
 const LIMITS_RETRY_MS = 3_000;
 
+const CHANGED = "The fee changed. Check the new amount and press Withdraw again.";
+
 type WithdrawFormProps = {
-    /** The linked EVM wallets a withdrawal can go to. */
-    wallets: string[];
+    /** The linked wallets a withdrawal can go to. */
+    wallets: WithdrawWallet[];
     /** The wallet picked to begin with. */
     defaultTo: string | undefined;
     limits: () => Promise<WithdrawLimits | ApiError>;
-    onSubmit: (amount: string, to: string) => Promise<"sent" | "refused" | "failed">;
+    /** What a withdrawal to a Solana wallet would cost and deliver. */
+    quote: (amount: string, to: string) => Promise<WithdrawQuote | ApiError>;
+    onSubmit: (amount: string, to: string, reviewedFee?: string) => Promise<"sent" | "refused" | "failed" | "changed">;
     onConnect: () => void;
     onClose: () => void;
 };
 
 /** The amount to withdraw and the wallet to send it to, in place of the Deposit and Withdraw buttons. */
-export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, onClose }: WithdrawFormProps) {
+export function WithdrawForm({ wallets, defaultTo, limits, quote, onSubmit, onConnect, onClose }: WithdrawFormProps) {
     const [text, setText] = useState("");
     const [sending, setSending] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
@@ -68,9 +80,13 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
     // Cut, never rounded up past what can be paid.
     const maxText = loaded ? cleanAmount(loaded.max, MAX_DECIMALS) : null;
     const max = maxText === null ? null : Number(maxText);
-    const min = loaded ? Number(loaded.min) : null;
+    const arcMin = loaded ? Number(loaded.min) : null;
 
-    const to = wallets.find((w) => w.toLowerCase() === chosen?.toLowerCase()) ?? defaultTo ?? wallets[0];
+    const rows = pickerRows(wallets, defaultTo, chosen);
+    const picked = rows.find((row) => row.checked);
+    const to = picked?.address;
+    const solana = picked?.kind === "solana";
+    const min = floorFor(picked?.kind, arcMin);
     const amount = normalizeAmount(text);
     const value = amount === null ? 0 : Number(amount);
     const isOver = (v: number) => max !== null && v > max;
@@ -79,10 +95,40 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
         amount === null || value === 0 || over
             ? null
             : min !== null && value < min
-              ? `The minimum withdrawal is ${formatUsd(min)}.`
+              ? solana
+                  ? `The smallest withdrawal to Solana is ${formatUsd(min)}.`
+                  : `The minimum withdrawal is ${formatUsd(min)}.`
               : null;
+
+    // A Solana wallet's fee is asked for as the amount settles, and a withdrawal is sent only with the fee shown.
+    // The first `quote` is kept: it asks the same client however often the parent renders.
+    const [quoter] = useState(() => new WithdrawQuoter(quote));
+    useEffect(() => () => quoter.stop(), [quoter]);
+    const priced = useSyncExternalStore(quoter.subscribe, quoter.getSnapshot, quoter.getSnapshot);
+    const target = solana && to && amount !== null && value > 0 && !over && issue === null ? { amount, to } : null;
+    const targetKey = target ? `${target.to}:${target.amount}` : "";
+    useEffect(() => {
+        quoter.request(
+            targetKey
+                ? {
+                      to: targetKey.slice(0, targetKey.indexOf(":")),
+                      amount: targetKey.slice(targetKey.indexOf(":") + 1),
+                  }
+                : null,
+        );
+    }, [quoter, targetKey]);
+    const lines = priced.status === "ready" ? quoteLines(priced.quote) : null;
+    const quoteError = priced.status === "error" ? priced.message : null;
+
     // Limits only guide the field; the server checks them again, so a slow read never holds the button.
-    const canSend = amount !== null && value > 0 && !over && issue === null && !!to && !sending;
+    const canSend =
+        amount !== null &&
+        value > 0 &&
+        !over &&
+        issue === null &&
+        !!to &&
+        !sending &&
+        (!solana || priced.status === "ready");
 
     const shake = () => {
         if (!reduceMotion)
@@ -91,20 +137,26 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
 
     const submit = async (event: FormEvent) => {
         event.preventDefault();
-        if (over) return shake();
+        if (over || issue !== null) return shake();
         if (!canSend || amount === null || !to) return;
         setSending(true);
         setProblem(null);
-        const result = await onSubmit(amount, to);
+        const result = await onSubmit(amount, to, solana ? (quoter.reviewedFee() ?? undefined) : undefined);
         setSending(false);
         // Refused: the status line says why, and the amount stays to be changed.
         if (result === "refused") return;
+        // The fee rose: the new figures are shown and nothing is sent until Withdraw is pressed again.
+        if (result === "changed") {
+            setProblem(CHANGED);
+            if (target) quoter.refresh(target);
+            return;
+        }
         if (result === "failed")
             return setProblem("Couldn't reach the server. Check your balance before trying again.");
         onClose();
     };
 
-    const hint = problem ?? issue ?? readError;
+    const hint = problem ?? issue ?? quoteError ?? readError;
     const maxNote = over ? OVER_MAX : max === null ? "" : `You can withdraw up to ${formatUsd(max)}`;
 
     return (
@@ -134,7 +186,7 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
                     <input
                         className={styles.amountInput}
                         aria-label="Withdraw amount"
-                        aria-describedby="withdraw-max withdraw-hint"
+                        aria-describedby="withdraw-max withdraw-quote withdraw-hint"
                         aria-invalid={over || issue !== null || undefined}
                         inputMode="decimal"
                         autoComplete="off"
@@ -187,7 +239,7 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
                 </motion.button>
             </form>
 
-            {wallets.length === 0 ? (
+            {showsConnect(wallets) ? (
                 <button type="button" className={styles.recipient} onClick={onConnect}>
                     <span className={styles.recipientMark} aria-hidden="true">
                         <PlusIcon />
@@ -195,42 +247,56 @@ export function WithdrawForm({ wallets, defaultTo, limits, onSubmit, onConnect, 
                     Connect an EVM wallet
                 </button>
             ) : (
-                wallets.length > 1 && (
+                rows.length > 1 && (
                     <div role="radiogroup" aria-label="Withdraw to" className={styles.recipients}>
-                        {wallets.map((wallet, index) => (
+                        {rows.map((row, index) => (
                             <button
-                                key={wallet}
+                                key={row.address}
                                 type="button"
                                 role="radio"
-                                aria-checked={wallet === to}
-                                aria-label={shortenAddress(wallet)}
+                                aria-checked={row.checked}
+                                aria-label={`${row.short} on ${row.network}`}
                                 // Roving tabindex: only the picked row is a tab stop.
-                                tabIndex={wallet === to ? 0 : -1}
+                                tabIndex={row.checked ? 0 : -1}
                                 className={styles.recipient}
                                 disabled={sending}
-                                onClick={() => setChosen(wallet)}
+                                onClick={() => setChosen(row.address)}
                                 onKeyDown={(event) => {
                                     const step = ARROWS[event.key];
                                     if (!step) return;
                                     event.preventDefault();
-                                    const next = wallets[(index + step + wallets.length) % wallets.length]!;
-                                    setChosen(next);
-                                    const rows = event.currentTarget.parentElement?.children;
-                                    (rows?.[wallets.indexOf(next)] as HTMLElement | undefined)?.focus();
+                                    const next = rows[(index + step + rows.length) % rows.length]!;
+                                    setChosen(next.address);
+                                    const children = event.currentTarget.parentElement?.children;
+                                    (children?.[rows.indexOf(next)] as HTMLElement | undefined)?.focus();
                                 }}
                             >
-                                <NetworkLogo network={ARC} className={styles.recipientMark} />
-                                {shortenAddress(wallet)}
+                                <NetworkLogo
+                                    network={row.kind === "solana" ? "solana" : ARC}
+                                    className={styles.recipientMark}
+                                />
+                                {row.short}
                             </button>
                         ))}
                     </div>
                 )
             )}
 
+            {lines && (
+                <p id="withdraw-quote" className={styles.depositHint} aria-live="polite">
+                    {lines.fee}
+                    {lines.setup && (
+                        <>
+                            <br />
+                            {lines.setup}
+                        </>
+                    )}
+                </p>
+            )}
             <p
                 id="withdraw-hint"
                 className={styles.depositHint}
-                data-tone={problem || issue || readError ? "error" : undefined}
+                data-tone={problem || issue || quoteError || readError ? "error" : undefined}
                 aria-live="polite"
             >
                 {hint}

@@ -39,6 +39,7 @@ import type {
     SwapQuoteView,
     SwapRequest,
     WithdrawLimits,
+    WithdrawQuote,
     WithdrawalView,
 } from "@/server/src/protocol";
 import {
@@ -104,8 +105,10 @@ export type Account = {
     pendingWithdrawals: PendingWithdrawal[];
     /** What a withdrawal may be right now. */
     withdrawLimits: () => Promise<WithdrawLimits | ApiError>;
-    /** Withdraws `amount` USDC to the linked EVM wallet `to`; the amount is counted at once. */
-    withdraw: (amount: string, to: string) => Promise<"sent" | "refused" | "failed">;
+    /** What a withdrawal of `amount` to the linked Solana wallet `to` would cost and deliver. */
+    withdrawQuote: (amount: string, to: string) => Promise<WithdrawQuote | ApiError>;
+    /** Withdraws `amount` USDC to the linked wallet `to` (with the fee shown for a Solana one); the amount is counted at once. */
+    withdraw: (amount: string, to: string, reviewedFee?: string) => Promise<"sent" | "refused" | "failed" | "changed">;
 };
 
 type PlaceInput = Parameters<AccountClient["placePrediction"]>[0];
@@ -282,7 +285,8 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             closePosition={(position, sellPrice) => client.closePosition(position, sellPrice)}
             dismissTradeNotice={() => client.dismissTradeNotice()}
             withdrawLimits={() => client.withdrawLimits()}
-            withdraw={(amount, to) => client.withdraw(amount, to)}
+            withdrawQuote={(amount, to) => client.withdrawQuote(amount, to)}
+            withdraw={(amount, to, reviewedFee) => client.withdraw(amount, to, reviewedFee)}
         >
             {children}
         </Provide>
@@ -306,6 +310,7 @@ function Provide({
     closePosition = () => undefined,
     dismissTradeNotice = () => undefined,
     withdrawLimits = async () => UNAVAILABLE_WITHDRAW,
+    withdrawQuote = async () => UNAVAILABLE_WITHDRAW,
     withdraw = async () => "failed",
     children,
 }: {
@@ -325,6 +330,7 @@ function Provide({
     closePosition?: Account["closePosition"];
     dismissTradeNotice?: () => void;
     withdrawLimits?: Account["withdrawLimits"];
+    withdrawQuote?: Account["withdrawQuote"];
     withdraw?: Account["withdraw"];
     children: ReactNode;
 }) {
@@ -360,6 +366,7 @@ function Provide({
         withdrawals: state.status === "ready" ? state.withdrawals : NO_WITHDRAWALS,
         pendingWithdrawals: state.status === "ready" ? state.pendingWithdrawals : NO_PENDING_WITHDRAWALS,
         withdrawLimits,
+        withdrawQuote,
         withdraw,
     };
     return <AccountContext value={value}>{children}</AccountContext>;

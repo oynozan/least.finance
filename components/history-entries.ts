@@ -9,7 +9,16 @@ export type WithdrawalEntry = {
     at: Date;
     to: string;
     state: WithdrawalView["state"];
+    /** A Solana withdrawal that has been forwarding for 15 minutes. */
+    delayed: boolean;
 };
+
+/** What a withdrawal's line says in place of its age while it is under way, or null once it is sent or failed. */
+export function withdrawalProgress(entry: Pick<WithdrawalEntry, "state" | "delayed">): string | null {
+    if (entry.state === "sending") return "Sending";
+    if (entry.state !== "forwarding") return null;
+    return entry.delayed ? "Taking longer than expected" : "Sending to Solana";
+}
 
 export type DepositEntry = HistoryRow & { kind: "deposit" };
 
@@ -25,6 +34,7 @@ export function withdrawalEntries(withdrawals: WithdrawalView[], pending: Pendin
         at: new Date(p.at),
         to: p.to,
         state: "sending",
+        delayed: false,
     }));
     const placed = withdrawals.map((w): WithdrawalEntry => ({
         kind: "withdrawal",
@@ -33,6 +43,7 @@ export function withdrawalEntries(withdrawals: WithdrawalView[], pending: Pendin
         at: new Date(w.createdAt),
         to: w.to,
         state: w.state,
+        delayed: w.delayed,
     }));
     return [...asked, ...placed].sort((a, b) => b.at.getTime() - a.at.getTime());
 }

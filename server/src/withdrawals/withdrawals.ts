@@ -67,9 +67,14 @@ export class Withdrawals {
     async quoteSolana(
         _account: AccountDoc,
         input: { amount: string; to: string },
-    ): Promise<{ fee: bigint; receive: bigint; setup: boolean }> {
+    ): Promise<{ fee: bigint; receive: bigint; setup: boolean; setupFee: bigint | null }> {
         const priced = await this.#priceSolana(input);
-        return { fee: priced.fee, receive: priced.wei - priced.fee, setup: priced.setup };
+        // The part of the fee that creates the recipient's USDC account.
+        const plain = priced.setup
+            ? await this.#deps.solana!.iris.forwardFee({ from: 26, to: 5, setup: false }).catch(() => null)
+            : null;
+        const setupFee = plain ? (priced.fee > plain.med ? priced.fee - plain.med : 0n) : null;
+        return { fee: priced.fee, receive: priced.wei - priced.fee, setup: priced.setup, setupFee };
     }
 
     create(account: AccountDoc, input: CreateInput): Promise<WithdrawalDoc> {

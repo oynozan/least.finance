@@ -103,7 +103,10 @@ test("withdraw:quote answers fee, receive and setup and is limited to 30 per min
     const quote = (to: string) =>
         socket.timeout(5000).emitWithAck("withdraw:quote", { amount: "10", to }) as Promise<Ack<WithdrawQuote>>;
 
-    expect(await quote(wallet)).toEqual({ ok: true, data: { fee: "0.286", receive: "9.714", setup: true } });
+    expect(await quote(wallet)).toEqual({
+        ok: true,
+        data: { fee: "0.286", receive: "9.714", setup: true, setupFee: "0.159" },
+    });
     expect(await quote(SOLANA)).toMatchObject({ ok: false, error: { code: "forbidden" } });
     expect(await quote(user.wallet)).toMatchObject({ ok: false, error: { code: "bad_request" } });
 
