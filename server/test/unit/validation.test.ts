@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AppError } from "../../src/errors.ts";
 import {
+    activityPage,
     coinWalletAmount,
     depositPage,
     depositReport,
@@ -58,6 +59,48 @@ describe("parse", () => {
             const error = catchError(() => parse(depositPage, { before: bad })) as AppError;
             expect(error.code).toBe("bad_request");
             expect(error.message).toContain("before");
+        }
+    });
+});
+
+describe("activity page input", () => {
+    const before = `1760000000000:3:${"a1".repeat(12)}`;
+
+    it("activityPage accepts no fields, a filter and a limit of 1 or 100", () => {
+        expect(parse(activityPage, undefined)).toEqual({});
+        expect(parse(activityPage, { before })).toEqual({ before });
+        for (const filter of ["all", "trades", "deposits"]) {
+            expect(parse(activityPage, { filter })).toEqual({ filter });
+        }
+        expect(parse(activityPage, { limit: 1 })).toEqual({ limit: 1 });
+        expect(parse(activityPage, { limit: "100" })).toEqual({ limit: 100 });
+        expect(parse(activityPage, { before, limit: 50, filter: "trades" })).toEqual({
+            before,
+            limit: 50,
+            filter: "trades",
+        });
+    });
+
+    it("activityPage rejects limit 0, 101 and 1.5, an unknown filter and a malformed before, naming the field", () => {
+        const id = "a1".repeat(12);
+        const bad: Array<[string, Record<string, unknown>]> = [
+            ["limit", { limit: 0 }],
+            ["limit", { limit: 101 }],
+            ["limit", { limit: 1.5 }],
+            ["filter", { filter: "swaps" }],
+            ["before", { before: "x" }],
+            ["before", { before: `1:0:${id.slice(2)}` }],
+            ["before", { before: `12345678901234567:0:${id}` }],
+            ["before", { before: `1:10:${id}` }],
+            ["before", { before: `1:0:${id.toUpperCase()}` }],
+            ["before", { before: `-1:0:${id}` }],
+            ["before", { before: `${before}0` }],
+        ];
+        for (const [field, input] of bad) {
+            const error = catchError(() => parse(activityPage, input)) as AppError;
+            expect(error).toBeInstanceOf(AppError);
+            expect(error.code).toBe("bad_request");
+            expect(error.message).toContain(field);
         }
     });
 });

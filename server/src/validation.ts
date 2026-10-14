@@ -37,6 +37,15 @@ export const depositPage = z.object({
     limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
+export const activityPage = z.object({
+    before: z
+        .string()
+        .regex(/^\d{1,16}:\d:[0-9a-f]{24}$/, "a cursor from a previous page")
+        .optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    filter: z.enum(["all", "trades", "deposits"]).optional(),
+});
+
 export const marketSearch = z.object({ q: z.string().max(100) });
 
 export const marketId = z.string().regex(/^\d{1,12}$/, "a market id");

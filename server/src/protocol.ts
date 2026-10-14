@@ -633,3 +633,18 @@ export type PnlSeries = {
     tz: string;
     ranges: Record<PnlRangeKey, { unit: PnlUnit; points: PnlPoint[] }>;
 };
+
+/** Deposits and withdrawals, or swaps, predictions, sales and perps, or everything */
+export type ActivityFilter = "all" | "trades" | "deposits";
+
+/** One history row, a position being two items for its opening and its settlement */
+export type ActivityItem =
+    | { kind: "deposit"; at: string; deposit: DepositView }
+    | { kind: "withdrawal"; at: string; withdrawal: WithdrawalView }
+    | { kind: "swap"; at: string; order: SwapOrderView }
+    | { kind: "prediction"; at: string; part: "open" | "settle"; position: PositionView }
+    | { kind: "sale"; at: string; order: PredictionOrderView }
+    | { kind: "perp"; at: string; part: "open" | "settle"; position: PerpPositionView };
+
+/** Newest first, with `next` an opaque cursor for older items and null on the last page */
+export type ActivityPage = { items: ActivityItem[]; next: string | null };
