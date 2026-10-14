@@ -39,7 +39,7 @@ import type {
     SwapTxView,
     WithdrawQuote,
 } from "@/server/src/protocol";
-import { buildDepositTransaction } from "@/lib/account/solana-tx";
+import { buildDepositTransaction, signWithFreshKeys, withFreshSigners } from "@/lib/account/solana-tx";
 import { arc } from "./arc";
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
@@ -632,12 +632,16 @@ export class AccountClient {
                 .emitWithAck("solana:blockhash", {})
                 .catch(() => null);
             if (!recent?.ok || this.#socket !== socket) return "failed";
-            const bytes = buildDepositTransaction({
-                payer: wallet.address,
-                blockhash: recent.data,
-                instructions: tx.instructions,
-                lookupTables: tx.lookupTables,
-            });
+            const { instructions, keyPairs } = await withFreshSigners(tx.instructions);
+            const bytes = await signWithFreshKeys(
+                buildDepositTransaction({
+                    payer: wallet.address,
+                    blockhash: recent.data,
+                    instructions,
+                    lookupTables: tx.lookupTables,
+                }),
+                keyPairs,
+            );
             const signature = await wallet.signer.signAndSend(bytes);
             if (typeof signature !== "string" || signature === "") return "failed";
             if (this.#socket !== socket) return "sent";

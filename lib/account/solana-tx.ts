@@ -6,7 +6,11 @@ import {
     compileTransaction,
     compressTransactionMessageUsingAddressLookupTables,
     createTransactionMessage,
+    generateKeyPair,
+    getAddressFromPublicKey,
+    getTransactionDecoder,
     getTransactionEncoder,
+    partiallySignTransaction,
     pipe,
     setTransactionMessageFeePayer,
     setTransactionMessageLifetimeUsingBlockhash,
@@ -77,4 +81,40 @@ export function buildDepositTransaction(input: {
         (m) => compressTransactionMessageUsingAddressLookupTables(m, tables),
     );
     return Uint8Array.from(getTransactionEncoder().encode(compileTransaction(message)));
+}
+
+/** The address a quote puts where it needs a signer only the app can supply (a one-off key). */
+const FRESH_SIGNER = "11111111111111111111111111111111";
+
+/** The instructions with every fresh-signer placeholder swapped for one new key's address, and that key. */
+export async function withFreshSigners(
+    instructions: SolanaInstruction[],
+): Promise<{ instructions: SolanaInstruction[]; keyPairs: CryptoKeyPair[] }> {
+    const keyPairs: CryptoKeyPair[] = [];
+    let fresh: string | null = null;
+    const out: SolanaInstruction[] = [];
+    for (const instruction of instructions) {
+        const keys: SolanaInstruction["keys"] = [];
+        for (const key of instruction.keys) {
+            if (!key.isSigner || key.pubkey !== FRESH_SIGNER) {
+                keys.push(key);
+                continue;
+            }
+            if (fresh === null) {
+                const keyPair = await generateKeyPair();
+                keyPairs.push(keyPair);
+                fresh = await getAddressFromPublicKey(keyPair.publicKey);
+            }
+            keys.push({ ...key, pubkey: fresh });
+        }
+        out.push({ ...instruction, keys });
+    }
+    return { instructions: out, keyPairs };
+}
+
+/** The transaction with the one-off keys' signatures filled in, left for the wallet to add its own. */
+export async function signWithFreshKeys(bytes: Uint8Array, keyPairs: CryptoKeyPair[]): Promise<Uint8Array> {
+    if (keyPairs.length === 0) return bytes;
+    const signed = await partiallySignTransaction(keyPairs, getTransactionDecoder().decode(bytes));
+    return Uint8Array.from(getTransactionEncoder().encode(signed));
 }

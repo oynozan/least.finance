@@ -12,7 +12,7 @@ import {
 import { Server } from "socket.io";
 import { AccountClient, NEEDS_SOL, type SwapSigner } from "@/components/account-client";
 import { isDepositOpen } from "@/lib/account/balances";
-import { buildDepositTransaction } from "@/lib/account/solana-tx";
+import { buildDepositTransaction, signWithFreshKeys, withFreshSigners } from "@/lib/account/solana-tx";
 import type { BalancesView, CoinBalance, SolanaInstruction } from "@/server/src/protocol";
 
 const key = (n: number) => getAddressDecoder().decode(new Uint8Array(32).fill(n)) as string;
@@ -82,6 +82,43 @@ test.describe("the deposit transaction", () => {
         expect(limits([price, deposit])).toHaveLength(1);
         expect(decode(build([price, deposit])).instructions).toHaveLength(3);
         expect(decode(build([limit, deposit])).instructions).toHaveLength(2);
+    });
+});
+
+test.describe("one-off signers", () => {
+    const placeholder = "11111111111111111111111111111111";
+    const burn: SolanaInstruction = {
+        programId: PROGRAM,
+        keys: [
+            { pubkey: PAYER, isSigner: true, isWritable: false },
+            { pubkey: placeholder, isSigner: true, isWritable: true },
+            { pubkey: placeholder, isSigner: false, isWritable: false },
+        ],
+        data: "0x01",
+    };
+
+    test("the placeholder signer gets a new address; the payer and a non-signer placeholder are kept", async () => {
+        const { instructions, keyPairs } = await withFreshSigners([burn]);
+        const keys = instructions[0]!.keys;
+        expect(keyPairs).toHaveLength(1);
+        expect(keys[0]!.pubkey).toBe(PAYER);
+        expect(keys[1]!.pubkey).not.toBe(placeholder);
+        expect(keys[2]!.pubkey).toBe(placeholder);
+    });
+
+    test("the built transaction carries the one-off key's signature and leaves the wallet's empty", async () => {
+        const { instructions, keyPairs } = await withFreshSigners([burn]);
+        const bytes = await signWithFreshKeys(build(instructions), keyPairs);
+        const transaction = getTransactionDecoder().decode(bytes);
+        const fresh = instructions[0]!.keys[1]!.pubkey as Address;
+        expect(transaction.signatures[PAYER as Address]).toBeNull();
+        expect(transaction.signatures[fresh]).not.toBeNull();
+    });
+
+    test("without placeholders nothing changes", async () => {
+        const { instructions, keyPairs } = await withFreshSigners([deposit]);
+        expect(keyPairs).toEqual([]);
+        expect(instructions).toEqual([deposit]);
     });
 });
 
