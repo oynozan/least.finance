@@ -11,6 +11,7 @@ import {
     formatPnl,
     formatUsd,
     liveValue,
+    perpCloseBlock,
     positionDetail,
     positionName,
     positionTitle,
@@ -37,6 +38,7 @@ type PositionRowProps = {
     /** The market's sell price and smallest sale; null where its question isn't known yet. */
     market: { sellPrice: number | null; minShares: number | null };
     onSell: (position: PositionView, sellPrice: number | null) => void;
+    onClosePerp: (positionId: string) => void;
     ref?: Ref<HTMLLIElement>;
 };
 
@@ -45,14 +47,15 @@ type PositionRowProps = {
  * worth. Hovering (or focusing, or tapping on touch) slides in a close button
  * tinted by the PnL.
  */
-export function PositionRow({ position, entranceDelay, market, onSell, ref }: PositionRowProps) {
+export function PositionRow({ position, entranceDelay, market, onSell, onClosePerp, ref }: PositionRowProps) {
     const { symbol } = position;
     const title = positionTitle(position);
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
     const [tapped, setTapped] = useState(false);
     const revealed = hovered || focused || tapped;
-    const worth = position.status === "open" ? liveValue(position, market.sellPrice) : null;
+    const worth =
+        position.status === "open" || position.status === "closing" ? liveValue(position, market.sellPrice) : null;
     const pnl = worth ? worth.pnl : position.pnl;
     const trend = trendOf(pnl);
     // Only a position that resolved or was bought but not yet filled has no sale to make
@@ -92,7 +95,7 @@ export function PositionRow({ position, entranceDelay, market, onSell, ref }: Po
             </span>
             <span className={styles.pnl}>{liveText(position, worth?.value ?? null)}</span>
             {/* Always mounted, only collapsed, so keyboard users can tab to it. */}
-            {(position.status === "pending" || position.status === "open") && (
+            {(position.status === "pending" || position.status === "open" || position.status === "closing") && (
                 <motion.span
                     className={styles.closeSlot}
                     initial={false}
@@ -110,7 +113,9 @@ export function PositionRow({ position, entranceDelay, market, onSell, ref }: Po
                         whileTap={{ scale: 0.9 }}
                         transition={spring}
                         onClick={() => {
-                            if (!reason && position.position) onSell(position.position, market.sellPrice);
+                            if (reason) return;
+                            if (position.kind === "perp-live") onClosePerp(position.position.id);
+                            else if (position.position) onSell(position.position, market.sellPrice);
                         }}
                     >
                         Close
@@ -126,8 +131,9 @@ export function PositionRow({ position, entranceDelay, market, onSell, ref }: Po
     );
 }
 
-/** Why a live prediction can't be sold now, or null when it can. */
+/** Why a live position can't be closed now, or null when it can. */
 function closeBlock(live: Position, minShares: number | null): string | null {
+    if (live.kind === "perp-live") return perpCloseBlock(live);
     if (!live.position) return BUY_PENDING;
     return minShares !== null && sellableShares(live.shares) < minShares ? TOO_SMALL : null;
 }
@@ -135,6 +141,12 @@ function closeBlock(live: Position, minShares: number | null): string | null {
 /** What sits at the row's right edge: the wait, the outcome, or the position's worth. */
 function liveText(live: Position, value: number | null) {
     if (live.status === "pending") return "Pending";
+    if (live.kind === "perp-live") {
+        if (live.status === "closing") return "Closing";
+        if (live.status === "closed") return "Closed";
+        if (live.status === "liquidated") return "Liquidated";
+        return formatUsd(value ?? live.size);
+    }
     if (live.status === "won") return `Won ${formatUsd(live.payout ?? 0)}`;
     if (live.status === "lost") return "Lost";
     return formatUsd(value ?? live.size);

@@ -1,6 +1,6 @@
 import { QUOTE } from "./catalog";
 import { formatUnits, formatUsdShort } from "./format";
-import type { PositionView, SwapOrderState, SwapOrderView } from "@/server/src/protocol";
+import type { PerpPositionView, PositionView, SwapOrderState, SwapOrderView } from "@/server/src/protocol";
 import { networkName } from "./networks";
 import { shortenAddress } from "@/components/wallet-data";
 
@@ -121,6 +121,42 @@ export function predictionActivity(position: PositionView, optimistic = false): 
             title: `${settled.prefix} ${name}`,
             detail: position.state === "lost" ? "" : `${formatUsdShort(settled.gross)} back`,
             change: settled.gross - cost,
+        });
+    }
+    return rows;
+}
+
+/**
+ * The rows for a perp position: its opening, which moves nothing (the collateral stays part of the balance), then
+ * what closing or a liquidation did. `optimistic` marks an open the server hasn't filled yet.
+ */
+export function perpActivity(position: PerpPositionView, optimistic = false): Activity[] {
+    const collateral = Number(position.collateralUSD);
+    const name = `${position.side === "long" ? "Long" : "Short"} ${position.asset} at ${position.leverage}x`;
+    const base = { symbols: [position.asset], amountUSD: collateral };
+    const rows: Activity[] = [
+        {
+            ...base,
+            id: `perp:${position.id}:open`,
+            at: new Date(position.openedAt),
+            kind: position.side,
+            title: name,
+            detail: `${formatUsdShort(collateral * position.leverage)} position`,
+            change: 0,
+            pending: optimistic || undefined,
+        },
+    ];
+    if (position.state === "closed" || position.state === "liquidated") {
+        const back = Number(position.proceedsUSD ?? 0);
+        const liquidated = position.state === "liquidated";
+        rows.push({
+            ...base,
+            id: `perp:${position.id}:settle`,
+            at: new Date(position.settledAt ?? position.updatedAt),
+            kind: "close",
+            title: `${liquidated ? "Liquidated" : "Closed"} ${name}`,
+            detail: back > 0 ? `${formatUsdShort(back)} back` : "",
+            change: back - collateral,
         });
     }
     return rows;

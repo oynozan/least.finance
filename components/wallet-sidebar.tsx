@@ -55,7 +55,7 @@ import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
 import { useSidebar } from "./sidebar";
 import { useTrade } from "./trade/trade-provider";
-import { formatUsd, formatWhen, livePredictionRows, shortenAddress, type LivePredictionPosition } from "./wallet-data";
+import { formatUsd, formatWhen, livePerpRows, livePredictionRows, shortenAddress, type Position } from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
 import { WithdrawForm } from "./withdraw-form";
 import styles from "./wallet-sidebar.module.css";
@@ -123,7 +123,8 @@ function historyRef(list: HTMLOListElement | null) {
 }
 
 /** The sell price and smallest sale of a prediction's outcome, from the questions seen; null where not known. */
-function marketOf(position: LivePredictionPosition, known: ReadonlyMap<string, MarketView>) {
+function marketOf(position: Position, known: ReadonlyMap<string, MarketView>) {
+    if (position.kind === "perp-live") return { sellPrice: null, minShares: null };
     const outcome = known.get(position.eventId)?.outcomes.find((o) => o.tokenId === position.tokenId);
     // A view cached before sell prices lacks them
     const number = (value: unknown) => (typeof value === "number" ? value : null);
@@ -156,8 +157,8 @@ function SignedInWallet() {
     const evmNetwork = useWalletNetwork(address);
     const network = active.kind === "solana" ? "solana" : evmNetwork;
 
-    // Predictions are the only positions that stay open: swaps settle at once, and perps have no venue yet.
-    const { predictions, optimisticTrades } = account;
+    // Predictions and perps are the positions that stay open: swaps settle at once.
+    const { predictions, perps, optimisticTrades } = account;
     const { known } = useTrade();
     // Moves on whenever the sidebar opens; a clock read while rendering can't be prerendered.
     const [clock, setClock] = useState(0);
@@ -166,8 +167,8 @@ function SignedInWallet() {
         return () => clearTimeout(timer);
     }, [open]);
     const positions = useMemo(
-        () => livePredictionRows(predictions, optimisticTrades, clock),
-        [predictions, optimisticTrades, clock],
+        (): Position[] => [...livePredictionRows(predictions, optimisticTrades, clock), ...livePerpRows(perps, clock)],
+        [predictions, perps, optimisticTrades, clock],
     );
 
     // Remount the animated parts on every open so they replay their entrance.
@@ -254,6 +255,7 @@ function SignedInWallet() {
                                     entranceDelay={entranceDelay(i, positions.length)}
                                     market={marketOf(position, known)}
                                     onSell={account.closePosition}
+                                    onClosePerp={account.closePerp}
                                 />
                             ))}
                         </AnimatePresence>

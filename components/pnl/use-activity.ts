@@ -1,12 +1,13 @@
 "use client";
 
 import { useMemo, useSyncExternalStore } from "react";
-import { toUsdc, type OptimisticTrade } from "@/lib/account/state";
-import type { PositionsView } from "@/server/src/protocol";
+import { isPendingPerp, toUsdc, type OptimisticTrade } from "@/lib/account/state";
+import type { PerpsView, PositionsView } from "@/server/src/protocol";
 import {
     byNewest,
     depositActivity,
     pendingBuyActivity,
+    perpActivity,
     predictionActivity,
     swapActivity,
     withdrawalActivity,
@@ -69,13 +70,16 @@ function realPredictions({ positions, orders }: PositionsView, optimistic: reado
     return rows;
 }
 
+/** Perp positions as their rows; an open the server hasn't filled yet is pending. */
+const realPerps = ({ positions }: PerpsView): Activity[] => positions.flatMap((p) => perpActivity(p, isPendingPerp(p)));
+
 /**
- * Everything the account did, newest first: its deposits, withdrawals, swaps and predictions,
+ * Everything the account did, newest first: its deposits, withdrawals, swaps, predictions and perps,
  * as the server holds them, plus buys still on their way.
  */
 export function useActivity(): ActivityState {
     const { wallet, catalog } = useTrade();
-    const { history, predictions, optimisticTrades, swaps, withdrawals, pendingWithdrawals } = useAccount();
+    const { history, predictions, perps, optimisticTrades, swaps, withdrawals, pendingWithdrawals } = useAccount();
     const nowMs = useNow();
 
     const now = useMemo(() => (nowMs === null ? null : new Date(nowMs)), [nowMs]);
@@ -102,8 +106,14 @@ export function useActivity(): ActivityState {
             const price = priceOf(order.from.token);
             return swapActivity(order, price === null ? null : Number(order.from.amount) * price);
         });
-        return [...deposits, ...payouts, ...trades, ...realPredictions(predictions, optimisticTrades)].sort(byNewest);
-    }, [now, history, predictions, optimisticTrades, swaps, withdrawals, pendingWithdrawals, catalog]);
+        return [
+            ...deposits,
+            ...payouts,
+            ...trades,
+            ...realPredictions(predictions, optimisticTrades),
+            ...realPerps(perps),
+        ].sort(byNewest);
+    }, [now, history, predictions, perps, optimisticTrades, swaps, withdrawals, pendingWithdrawals, catalog]);
 
     if (wallet.status === "disconnected") return { status: "signed-out", connect: wallet.connect };
     if (wallet.status === "loading" || now === null || activity === null) return { status: "loading" };
