@@ -17,8 +17,10 @@ export type IrisMessage = {
 export type Iris = {
     /** The forward fee of a burn on Arc minted on Solana, in USDC wei. */
     forwardFee(input: { from: 26; to: 5; setup: boolean }): Promise<{ med: bigint; high: bigint }>;
-    /** What Circle reports for the message a burn produced; null while it has none. */
-    message(input: { domain: number; burnTxHash: Hex }): Promise<IrisMessage | null>;
+    /** The forward fee of a burn on Solana minted on Arc, in USDC wei. */
+    depositFee(): Promise<{ med: bigint; high: bigint }>;
+    /** What Circle reports for the message a burn produced (a hash on EVM, a signature on Solana); null while it has none. */
+    message(input: { domain: number; burnTxHash: Hex | string }): Promise<IrisMessage | null>;
 };
 
 /** Iris couldn't be asked or answered badly; `rate_limited` means back off. */
@@ -62,17 +64,20 @@ export function createIris(options: { baseUrl: string; fetch?: typeof fetch; tim
         return BigInt(Math.ceil(Number(value))) * WEI_PER_UNIT;
     };
 
+    async function fees(path: string) {
+        const { body } = await get(path);
+        const rows = (Array.isArray(body) ? body : ((body as { data?: unknown } | null)?.data ?? [])) as FeeRow[];
+        const row = Array.isArray(rows)
+            ? (rows.find((r) => r.finalityThreshold === STANDARD_FINALITY) ?? rows[0])
+            : undefined;
+        if (!row?.forwardFee) throw new IrisError("unavailable", "Iris gave no forward fee");
+        return { med: toWei(row.forwardFee.med), high: toWei(row.forwardFee.high) };
+    }
+
     return {
-        async forwardFee({ from, to, setup }) {
-            const query = `forward=true${setup ? "&includeRecipientSetup=true" : ""}`;
-            const { body } = await get(`/v2/burn/USDC/fees/${from}/${to}?${query}`);
-            const rows = (Array.isArray(body) ? body : ((body as { data?: unknown } | null)?.data ?? [])) as FeeRow[];
-            const row = Array.isArray(rows)
-                ? (rows.find((r) => r.finalityThreshold === STANDARD_FINALITY) ?? rows[0])
-                : undefined;
-            if (!row?.forwardFee) throw new IrisError("unavailable", "Iris gave no forward fee");
-            return { med: toWei(row.forwardFee.med), high: toWei(row.forwardFee.high) };
-        },
+        forwardFee: ({ from, to, setup }) =>
+            fees(`/v2/burn/USDC/fees/${from}/${to}?forward=true${setup ? "&includeRecipientSetup=true" : ""}`),
+        depositFee: () => fees(`/v2/burn/USDC/fees/${SOLANA_DOMAIN}/${ARC_DOMAIN}?forward=true`),
         async message({ domain, burnTxHash }) {
             const { body } = await get(`/v2/messages/${domain}?transactionHash=${burnTxHash}`);
             const found = (body as { messages?: Record<string, unknown>[] } | null)?.messages?.[0];

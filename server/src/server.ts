@@ -11,12 +11,13 @@ import type { Config } from "./config.ts";
 import { DepositOrders } from "./crosschain/orders.ts";
 import { OrderTracker } from "./crosschain/tracker.ts";
 import { createAcross } from "./crosschain/providers/across.ts";
+import { createCctp } from "./crosschain/providers/cctp.ts";
 import { createRelay } from "./crosschain/providers/relay.ts";
 import type { BridgeProvider } from "./crosschain/providers/types.ts";
 import { readBalances } from "./crosschain/balances.ts";
 import { createSourceClients, type SourceClients } from "./crosschain/chains.ts";
 import { lifiPrices, type PriceFeed } from "./crosschain/prices.ts";
-import { createIris, type Iris } from "./crosschain/iris.ts";
+import { ARC_DOMAIN, createIris, SOLANA_DOMAIN, type Iris } from "./crosschain/iris.ts";
 import { createSolanaRpc, readSolanaBalances, type SolanaRpc } from "./crosschain/solana.ts";
 import { connectDatabase } from "./db/mongo.ts";
 import { formatUsdc } from "./db/money.ts";
@@ -129,8 +130,15 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             confirmations: config.DEPOSIT_CONFIRMATIONS,
             receiptTimeoutMs: config.DEPOSIT_RECEIPT_TIMEOUT_MS,
         });
+        const iris = overrides.iris ?? createIris({ baseUrl: config.CIRCLE_IRIS_URL });
         const bridges = overrides.bridges ?? [
             createRelay({ apiKey: config.RELAY_API_KEY }),
+            createCctp({
+                iris,
+                arcDomain: ARC_DOMAIN,
+                solanaDomain: SOLANA_DOMAIN,
+                logger: logger.child({ component: "cctp" }),
+            }),
             createAcross({ apiKey: config.ACROSS_API_KEY, integratorId: config.ACROSS_INTEGRATOR_ID }),
         ];
         const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
@@ -146,7 +154,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             allowedPrograms: config.SOLANA_ALLOWED_PROGRAMS,
             logger: logger.child({ component: "deposit-orders" }),
         });
-        const iris = overrides.iris ?? createIris({ baseUrl: config.CIRCLE_IRIS_URL });
         const withdrawals = new Withdrawals({
             collections,
             ledger,

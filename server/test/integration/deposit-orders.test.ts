@@ -235,6 +235,67 @@ describe("Solana deposits", () => {
     });
 });
 
+describe("Solana deposits through CCTP", () => {
+    let open: Stack;
+    beforeAll(async () => {
+        open = await startStack({
+            mongoUri: inject("mongoUri"),
+            anvilUrl: inject("anvilUrl"),
+            env: { SOLANA_DEPOSITS: "on", ORDER_POLL_MS: "100" },
+            cctp: true,
+        });
+    });
+    afterAll(() => open?.stop());
+
+    test("Relay gives no quote, so a Solana USDC deposit goes through CCTP and is credited once by the watcher", async () => {
+        const user = await open.user();
+        open.privy.setUser(user.userId, [user.wallet, { address: SOLANA, chain: "solana" }]);
+        const socket = await open.socket(user);
+        const opened = (await socket.timeout(5000).emitWithAck("account:open", {})) as Ack<WalletSession>;
+        if (!opened.ok) throw new Error(opened.error.code);
+        const { depositAddress } = opened.data.account;
+        const collections = open.server.services.database.collections;
+
+        const relay = vi.spyOn(open.solanaBridge, "quote").mockRejectedValue(new Error("no route"));
+        let created;
+        try {
+            created = await ask(socket, "solana:USDC", "10", SOLANA);
+        } finally {
+            relay.mockRestore();
+        }
+        if (!created.ok) throw new Error(created.error.code);
+        const { order, txs } = created.data;
+        expect(txs).toMatchObject([
+            { kind: "solana", instructions: [{ programId: "CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe" }] },
+        ]);
+        expect(order).toMatchObject({ usdcOut: "9.984362", state: "created" });
+
+        // The wallet burns on Solana; Circle then mints on Arc at the deposit address.
+        const reported = await socket
+            .timeout(5000)
+            .emitWithAck("deposit:source", { orderId: order.id, txHashes: [SIGNATURE] });
+        expect(reported).toMatchObject({ ok: true, data: { state: "sent" } });
+        open.solanaRpc.setSignatureStatus(SIGNATURE, { confirmationStatus: "finalized", err: null });
+        open.iris.setPending(SIGNATURE);
+        const state = async () => (await collections.depositOrders.findOne({ _id: new ObjectId(order.id) }))!.state;
+        await expect.poll(state).toBe("bridging");
+
+        const minter = getAddress("0x00000000000000000000000000000000000c0de5");
+        await open.chain.fund(minter, "20");
+        const mint = await open.chain.send(minter, depositAddress, "9.984362");
+        open.iris.setForwarded(SIGNATURE, mint);
+        await expect.poll(state).toBe("delivered");
+
+        const doc = (await collections.depositOrders.findOne({ _id: new ObjectId(order.id) }))!;
+        const deposits = await collections.deposits.find({ accountId: doc.accountId }).toArray();
+        expect(deposits).toHaveLength(1);
+        expect(deposits[0]!.origin).toMatchObject({ coin: "solana:USDC", amount: "10", txHash: SIGNATURE });
+        expect(doc.provider).toBe("cctp");
+        expect(doc.depositId).toEqual(deposits[0]!._id);
+        expect(await collections.ledger.countDocuments({ accountId: doc.accountId })).toBe(1);
+    });
+});
+
 test("reporting the source sends the order once", async () => {
     const user = await stack.user();
     const { socket } = await bind(user);

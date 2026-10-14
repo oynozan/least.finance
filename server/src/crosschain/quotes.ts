@@ -1,5 +1,6 @@
 import { AppError } from "../errors.ts";
 import { ARC_USDC_TOKENS } from "./catalog.ts";
+import { TOKEN_MESSENGER_MINTER_V2 } from "./providers/cctp.ts";
 import type { BridgeProvider, Quote, QuoteRequest, SourceTx } from "./providers/types.ts";
 
 const QUOTE_TIMEOUT_MS = 3_000;
@@ -61,8 +62,8 @@ function solanaTxsHold(
 /**
  * Whether a provider's quote does what was asked: it takes the requested coin and amount, pays native USDC on Arc
  * (by address, never by symbol) to the requested recipient, refunds the requested wallet, and has the user sign
- * at least one transaction, all on the coin's chain. A Solana quote also keeps to the allowed programs and to
- * transfers no larger than the deposit; Solana addresses compare exactly.
+ * at least one transaction, all on the coin's chain. A Solana quote also keeps to the allowed programs (CCTP's
+ * only to its own) and to transfers no larger than the deposit; Solana addresses compare exactly.
  */
 export function checkQuote(
     quote: Quote,
@@ -75,7 +76,12 @@ export function checkQuote(
     const sameWallet = solana ? quote.refundTo === request.refundTo : sameAddress(quote.refundTo, request.refundTo);
     const txsHold = solana
         ? quote.txs.every((tx): tx is SolanaTx => tx.kind === "solana") &&
-          solanaTxsHold(quote.txs as SolanaTx[], request, allowedPrograms, logger)
+          solanaTxsHold(
+              quote.txs as SolanaTx[],
+              request,
+              quote.provider === "cctp" ? [TOKEN_MESSENGER_MINTER_V2] : allowedPrograms,
+              logger,
+          )
         : quote.txs.every((tx) => tx.kind === "evm" && tx.chainId === coin.chainId);
     return (
         quote.coin === coin.key &&

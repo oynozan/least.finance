@@ -10,6 +10,7 @@ import { arcChain } from "../../src/chain/arc.ts";
 import { EVM_COINS } from "../../src/crosschain/catalog.ts";
 import { createSourceClients } from "../../src/crosschain/chains.ts";
 import { fixedPrices } from "../../src/crosschain/prices.ts";
+import { createCctp } from "../../src/crosschain/providers/cctp.ts";
 import { createIris } from "../../src/crosschain/iris.ts";
 import { createSolanaRpc } from "../../src/crosschain/solana.ts";
 import { loadConfig } from "../../src/config.ts";
@@ -143,6 +144,8 @@ type StackOptions = {
     now?: () => number;
     env?: Record<string, string>;
     emulator?: EmulatorOptions;
+    /** Adds the real CCTP deposit provider, after the Relay stand-in, reading the fake Iris. */
+    cctp?: boolean;
 };
 
 /** The real server, against a throwaway database, the emulated chain and the fake Privy. */
@@ -154,6 +157,7 @@ export async function startStack({
     now,
     env = {},
     emulator: emulatorOptions,
+    cctp,
 }: StackOptions): Promise<Stack> {
     if (!ethereumUrl || !bnbUrl) {
         const { inject } = await import("vitest");
@@ -214,7 +218,11 @@ export async function startStack({
         solana: createSolanaRpc([solanaRpc.url]),
         iris: createIris({ baseUrl: iris.url }),
         prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
-        bridges: [bridge, solanaBridge],
+        bridges: [
+            bridge,
+            solanaBridge,
+            ...(cctp ? [createCctp({ iris: createIris({ baseUrl: iris.url }), arcDomain: 26, solanaDomain: 5 })] : []),
+        ],
         trader,
         now,
     });

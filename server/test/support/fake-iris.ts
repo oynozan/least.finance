@@ -8,6 +8,7 @@ type Fee = { med: number; high: number };
 /** A Circle Iris stand-in: forward fees in USDC units (6 decimals) and per-burn messages set by the test. */
 export async function startFakeIris() {
     const fees = { plain: { med: 127_000, high: 150_000 } as Fee, setup: { med: 286_000, high: 320_000 } as Fee };
+    let depositFee: Fee = { med: 15_638, high: 15_763 };
     const messages = new Map<string, Record<string, unknown>>();
     const urls: string[] = [];
     let failure: number | null = null;
@@ -25,7 +26,12 @@ export async function startFakeIris() {
         };
         if (url.pathname.startsWith("/v2/burn/USDC/fees/")) {
             if (url.searchParams.get("forward") !== "true") return json({ error: "forward required" }, 400);
-            const fee = url.searchParams.get("includeRecipientSetup") === "true" ? fees.setup : fees.plain;
+            const toArc = url.pathname === "/v2/burn/USDC/fees/5/26";
+            const fee = toArc
+                ? depositFee
+                : url.searchParams.get("includeRecipientSetup") === "true"
+                  ? fees.setup
+                  : fees.plain;
             return json([
                 { finalityThreshold: 1000, minimumFee: 1, forwardFee: { low: 1, med: 1, high: 1 } },
                 {
@@ -50,6 +56,8 @@ export async function startFakeIris() {
             fees.plain = plain;
             fees.setup = setup;
         },
+        /** The forward fee of a Solana to Arc burn, in USDC units. */
+        setDepositFee: (fee: Fee) => void (depositFee = fee),
         setMessage: (burnTxHash: string, message: Record<string, unknown>) => void messages.set(burnTxHash, message),
         /** The message of a burn Circle has seen but not yet forwarded. */
         setPending: (burnTxHash: string) => void messages.set(burnTxHash, { status: "pending_confirmations" }),
