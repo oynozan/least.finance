@@ -155,6 +155,8 @@ export const withdrawQuoteRequest = z.object({
     to: withdrawRequest.shape.to,
 });
 
+export const pnlSeries = z.object({ tz: z.string().max(64) });
+
 /** Parses client input, turning a mismatch into a 400 that names the field. */
 export function parse<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
     const result = schema.safeParse(input ?? {});

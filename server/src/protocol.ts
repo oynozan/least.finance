@@ -288,6 +288,8 @@ export type ClientToServerEvents = {
     ) => void;
     /** Closes a whole position; the outcome follows as a `perp:update`. A repeated `requestId` is the same order. */
     "perp:close": (req: PerpCloseRequest, ack: (result: Ack<{ order: PerpOrderView }>) => void) => void;
+    /** The account's balance, PnL and net per day, week or month for 7D, 30D and All, with days cut in the zone `tz`. */
+    "pnl:series": (payload: { tz: string }, ack: (result: Ack<PnlSeries>) => void) => void;
 };
 
 export type ServerToClientEvents = {
@@ -316,6 +318,8 @@ export type ServerToClientEvents = {
     "perp:update": (payload: PerpUpdate) => void;
     /** The account's perp positions and in-flight orders, pushed after `account:open`. */
     perps: (payload: PerpsView) => void;
+    /** Something that can move the account's PnL series happened; ask for it again. */
+    "pnl:changed": () => void;
 };
 
 /** What the socket handshake carries in `auth`. */

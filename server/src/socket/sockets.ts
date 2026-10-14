@@ -22,6 +22,7 @@ import {
     perpClose,
     perpOrder,
     perpQuote,
+    pnlSeries,
     predictionClose,
     predictionOrder,
     predictionQuote,
@@ -86,6 +87,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     const predictionOrders = new RateLimiterMemory({ keyPrefix: "prediction", points: 10, duration: 60 });
     const perpQuotes = new RateLimiterMemory({ keyPrefix: "perp-quote", points: 60, duration: 60 });
     const perpOrders = new RateLimiterMemory({ keyPrefix: "perp", points: 10, duration: 60 });
+    const pnlSeriesLimit = new RateLimiterMemory({ keyPrefix: "pnl-series", points: 30, duration: 60 });
 
     io.use(async (socket, next) => {
         try {
@@ -423,6 +425,17 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 return { order: perpOrderView(closed.order) };
             }),
         );
+
+        socket.on("pnl:series", (payload, ack) =>
+            reply(ack, async () => {
+                const { tz } = parse(pnlSeries, payload);
+                await pnlSeriesLimit.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                });
+                const account = await boundAccount(socket);
+                return services.pnl.series(account._id, tz);
+            }),
+        );
     });
 
     bus.on("deposit:credited", ({ deposit, account }) => {
@@ -433,8 +446,10 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             .fetchSockets()
             .then((sockets) => {
                 for (const socket of sockets) {
-                    if (socket.data.identity.userId === account.privyUserId) socket.emit("deposit:credited", payload);
-                    else socket.leave(roomOf(deposit.accountId));
+                    if (socket.data.identity.userId === account.privyUserId) {
+                        socket.emit("deposit:credited", payload);
+                        socket.emit("pnl:changed");
+                    } else socket.leave(roomOf(deposit.accountId));
                 }
             });
     });
@@ -507,8 +522,10 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 if (!current) return;
                 const payload = { withdrawal: withdrawalView(withdrawal), account: accountView(current) };
                 for (const socket of await io.in(room).fetchSockets()) {
-                    if (socket.data.identity.userId === owner?.privyUserId) socket.emit("withdrawal:update", payload);
-                    else socket.leave(room);
+                    if (socket.data.identity.userId === owner?.privyUserId) {
+                        socket.emit("withdrawal:update", payload);
+                        socket.emit("pnl:changed");
+                    } else socket.leave(room);
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push a withdrawal update");
@@ -521,10 +538,13 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             try {
                 const room = roomOf(update.account._id);
                 const payload = predictionUpdate(update);
+                // A buy keeps its money at cost, so only a filled sell moves the series
+                const moves = update.order.side === "sell" && update.order.state === "filled";
                 for (const socket of await io.in(room).fetchSockets()) {
-                    if (socket.data.identity.userId === update.account.privyUserId)
+                    if (socket.data.identity.userId === update.account.privyUserId) {
                         socket.emit("prediction:update", payload);
-                    else socket.leave(room);
+                        if (moves) socket.emit("pnl:changed");
+                    } else socket.leave(room);
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push a prediction update");
@@ -537,9 +557,13 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             try {
                 const room = roomOf(update.account._id);
                 const payload = perpUpdate(update);
+                // Funding and liquidation-price ticks on an open position do not move the series
+                const moves = !update.position || update.position.settledAt !== null;
                 for (const socket of await io.in(room).fetchSockets()) {
-                    if (socket.data.identity.userId === update.account.privyUserId) socket.emit("perp:update", payload);
-                    else socket.leave(room);
+                    if (socket.data.identity.userId === update.account.privyUserId) {
+                        socket.emit("perp:update", payload);
+                        if (moves) socket.emit("pnl:changed");
+                    } else socket.leave(room);
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push a perp update");
@@ -553,8 +577,10 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 const room = roomOf(account._id);
                 const payload = { position: positionView(position), account: accountView(account) };
                 for (const socket of await io.in(room).fetchSockets()) {
-                    if (socket.data.identity.userId === account.privyUserId) socket.emit("position:settled", payload);
-                    else socket.leave(room);
+                    if (socket.data.identity.userId === account.privyUserId) {
+                        socket.emit("position:settled", payload);
+                        socket.emit("pnl:changed");
+                    } else socket.leave(room);
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push a settled position");
