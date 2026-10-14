@@ -35,6 +35,7 @@ import type {
     PerpQuoteRequest,
     PerpQuoteView,
     PerpsView,
+    PnlSeries,
     PositionView,
     PositionsView,
     QuoteView,
@@ -111,6 +112,10 @@ export type Account = {
     placePerp: (req: PerpOrderRequest, quote: PerpQuoteView) => { requestId: string; sent: boolean };
     /** Closes a whole perp position; the outcome arrives as a push. */
     closePerp: (positionId: string) => Promise<void>;
+    /** How many times a socket bound to the account and the server pushed `pnl:changed`; the series is asked again on either. */
+    pnl: AccountSnapshot["pnl"];
+    /** The balance and PnL series with its days cut in the zone `tz`. */
+    loadPnlSeries: (tz: string) => Promise<PnlSeries | ApiError>;
     /** The account's recent withdrawals, newest first. */
     withdrawals: WithdrawalView[];
     /** Withdrawals asked for that the server hasn't shown back yet, newest first. */
@@ -132,6 +137,7 @@ const IDLE: AccountSnapshot = {
     swapHoldings: null,
     swaps: [],
     tradeNotice: null,
+    pnl: { bound: 0, changed: 0 },
 };
 const NO_PREDICTIONS: PositionsView = { positions: [], orders: [] };
 const NO_PERPS: PerpsView = { positions: [], orders: [] };
@@ -143,6 +149,8 @@ const UNAVAILABLE: ApiError = { code: "unavailable", message: "Predictions aren'
 const UNAVAILABLE_PERP: ApiError = { code: "unavailable", message: "Long and short aren't available right now." };
 
 const UNAVAILABLE_WITHDRAW: ApiError = { code: "unavailable", message: "Withdrawals aren't available right now." };
+
+const UNAVAILABLE_PNL: ApiError = { code: "unavailable", message: "Your history isn't available right now." };
 
 const NO_SIGNERS: Signers = {};
 
@@ -302,6 +310,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             quotePerp={(req) => client.quotePerp(req)}
             placePerp={(req, quote) => client.placePerp(req, quote)}
             closePerp={(positionId) => client.closePerp(positionId)}
+            loadPnlSeries={(tz) => client.loadPnlSeries(tz)}
             withdrawLimits={() => client.withdrawLimits()}
             withdrawQuote={(amount, to) => client.withdrawQuote(amount, to)}
             withdraw={(amount, to, reviewedFee) => client.withdraw(amount, to, reviewedFee)}
@@ -330,6 +339,7 @@ function Provide({
     quotePerp = async () => UNAVAILABLE_PERP,
     placePerp = (req) => ({ requestId: req.requestId, sent: false }),
     closePerp = async () => undefined,
+    loadPnlSeries = async () => UNAVAILABLE_PNL,
     withdrawLimits = async () => UNAVAILABLE_WITHDRAW,
     withdrawQuote = async () => UNAVAILABLE_WITHDRAW,
     withdraw = async () => "failed",
@@ -353,6 +363,7 @@ function Provide({
     quotePerp?: Account["quotePerp"];
     placePerp?: Account["placePerp"];
     closePerp?: Account["closePerp"];
+    loadPnlSeries?: Account["loadPnlSeries"];
     withdrawLimits?: Account["withdrawLimits"];
     withdrawQuote?: Account["withdrawQuote"];
     withdraw?: Account["withdraw"];
@@ -391,6 +402,8 @@ function Provide({
         quotePerp,
         placePerp,
         closePerp,
+        pnl: snapshot.pnl,
+        loadPnlSeries,
         withdrawals: state.status === "ready" ? state.withdrawals : NO_WITHDRAWALS,
         pendingWithdrawals: state.status === "ready" ? state.pendingWithdrawals : NO_PENDING_WITHDRAWALS,
         withdrawLimits,

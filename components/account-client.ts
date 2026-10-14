@@ -30,12 +30,14 @@ import {
 } from "@/lib/account/swaps";
 import { loadCachedSwapHoldings, saveCachedSwapHoldings, validHoldings } from "@/lib/trade/wallet-holdings";
 import { networkName, type NetworkCheck } from "@/lib/wallet/network";
+import { resetPnlStores } from "@/lib/pnl/series-store";
 import type {
     BalancesView,
     ClientToServerEvents,
     PerpOrderRequest,
     PerpQuoteRequest,
     PerpQuoteView,
+    PnlSeries,
     ServerToClientEvents,
     SwapHoldingsView,
     SwapOrderView,
@@ -98,6 +100,8 @@ export type AccountSnapshot = {
     swaps: SwapOrderView[];
     /** Why the last prediction didn't go through, or that it couldn't be sent. */
     tradeNotice: { message: string } | null;
+    /** `bound` counts the sockets bound to the account; `changed` counts the server's `pnl:changed` pushes. */
+    pnl: { bound: number; changed: number };
 };
 
 /** What the person is told when a placed prediction fails on the server. */
@@ -160,6 +164,7 @@ export class AccountClient {
         swapHoldings: null,
         swaps: [],
         tradeNotice: null,
+        pnl: { bound: 0, changed: 0 },
     };
     readonly #listeners = new Set<() => void>();
     #socket: AppSocket | null = null;
@@ -280,6 +285,11 @@ export class AccountClient {
             this.#emit();
         });
         socket.on("swap:update", ({ order }) => this.#swapUpdated(order));
+        socket.on("pnl:changed", () => {
+            const { pnl } = this.#snapshot;
+            this.#snapshot = { ...this.#snapshot, pnl: { ...pnl, changed: pnl.changed + 1 } };
+            this.#emit();
+        });
         socket.on("disconnect", (reason) => {
             this.#bound = null;
             // The server hung up (its token check expired); a fresh token brings it back.
@@ -306,6 +316,9 @@ export class AccountClient {
             if (result?.ok) {
                 this.#dispatch({ type: "session", session: result.data });
                 this.#bound = socket;
+                const { pnl } = this.#snapshot;
+                this.#snapshot = { ...this.#snapshot, pnl: { ...pnl, bound: pnl.bound + 1 } };
+                this.#emit();
                 // Deposits still pending from before a reconnect are reported again.
                 const { state } = this.#snapshot;
                 if (state.status === "ready") {
@@ -336,8 +349,18 @@ export class AccountClient {
         this.#reporting.clear();
         this.#bound = null;
         this.#tracking = {};
-        const { state, notice, balances, swapHoldings, swaps, tradeNotice } = this.#snapshot;
-        if (state.status !== "idle" || notice || balances || swapHoldings || swaps.length || tradeNotice) {
+        resetPnlStores();
+        const { state, notice, balances, swapHoldings, swaps, tradeNotice, pnl } = this.#snapshot;
+        if (
+            state.status !== "idle" ||
+            notice ||
+            balances ||
+            swapHoldings ||
+            swaps.length ||
+            tradeNotice ||
+            pnl.bound !== 0 ||
+            pnl.changed !== 0
+        ) {
             this.#snapshot = {
                 state: initialAccountState,
                 notice: null,
@@ -345,6 +368,7 @@ export class AccountClient {
                 swapHoldings: null,
                 swaps: [],
                 tradeNotice: null,
+                pnl: { bound: 0, changed: 0 },
             };
             this.#emit();
         }
@@ -399,6 +423,18 @@ export class AccountClient {
         const result = await socket
             .timeout(CONNECT_TIMEOUT_MS)
             .emitWithAck("deposit:quote", { coin, amount, wallet })
+            .catch(() => null);
+        if (!result) return UNREACHABLE;
+        return result.ok ? result.data : result.error;
+    }
+
+    /** The balance and PnL series, cut into days of the zone `tz`. */
+    async loadPnlSeries(tz: string): Promise<PnlSeries | ApiError> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket || this.#bound !== socket) return UNREACHABLE;
+        const result = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("pnl:series", { tz })
             .catch(() => null);
         if (!result) return UNREACHABLE;
         return result.ok ? result.data : result.error;
