@@ -4,16 +4,17 @@ import type { Logger } from "pino";
 import type { Keyring } from "../accounts/keyring.ts";
 import type { ArcClient } from "../chain/arc.ts";
 import type { Config } from "../config.ts";
-import type { Collections, PerpOrderDoc } from "../db/mongo.ts";
+import type { Collections } from "../db/mongo.ts";
 import { fromDecimal, weiToE6 } from "../db/money.ts";
 import { nextNonce, type AccountState, type HyperliquidClient } from "./client.ts";
 import { ACTIVATION_E6 } from "./float.ts";
-import { ourFeeOf } from "./math.ts";
 
 export const RECONCILE_EVERY_MS = 600_000;
 /** An idle address holding more than this is a stuck sweep. */
 const STUCK_E6 = 1_000_000n;
 const ARC_READS_AT_ONCE = 10;
+/** A rebalance still `sent` after this long is no longer money in flight. */
+const IN_FLIGHT_MAX_MS = 3_600_000;
 
 export type ReconcileReport = {
     mismatches: number;
@@ -28,7 +29,9 @@ type Deps = {
     client: Pick<HyperliquidClient, "state" | "usdSend">;
     keyring: Pick<Keyring, "perpSignerAt" | "perpAddressAt">;
     logger: Logger;
-    config: Pick<Config, "PERPS_RECONCILE_TOLERANCE_USD" | "PERPS_FEE_BPS">;
+    config: Pick<Config, "PERPS_RECONCILE_TOLERANCE_USD">;
+    /** Runs a step that reads a perp address and then moves its money, one at a time per index. */
+    withIndexLock: <T>(index: number, fn: () => Promise<T>) => Promise<T>;
     /** The wei held on Arc: the treasury and the deposit addresses not yet swept into it. */
     arcAssets: () => Promise<bigint>;
 };
@@ -102,6 +105,27 @@ export class PerpReconciler {
         return order !== null || position !== null;
     }
 
+    /** Re-reads the address under its lock and sends what is above the kept fee to the master; returns what moved. */
+    async #sweepStuck(person: { index: number; address: string }): Promise<bigint> {
+        const { client, keyring } = this.#deps;
+        if (await this.#busy(person.index)) return 0n;
+        const [state, row] = await Promise.all([
+            client.state(person.address),
+            this.#deps.collections.perpAccounts.findOne({ index: person.index }),
+        ]);
+        if (!state || state.positions.length > 0) return 0n;
+        const stuck = state.withdrawableE6 - (row?.retainedE6 ? fromDecimal(row.retainedE6) : 0n);
+        if (stuck <= STUCK_E6) return 0n;
+        const sent = await client.usdSend(
+            keyring.perpSignerAt(person.index),
+            keyring.perpAddressAt(0),
+            stuck,
+            nextNonce(person.address),
+        );
+        if (sent.kind !== "ok") throw new Error(sent.kind === "rejected" ? sent.message : "duplicate nonce");
+        return stuck;
+    }
+
     async run(): Promise<ReconcileReport> {
         const { collections, client, keyring, logger, config } = this.#deps;
         const { perpAccounts, perpPositions, perpOrders, perpRebalances, accounts, perpFloat } = collections;
@@ -110,15 +134,10 @@ export class PerpReconciler {
             perpPositions.find({ active: true }).toArray(),
             perpOrders.find().toArray(),
         ]);
-        const rate = config.PERPS_FEE_BPS / 10_000;
-        const feeOf = (o: PerpOrderDoc) => ourFeeOf(fromDecimal(o.notionalE6), rate);
-        const keptBy = new Map<number, bigint>();
-        let ourFeeE6 = 0n;
-        for (const o of orders) {
-            if (o.kind !== "open" || o.state !== "filled") continue;
-            keptBy.set(o.index, (keptBy.get(o.index) ?? 0n) + feeOf(o));
-            ourFeeE6 += feeOf(o);
-        }
+        const retainedBy = new Map(people.map((p) => [p.index, p.retainedE6 ? fromDecimal(p.retainedE6) : 0n]));
+        const ourFeeE6 = [...orders]
+            .filter((o) => o.kind === "open" && o.state === "filled")
+            .reduce((sum, o) => sum + BigInt(String(o.steps.ourFeeE6 ?? "0")), 0n);
         const moving = new Set(
             orders.filter((o) => ["placing", "funding", "posted", "sweeping"].includes(o.state)).map((o) => o.index),
         );
@@ -127,13 +146,13 @@ export class PerpReconciler {
         let mismatches = 0;
         let swept = 0;
         let readable = true;
-        let accountValueE6 = 0n;
+        const valueBy = new Map<number, bigint>();
         const states = new Map<number, AccountState | null>();
         for (const person of people) {
             try {
                 const state = await client.state(person.address);
                 states.set(person.index, state);
-                accountValueE6 += state?.accountValueE6 ?? 0n;
+                valueBy.set(person.index, state?.accountValueE6 ?? 0n);
             } catch (error) {
                 readable = false;
                 logger.warn({ err: error, index: person.index }, "Couldn't read a Hyperliquid account to reconcile");
@@ -154,22 +173,23 @@ export class PerpReconciler {
         const holding = new Set(positions.map((p) => p.index));
         for (const person of people) {
             const state = states.get(person.index);
-            if (!state || holding.has(person.index) || moving.has(person.index) || state.positions.length > 0) continue;
-            const stuck = state.withdrawableE6 - (keptBy.get(person.index) ?? 0n);
-            if (stuck <= STUCK_E6) continue;
-            if (await this.#busy(person.index)) continue;
-            try {
-                const sent = await client.usdSend(
-                    keyring.perpSignerAt(person.index),
-                    keyring.perpAddressAt(0),
-                    stuck,
-                    nextNonce(person.address),
+            if (!state || moving.has(person.index)) continue;
+            for (const real of state.positions) {
+                if (positions.some((p) => p.index === person.index && p.asset === real.asset)) continue;
+                logger.error(
+                    { index: person.index, asset: real.asset, side: real.side, size: real.sizeCoin },
+                    "A Hyperliquid position has no active record",
                 );
-                if (sent.kind !== "ok") throw new Error(sent.kind === "rejected" ? sent.message : "duplicate nonce");
+            }
+            if (holding.has(person.index) || state.positions.length > 0) continue;
+            if (state.withdrawableE6 - (retainedBy.get(person.index) ?? 0n) <= STUCK_E6) continue;
+            try {
+                const moved = await this.#deps.withIndexLock(person.index, () => this.#sweepStuck(person));
+                if (moved === 0n) continue;
                 swept++;
-                accountValueE6 -= stuck;
+                valueBy.set(person.index, (valueBy.get(person.index) ?? 0n) - moved);
                 logger.warn(
-                    { index: person.index, address: person.address, amountE6: stuck.toString() },
+                    { index: person.index, address: person.address, amountE6: moved.toString() },
                     "Swept a stuck balance to the master",
                 );
             } catch (error) {
@@ -190,8 +210,25 @@ export class PerpReconciler {
                     ])
                     .toArray(),
             ]);
-            const sentE6 = inFlight.reduce((sum, row) => sum + fromDecimal(row.amountE6), 0n);
-            const assets = weiToE6(arc) + (master?.accountValueE6 ?? 0n) + accountValueE6 + sentE6;
+            const fresh = inFlight.filter((row) => Date.now() - row.createdAt.getTime() < IN_FLIGHT_MAX_MS);
+            for (const row of inFlight) {
+                if (fresh.includes(row)) continue;
+                logger.error(
+                    { rebalanceId: row._id.toHexString(), amountE6: fromDecimal(row.amountE6).toString() },
+                    "A rebalance has been sent for over an hour; mark it arrived once it has",
+                );
+            }
+            const sentE6 = fresh.reduce((sum, row) => sum + fromDecimal(row.amountE6), 0n);
+            // A person's Hyperliquid money is theirs: only the kept fee, and a balance nobody holds a trade on, is ours
+            let peopleOursE6 = 0n;
+            for (const person of people) {
+                const value = valueBy.get(person.index) ?? 0n;
+                const retained = retainedBy.get(person.index) ?? 0n;
+                const idle = !holding.has(person.index) && !moving.has(person.index);
+                const open = (states.get(person.index)?.positions.length ?? 0) > 0;
+                peopleOursE6 += idle && !open ? value : value < retained ? value : retained;
+            }
+            const assets = weiToE6(arc) + (master?.accountValueE6 ?? 0n) + peopleOursE6 + sentE6;
             const liabilities =
                 weiToE6(BigInt(owed[0]?.total.toString() ?? "0")) + (floatDoc ? fromDecimal(floatDoc.heldE6) : 0n);
             if (liabilities > assets) shortfallE6 = liabilities - assets;

@@ -4,23 +4,25 @@
  *
  *   node --env-file=.env scripts/perps-rebalance.ts arc-to-hl <usd> [--reserve <usd>] [--yes-send-real-money]
  *   node --env-file=.env scripts/perps-rebalance.ts hl-to-arc <usd> [--yes-send-real-money]
+ *   node --env-file=.env scripts/perps-rebalance.ts arrived <rebalanceId>
  *
  * It prints both sides and what it would do; nothing is sent without --yes-send-real-money. arc-to-hl needs
  * HYPERCORE_CCTP_FORWARDER, the CctpForwarder address on HyperEVM from Circle's HyperCore contract page. The
  * hl-to-arc forwarding data and Arc as its destination are unverified (design question 11): try $5 first, and
- * if it fails, withdraw to HyperEVM and burn there to Arc.
+ * if it fails, withdraw to HyperEVM and burn there to Arc. A row stays `sent` until `arrived` marks it; the
+ * reconciler stops counting a `sent` row after an hour and logs an error for it.
  */
 import { concatHex, formatUnits, keccak256, pad, parseGwei, parseUnits, toHex, type Address, type Hex } from "viem";
 import { createKeyring } from "../src/accounts/keyring.ts";
 import { ARC_CHAIN_ID, MIN_BASE_FEE, createArcClient } from "../src/chain/arc.ts";
 import { loadConfig } from "../src/config.ts";
-import { connectDatabase } from "../src/db/mongo.ts";
+import { connectDatabase, type PerpRebalanceDoc } from "../src/db/mongo.ts";
 import { fromDecimal, toDecimal, weiToE6 } from "../src/db/money.ts";
 import { FORWARD_HOOK_DATA, ARC_USDC_ERC20, TOKEN_MESSENGER_V2, encodeApprove } from "../src/withdrawals/cctp-burn.ts";
 import { TREASURY_GAS_RESERVE } from "../src/withdrawals/withdrawals.ts";
 import { createNktkasClient, sendToEvmWithData } from "../src/perps/nktkas-client.ts";
 import { nextNonce } from "../src/perps/client.ts";
-import { ObjectId } from "mongodb";
+import { ObjectId, type Collection } from "mongodb";
 import { encodeFunctionData, parseAbi } from "viem";
 
 const HYPEREVM_DOMAIN = 19;
@@ -87,10 +89,36 @@ export async function recordIfMined(status: string, record: () => Promise<void>)
     return true;
 }
 
+/** Marks a `sent` rebalance `arrived`; false when no such row is waiting. */
+export async function markArrived(
+    collection: Pick<Collection<PerpRebalanceDoc>, "updateOne">,
+    id: string,
+): Promise<boolean> {
+    if (!ObjectId.isValid(id)) throw new Error("That is not a rebalance id.");
+    const result = await collection.updateOne({ _id: new ObjectId(id), state: "sent" }, { $set: { state: "arrived" } });
+    return result.modifiedCount === 1;
+}
+
 const dollars = (e6: bigint) => `$${formatUnits(e6, 6)}`;
 
 async function main() {
     const [direction, amountArg, ...rest] = process.argv.slice(2);
+    if (direction === "arrived") {
+        if (!amountArg) {
+            console.error("Usage: perps-rebalance.ts arrived <rebalanceId>");
+            process.exit(1);
+        }
+        const config = loadConfig();
+        const database = await connectDatabase(config.MONGODB_URI, config.MONGODB_DB);
+        try {
+            const marked = await markArrived(database.collections.perpRebalances, amountArg);
+            console.log(marked ? "Marked arrived." : "No sent rebalance has that id.");
+            if (!marked) process.exitCode = 1;
+        } finally {
+            await database.close();
+        }
+        return;
+    }
     if ((direction !== "arc-to-hl" && direction !== "hl-to-arc") || !amountArg) {
         console.error("Usage: perps-rebalance.ts arc-to-hl|hl-to-arc <usd> [--reserve <usd>] [--yes-send-real-money]");
         process.exit(1);

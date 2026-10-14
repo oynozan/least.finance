@@ -66,6 +66,20 @@ test.describe("perp rows in the sidebar", () => {
         expect(trendOf(Math.round(flat!.pnl * 100) / 100)).toBe("flat");
     });
 
+    test("a perp row's PnL follows the live mark between snapshots", () => {
+        const [long] = livePerpRows({ positions: [position()], orders: [] }, NOW, { BTC: 67000 });
+        // 0.00769 * (67000 - 65000) = 15.38, less 0.5 funding paid
+        expect(long!.pnl).toBeCloseTo(14.88, 6);
+        expect(liveValue(long!, null)?.value).toBeCloseTo(114.88, 6);
+        const [short] = livePerpRows({ positions: [position({ side: "short" })], orders: [] }, NOW, { BTC: 67000 });
+        expect(short!.pnl).toBeCloseTo(-15.88, 6);
+        // No mark for the asset, or no entry: the server's snapshot stands
+        const [stale] = livePerpRows({ positions: [position()], orders: [] }, NOW, { ETH: 3000 });
+        expect(stale!.pnl).toBeCloseTo(7.19, 6);
+        const [noEntry] = livePerpRows({ positions: [position({ entryPx: null })], orders: [] }, NOW, { BTC: 67000 });
+        expect(noEntry!.pnl).toBeCloseTo(7.19, 6);
+    });
+
     test("a null liquidationPx is left out of the detail", () => {
         expect(positionDetail(only({ liquidationPx: null }))).toBe("$500 position, entry $65,000");
     });

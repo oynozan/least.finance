@@ -223,9 +223,25 @@ export function livePredictionRows(
         });
 }
 
-/** The rows for the person's perps: open and closing ones, an open on its way, and ones settled in the last week. */
-export function livePerpRows({ positions }: PerpsView, now = Date.now()): LivePerpPosition[] {
+/** The position with its mark and unrealized PnL taken from the live mark; unchanged without a mark or an entry. */
+function marked(p: PerpPositionView, marks: Record<string, number>): PerpPositionView {
+    const mark = marks[p.asset];
+    const entry = Number(p.entryPx);
+    const size = Number(p.sizeCoin);
+    if (p.state !== "open" && p.state !== "closing") return p;
+    if (!mark || !Number.isFinite(mark) || !p.entryPx || !Number.isFinite(entry) || !Number.isFinite(size)) return p;
+    const pnl = (p.side === "long" ? 1 : -1) * size * (mark - entry);
+    return { ...p, markPx: String(mark), unrealizedPnlUSD: String(pnl) };
+}
+
+/** The rows for the person's perps: open and closing ones, an open on its way, and ones settled in the last week; `marks` are live prices by asset. */
+export function livePerpRows(
+    { positions }: PerpsView,
+    now = Date.now(),
+    marks: Record<string, number> = {},
+): LivePerpPosition[] {
     return positions
+        .map((p) => marked(p, marks))
         .filter(
             (p) =>
                 p.state === "open" ||

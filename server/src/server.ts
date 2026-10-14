@@ -340,6 +340,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             keyring,
             config,
             logger: logger.child({ component: "perp-reconciler" }),
+            withIndexLock: (index, fn) => perps.withIndexLock(index, fn),
             arcAssets: arcHoldings({ client, treasury: keyring.operator().address, collections }),
         });
         const sweeper = new Sweeper({

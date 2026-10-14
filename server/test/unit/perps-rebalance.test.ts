@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { expect, test } from "vitest";
 import { requireTestnet } from "../../scripts/live-check-guards.ts";
-import { buildHookData, planRebalance, recordIfMined } from "../../scripts/perps-rebalance.ts";
+import { buildHookData, markArrived, planRebalance, recordIfMined } from "../../scripts/perps-rebalance.ts";
 
 test("planRebalance refuses to leave the treasury below the withdrawal need", () => {
     const base = { direction: "arc-to-hl" as const, amountE6: 100_000_000n };
@@ -54,4 +54,19 @@ test("a reverted burn is not recorded as in flight", async () => {
     expect(rows).toEqual([]);
     expect(await recordIfMined("success", record)).toBe(true);
     expect(rows).toEqual(["sent"]);
+});
+
+test("arrived marks a sent rebalance and only a sent one", async () => {
+    const updates: unknown[] = [];
+    const collection = {
+        updateOne: async (filter: unknown, update: unknown) => {
+            updates.push({ filter, update });
+            return { modifiedCount: 1 };
+        },
+    };
+    const id = "65f000000000000000000001";
+    expect(await markArrived(collection as never, id)).toBe(true);
+    expect(JSON.stringify(updates[0])).toContain('"state":"sent"');
+    expect(JSON.stringify(updates[0])).toContain('"$set":{"state":"arrived"}');
+    await expect(markArrived(collection as never, "nope")).rejects.toThrow(/id/i);
 });

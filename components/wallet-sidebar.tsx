@@ -54,6 +54,7 @@ import { canHover } from "./pointer";
 import { PositionRow } from "./position-row";
 import { trackScrollEdges } from "./scroll-edges";
 import { useSidebar } from "./sidebar";
+import { getPerpMarkets, subscribePerpMarkets } from "@/lib/trade/perp-markets-store";
 import { useTrade } from "./trade/trade-provider";
 import { formatUsd, formatWhen, livePerpRows, livePredictionRows, shortenAddress, type Position } from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
@@ -166,9 +167,17 @@ function SignedInWallet() {
         const timer = setTimeout(() => setClock(Date.now()));
         return () => clearTimeout(timer);
     }, [open]);
+    const perpView = useSyncExternalStore(subscribePerpMarkets, getPerpMarkets, getPerpMarkets);
+    const marks = useMemo(
+        () => Object.fromEntries((perpView?.markets ?? []).map((m) => [m.asset, Number(m.markPx)])),
+        [perpView],
+    );
     const positions = useMemo(
-        (): Position[] => [...livePredictionRows(predictions, optimisticTrades, clock), ...livePerpRows(perps, clock)],
-        [predictions, perps, optimisticTrades, clock],
+        (): Position[] => [
+            ...livePredictionRows(predictions, optimisticTrades, clock),
+            ...livePerpRows(perps, clock, marks),
+        ],
+        [predictions, perps, optimisticTrades, clock, marks],
     );
 
     // Remount the animated parts on every open so they replay their entrance.

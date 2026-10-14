@@ -7,6 +7,7 @@
  *
  * Run it from server/ with `HYPERLIQUID_API_URL=https://api.hyperliquid-testnet.xyz node scripts/perps-check.ts`.
  */
+import { HttpTransport, InfoClient } from "@nktkas/hyperliquid";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { createKeyring } from "../src/accounts/keyring.ts";
@@ -66,6 +67,15 @@ async function main() {
     const again = await client.usdSend(keyring.perpSignerAt(0), person, 1_000_000n, nonce);
     observed("9. Duplicate nonce", `first ${first.kind}, repeat ${JSON.stringify(again)}`);
 
+    // 11: a send over the balance with nonce N, then a valid send with the same N
+    const spent = nextNonce(master);
+    const over = await client.usdSend(keyring.perpSignerAt(0), person, masterStart * 10n, spent);
+    const valid = await client.usdSend(keyring.perpSignerAt(0), person, 1_000_000n, spent);
+    observed(
+        "11. Does a refused send use up its nonce (duplicate after a refusal means yes)",
+        `over the balance ${JSON.stringify(over)}, then a valid send with the same nonce ${JSON.stringify(valid)}`,
+    );
+
     // Open
     const meta = (await client.meta()).assets.find((a) => a.asset === ASSET)!;
     const sizing = sizeFor({
@@ -86,6 +96,11 @@ async function main() {
         reduceOnly: false,
         cloid: `0x${"1".repeat(32)}`,
     });
+    const instant = await client.orderStatus(person, `0x${"1".repeat(32)}`);
+    observed(
+        "12. orderStatus right after the order returns",
+        `${JSON.stringify(instant)} (missing means not visible yet)`,
+    );
     await pause(2_000);
     const state = (await client.state(person))!;
     const position = state.positions.find((p) => p.asset === ASSET);
@@ -117,6 +132,14 @@ async function main() {
     observed(
         "8. REST liquidation field",
         `the adapter reads it as a boolean; this account's fills show liquidation=${fills.map((f) => f.liquidation).join(",")} (a real liquidation is the only way to see it set)`,
+    );
+
+    const info = new InfoClient({ transport: new HttpTransport({ isTestnet: true }) });
+    const paid = await info.userFunding({ user: person as `0x${string}`, startTime: Date.now() - 3_600_000 });
+    const paidTotal = paid.reduce((sum, row) => sum + Number(row.delta.usdc), 0);
+    observed(
+        "13. cumFunding.sinceOpen against userFunding (a positive usdc is funding received)",
+        `cumFunding.sinceOpen ${usd(position.cumFundingE6)}; userFunding deltas sum ${paidTotal} over ${paid.length} rows; funding settles hourly, so hold a position across the hour to see a sign`,
     );
 
     // 4: a reduce-only close under $10, then the rest
