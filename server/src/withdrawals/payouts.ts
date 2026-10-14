@@ -3,13 +3,20 @@ import type { Logger } from "pino";
 import { HttpRequestError, keccak256, parseGwei, TimeoutError, type Address, type Hex } from "viem";
 import type { HDAccount } from "viem/accounts";
 import { MIN_BASE_FEE, type ArcClient } from "../chain/arc.ts";
-import { IrisError, ARC_DOMAIN, type Iris } from "../crosschain/iris.ts";
+import { IrisError, ARC_DOMAIN, POLYGON_DOMAIN, type Iris } from "../crosschain/iris.ts";
 import { IrisLimiter } from "../crosschain/iris-limiter.ts";
-import type { Collections, WithdrawalDoc } from "../db/mongo.ts";
+import type { Collections, PoolRebalanceDoc, WithdrawalDoc } from "../db/mongo.ts";
 import { fromDecimal } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
 import type { Bus } from "../events.ts";
-import { ARC_USDC_ERC20, TOKEN_MESSENGER_V2, encodeApprove, encodeBurn, weiToUsdc6 } from "./cctp-burn.ts";
+import {
+    ARC_USDC_ERC20,
+    TOKEN_MESSENGER_V2,
+    encodeApprove,
+    encodeBurn,
+    encodeBurnToEvm,
+    weiToUsdc6,
+} from "./cctp-burn.ts";
 import { FORWARDING_DELAYED_MS } from "./views.ts";
 
 const GAS_LIMIT = 21_000n;
@@ -61,7 +68,7 @@ const unreachable = (error: unknown) =>
     error instanceof TimeoutError ||
     /fetch failed|ECONN|ETIMEDOUT/i.test(String(error));
 
-/** Pays each `sending` withdrawal from the treasury, signing once and re-sending the same transaction until it settles. */
+/** Pays each `sending` withdrawal and each `sending` pool top-up from the treasury, signing once and re-sending the same transaction until it settles. */
 export class Payouts {
     readonly #deps: Deps;
     #queue: Promise<unknown> = Promise.resolve();
@@ -91,8 +98,15 @@ export class Payouts {
         const onUpdated = ({ withdrawal }: { withdrawal: WithdrawalDoc }) => {
             if (withdrawal.state === "sending") this.#wake?.();
         };
+        const onRebalance = ({ rebalance }: { rebalance: PoolRebalanceDoc }) => {
+            if (rebalance.state === "sending") this.#wake?.();
+        };
         bus.on("withdrawal:updated", onUpdated);
-        this.#unsubscribe = () => bus.off("withdrawal:updated", onUpdated);
+        bus.on("pool-rebalance:updated", onRebalance);
+        this.#unsubscribe = () => {
+            bus.off("withdrawal:updated", onUpdated);
+            bus.off("pool-rebalance:updated", onRebalance);
+        };
         this.#stop = new AbortController();
         const signal = this.#stop.signal;
         this.#loop = (async () => {
@@ -147,6 +161,22 @@ export class Payouts {
             } catch (error) {
                 logger.warn({ err: error, withdrawalId: withdrawal._id.toHexString() }, "Payout failed, will retry");
                 // Whatever this withdrawal signed may be unsent, so later ones must not sign above it.
+                return;
+            }
+        }
+        const rebalances = await collections.poolRebalances
+            .find({ direction: "arc_to_polygon", state: "sending" })
+            .sort({ _id: 1 })
+            .toArray();
+        for (const rebalance of rebalances) {
+            if (this.#stop?.signal.aborted) return;
+            try {
+                if (!(await this.#payRebalance(rebalance))) return;
+            } catch (error) {
+                logger.warn(
+                    { err: error, rebalanceId: rebalance._id.toHexString() },
+                    "Pool rebalance payout failed, will retry",
+                );
                 return;
             }
         }
@@ -282,6 +312,156 @@ export class Payouts {
         return "ended";
     }
 
+    /** Signs the approve and the burn of a pool top-up on consecutive nonces and stores both before either is sent, leaving `updatedAt` alone. */
+    async #signRebalance(rebalance: PoolRebalanceDoc): Promise<PoolRebalanceDoc> {
+        const { client, signer, collections } = this.#deps;
+        const { nonce, maxFeePerGas } = await this.#nextNonce();
+        const amount6 = fromDecimal(rebalance.amountE6);
+        const usdc = this.#deps.usdc ?? ARC_USDC_ERC20;
+        const messenger = this.#deps.tokenMessenger ?? TOKEN_MESSENGER_V2;
+        const sign = (n: number, to: Address, data: Hex, gas: bigint) =>
+            signer.signTransaction({
+                type: "eip1559",
+                chainId: client.chain!.id,
+                nonce: n,
+                to,
+                value: 0n,
+                data,
+                gas,
+                maxFeePerGas,
+                maxPriorityFeePerGas: PRIORITY_FEE,
+            });
+        const approveRawTx = await sign(nonce, usdc, encodeApprove(amount6, messenger), APPROVE_GAS);
+        const burnRawTx = await sign(
+            nonce + 1,
+            messenger,
+            encodeBurnToEvm({
+                amount6,
+                domain: POLYGON_DOMAIN,
+                recipient: rebalance.mintRecipient as Address,
+                maxFee6: fromDecimal(rebalance.maxFeeE6),
+                burnToken: usdc,
+            }),
+            BURN_GAS,
+        );
+        const stored = await collections.poolRebalances.findOneAndUpdate(
+            { _id: rebalance._id, state: "sending", "arc.approveRawTx": null },
+            {
+                $set: {
+                    "arc.approveNonce": nonce,
+                    "arc.approveRawTx": approveRawTx,
+                    "arc.approveTxHash": keccak256(approveRawTx),
+                    "arc.burnNonce": nonce + 1,
+                    "arc.burnRawTx": burnRawTx,
+                    "arc.burnTxHash": keccak256(burnRawTx),
+                },
+            },
+            { returnDocument: "after" },
+        );
+        return stored ?? (await collections.poolRebalances.findOne({ _id: rebalance._id })) ?? rebalance;
+    }
+
+    /** Sends the approve, then the burn, each once mined; the burn mined moves the top-up to `forwarding`. False while a sent transaction is still unconfirmed. */
+    async #payRebalance(found: PoolRebalanceDoc): Promise<boolean> {
+        const { collections, bus } = this.#deps;
+        if (!found.arc.approveRawTx && !found.mintRecipient) {
+            await this.#failRebalance(found, "No mint recipient");
+            return true;
+        }
+        const rebalance = found.arc.approveRawTx ? found : await this.#signRebalance(found);
+        if (rebalance.state !== "sending" || !rebalance.arc.approveRawTx) return true;
+        for (const step of ["approve", "burn"] as const) {
+            const settled = await this.#settleRebalance(rebalance, step);
+            if (settled !== "mined") return settled === "ended";
+        }
+        const moved = await collections.poolRebalances.findOneAndUpdate(
+            { _id: rebalance._id, state: "sending" },
+            { $set: { state: "forwarding", updatedAt: new Date(this.#now()) } },
+            { returnDocument: "after" },
+        );
+        if (!moved) return true;
+        bus.emit("pool-rebalance:updated", { rebalance: moved });
+        return true;
+    }
+
+    /** Broadcasts one stored transaction of a pool top-up and waits for it: mined successfully, still unconfirmed, or ended (failed or its signatures dropped). */
+    async #settleRebalance(rebalance: PoolRebalanceDoc, step: Step): Promise<"mined" | "pending" | "ended"> {
+        const { client, broadcast, collections } = this.#deps;
+        const rawTx = (step === "approve" ? rebalance.arc.approveRawTx : rebalance.arc.burnRawTx) as Hex;
+        const hash = (step === "approve" ? rebalance.arc.approveTxHash : rebalance.arc.burnTxHash) as Hex;
+        const key = `${rebalance._id.toHexString()}:${step}`;
+        const stored = { txHash: hash };
+
+        try {
+            await (broadcast ?? ((tx: Hex) => client.sendRawTransaction({ serializedTransaction: tx })))(rawTx);
+        } catch (error) {
+            if (unreachable(error)) throw error;
+            if (/nonce too low/i.test(String(error)) && !(await this.#mined(stored))) {
+                await collections.poolRebalances.updateOne(
+                    { _id: rebalance._id, state: "sending", [`arc.${step}TxHash`]: hash },
+                    {
+                        $set: {
+                            "arc.approveNonce": null,
+                            "arc.approveRawTx": null,
+                            "arc.approveTxHash": null,
+                            "arc.burnNonce": null,
+                            "arc.burnRawTx": null,
+                            "arc.burnTxHash": null,
+                        },
+                    },
+                );
+                return "ended";
+            }
+            if (!alreadySent(error) && !(await this.#seen(stored))) {
+                const passes = (this.#absent.get(key) ?? 0) + 1;
+                if (!refused(error) && passes < ABSENT_PASSES_BEFORE_FAIL) {
+                    this.#absent.set(key, passes);
+                    throw error;
+                }
+                this.#absent.delete(key);
+                await this.#failRebalance(rebalance, "Rejected by the network", step);
+                return "ended";
+            }
+        }
+        this.#absent.delete(key);
+
+        const receipt = await this.#abortable(
+            client.waitForTransactionReceipt({ hash, timeout: RECEIPT_TIMEOUT_MS }),
+        ).catch((error: unknown) => {
+            if (error instanceof TimeoutError || /timed out|could not be found/i.test(String(error))) return null;
+            throw error;
+        });
+        if (!receipt) return "pending";
+        if (receipt.status === "success") return "mined";
+        await this.#failRebalance(
+            rebalance,
+            step === "approve" ? "Approval reverted on the network" : "Burn reverted on the network",
+            step,
+        );
+        return "ended";
+    }
+
+    /** Marks a top-up failed without touching any balance: nothing was burned, so the treasury only lost gas. */
+    async #failRebalance(rebalance: PoolRebalanceDoc, failure: string, step?: Step) {
+        const { collections, bus, logger } = this.#deps;
+        const at = new Date(this.#now());
+        const moved = await collections.poolRebalances.findOneAndUpdate(
+            { _id: rebalance._id, state: "sending" },
+            { $set: { state: "failed", lastError: failure, doneAt: at, updatedAt: at }, $unset: { active: "" } },
+            { returnDocument: "after" },
+        );
+        if (!moved) return;
+        const fields = {
+            rebalanceId: rebalance._id.toHexString(),
+            direction: rebalance.direction,
+            amountE6: fromDecimal(rebalance.amountE6).toString(),
+        };
+        logger.warn({ ...fields, failure }, "Pool rebalance failed before any burn");
+        // The approve stays as it is: the next one overwrites it, and a reset would cost another transaction.
+        if (step === "burn") logger.info(fields, "A failed pool burn leaves the TokenMessengerV2 allowance in place");
+        bus.emit("pool-rebalance:updated", { rebalance: moved });
+    }
+
     /** Logs stalled forwards and asks Iris about the forwarding withdrawal checked longest ago, within its request budget. */
     async #followForwards() {
         const { collections, iris, logger, bus } = this.#deps;
@@ -363,7 +543,7 @@ export class Payouts {
     /** The next free treasury nonce, counting every signed transaction still waiting to be sent, and the fee cap to sign with. */
     async #nextNonce() {
         const { client, signer, collections } = this.#deps;
-        const [pending, block, arc, burn] = await Promise.all([
+        const [pending, block, arc, burn, rebalance] = await Promise.all([
             client.getTransactionCount({ address: signer.address, blockTag: "pending" }),
             client.getBlock(),
             collections.withdrawals
@@ -376,9 +556,19 @@ export class Payouts {
                 .sort({ "solana.burnNonce": -1 })
                 .limit(1)
                 .toArray(),
+            collections.poolRebalances
+                .find({ state: "sending", "arc.burnRawTx": { $ne: null } })
+                .sort({ "arc.burnNonce": -1 })
+                .limit(1)
+                .toArray(),
         ]);
         const after = (value: number | null | undefined) => (value != null ? value + 1 : 0);
-        const nonce = Math.max(pending, after(arc[0]?.nonce), after(burn[0]?.solana?.burnNonce));
+        const nonce = Math.max(
+            pending,
+            after(arc[0]?.nonce),
+            after(burn[0]?.solana?.burnNonce),
+            after(rebalance[0]?.arc.burnNonce),
+        );
         const doubled = (block.baseFeePerGas ?? 0n) * 2n;
         return { nonce, maxFeePerGas: doubled > MIN_BASE_FEE ? doubled : MIN_BASE_FEE };
     }
@@ -448,7 +638,7 @@ export class Payouts {
     }
 
     /** True when the node knows the stored hash, pending or mined. */
-    async #seen(withdrawal: WithdrawalDoc) {
+    async #seen(withdrawal: Pick<WithdrawalDoc, "txHash">) {
         const found = await this.#deps.client
             .getTransaction({ hash: withdrawal.txHash as Hex })
             .catch((error: unknown) => {
@@ -459,7 +649,7 @@ export class Payouts {
     }
 
     /** True when the stored hash has a receipt; false when its nonce was taken by another transaction. */
-    async #mined(withdrawal: WithdrawalDoc) {
+    async #mined(withdrawal: Pick<WithdrawalDoc, "txHash">) {
         const receipt = await this.#deps.client
             .getTransactionReceipt({ hash: withdrawal.txHash as Hex })
             .catch((error: unknown) => {
