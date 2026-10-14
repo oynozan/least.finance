@@ -1,6 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
-import { seedDeposits } from "./backend";
-import { trendingView } from "./polymarket";
+import {
+    accountOf,
+    gate,
+    resolveMarket,
+    resolveNow,
+    seedDeposits,
+    seedHistory,
+    sendFromOutside,
+    type HistorySeed,
+} from "./backend";
+import { marketIdOf, pricesLosing, trendingView } from "./polymarket";
 import { buyPredictions, predictionsToBuy } from "./positions";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 import { pickCoin } from "./swap-flow";
@@ -15,6 +24,30 @@ const balance = (page: Page) => page.getByRole("main").getByRole("region", { nam
 const chart = (page: Page) => page.getByRole("slider", { name: "Balance by day" });
 const activity = (page: Page) => page.getByRole("region", { name: "Activity" });
 const rows = (page: Page) => activity(page).locator("tbody tr");
+const showOlder = (page: Page) => activity(page).getByRole("button", { name: "Show older" });
+// The line under the balance, with the PnL pill in it
+const pnlLine = (page: Page) => balance(page).locator("p").filter({ hasText: "PnL" });
+const FAILURE = "Couldn't load your history.";
+
+// 120 deposits, a day apart, none of them in the balance or the ledger
+const OLD_DEPOSITS: HistorySeed[] = Array.from({ length: 120 }, (_, i) => ({
+    kind: "deposit",
+    usdc: "1",
+    daysAgo: i + 1,
+}));
+// Settled long past the 35 days the live account keeps, so only the paged history has it
+const OLD_LOSS: HistorySeed[] = [{ kind: "prediction", state: "lost", cost: "100", daysAgo: 400, settledDaysAgo: 400 }];
+
+/** Counts the activity:list requests the page sends over its socket, so call it before the page opens */
+function activityRequests(page: Page) {
+    let sent = 0;
+    page.on("websocket", (socket) =>
+        socket.on("framesent", ({ payload }) => {
+            if (typeof payload === "string" && payload.includes('"activity:list"')) sent++;
+        }),
+    );
+    return () => sent;
+}
 
 async function shoot(page: Page, name: string) {
     await page.waitForTimeout(900);
@@ -249,14 +282,216 @@ test("switching the activity filter never stretches the card past where it ends 
     }
 });
 
+test("a 400-day-old loss is in 7D, 30D and All", async ({ page }) => {
+    await seedHistory(addressOf(page), [
+        { kind: "deposit", usdc: "500", daysAgo: 500 },
+        { kind: "prediction", state: "lost", cost: "100", daysAgo: 400, settledDaysAgo: 400 },
+        { kind: "perp", state: "liquidated", collateral: "40", proceeds: "0", daysAgo: 200, settledDaysAgo: 200 },
+        { kind: "deposit", usdc: "20", daysAgo: 10 },
+    ]);
+    await page.goto("/pnl");
+    await connect(page);
+    await expect(chart(page)).toBeVisible();
+
+    for (const [range, pnl] of [
+        ["7D", /^\$0\.00/],
+        ["30D", /^\$0\.00/],
+        ["All", /^−\$140\.00/],
+    ] as const) {
+        await balance(page).getByRole("radio", { name: range }).click();
+        await expect(chart(page)).toHaveAttribute("aria-valuetext", /\$380\.00$/);
+        await expect(pnlLine(page)).toHaveText(pnl);
+    }
+});
+
+test("the chart's placeholder shows while the series loads and the stored series shows at once on a second visit", async ({
+    page,
+}) => {
+    const address = addressOf(page);
+    await seedDeposits(address, [{ amount: "500", daysAgo: 3 }]);
+    try {
+        await gate(address, "pnl", "hold");
+        await page.goto("/pnl");
+        await connect(page);
+        await expect(page.getByLabel("Loading balance")).toBeVisible();
+        await expect(page.getByText(FAILURE)).toHaveCount(0);
+        await gate(address, "pnl", "off");
+        await expect(chart(page)).toBeVisible();
+
+        // The series is asked for again on the way back and held, yet the stored one is drawn
+        await gate(address, "pnl", "hold");
+        await tile(page, "Trade").click();
+        await expect(page).toHaveURL(/\/$/);
+        await tile(page, "PnL").click();
+        await expect(chart(page)).toBeVisible({ timeout: 1000 });
+        await expect(page.getByLabel("Loading balance")).toHaveCount(0);
+    } finally {
+        await gate(address, "pnl", "off");
+    }
+});
+
+test("opening the page before the session is ready never shows Couldn't load your history", async ({ page }) => {
+    await page.addInitScript((sentence) => {
+        const seen = window as unknown as { __sawFailure?: boolean };
+        new MutationObserver(() => {
+            if (document.body?.innerText.includes(sentence)) seen.__sawFailure = true;
+        }).observe(document, { childList: true, subtree: true, characterData: true });
+    }, FAILURE);
+    await page.goto("/pnl");
+    await connect(page);
+    await expect(chart(page)).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { __sawFailure?: boolean }).__sawFailure)).not.toBe(true);
+});
+
+test("a failing series says so, and the next pnl:changed repairs it", async ({ page }) => {
+    const address = addressOf(page);
+    try {
+        await gate(address, "pnl", "fail");
+        await page.goto("/pnl");
+        await connect(page);
+        await expect(page.getByText(FAILURE)).toBeVisible({ timeout: 10_000 });
+        await expect(chart(page)).toHaveCount(0);
+
+        await gate(address, "pnl", "off");
+        const account = await accountOf(address);
+        await sendFromOutside(account!.depositAddress, "5");
+        await expect(page.getByText(FAILURE)).toHaveCount(0);
+        await expect(chart(page)).toBeVisible();
+        await expect(chart(page)).toHaveAttribute("aria-valuetext", /\$5\.00$/);
+    } finally {
+        await gate(address, "pnl", "off");
+    }
+});
+
+test("a new deposit updates the bars without a reload", async ({ page }) => {
+    const { depositAddress } = await seedDeposits(addressOf(page), [{ amount: "500", daysAgo: 3 }]);
+    await page.goto("/pnl");
+    await connect(page);
+    await expect(chart(page)).toHaveAttribute("aria-valuetext", /\$500\.00$/);
+
+    await sendFromOutside(depositAddress, "50");
+    await expect(chart(page)).toHaveAttribute("aria-valuetext", /\$550\.00$/);
+});
+
+// Resolving closes a market for everyone, and predictions.spec.ts owns 12 to 15 (positions.ts skips these too)
+test("a position resolved while the page is open updates the bars without a reload", async ({ page, isMobile }) => {
+    const market = (await trendingView()).markets.filter((m) => m.outcomes.length === 2)[isMobile ? 17 : 16]!;
+    const outcome = market.outcomes[1]!;
+    await seedDeposits(addressOf(page), [{ amount: "500", daysAgo: 3 }]);
+    await buyPredictions(addressOf(page), [{ market, outcome }]);
+    await page.goto("/pnl");
+    await connect(page);
+    await expect(chart(page)).toHaveAttribute("aria-valuetext", /\$500\.00$/);
+    await expect(pnlLine(page)).toHaveText(/^\$0\.00/);
+
+    // The outcome bought loses, whichever place the question lists it in
+    await resolveMarket(marketIdOf(outcome.tokenId), pricesLosing(outcome.tokenId));
+    await resolveNow();
+    await expect(pnlLine(page)).toHaveText(/^−\$\d/);
+    const lastBalance = async () => Number((await chart(page).getAttribute("aria-valuetext"))!.split("$").at(-1));
+    await expect.poll(lastBalance).toBeLessThan(500);
+});
+
+test("more than 50 old rows show Show older, which loads the next page and goes away at the end", async ({ page }) => {
+    await seedHistory(addressOf(page), OLD_DEPOSITS);
+    await page.goto("/pnl");
+    await connect(page);
+    await expect(rows(page)).toHaveCount(50);
+
+    await showOlder(page).click();
+    await expect(rows(page)).toHaveCount(100);
+    await showOlder(page).click();
+    await expect(rows(page)).toHaveCount(120);
+    await expect(showOlder(page)).toHaveCount(0);
+});
+
+test("a failed older page leaves Show older, which then works", async ({ page }) => {
+    const address = addressOf(page);
+    const requests = activityRequests(page);
+    await seedHistory(address, OLD_DEPOSITS);
+    try {
+        await page.goto("/pnl");
+        await connect(page);
+        await expect(rows(page)).toHaveCount(50);
+
+        await gate(address, "feed", "fail");
+        const before = requests();
+        await showOlder(page).click();
+        // The request went out and was refused, so the button is back
+        await expect.poll(requests).toBeGreaterThan(before);
+        await expect(showOlder(page)).toBeEnabled();
+        await expect(rows(page)).toHaveCount(50);
+
+        await gate(address, "feed", "off");
+        await showOlder(page).click();
+        await expect(rows(page)).toHaveCount(100);
+    } finally {
+        await gate(address, "feed", "off");
+    }
+});
+
+test("the Deposits chip lists old deposits", async ({ page }) => {
+    await seedHistory(addressOf(page), OLD_DEPOSITS);
+    await page.goto("/pnl");
+    await connect(page);
+    await activity(page).getByRole("radio", { name: "Deposits" }).click();
+    await expect(rows(page)).toHaveCount(50);
+    await showOlder(page).click();
+    await expect(rows(page)).toHaveCount(100);
+    await showOlder(page).click();
+    await expect(rows(page)).toHaveCount(120);
+    await expect(showOlder(page)).toHaveCount(0);
+});
+
+test("the first paint of a person with old history never shows Nothing here yet", async ({ page }) => {
+    const address = addressOf(page);
+    await seedHistory(address, OLD_LOSS);
+    try {
+        await gate(address, "feed", "hold");
+        await page.goto("/pnl");
+        await connect(page);
+        await expect(activity(page).locator('[aria-busy="true"]')).toBeVisible();
+        await expect(activity(page).getByText("Nothing here yet")).toHaveCount(0);
+
+        await gate(address, "feed", "off");
+        await expect(rows(page)).toHaveCount(2);
+        await expect(rows(page).filter({ hasText: "Lost Yes on Will it rain?" })).toHaveCount(1);
+        await expect(rows(page).filter({ hasText: "Yes on Will it rain?", hasNotText: "Lost" })).toHaveCount(1);
+        await expect(activity(page).getByText("Nothing here yet")).toHaveCount(0);
+    } finally {
+        await gate(address, "feed", "off");
+    }
+});
+
+test("a failing first page never shows Nothing here yet and repairs itself", async ({ page }) => {
+    const address = addressOf(page);
+    await seedHistory(address, OLD_LOSS);
+    try {
+        await gate(address, "feed", "fail");
+        await page.goto("/pnl");
+        await connect(page);
+        // One retry has failed by now
+        await page.waitForTimeout(3500);
+        await expect(activity(page).getByText("Nothing here yet")).toHaveCount(0);
+        await expect(rows(page)).toHaveCount(0);
+
+        await gate(address, "feed", "off");
+        await expect(rows(page)).toHaveCount(2, { timeout: 10_000 });
+    } finally {
+        await gate(address, "feed", "off");
+    }
+});
+
 test("phones fit the PnL page without scrolling sideways", async ({ page, isMobile }) => {
     test.skip(!isMobile, "phone layout");
     // A long question, so a row has to truncate.
     await seedDeposits(addressOf(page), [{ amount: "500", daysAgo: 1 }]);
+    await seedHistory(addressOf(page), OLD_DEPOSITS);
     await buyPredictions(addressOf(page), await predictionsToBuy(1));
     await page.goto("/pnl");
     await connect(page);
     await expect(rows(page).first()).toBeVisible();
+    await expect(showOlder(page)).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
     await shoot(page, "3-phone");
 });

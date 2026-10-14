@@ -28,12 +28,20 @@ export const sampleView = (id: string) => get<MarketView>(`/markets/${id}`);
 /** The trending list, in the order the picker shows it. */
 export const trendingView = () => get<TrendingView>("/markets/trending");
 
-/** The Polymarket market a token belongs to, which is what resolving takes. */
-export function marketIdOf(tokenId: string): string {
+/** The fixture's market a token belongs to, and its tokens in the order Polymarket resolves them. */
+function marketOf(tokenId: string) {
     for (const event of [...fixtures.top, ...fixtures.extra]) {
         for (const market of event.markets) {
-            if ((JSON.parse(market.clobTokenIds) as string[]).includes(tokenId)) return market.id;
+            const tokens = JSON.parse(market.clobTokenIds) as string[];
+            if (tokens.includes(tokenId)) return { id: market.id, tokens };
         }
     }
     throw new Error(`No market for token ${tokenId}`);
 }
+
+/** The Polymarket market a token belongs to, which is what resolving takes. */
+export const marketIdOf = (tokenId: string): string => marketOf(tokenId).id;
+
+/** Resolution prices of the token's market in which that token loses and every other outcome wins. */
+export const pricesLosing = (tokenId: string): string[] =>
+    marketOf(tokenId).tokens.map((token) => (token === tokenId ? "0" : "1"));

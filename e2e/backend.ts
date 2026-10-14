@@ -34,6 +34,46 @@ export type SeededDeposit = { amount: string; daysAgo: number };
 export const seedDeposits = (address: string, deposits: SeededDeposit[]) =>
     call<{ depositAddress: string; balance: string }>("/seed", { address, deposits });
 
+/** One row of old history, dated in whole days back from now, with `settledDaysAgo` dating a position's or perp's settle. */
+export type HistorySeed =
+    | { kind: "deposit"; usdc: string; daysAgo: number; txHash?: string; logIndex?: number }
+    | { kind: "withdrawal"; usdc: string; daysAgo: number; state?: "sending" | "forwarding" | "sent" | "failed" }
+    | {
+          kind: "swap";
+          daysAgo: number;
+          state?: "created" | "sent" | "done" | "partial" | "refunded" | "failed" | "expired";
+          sent?: boolean;
+      }
+    | {
+          kind: "prediction";
+          state: "open" | "closing" | "closed" | "won" | "lost";
+          cost: string;
+          proceeds?: string;
+          payout?: string;
+          daysAgo: number;
+          settledDaysAgo?: number;
+      }
+    | { kind: "sale"; cost: string; proceeds: string; daysAgo: number }
+    | {
+          kind: "perp";
+          state: "open" | "closing" | "closed" | "liquidated";
+          collateral: string;
+          proceeds?: string;
+          daysAgo: number;
+          settledDaysAgo?: number;
+      };
+
+/** Old rows written straight to the entity collections, which unlike `seedDeposits` touch neither the balance nor the ledger. */
+export const seedHistory = (address: string, rows: HistorySeed[]) =>
+    call<{ depositAddress: string; balance: string }>("/seed", { address, history: rows });
+
+/** What `gate` holds back: the PnL series, or the pages of the Activity table. */
+export type GateName = "pnl" | "feed";
+
+/** Holds, fails or lets through the requests of the one person who owns `address`, and "off" also releases what was held. */
+export const gate = (address: string, name: GateName, mode: "hold" | "fail" | "off") =>
+    call<object>("/gate", { address, name, mode }).then(() => undefined);
+
 /** USDC sent to `to` from a wallet outside the app, such as an exchange. */
 export const sendFromOutside = (to: string, usdc: string) => call<{ txHash: string }>("/send", { to, usdc });
 

@@ -23,6 +23,7 @@ import { formatUsdc, fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { startServer } from "../../src/server.ts";
 import { COINS, NETWORKS } from "../../src/swaps/coins.ts";
 import { TREASURY_GAS_RESERVE } from "../../src/withdrawals/withdrawals.ts";
+import { seedRows, type SeedRow } from "../support/history-seed.ts";
 import { startAnvil } from "../support/anvil.ts";
 import { startArcEmulator } from "../support/arc-emulator.ts";
 import { FakeBridge } from "../support/fake-bridge.ts";
@@ -175,6 +176,23 @@ const normalize = (address: unknown) =>
 
 type Seeded = { amount: string; daysAgo: number };
 
+/** A `SeedRow` with its dates given as whole days back from now: `daysAgo`, and for positions and perps `settledDaysAgo`. */
+type HistorySeed = { kind: SeedRow["kind"]; daysAgo: number; settledDaysAgo?: number } & Record<string, unknown>;
+
+const ago = (days: number) => new Date(Date.now() - days * 86_400_000);
+
+/** The row a `HistorySeed` stands for, its day counts turned into dates. */
+function historyRow({ daysAgo, settledDaysAgo, ...row }: HistorySeed): SeedRow {
+    if (row.kind === "prediction" || row.kind === "perp") {
+        return {
+            ...row,
+            openedAt: ago(daysAgo),
+            ...(settledDaysAgo === undefined ? {} : { settledAt: ago(settledDaysAgo) }),
+        } as SeedRow;
+    }
+    return { ...row, at: ago(daysAgo) } as SeedRow;
+}
+
 /** An id dated `at`, since ids are what order the history; the random tail keeps tests seeding the same day apart. */
 function objectIdAt(at: Date) {
     const bytes = new Uint8Array(12);
@@ -183,8 +201,8 @@ function objectIdAt(at: Date) {
     return new ObjectId(bytes);
 }
 
-/** Writes deposit history straight to the database, as if it had been credited over time. */
-async function seed(address: string, deposits: Seeded[]) {
+/** Writes deposit history straight to the database, as if it had been credited over time, and old rows that touch neither balance nor ledger. */
+async function seed(address: string, deposits: Seeded[], history: HistorySeed[]) {
     const account = await services.accounts.open(userIdOf(address));
     const { client, collections } = services.database;
     const now = Date.now();
@@ -231,8 +249,49 @@ async function seed(address: string, deposits: Seeded[]) {
             }
         }),
     );
+    await seedRows(collections, account._id, history.map(historyRow));
     const current = await services.accounts.findById(account._id);
     return { depositAddress: getAddress(account.depositAddress), balance: formatUsdc(fromDecimal(current!.balance)) };
+}
+
+type Gate = { mode: "hold" | "fail"; released: Promise<void>; release: () => void };
+/** Per request kind, the gate each gated person's account has. */
+const gates = { pnl: new Map<string, Gate>(), feed: new Map<string, Gate>() };
+let gatesInstalled = false;
+
+/** Waits while the account's gate holds, throws while it fails, and runs on when there is none. */
+async function passGate(table: Map<string, Gate>, accountId: ObjectId) {
+    const gate = table.get(accountId.toHexString());
+    if (gate?.mode === "fail") throw new Error("gated");
+    if (gate) await gate.released;
+}
+
+/** Wraps the two methods the sockets call, once and only for the people gated, since every test shares this backend. */
+function installGates() {
+    if (gatesInstalled) return;
+    gatesInstalled = true;
+    const series = services.pnl.series.bind(services.pnl);
+    services.pnl.series = async (accountId, ...rest) => {
+        await passGate(gates.pnl, accountId);
+        return series(accountId, ...rest);
+    };
+    const page = services.feed.page.bind(services.feed);
+    services.feed.page = async (accountId, input) => {
+        await passGate(gates.feed, accountId);
+        return page(accountId, input);
+    };
+}
+
+/** Sets an account's gate on one kind of request, releasing any gate it had first, and "off" leaves none. */
+function setGate(name: keyof typeof gates, accountId: ObjectId, mode: "hold" | "fail" | "off") {
+    installGates();
+    const table = gates[name];
+    const key = accountId.toHexString();
+    table.get(key)?.release();
+    table.delete(key);
+    if (mode === "off") return;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    table.set(key, { mode, released, release });
 }
 
 const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>> = {
@@ -250,7 +309,16 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
         }
         return { userId, token: await privy.token(userId) };
     },
-    "/seed": async ({ address, deposits }) => seed(normalize(address), deposits as Seeded[]),
+    "/seed": async ({ address, deposits = [], history = [] }) =>
+        seed(normalize(address), deposits as Seeded[], history as HistorySeed[]),
+    /** Holds, fails or lets through one person's `pnl:series` or `activity:list` requests, and "off" also releases what was held. */
+    "/gate": async ({ address, name, mode }) => {
+        if (name !== "pnl" && name !== "feed") throw new Error("Bad gate name");
+        if (mode !== "hold" && mode !== "fail" && mode !== "off") throw new Error("Bad gate mode");
+        const account = await services.accounts.open(userIdOf(normalize(address)));
+        setGate(name, account._id, mode);
+        return {};
+    },
     /** The browser wallet's way onto the chain; anvil signs for funded test wallets. */
     "/rpc": async ({ method, params, chainId = ARC_CHAIN_ID }) => {
         const url = rpcUrls[Number(chainId)];

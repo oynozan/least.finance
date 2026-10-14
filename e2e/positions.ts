@@ -12,8 +12,8 @@ import { API, trendingView } from "./polymarket";
 
 export type Bought = { market: MarketView; outcome: MarketOutcomeView };
 
-// predictions.spec.ts resolves these questions, which would settle a position bought here.
-const RESOLVED = new Set([12, 13, 14, 15]);
+// predictions.spec.ts and pnl.spec.ts resolve these questions, which would settle a position bought here.
+const RESOLVED = new Set([12, 13, 14, 15, 16, 17]);
 
 /**
  * Two-outcome trending questions, oldest bought first, and the second outcome of each: the specs that steer the fake
