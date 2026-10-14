@@ -22,7 +22,7 @@ import type { Level } from "../predictions/trader.ts";
 import { formatUsdShort } from "../predictions/views.ts";
 import { nextNonce, type HyperliquidClient } from "./client.ts";
 import { ACTIVATION_E6, NOTHING_SPENT, PerpFloat } from "./float.ts";
-import { leverageBound, limitPrice, liquidationPrice, meetsMinimum, sizeFor } from "./math.ts";
+import { leverageBound, limitPrice, liquidationPrice, meetsMinimum, ourFeeOf, sizeFor } from "./math.ts";
 import type { PerpMarkets } from "./markets.ts";
 import { perpOrderView, perpPositionView } from "./views.ts";
 
@@ -473,7 +473,8 @@ export class PerpService {
         const feeE6 = await this.#feeOf(order, address, Number(sizeCoin) * Number(avgPx));
         const state = await this.#deps.client.state(address);
         const margin = state?.positions.find((p) => p.asset === order.asset)?.marginUsedE6 ?? 0n;
-        const spare = weiToE6(fromDecimal(order.collateral)) - margin - feeE6;
+        const ourFeeE6 = ourFeeOf(fromDecimal(order.notionalE6), this.#deps.config.PERPS_FEE_BPS / 10_000);
+        const spare = weiToE6(fromDecimal(order.collateral)) - margin - feeE6 - ourFeeE6;
         const sweep = minE6(state?.withdrawableE6 ?? 0n, spare > 0n ? spare : 0n);
         const moved = await this.#startSweep(
             order,

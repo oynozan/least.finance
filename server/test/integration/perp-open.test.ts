@@ -60,6 +60,20 @@ test("a fill debits, funds, records the real size and credits back the unused co
     expect(await h.heldE6()).toBe(0n);
 });
 
+test("our fee stays out of the credit after a fill", async () => {
+    const h = await fresh({ feeBps: 100 });
+    const account = await h.seedAccount("1000");
+    const { order } = await h.place(account);
+    const done = await h.settled(order._id);
+
+    expect(done.state).toBe("filled");
+    const ourFeeE6 = (fromDecimal(done.notionalE6) * 100n + 9_999n) / 10_000n;
+    const position = (await h.database.collections.perpPositions.findOne({ accountId: account._id }))!;
+    const held = fromDecimal(position.collateral) / 10n ** 12n;
+    const marginE6 = h.fake.account(await h.addressOf(account._id))!.positions[0]!.marginE6;
+    expect(held - BigInt(marginE6) - fromDecimal(done.fill!.feeE6)).toBeGreaterThanOrEqual(ourFeeE6);
+});
+
 test("a partial fill books the smaller size and returns the rest", async () => {
     const h = await fresh();
     const account = await h.seedAccount("1000");

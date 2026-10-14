@@ -29,6 +29,11 @@ export function limitPrice(
     return roundPrice(mark * (1 + (buying ? bps : -bps) / 10_000), szDecimals);
 }
 
+/** Our fee on a notional, rounded up the way sizeFor charges it. */
+export function ourFeeOf(notionalE6: bigint, ourFeeRate: number): bigint {
+    return ceilDiv(notionalE6 * BigInt(Math.round(ourFeeRate * RATE_SCALE)), BigInt(RATE_SCALE));
+}
+
 export type Sizing = {
     sizeCoin: string;
     notionalE6: bigint;
