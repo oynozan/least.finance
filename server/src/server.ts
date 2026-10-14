@@ -41,6 +41,7 @@ import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
 import { PredictionReconciler } from "./predictions/reconciler.ts";
 import { PredictionRedeemer } from "./predictions/redeemer.ts";
+import { RelayerGate } from "./predictions/relayer-gate.ts";
 import { PredictionResolver } from "./predictions/resolver.ts";
 import { PredictionTracker } from "./predictions/tracker.ts";
 import { inFlight, traderNeeded, withTimeouts, type PoolTrader } from "./predictions/trader.ts";
@@ -382,6 +383,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             resolveMs: config.PREDICTIONS_RESOLVE_MS,
             needTrader: () => ensureTrader(),
         });
+        const relayerGate = new RelayerGate({ collections });
         const predictionRedeemer = new PredictionRedeemer({
             collections,
             service,
@@ -389,6 +391,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             logger: predictionLogger,
             intervalMs: REDEEM_MS,
             needTrader: () => ensureTrader(),
+            gate: relayerGate,
         });
         const predictionReconciler = new PredictionReconciler({
             collections,

@@ -5,7 +5,9 @@ import type { PositionDoc, PositionState, PredictionOrderDoc } from "../../src/d
 import { toDecimal } from "../../src/db/money.ts";
 import { PredictionReconciler } from "../../src/predictions/reconciler.ts";
 import { PredictionRedeemer } from "../../src/predictions/redeemer.ts";
-import { withTimeouts } from "../../src/predictions/trader.ts";
+import { GATE_SHUT_MS, RelayerGate } from "../../src/predictions/relayer-gate.ts";
+import { withTimeouts, type PoolTrader } from "../../src/predictions/trader.ts";
+import { poolRebalanceRow } from "../support/pool-rebalance-row.ts";
 import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
 
 const TEN_MINUTES = 600_000;
@@ -614,4 +616,115 @@ test("with no trader, open positions make the reconciler ask for one", async () 
     });
     await idle.tick();
     expect(asked).toBe(before + 1);
+});
+
+/** A redeemer behind a gate of its own, with the pool rebalances of earlier tests cleared. */
+async function gated(trader: () => PoolTrader = () => h.trader) {
+    await h.database.collections.poolRebalances.deleteMany({});
+    const gate = new RelayerGate({ collections: h.database.collections, now: () => clock });
+    const lines: { level: number; msg: string }[] = [];
+    const redeemer = new PredictionRedeemer({
+        collections: h.database.collections,
+        service: h.service,
+        trader,
+        logger: pino({ level: "debug" }, { write: (line: string) => void lines.push(JSON.parse(line)) }),
+        intervalMs: 0,
+        now: () => clock,
+        gate,
+    });
+    return { gate, redeemer, lines };
+}
+
+/** A second pending redemption beside the one `queue` made. */
+async function queueAnother(conditionId: string) {
+    const now = new Date(clock);
+    await h.database.collections.predictionRedemptions.insertOne({
+        _id: new ObjectId(),
+        conditionId,
+        marketId: "mkt-1",
+        state: "pending",
+        transactionId: null,
+        attempts: 0,
+        nextAt: now,
+        lastError: null,
+        createdAt: now,
+        updatedAt: now,
+    });
+}
+
+test("two due redemptions are both submitted in one pass", async () => {
+    const first = `0xcond-${unique()}`;
+    const second = `0xcond-${unique()}`;
+    await queue(first);
+    await queueAnother(second);
+    const { redeemer: behindGate } = await gated();
+    await behindGate.tick();
+    expect(await redemption(first)).toMatchObject({ state: "submitted", attempts: 0 });
+    expect(await redemption(second)).toMatchObject({ state: "submitted", attempts: 0 });
+    expect(redeemsOf(first)).toHaveLength(1);
+    expect(redeemsOf(second)).toHaveLength(1);
+});
+
+test("a timed-out redeem shuts the gate and the next due redemption waits", async () => {
+    const first = `0xcond-${unique()}`;
+    const second = `0xcond-${unique()}`;
+    await queue(first);
+    await queueAnother(second);
+    const { redeemer: behindGate } = await gated(() => withTimeouts(h.trader, 20));
+    h.trader.hangNextRedeem();
+    await behindGate.tick();
+    expect(await redemption(first)).toMatchObject({ state: "failed", attempts: 1, lastError: "redeem timed out" });
+    expect(await redemption(second)).toMatchObject({ state: "pending", attempts: 0, lastError: null });
+    expect(redeemsOf(second)).toHaveLength(0);
+
+    // Still shut a moment before the 11 minutes are up, and open at the end of them
+    clock += GATE_SHUT_MS - 1;
+    await behindGate.tick();
+    expect(redeemsOf(second)).toHaveLength(0);
+    expect(await redemption(second)).toMatchObject({ state: "pending", attempts: 0 });
+    clock += 1;
+    await behindGate.tick();
+    expect(await redemption(second)).toMatchObject({ state: "submitted", attempts: 0 });
+    expect(await redemption(first)).toMatchObject({ state: "submitted", attempts: 1 });
+    expect(redeemsOf(second)).toHaveLength(1);
+});
+
+test("a redeem that fails for another reason leaves the gate open for the next due redemption", async () => {
+    const first = `0xcond-${unique()}`;
+    const second = `0xcond-${unique()}`;
+    await queue(first);
+    await queueAnother(second);
+    const { redeemer: behindGate } = await gated();
+    h.trader.failNextRedeem();
+    await behindGate.tick();
+    expect(await redemption(first)).toMatchObject({ state: "failed", attempts: 1, lastError: "the relayer is busy" });
+    expect(await redemption(second)).toMatchObject({ state: "submitted", attempts: 0 });
+});
+
+test("a held gate records no failure and no attempt", async () => {
+    const conditionId = `0xcond-${unique()}`;
+    await queue(conditionId);
+    const { redeemer: behindGate, lines } = await gated();
+    const drain = await h.database.collections.poolRebalances.insertOne(
+        poolRebalanceRow({
+            kind: "move",
+            now: new Date(clock),
+            polygon: { attemptedAt: new Date(clock), relayerTransactionId: "tx-drain" },
+        }),
+    );
+    const before = await redemption(conditionId);
+
+    await behindGate.tick();
+    expect(await redemption(conditionId)).toEqual(before);
+    expect(redeemsOf(conditionId)).toHaveLength(0);
+    expect(lines.filter((l) => l.level >= WARN)).toEqual([]);
+
+    // The row is still due and goes out once the drain batch is final
+    await h.database.collections.poolRebalances.updateOne(
+        { _id: drain.insertedId },
+        { $set: { "polygon.relayerFinalAt": new Date(clock) } },
+    );
+    await behindGate.tick();
+    expect(await redemption(conditionId)).toMatchObject({ state: "submitted", attempts: 0 });
+    expect(redeemsOf(conditionId)).toHaveLength(1);
 });

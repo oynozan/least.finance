@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
 import type { Collections, PredictionRedemptionDoc } from "../db/mongo.ts";
 import type { PredictionService } from "./predictions.ts";
+import type { RelayerGate } from "./relayer-gate.ts";
 import type { PoolTrader, TransactionState } from "./trader.ts";
 
 const SUBMITTED_TIMEOUT_MS = 30 * 60_000;
@@ -24,6 +25,8 @@ type Deps = {
     intervalMs: number;
     /** Asks for the pool's trader to be connected when a redemption is waiting for it. */
     needTrader?: () => void;
+    /** Serialises the redeem batches with the pool rebalancer's, when there is one. */
+    gate?: RelayerGate;
     /** The clock, for tests. */
     now?: () => number;
 };
@@ -107,28 +110,38 @@ export class PredictionRedeemer {
     }
 
     async #submit(trader: PoolTrader, row: PredictionRedemptionDoc) {
-        let transactionId: string;
-        try {
-            ({ transactionId } = await trader.redeem(row.conditionId));
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            await this.#fail(row, /timed out/.test(message) ? "redeem timed out" : message);
-            return;
-        }
-        const now = new Date(this.#now());
-        await this.#deps.collections.predictionRedemptions.updateOne(
-            { _id: row._id, state: row.state },
-            {
-                $set: {
-                    state: "submitted",
-                    transactionId,
-                    submittedAt: now,
-                    checkErrors: 0,
-                    lastError: null,
-                    updatedAt: now,
+        const send = async () => {
+            let transactionId: string;
+            try {
+                ({ transactionId } = await trader.redeem(row.conditionId));
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                const timedOut = /timed out/.test(message);
+                // A call that timed out may still complete, so no other batch is prepared meanwhile
+                if (timedOut) this.#deps.gate?.shut();
+                return { failure: timedOut ? "redeem timed out" : message };
+            }
+            const now = new Date(this.#now());
+            await this.#deps.collections.predictionRedemptions.updateOne(
+                { _id: row._id, state: row.state },
+                {
+                    $set: {
+                        state: "submitted",
+                        transactionId,
+                        submittedAt: now,
+                        checkErrors: 0,
+                        lastError: null,
+                        updatedAt: now,
+                    },
                 },
-            },
-        );
+            );
+            return { failure: null };
+        };
+        const outcome = this.#deps.gate
+            ? await this.#deps.gate.run(send, { from: "redeemer" })
+            : { ran: true as const, value: await send() };
+        // A held gate leaves the row due for the next pass
+        if (outcome.ran && outcome.value.failure !== null) await this.#fail(row, outcome.value.failure);
     }
 
     async #check(trader: PoolTrader, row: PredictionRedemptionDoc) {
