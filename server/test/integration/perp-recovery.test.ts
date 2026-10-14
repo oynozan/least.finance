@@ -39,7 +39,9 @@ test("after the debit", async () => {
     expect(done.state).toBe("rejected");
     const s = await expectSettledOnce(h, account._id);
     expect(s.balance).toBe(wei("1000"));
-    expect(h.fake.usdSends).toHaveLength(0);
+    // The unsent funding is made certain by sending it with its stored nonce, then swept back
+    expect(h.fake.usdSends.map((send) => send.to)).toEqual([await h.addressOf(account._id), h.master]);
+    expect(h.fake.account(await h.addressOf(account._id))!.freeE6).toBe(0n);
 });
 
 test("after the transfer", async () => {

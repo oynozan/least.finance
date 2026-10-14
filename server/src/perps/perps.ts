@@ -104,6 +104,8 @@ export class PerpService {
     #taker: { rate: number; at: number } | null = null;
     /** Orders this process is still sending, so a tracker doesn't judge a post that hasn't answered yet. */
     readonly #submitting = new Set<string>();
+    /** The tail of each perp index's queue of holders. */
+    readonly #locks = new Map<number, Promise<void>>();
     #stopped = false;
 
     constructor(deps: Deps) {
@@ -131,6 +133,22 @@ export class PerpService {
     /** Stops taking new orders, so a shutdown doesn't post one it can't follow. */
     stopOrders(): void {
         this.#stopped = true;
+    }
+
+    /** Runs `fn` alone among everything that reads an address and then moves its money; a hung call still ends at its timeout. */
+    async withIndexLock<T>(index: number, fn: () => Promise<T>): Promise<T> {
+        const before = this.#locks.get(index) ?? Promise.resolve();
+        let release!: () => void;
+        const mine = new Promise<void>((resolve) => (release = resolve));
+        const tail = before.then(() => mine);
+        this.#locks.set(index, tail);
+        await before;
+        try {
+            return await fn();
+        } finally {
+            release();
+            if (this.#locks.get(index) === tail) this.#locks.delete(index);
+        }
     }
 
     submitting(id: ObjectId): boolean {
@@ -368,7 +386,14 @@ export class PerpService {
         const nonce = nextNonce(master.address);
         const moved = await perpOrders.findOneAndUpdate(
             { _id: order._id, state: "placing" },
-            { $set: { state: "funding", "steps.fundNonce": nonce, updatedAt: new Date(this.#now()) } },
+            {
+                $set: {
+                    state: "funding",
+                    "steps.fundNonce": nonce,
+                    "steps.sentAt": new Date(this.#now()),
+                    updatedAt: new Date(this.#now()),
+                },
+            },
             { returnDocument: "after" },
         );
         if (!moved) throw new Error("The order moved on");
@@ -378,6 +403,7 @@ export class PerpService {
             rejected();
             throw new Error(`The transfer was refused: ${sent.message}`);
         }
+        await perpOrders.updateOne({ _id: order._id, state: "funding" }, { $set: { "steps.funded": true } });
         const state = await this.#deps.client.state(address);
         const short = amount - (state?.withdrawableE6 ?? 0n);
         if (short > 0n) {
@@ -479,7 +505,11 @@ export class PerpService {
     }
 
     /** Sweeps the unused collateral back to the master and books the position at what really filled. */
-    async #onFill(order: PerpOrderDoc, fill: { totalSz: string; avgPx: string }): Promise<void> {
+    #onFill(order: PerpOrderDoc, fill: { totalSz: string; avgPx: string }): Promise<void> {
+        return this.withIndexLock(order.index, () => this.#sweepFill(order, fill));
+    }
+
+    async #sweepFill(order: PerpOrderDoc, fill: { totalSz: string; avgPx: string }): Promise<void> {
         const address = this.#deps.keyring.perpAddressAt(order.index);
         const sizeCoin = clean(fill.totalSz);
         const avgPx = clean(fill.avgPx);
@@ -500,7 +530,11 @@ export class PerpService {
     }
 
     /** Nothing filled: everything on the person's address goes back to the master, and what it received is credited. */
-    async #onNoFill(order: PerpOrderDoc, message: string): Promise<void> {
+    #onNoFill(order: PerpOrderDoc, message: string): Promise<void> {
+        return this.withIndexLock(order.index, () => this.#sweepNoFill(order, message));
+    }
+
+    async #sweepNoFill(order: PerpOrderDoc, message: string): Promise<void> {
         const address = this.#deps.keyring.perpAddressAt(order.index);
         const state = await this.#deps.client.state(address);
         const sweep = minE6(state?.withdrawableE6 ?? 0n, weiToE6(fromDecimal(order.collateral)));
@@ -520,24 +554,68 @@ export class PerpService {
         return BigInt(Math.ceil(notionalUSD * DEFAULT_TAKER_RATE * 1e6));
     }
 
-    /** Refunds an order that never posted: whatever reached the person's address goes back to the master, then the whole collateral is credited. */
+    /** Refunds an order that never posted: the funding transfer is made certain first, then what it moved is swept back and credited; an order whose transfer can't be judged now stays for the tracker. */
     async #unwind(order: PerpOrderDoc, message: string, sent: "no" | "maybe"): Promise<void> {
-        const fresh = await this.#deps.collections.perpOrders.findOne({ _id: order._id });
-        if (!fresh || (fresh.state !== "placing" && fresh.state !== "funding")) return;
-        let sweep = 0n;
-        if (sent === "maybe") {
+        await this.withIndexLock(order.index, async () => {
+            const { perpOrders, perpAccounts } = this.#deps.collections;
+            const fresh = await perpOrders.findOne({ _id: order._id });
+            if (!fresh || (fresh.state !== "placing" && fresh.state !== "funding")) return;
+            const collateral = weiToE6(fromDecimal(fresh.collateral));
+            const outcome = { kind: "rejected", message } as const;
+            const from: PerpOrderState[] = ["placing", "funding"];
+            const refund = async () => {
+                const moved = await this.#startSweep(fresh, from, outcome, 0n, collateral);
+                if (moved) await this.#finishSweep(moved);
+            };
+            if (fresh.state === "placing" || sent === "no") return refund();
+            if (fresh.steps.funded !== true) {
+                const moved = await this.#fundingMoved(fresh, collateral);
+                if (moved === null) return;
+                if (!moved) return refund();
+                await perpOrders.updateOne({ _id: fresh._id, state: "funding" }, { $set: { "steps.funded": true } });
+            }
             const state = await this.#deps.client.state(this.#deps.keyring.perpAddressAt(fresh.index));
-            sweep = minE6(state?.withdrawableE6 ?? 0n, weiToE6(fromDecimal(fresh.collateral)));
+            const account = await perpAccounts.findOne({ index: fresh.index });
+            const allowance = account?.activatedAt === null ? ACTIVATION_E6 : 0n;
+            const have = state?.withdrawableE6 ?? 0n;
+            if (have < collateral - allowance) {
+                this.#deps.logger.warn({ order: fresh._id.toHexString() }, "A funded order isn't on its address yet");
+                return;
+            }
+            const sweep = minE6(have, collateral);
+            const moved = await this.#startSweep(fresh, from, outcome, sweep, sweep);
+            if (moved) await this.#finishSweep(moved);
+        });
+    }
+
+    /** Whether the funding transfer reached the person's address: true or false when known, null when the send itself can't be judged now. */
+    async #fundingMoved(order: PerpOrderDoc, collateral: bigint): Promise<boolean | null> {
+        const master = this.#deps.keyring.perpSignerAt(0);
+        const address = this.#deps.keyring.perpAddressAt(order.index);
+        try {
+            const sent = await this.#deps.client.usdSend(master, address, collateral, order.steps.fundNonce as number);
+            if (sent.kind === "ok") return true;
+            if (sent.kind === "rejected") return false;
+            return await this.#landed(master.address, address, collateral, order.steps.sentAt as Date);
+        } catch (error) {
+            this.#deps.logger.warn(
+                { err: error, order: order._id.toHexString() },
+                "Couldn't settle a funding transfer",
+            );
+            return null;
         }
-        const credit = fresh.steps.funded === true ? sweep : weiToE6(fromDecimal(fresh.collateral));
-        const moved = await this.#startSweep(
-            fresh,
-            ["placing", "funding"],
-            { kind: "rejected", message },
-            sweep,
-            credit,
+    }
+
+    /** Whether the ledger shows `from` sending `amountE6` to `to` at or after `since`. */
+    async #landed(from: string, to: string, amountE6: bigint, since: Date): Promise<boolean> {
+        const sent = await this.#deps.client.transfers(from, since.getTime());
+        return sent.some(
+            (t) =>
+                t.from === from.toLowerCase() &&
+                t.to === to.toLowerCase() &&
+                t.amountE6 === amountE6 &&
+                t.time >= since.getTime(),
         );
-        if (moved) await this.#finishSweep(moved);
     }
 
     /** Stores what the sweep will move and credit, with its nonce, before anything is sent, so a restart repeats it exactly. */
@@ -707,7 +785,7 @@ export class PerpService {
                 if (order.state === "placing") await this.#unwind(order, PERP_MESSAGES.silent, "no");
                 else if (order.state === "funding") await this.#unwind(order, PERP_MESSAGES.silent, "maybe");
                 else if (order.state === "posted") await this.settlePosted(order);
-                else await this.#finishSweep(order);
+                else await this.retrySweep(order);
             } catch (error) {
                 this.#deps.logger.error(
                     { err: error, order: order._id.toHexString() },
@@ -730,8 +808,10 @@ export class PerpService {
 
     /** Finishes an open order's stored sweep; a repeat, or an order that moved on, does nothing. */
     async retrySweep(order: PerpOrderDoc): Promise<void> {
-        const fresh = await this.#deps.collections.perpOrders.findOne({ _id: order._id });
-        if (fresh?.kind === "open" && fresh.state === "sweeping") await this.#finishSweep(fresh);
+        await this.withIndexLock(order.index, async () => {
+            const fresh = await this.#deps.collections.perpOrders.findOne({ _id: order._id });
+            if (fresh?.kind === "open" && fresh.state === "sweeping") await this.#finishSweep(fresh);
+        });
     }
 
     /** The last mark the market sync saw for an asset. */
@@ -868,7 +948,7 @@ export class PerpService {
     async settleClose(order: PerpOrderDoc): Promise<void> {
         const fresh = await this.#deps.collections.perpOrders.findOne({ _id: order._id });
         if (!fresh || fresh.kind !== "close") return;
-        if (fresh.state === "sweeping") return this.#finishCloseSweep(fresh);
+        if (fresh.state === "sweeping") return this.withIndexLock(fresh.index, () => this.#finishCloseSweep(fresh));
         if (fresh.state === "placing") {
             if (!this.submitting(fresh._id)) await this.#onCloseRejected(fresh, ["placing"], "never sent");
             return;
@@ -893,7 +973,11 @@ export class PerpService {
     }
 
     /** A close that filled: a partial one shrinks the position, a whole one sweeps the account back to the master first. */
-    async #onCloseFill(order: PerpOrderDoc, fill: { totalSz: string; avgPx: string }): Promise<void> {
+    #onCloseFill(order: PerpOrderDoc, fill: { totalSz: string; avgPx: string }): Promise<void> {
+        return this.withIndexLock(order.index, () => this.#settleCloseFill(order, fill));
+    }
+
+    async #settleCloseFill(order: PerpOrderDoc, fill: { totalSz: string; avgPx: string }): Promise<void> {
         const { perpPositions } = this.#deps.collections;
         const position = await perpPositions.findOne({ _id: new ObjectId(order.steps.positionId as string) });
         if (!position || position.state !== "closing") return;
@@ -1128,7 +1212,11 @@ export class PerpService {
     }
 
     /** Settles a position that is gone or smaller on Hyperliquid with no close of ours in flight, from the fills and the account state read for it. */
-    async settleOutside(position: PerpPositionDoc, fills: Fill[], state: AccountState | null): Promise<void> {
+    settleOutside(position: PerpPositionDoc, fills: Fill[], state: AccountState | null): Promise<void> {
+        return this.withIndexLock(position.index, () => this.#settleGone(position, fills, state));
+    }
+
+    async #settleGone(position: PerpPositionDoc, fills: Fill[], state: AccountState | null): Promise<void> {
         const { perpOrders, perpPositions } = this.#deps.collections;
         const fresh = await perpPositions.findOne({ _id: position._id });
         if (!fresh || fresh.state !== "open" || !fresh.active) return;

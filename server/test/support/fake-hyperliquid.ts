@@ -14,6 +14,9 @@ export type FakeBook = {
 export type NextOrder = "fill" | { partial: string } | { reject: string } | "hold" | "drop";
 
 export type FakeUsdSend = { from: string; to: string; amountE6: bigint; nonce: number };
+
+/** How a numbered usdSend goes wrong: refused, never answered or applied, or applied only after a delay (its reply is late too). */
+export type UsdSendShape = "refuse" | "lose" | { late: number };
 export type FakeOrder = {
     signer: string;
     asset: string;
@@ -74,6 +77,14 @@ export type FakeHyperliquid = {
     nextOrder(next: NextOrder): void;
     liquidate(address: string, asset: string): void;
     failUsdSend(on: boolean): void;
+    /** Shapes the nth usdSend from now (1 is the next one). */
+    nextUsdSend(nth: number, shape: UsdSendShape): void;
+    /** Whether a refused usdSend still uses up its nonce, so a later send with it answers "Duplicate nonce". */
+    refusalConsumesNonce(on: boolean): void;
+    /** Answers orderStatus with an unknown order while on, though the order and its fills exist. */
+    hideOrderStatus(on: boolean): void;
+    /** Removes a position with no fill, as if the account state were read empty. */
+    vanish(address: string, asset: string): void;
     /** Whether the 1 USDC activation of a new address is paid by the sender on top of the amount (the default) or comes out of the amount. */
     activationFrom(source: "sender" | "amount"): void;
     account(address: string): FakeAccountView | undefined;
@@ -167,6 +178,7 @@ const userSigner = async (body: Json): Promise<string> => {
 export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
     const requests: string[] = [];
     const usdSends: FakeUsdSend[] = [];
+    const transferLog: { from: string; to: string; amountE6: bigint; time: number }[] = [];
     const orders: FakeOrder[] = [];
     const accounts = new Map<string, Account>();
     const fills = new Map<string, FillRecord[]>();
@@ -176,6 +188,10 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
     const seenNonces = new Map<string, Set<number>>();
     let next: NextOrder | undefined;
     let usdSendFails = false;
+    let usdSendCount = 0;
+    const usdSendPlan = new Map<number, UsdSendShape>();
+    let refusalUsesNonce = false;
+    let statusHidden = false;
     let activation: "sender" | "amount" = "sender";
     let oid = 1000;
     let tid = 5000;
@@ -342,21 +358,30 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
             const to = (action.destination as string).toLowerCase();
             const amountE6 = parseUnits(action.amount as string, 6);
             const nonce = body.nonce as number;
-            if (usdSendFails) return send(response, { status: "err", response: "usdSend is failing." });
+            const shape = usdSendPlan.get(++usdSendCount);
+            if (shape === "lose") return;
+            if (typeof shape === "object") await new Promise((resolve) => setTimeout(resolve, shape.late));
             const seen = seenNonces.get(from) ?? new Set<number>();
+            const refuse = (message: string) => {
+                if (refusalUsesNonce) {
+                    seen.add(nonce);
+                    seenNonces.set(from, seen);
+                }
+                return send(response, { status: "err", response: message });
+            };
+            if (usdSendFails || shape === "refuse") return refuse("usdSend is failing.");
             if (seen.has(nonce)) return send(response, { status: "err", response: "Duplicate nonce." });
             const sender = accounts.get(from);
             const fresh = !accounts.has(to);
             const debit = amountE6 + (fresh && activation === "sender" ? ACTIVATION_E6 : 0n);
             const credit = amountE6 - (fresh && activation === "amount" ? ACTIVATION_E6 : 0n);
-            if (!sender || sender.freeE6 < debit || credit < 0n) {
-                return send(response, { status: "err", response: "Insufficient balance for withdrawal." });
-            }
+            if (!sender || sender.freeE6 < debit || credit < 0n) return refuse("Insufficient balance for withdrawal.");
             seen.add(nonce);
             seenNonces.set(from, seen);
             sender.freeE6 -= debit;
             accountOf(to).freeE6 += credit;
             usdSends.push({ from, to, amountE6, nonce });
+            transferLog.push({ from, to, amountE6, time: Date.now() });
             return send(response, { status: "ok", response: { type: "default" } });
         }
         const signer = await l1Signer(body);
@@ -368,6 +393,8 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
             const forced = next;
             next = undefined;
             if (forced === "hold") return;
+            if (typeof body.expiresAfter === "number" && Date.now() > body.expiresAfter)
+                return send(response, { status: "err", response: "Order action expired." });
             const [order] = action.orders as Json[];
             const status = placeOrder(signer, order!, forced);
             orders.push({
@@ -429,10 +456,35 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
                 (fills.get(user) ?? []).filter((f) => f.time >= since),
             );
         }
+        if (type === "userNonFundingLedgerUpdates") {
+            const since = (body.startTime as number | undefined) ?? 0;
+            return send(
+                response,
+                transferLog
+                    .filter((t) => t.time >= since && (t.from === user || t.to === user))
+                    .map((t) => ({
+                        time: t.time,
+                        hash: `0x${"0".repeat(64)}`,
+                        delta: {
+                            type: "send",
+                            user: t.from,
+                            destination: t.to,
+                            sourceDex: "",
+                            destinationDex: "",
+                            token: "USDC",
+                            amount: usd(t.amountE6),
+                            usdcValue: usd(t.amountE6),
+                            fee: "0.0",
+                            nativeTokenFee: "0.0",
+                            nonce: null,
+                        },
+                    })),
+            );
+        }
         if (type === "orderStatus") {
             const key = typeof body.oid === "string" ? body.oid : `oid:${String(body.oid)}`;
             const found = statuses.get(key) ?? [...statuses.values()].find((s) => `oid:${s.oid}` === key);
-            if (!found) return send(response, { status: "unknownOid" });
+            if (!found || statusHidden) return send(response, { status: "unknownOid" });
             return send(response, {
                 status: "order",
                 order: {
@@ -503,6 +555,14 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
             });
         },
         failUsdSend: (on) => void (usdSendFails = on),
+        nextUsdSend(nth, shape) {
+            usdSendPlan.set(usdSendCount + nth, shape);
+        },
+        refusalConsumesNonce: (on) => void (refusalUsesNonce = on),
+        hideOrderStatus: (on) => void (statusHidden = on),
+        vanish(address, asset) {
+            accounts.get(address.toLowerCase())?.positions.delete(asset);
+        },
         activationFrom: (source) => void (activation = source),
         account(address) {
             const account = accounts.get(address.toLowerCase());
@@ -519,6 +579,11 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
             for (const map of [accounts, fills, statuses, marks, books, seenNonces]) map.clear();
             next = undefined;
             usdSendFails = false;
+            usdSendCount = 0;
+            usdSendPlan.clear();
+            transferLog.length = 0;
+            refusalUsesNonce = false;
+            statusHidden = false;
             activation = "sender";
         },
         stop: () =>

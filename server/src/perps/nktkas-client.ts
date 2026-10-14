@@ -8,6 +8,7 @@ import type {
     OrderResult,
     OrderStatus,
     PerpMeta,
+    Transfer,
     UsdSendResult,
 } from "./client.ts";
 
@@ -165,6 +166,22 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
             return { kind: "canceled" };
         },
 
+        async transfers(address, sinceMs): Promise<Transfer[]> {
+            const raw = await info.userNonFundingLedgerUpdates({ user: address as `0x${string}`, startTime: sinceMs });
+            return raw.flatMap(({ time, delta }) =>
+                delta.type === "send" && delta.token === "USDC"
+                    ? [
+                          {
+                              from: delta.user.toLowerCase(),
+                              to: delta.destination.toLowerCase(),
+                              amountE6: toE6(delta.amount),
+                              time,
+                          },
+                      ]
+                    : [],
+            );
+        },
+
         async usdSend(from, to, amountE6, nonce): Promise<UsdSendResult> {
             try {
                 await exchangeFor(from, nonce).usdSend({
@@ -186,20 +203,23 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
         async order(signer, o): Promise<OrderResult> {
             const a = await assetIndex(o.asset);
             try {
-                const result = await exchangeFor(signer).order({
-                    orders: [
-                        {
-                            a,
-                            b: o.isBuy,
-                            p: o.px,
-                            s: o.sz,
-                            r: o.reduceOnly,
-                            t: { limit: { tif: "Ioc" } },
-                            c: o.cloid as `0x${string}`,
-                        },
-                    ],
-                    grouping: "na",
-                });
+                const result = await exchangeFor(signer).order(
+                    {
+                        orders: [
+                            {
+                                a,
+                                b: o.isBuy,
+                                p: o.px,
+                                s: o.sz,
+                                r: o.reduceOnly,
+                                t: { limit: { tif: "Ioc" } },
+                                c: o.cloid as `0x${string}`,
+                            },
+                        ],
+                        grouping: "na",
+                    },
+                    o.expiresAfter === undefined ? undefined : { expiresAfter: o.expiresAfter },
+                );
                 const status = result.response.data.statuses[0];
                 if (typeof status === "object" && "filled" in status) {
                     return { kind: "filled", totalSz: status.filled.totalSz, avgPx: status.filled.avgPx };
