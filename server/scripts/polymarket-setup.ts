@@ -24,11 +24,17 @@ if (missing.length > 0) {
 }
 
 const client = await createPolymarketClient(config);
+// The pool key's own deposit wallet, which the SDK derives when no wallet is pinned
+const derived = (await createPolymarketClient(config, undefined, { ignorePinnedWallet: true })).account.wallet;
 await client.setupTradingApprovals();
 const { balance } = await updateBalanceAllowance(client, { assetType: AssetType.COLLATERAL });
 
 const pusd = BigInt(balance);
 const dollars = `${pusd / 1_000_000n}.${(pusd % 1_000_000n).toString().padStart(6, "0")}`;
 console.log(`Deposit wallet: ${client.account.wallet}`);
+console.log(`Derived wallet: ${derived}`);
+if (derived.toLowerCase() !== client.account.wallet.toLowerCase()) {
+    console.log("Warning: the deposit wallet in the config is not the wallet the pool key controls.");
+}
 console.log(`pUSD balance:   ${dollars}`);
 if (pusd === 0n) console.log("Fund this wallet with pUSD before turning PREDICTIONS_TRADING on.");

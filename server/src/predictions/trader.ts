@@ -1,3 +1,5 @@
+import type { Address, Hex } from "viem";
+
 export type Level = { price: number; size: number };
 export type Book = { bids: Level[]; asks: Level[]; tickSize: number; minOrderSize: number; negRisk: boolean };
 export type MarketMeta = {
@@ -24,6 +26,13 @@ export type LookupResult =
 /** What the pool's trade records show for an order: its fill, or a trade that can't be linked to any order. */
 export type FoundFill = { makingE6: bigint; takingE6: bigint } | "unlinked";
 
+/** What submitting a relayer batch came to: it was taken, clearly refused (nothing was sent), or may or may not have been sent. */
+export type BatchSubmit =
+    { kind: "submitted"; transactionId: string } | { kind: "refused"; message: string } | { kind: "unknown" };
+
+/** The relayer's record of a transaction: its state, the Polygon hash once it has one, and its error message when it failed. */
+export type RelayerTransaction = { state: TransactionState; hash: string | null; errorMsg: string | null };
+
 export interface PoolTrader {
     book(tokenId: string): Promise<Book>;
     meta(tokenId: string): Promise<MarketMeta>;
@@ -36,9 +45,23 @@ export interface PoolTrader {
     balanceE6(): Promise<bigint>;
     /** Submits the relayer transaction that redeems the pool's tokens of a resolved condition, without waiting for it. */
     redeem(conditionId: string): Promise<{ transactionId: string }>;
-    transaction(transactionId: string): Promise<TransactionState>;
+    transaction(transactionId: string): Promise<RelayerTransaction>;
     /** What the pool holds on Polymarket, per token; the Data API leaves out anything under 0.1 share. */
     holdings(): Promise<Array<{ tokenId: string; sharesE6: bigint }>>;
+    /** Native USDC the pool's deposit wallet holds on Polygon. */
+    usdcBalanceE6(): Promise<bigint>;
+    /** Forces the CLOB to re-read the pool's collateral balance, so balanceE6 shows what the wallet holds now. */
+    syncBalance(): Promise<void>;
+    /** Submits the batch that wraps the deposit wallet's native USDC into pUSD, without waiting for it. */
+    wrapUsdc(amountE6: bigint): Promise<BatchSubmit>;
+    /** Submits the batch that unwraps pUSD and burns the native USDC for `recipient` on Arc, without waiting for it. */
+    unwrapAndBurn(o: { amountE6: bigint; maxFeeE6: bigint; recipient: Address }): Promise<BatchSubmit>;
+    /** The burns of the pool's wallet on TokenMessengerV2 since the given instant. */
+    burnEvents(o: { since: Date }): Promise<{ txHash: Hex; amountE6: bigint }[]>;
+    /** The pool wallet's DepositForBurn in that transaction's receipt; null when it has none. */
+    burnLog(transactionHash: Hex): Promise<{ amountE6: bigint } | null>;
+    /** The deposit wallet in the config, the one the pool key derives, and whether the derived one has code. */
+    derivedWallet(): Promise<{ configured: Address; derived: Address; hasCode: boolean }>;
 }
 
 export type TransactionState = "pending" | "confirmed" | "failed";
@@ -57,8 +80,13 @@ function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
     return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
-/** The trader with every call bounded (a timed-out call may still complete); a post that doesn't answer in time is `unknown`, which leaves the order posted for the tracker. */
+/** The trader with every call bounded (a timed-out call may still complete); a post that doesn't answer in time is `unknown`, which leaves the order posted for the tracker, and so is a batch. */
 export function withTimeouts(trader: PoolTrader, ms: number): PoolTrader {
+    const batch = (work: Promise<BatchSubmit>, what: string) =>
+        bounded(work, ms, what).catch((error: unknown) => {
+            if (error instanceof TimedOut) return { kind: "unknown" } as const;
+            throw error;
+        });
     return {
         book: (tokenId) => bounded(trader.book(tokenId), ms, "book"),
         meta: (tokenId) => bounded(trader.meta(tokenId), ms, "meta"),
@@ -75,6 +103,13 @@ export function withTimeouts(trader: PoolTrader, ms: number): PoolTrader {
         redeem: (conditionId) => bounded(trader.redeem(conditionId), ms, "redeem"),
         transaction: (transactionId) => bounded(trader.transaction(transactionId), ms, "transaction"),
         holdings: () => bounded(trader.holdings(), ms, "holdings"),
+        usdcBalanceE6: () => bounded(trader.usdcBalanceE6(), ms, "usdcBalanceE6"),
+        syncBalance: () => bounded(trader.syncBalance(), ms, "syncBalance"),
+        wrapUsdc: (amountE6) => batch(trader.wrapUsdc(amountE6), "wrapUsdc"),
+        unwrapAndBurn: (o) => batch(trader.unwrapAndBurn(o), "unwrapAndBurn"),
+        burnEvents: (o) => bounded(trader.burnEvents(o), ms, "burnEvents"),
+        burnLog: (transactionHash) => bounded(trader.burnLog(transactionHash), ms, "burnLog"),
+        derivedWallet: () => bounded(trader.derivedWallet(), ms, "derivedWallet"),
     };
 }
 

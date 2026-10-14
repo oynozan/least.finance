@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
 import type { Collections, PredictionRedemptionDoc } from "../db/mongo.ts";
 import type { PredictionService } from "./predictions.ts";
-import type { PoolTrader } from "./trader.ts";
+import type { PoolTrader, TransactionState } from "./trader.ts";
 
 const SUBMITTED_TIMEOUT_MS = 30 * 60_000;
 const RETRY_MS = 600_000;
@@ -133,9 +133,9 @@ export class PredictionRedeemer {
 
     async #check(trader: PoolTrader, row: PredictionRedemptionDoc) {
         const { predictionRedemptions } = this.#deps.collections;
-        let state: Awaited<ReturnType<PoolTrader["transaction"]>>;
+        let state: TransactionState;
         try {
-            state = await trader.transaction(row.transactionId!);
+            ({ state } = await trader.transaction(row.transactionId!));
         } catch (error) {
             const counted = await predictionRedemptions.findOneAndUpdate(
                 { _id: row._id, state: "submitted" },

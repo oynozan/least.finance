@@ -1,8 +1,11 @@
 import { pino } from "pino";
-import { generatePrivateKey } from "viem/accounts";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { Address, Hex } from "viem";
+import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../../src/config.ts";
+import type { PolygonReader } from "../../src/predictions/polygon-reader.ts";
 import { createPolymarketTrader } from "../../src/predictions/polymarket-trader.ts";
+import { POLYGON, unwrapAndBurnCalls, wrapCalls } from "../../src/predictions/pool-moves.ts";
 import type { PoolTrader } from "../../src/predictions/trader.ts";
 import { startFakeClob, type FakeClob } from "../support/fake-clob.ts";
 
@@ -10,28 +13,61 @@ const TOKEN = "71321045679252212594626385532706912750332728571942532289631379312
 const OTHER = "52114319501245915516055106046884209969926127482827954674443846427813813222426";
 const HASH = `0x${"b".repeat(64)}`;
 
+const POOL_KEY = generatePrivateKey();
+const OWNER = privateKeyToAddress(POOL_KEY);
+const TREASURY: Address = "0x000000000000000000000000000000000000b0b0";
+const lower = (value: string) => value.toLowerCase();
+
+/** A Polygon reader that records what it is asked and answers what the test set. */
+function stubReader() {
+    const asked = {
+        balance: [] as Address[],
+        code: [] as Address[],
+        events: [] as { wallet: Address; since: Date; now: Date }[],
+        logs: [] as { wallet: Address; hash: Hex }[],
+    };
+    const answers = {
+        balanceE6: 0n,
+        hasCode: true,
+        events: [] as { txHash: Hex; amountE6: bigint }[],
+        log: null as { amountE6: bigint } | null,
+    };
+    const reader: PolygonReader = {
+        usdcBalanceE6: async (owner) => (asked.balance.push(owner), answers.balanceE6),
+        hasCode: async (address) => (asked.code.push(address), answers.hasCode),
+        burnEvents: async (o) => (asked.events.push(o), answers.events),
+        burnLog: async (o) => (asked.logs.push(o), answers.log),
+    };
+    return { reader, asked, answers };
+}
+
 let fake: FakeClob;
 let trader: PoolTrader & { wallet: string };
+let polygon: ReturnType<typeof stubReader>;
+let configFor: (extra?: Record<string, string>) => ReturnType<typeof loadConfig>;
 
 beforeAll(async () => {
     fake = await startFakeClob();
-    const config = loadConfig({
-        MONGODB_URI: "mongodb://localhost:27017",
-        PRIVY_APP_ID: "app",
-        PRIVY_APP_SECRET: "secret",
-        DEPOSIT_MNEMONIC: "test test test test test test test test test test test junk",
-        PREDICTIONS_TRADING: "on",
-        POLYMARKET_POOL_KEY: generatePrivateKey(),
-        POLYMARKET_BUILDER_API_KEY: "builder-key",
-        POLYMARKET_BUILDER_API_SECRET: Buffer.from("builder-secret").toString("base64"),
-        POLYMARKET_BUILDER_API_PASSPHRASE: "builder-pass",
-        POLYMARKET_CLOB_URL: fake.url,
-        POLYMARKET_GAMMA_URL: fake.url,
-        POLYMARKET_RELAYER_URL: fake.url,
-        POLYMARKET_DATA_URL: fake.url,
-        POLYGON_RPC_URL: fake.url,
-    });
-    trader = await createPolymarketTrader(config, pino({ level: "silent" }));
+    configFor = (extra = {}) =>
+        loadConfig({
+            MONGODB_URI: "mongodb://localhost:27017",
+            PRIVY_APP_ID: "app",
+            PRIVY_APP_SECRET: "secret",
+            DEPOSIT_MNEMONIC: "test test test test test test test test test test test junk",
+            PREDICTIONS_TRADING: "on",
+            POLYMARKET_POOL_KEY: POOL_KEY,
+            POLYMARKET_BUILDER_API_KEY: "builder-key",
+            POLYMARKET_BUILDER_API_SECRET: Buffer.from("builder-secret").toString("base64"),
+            POLYMARKET_BUILDER_API_PASSPHRASE: "builder-pass",
+            POLYMARKET_CLOB_URL: fake.url,
+            POLYMARKET_GAMMA_URL: fake.url,
+            POLYMARKET_RELAYER_URL: fake.url,
+            POLYMARKET_DATA_URL: fake.url,
+            POLYGON_RPC_URL: fake.url,
+            ...extra,
+        });
+    polygon = stubReader();
+    trader = await createPolymarketTrader(configFor(), pino({ level: "silent" }), { polygon: polygon.reader });
 });
 
 afterAll(async () => {
@@ -397,8 +433,27 @@ describe("the Polymarket trader", () => {
             ["STATE_INVALID", "failed"],
         ] as const) {
             fake.setTransactionState(transactionId, state);
-            expect(await trader.transaction(transactionId)).toBe(expected);
+            expect((await trader.transaction(transactionId)).state).toBe(expected);
         }
+    });
+
+    it("transaction returns the hash and error message of the relayer record", async () => {
+        const { transactionId } = await trader.redeem(`0x${"d".repeat(64)}`);
+        expect(await trader.transaction(transactionId)).toEqual({ state: "pending", hash: null, errorMsg: null });
+
+        fake.setTransactionState(transactionId, "STATE_CONFIRMED");
+        expect(await trader.transaction(transactionId)).toEqual({
+            state: "confirmed",
+            hash: `0x${"e".repeat(64)}`,
+            errorMsg: null,
+        });
+
+        fake.setTransactionState(transactionId, "STATE_FAILED");
+        expect(await trader.transaction(transactionId)).toEqual({
+            state: "failed",
+            hash: null,
+            errorMsg: "execution reverted",
+        });
     });
 
     it("holdings reads /v2/positions across pages", async () => {
@@ -423,5 +478,193 @@ describe("the Polymarket trader", () => {
         );
         expect(holdings).toHaveLength(4);
         expect(pages() - before).toBe(4);
+    });
+
+    describe("pool batches", () => {
+        const wallet = () => trader.wallet as Address;
+        const sent = () => fake.submitted.at(-1)!;
+
+        it("wrapUsdc submits one batch of two calls to native USDC and the Onramp and returns the relayer id", async () => {
+            const before = fake.submitted.length;
+            const result = await trader.wrapUsdc(4_930_000n);
+
+            expect(fake.submitted).toHaveLength(before + 1);
+            expect(result).toEqual({ kind: "submitted", transactionId: sent().id });
+            expect(sent().calls.map((call) => lower(call.target))).toEqual([
+                lower(POLYGON.usdc),
+                lower(POLYGON.onramp),
+            ]);
+            expect(sent().calls.map((call) => call.data)).toEqual(
+                wrapCalls({ amountE6: 4_930_000n, wallet: wallet() }).map((call) => call.data),
+            );
+            expect(sent().calls.every((call) => call.value === "0")).toBe(true);
+            const body = sent().body as {
+                metadata: string;
+                from: string;
+                signature: string;
+                depositWalletParams: { depositWallet: string };
+            };
+            expect(body.metadata).toBe("Wrap native USDC into pUSD");
+            expect(lower(body.from)).toBe(lower(OWNER));
+            expect(lower(body.depositWalletParams.depositWallet)).toBe(lower(wallet()));
+            expect(body.signature).toMatch(/^0x[0-9a-f]{130}$/);
+        });
+
+        it("unwrapAndBurn submits four calls in the order of 1.2", async () => {
+            const o = { amountE6: 12_000_000n, maxFeeE6: 213_201n, recipient: TREASURY };
+            const result = await trader.unwrapAndBurn(o);
+
+            expect(result).toEqual({ kind: "submitted", transactionId: sent().id });
+            expect(sent().calls.map((call) => lower(call.target))).toEqual(
+                [POLYGON.pusd, POLYGON.offramp, POLYGON.usdc, POLYGON.tokenMessenger].map(lower),
+            );
+            expect(sent().calls.map((call) => call.data)).toEqual(
+                unwrapAndBurnCalls({ ...o, wallet: wallet() }).map((call) => call.data),
+            );
+            expect((sent().body as { metadata: string }).metadata).toBe("Unwrap pUSD and burn to Arc");
+        });
+
+        it("a 400 on submit is refused and a 500 or a dropped connection is unknown", async () => {
+            const before = fake.submitted.length;
+
+            fake.nextSubmit({ status: 400, body: { error: "invalid signature" } });
+            const refused = await trader.wrapUsdc(4_000_000n);
+            expect(refused).toMatchObject({ kind: "refused" });
+            expect((refused as { message: string }).message).toBeTruthy();
+
+            fake.nextSubmit({ status: 403, body: { error: "forbidden" } });
+            expect(
+                await trader.unwrapAndBurn({ amountE6: 9_000_000n, maxFeeE6: 100_000n, recipient: TREASURY }),
+            ).toMatchObject({
+                kind: "refused",
+            });
+
+            fake.nextSubmit({ status: 500, body: { error: "internal error" } });
+            expect(await trader.wrapUsdc(4_000_000n)).toEqual({ kind: "unknown" });
+
+            fake.nextSubmit({ status: 503, body: { error: "unavailable" } });
+            expect(
+                await trader.unwrapAndBurn({ amountE6: 9_000_000n, maxFeeE6: 100_000n, recipient: TREASURY }),
+            ).toEqual({
+                kind: "unknown",
+            });
+
+            fake.nextSubmit("hold");
+            const arrived = fake.submitArrived();
+            const submitting = trader.wrapUsdc(4_000_000n);
+            await arrived;
+            fake.dropConnections();
+            expect(await submitting).toEqual({ kind: "unknown" });
+
+            expect(fake.submitted).toHaveLength(before);
+        });
+
+        it("an answer with no transaction id is unknown, because the batch may still run", async () => {
+            fake.nextSubmit({ status: 200, body: { state: "STATE_NEW" } });
+            expect(await trader.wrapUsdc(4_000_000n)).toEqual({ kind: "unknown" });
+        });
+
+        it("a busy relayer is retried by the SDK with a fresh signature and the batch is submitted once", async () => {
+            const before = fake.submitted.length;
+            fake.nextSubmit({ status: 400, body: { error: "wallet busy: it has an active action" } });
+            const result = await trader.wrapUsdc(4_000_000n);
+            expect(result).toEqual({ kind: "submitted", transactionId: sent().id });
+            expect(fake.submitted).toHaveLength(before + 1);
+        });
+
+        it("signs nothing more once the signing window has passed, so a late call can't outlive the caller's 11 minutes", async () => {
+            const before = fake.submitted.length;
+            fake.nextSubmit({ status: 400, body: { error: "wallet busy: it has an active action" } });
+            const arrived = fake.submitArrived();
+            const submitting = trader.wrapUsdc(4_000_000n);
+            await arrived;
+            const real = Date.now.bind(Date);
+            const clock = vi.spyOn(Date, "now").mockImplementation(() => real() + 31_000);
+            try {
+                expect(await submitting).toEqual({ kind: "unknown" });
+            } finally {
+                clock.mockRestore();
+            }
+            expect(fake.submitted).toHaveLength(before);
+        });
+
+        it("a batch the encoder refuses is refused and never reaches the relayer", async () => {
+            const before = fake.requests.filter((request) => request === "POST /submit").length;
+            expect(await trader.wrapUsdc(0n)).toMatchObject({ kind: "refused" });
+            expect(
+                await trader.unwrapAndBurn({ amountE6: 5_000_000n, maxFeeE6: 5_000_000n, recipient: TREASURY }),
+            ).toMatchObject({ kind: "refused" });
+            expect(fake.requests.filter((request) => request === "POST /submit")).toHaveLength(before);
+        });
+    });
+
+    describe("Polygon reads", () => {
+        it("usdcBalanceE6 reads the pool wallet's native USDC through the reader", async () => {
+            polygon.answers.balanceE6 = 4_930_000n;
+            expect(await trader.usdcBalanceE6()).toBe(4_930_000n);
+            expect(polygon.asked.balance.at(-1)).toBe(trader.wallet);
+        });
+
+        it("syncBalance forces the CLOB to re-read the collateral balance", async () => {
+            const before = fake.requests.filter((request) => request.endsWith("/balance-allowance/update")).length;
+            await trader.syncBalance();
+            expect(fake.requests.filter((request) => request.endsWith("/balance-allowance/update"))).toHaveLength(
+                before + 1,
+            );
+        });
+
+        it("burnEvents and burnLog ask the reader about the pool wallet", async () => {
+            polygon.answers.events = [{ txHash: `0x${"a".repeat(64)}`, amountE6: 7_000_000n }];
+            polygon.answers.log = { amountE6: 7_000_000n };
+            const since = new Date(Date.now() - 120_000);
+
+            expect(await trader.burnEvents({ since })).toEqual(polygon.answers.events);
+            const asked = polygon.asked.events.at(-1)!;
+            expect(asked.wallet).toBe(trader.wallet);
+            expect(asked.since).toBe(since);
+            expect(Math.abs(asked.now.getTime() - Date.now())).toBeLessThan(5_000);
+
+            const hash: Hex = `0x${"c".repeat(64)}`;
+            expect(await trader.burnLog(hash)).toEqual({ amountE6: 7_000_000n });
+            expect(polygon.asked.logs.at(-1)).toEqual({ wallet: trader.wallet, hash });
+        });
+    });
+
+    describe("derivedWallet", () => {
+        it("derivedWallet equals wallet without a pinned wallet and differs when POLYMARKET_DEPOSIT_WALLET pins another", async () => {
+            polygon.answers.hasCode = true;
+            const plain = await trader.derivedWallet();
+            expect(lower(plain.configured)).toBe(lower(trader.wallet));
+            expect(lower(plain.derived)).toBe(lower(trader.wallet));
+            expect(plain.hasCode).toBe(true);
+            expect(lower(polygon.asked.code.at(-1)!)).toBe(lower(plain.derived));
+
+            const pinned: Address = "0x00000000000000000000000000000000000a11ce";
+            const other = stubReader();
+            other.answers.hasCode = false;
+            const pinnedTrader = await createPolymarketTrader(
+                configFor({ POLYMARKET_DEPOSIT_WALLET: pinned }),
+                pino({ level: "silent" }),
+                { polygon: other.reader },
+            );
+            const mismatch = await pinnedTrader.derivedWallet();
+            expect(lower(mismatch.configured)).toBe(lower(pinned));
+            expect(lower(mismatch.derived)).toBe(lower(trader.wallet));
+            expect(mismatch.hasCode).toBe(false);
+        });
+
+        it("builds the second client once per trader", async () => {
+            const fresh = await createPolymarketTrader(configFor(), pino({ level: "silent" }), {
+                polygon: stubReader().reader,
+            });
+            const requests = () => fake.requests.length;
+            const before = requests();
+            await fresh.derivedWallet();
+            const afterFirst = requests();
+            await fresh.derivedWallet();
+            await fresh.derivedWallet();
+            expect(afterFirst).toBeGreaterThan(before);
+            expect(requests()).toBe(afterFirst);
+        });
     });
 });

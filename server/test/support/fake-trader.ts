@@ -1,12 +1,15 @@
+import { toHex, type Address, type Hex } from "viem";
 import { quoteBuy, quoteSell } from "../../src/predictions/pricing.ts";
 import type { FakePolymarket } from "./fake-polymarket.ts";
 import type {
+    BatchSubmit,
     Book,
     FoundFill,
     LookupResult,
     MarketMeta,
     PoolTrader,
     PostResult,
+    RelayerTransaction,
     SignedRecord,
 } from "../../src/predictions/trader.ts";
 
@@ -18,7 +21,24 @@ type Signed =
     | { side: "SELL"; tokenId: string; sharesE6: string; minPrice: number };
 
 type Fill = { makingE6: bigint; takingE6: bigint; balanceDelta: bigint; tokenId: string; sharesDelta: bigint };
-type Transaction = "pending" | "confirmed" | "failed";
+
+/** What the next wrap or unwrap-and-burn comes to: taken, refused, or answered `unknown` whether or not the relayer got it. */
+export type BatchMode = "submit" | "refuse" | "unknown-executed" | "unknown-lost" | "partial";
+
+/** A batch the relayer took; its effect on the balances lands when it is confirmed (or failed, for a partial one). */
+export type FakeBatch = {
+    id: string;
+    kind: "wrap" | "unwrap-and-burn";
+    amountE6: bigint;
+    maxFeeE6: bigint | null;
+    recipient: Address | null;
+    /** The unwrap runs and the burn does not. */
+    partial: boolean;
+    hash: Hex;
+    state: RelayerTransaction["state"];
+};
+
+const POOL_WALLET: Address = "0x1111111111111111111111111111111111111111";
 
 const REJECTS = {
     price_moved: "price moved",
@@ -41,7 +61,7 @@ export class FakeTrader implements PoolTrader {
     #failSign = new Set<string>();
     #fills = new Map<string, Fill>();
     #lookups = new Map<string, LookupResult>();
-    #transactions = new Map<string, Transaction>();
+    #transactions = new Map<string, RelayerTransaction>();
     #failRedeem = false;
     #failCheck = false;
     #hangRedeem = false;
@@ -54,6 +74,16 @@ export class FakeTrader implements PoolTrader {
     findFills: string[] = [];
     /** The order hashes lookup was asked about, in order. */
     lookups: string[] = [];
+    /** The wrap and unwrap-and-burn batches the relayer took, in order. */
+    batches: FakeBatch[] = [];
+    /** The pool wallet's burns on TokenMessengerV2, in order; burnEvents ignores its `since`. */
+    burns: { txHash: Hex; amountE6: bigint }[] = [];
+    #usdc = 0n;
+    #nextBatch: BatchMode = "submit";
+    #lagging = false;
+    #shown = 0n;
+    #hashes = 0;
+    #derived = { configured: POOL_WALLET, derived: POOL_WALLET, hasCode: true };
 
     constructor(o: {
         bookOf: (tokenId: string) => Book;
@@ -75,6 +105,41 @@ export class FakeTrader implements PoolTrader {
 
     setBalance(e6: bigint): void {
         this.#balance = e6;
+    }
+
+    /** Sets the native USDC the pool's deposit wallet holds. */
+    setUsdc(e6: bigint): void {
+        this.#usdc = e6;
+    }
+
+    /** Sets how the next wrap or unwrap-and-burn comes out; it lasts one call. */
+    onNextBatch(mode: BatchMode): void {
+        this.#nextBatch = mode;
+    }
+
+    /** Confirms a batch and applies it: a wrap moves native USDC into pUSD, an unwrap-and-burn lowers pUSD and records a burn. */
+    confirmBatch(id: string): void {
+        const batch = this.#pendingBatch(id);
+        this.#apply(batch);
+        batch.state = "confirmed";
+    }
+
+    /** Fails a batch; only a partial one still ran its unwrap. */
+    failBatch(id: string): void {
+        const batch = this.#pendingBatch(id);
+        if (batch.partial) this.#apply(batch);
+        batch.state = "failed";
+    }
+
+    /** While on, balanceE6 shows the figure of the last syncBalance, as a CLOB that hasn't re-read the wallet does. */
+    lagBalance(on: boolean): void {
+        this.#lagging = on;
+        this.#shown = this.#balance;
+    }
+
+    /** Replaces what derivedWallet answers, field by field. */
+    setDerived(o: Partial<{ configured: Address; derived: Address; hasCode: boolean }>): void {
+        this.#derived = { ...this.#derived, ...o };
     }
 
     onNext(tokenId: string, behavior: Behavior): void {
@@ -143,11 +208,15 @@ export class FakeTrader implements PoolTrader {
     }
 
     confirm(transactionId: string): void {
-        this.#transactions.set(transactionId, "confirmed");
+        this.#transactions.set(transactionId, { state: "confirmed", hash: this.#nextHash(), errorMsg: null });
     }
 
     failTransaction(transactionId: string): void {
-        this.#transactions.set(transactionId, "failed");
+        this.#transactions.set(transactionId, {
+            state: "failed",
+            hash: null,
+            errorMsg: "the relayer failed the transaction",
+        });
     }
 
     /** Replaces what the pool holds, which otherwise follows its own fills. */
@@ -223,7 +292,39 @@ export class FakeTrader implements PoolTrader {
     }
 
     async balanceE6(): Promise<bigint> {
-        return this.#balance;
+        return this.#lagging ? this.#shown : this.#balance;
+    }
+
+    async usdcBalanceE6(): Promise<bigint> {
+        return this.#usdc;
+    }
+
+    async syncBalance(): Promise<void> {
+        this.#shown = this.#balance;
+    }
+
+    async wrapUsdc(amountE6: bigint): Promise<BatchSubmit> {
+        return this.#submit({ kind: "wrap", amountE6, maxFeeE6: null, recipient: null });
+    }
+
+    async unwrapAndBurn(o: { amountE6: bigint; maxFeeE6: bigint; recipient: Address }): Promise<BatchSubmit> {
+        return this.#submit({
+            kind: "unwrap-and-burn",
+            amountE6: o.amountE6,
+            maxFeeE6: o.maxFeeE6,
+            recipient: o.recipient,
+        });
+    }
+
+    burnEvents: PoolTrader["burnEvents"] = async () => this.burns.map((burn) => ({ ...burn }));
+
+    async burnLog(transactionHash: Hex): Promise<{ amountE6: bigint } | null> {
+        const burn = this.burns.find((b) => b.txHash.toLowerCase() === transactionHash.toLowerCase());
+        return burn ? { amountE6: burn.amountE6 } : null;
+    }
+
+    async derivedWallet(): Promise<{ configured: Address; derived: Address; hasCode: boolean }> {
+        return { ...this.#derived };
     }
 
     async redeem(conditionId: string): Promise<{ transactionId: string }> {
@@ -237,19 +338,69 @@ export class FakeTrader implements PoolTrader {
         }
         this.redeems.push(conditionId);
         const transactionId = `tx-${this.redeems.length}-${conditionId}`;
-        this.#transactions.set(transactionId, "pending");
+        this.#transactions.set(transactionId, { state: "pending", hash: null, errorMsg: null });
         return { transactionId };
     }
 
-    async transaction(transactionId: string): Promise<Transaction> {
+    async transaction(transactionId: string): Promise<RelayerTransaction> {
         if (this.#failCheck) throw new Error("the relayer is unreachable");
-        return this.#transactions.get(transactionId) ?? "pending";
+        const batch = this.batches.find((b) => b.id === transactionId);
+        if (batch) {
+            if (batch.state === "confirmed") return { state: "confirmed", hash: batch.hash, errorMsg: null };
+            if (batch.state === "failed") {
+                return { state: "failed", hash: null, errorMsg: "the relayer failed the batch" };
+            }
+            return { state: "pending", hash: null, errorMsg: null };
+        }
+        return this.#transactions.get(transactionId) ?? { state: "pending", hash: null, errorMsg: null };
     }
 
     async holdings(): Promise<{ tokenId: string; sharesE6: bigint }[]> {
         return [...this.#holdings]
             .filter(([, sharesE6]) => sharesE6 > 0n)
             .map(([tokenId, sharesE6]) => ({ tokenId, sharesE6 }));
+    }
+
+    #nextHash(): Hex {
+        this.#hashes += 1;
+        return toHex(this.#hashes, { size: 32 });
+    }
+
+    #submit(batch: Pick<FakeBatch, "kind" | "amountE6" | "maxFeeE6" | "recipient">): BatchSubmit {
+        const mode = this.#nextBatch;
+        this.#nextBatch = "submit";
+        if (mode === "refuse") return { kind: "refused", message: "the relayer refused the batch" };
+        if (mode === "unknown-lost") return { kind: "unknown" };
+        const id = `batch-${this.batches.length + 1}`;
+        this.batches.push({
+            ...batch,
+            id,
+            partial: mode === "partial" && batch.kind === "unwrap-and-burn",
+            hash: this.#nextHash(),
+            state: "pending",
+        });
+        return mode === "unknown-executed" ? { kind: "unknown" } : { kind: "submitted", transactionId: id };
+    }
+
+    #pendingBatch(id: string): FakeBatch {
+        const batch = this.batches.find((b) => b.id === id);
+        if (!batch) throw new Error(`no batch ${id}`);
+        if (batch.state !== "pending") throw new Error(`batch ${id} is already ${batch.state}`);
+        return batch;
+    }
+
+    #apply(batch: FakeBatch): void {
+        if (batch.kind === "wrap") {
+            if (this.#usdc < batch.amountE6) throw new Error("the wallet holds too little native USDC to wrap");
+            this.#usdc -= batch.amountE6;
+            this.#balance += batch.amountE6;
+            return;
+        }
+        if (this.#balance < batch.amountE6) throw new Error("the pool holds too little pUSD to unwrap");
+        this.#balance -= batch.amountE6;
+        // The unwrap pays native USDC into the wallet and the burn takes it out again
+        if (batch.partial) this.#usdc += batch.amountE6;
+        else this.burns.push({ txHash: batch.hash, amountE6: batch.amountE6 });
     }
 
     #hold(fill: Fill): void {

@@ -6,7 +6,9 @@ import {
     OrderSide,
     OrderType,
     PositionStatus,
+    RateLimitError,
     RequestRejectedError,
+    UserInputError,
     type OrderResponse,
     type SignedOrder,
     type Signer,
@@ -16,16 +18,29 @@ import {
     fetchMarketInfo,
     fetchTransaction,
     listAccountTrades,
+    prepareGaslessTransaction,
     resolveConditionByToken,
+    updateBalanceAllowance,
 } from "@polymarket/client/actions";
 import { builderApiKey } from "@polymarket/client/node";
 import { signerFrom } from "@polymarket/client/viem";
 import type { Logger } from "pino";
-import { createWalletClient, hashTypedData, http, type Hex } from "viem";
+import { createPublicClient, createWalletClient, hashTypedData, http, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
 import type { Config } from "../config.ts";
-import type { Book, FoundFill, LookupResult, MarketMeta, PoolTrader, PostResult, SignedRecord } from "./trader.ts";
+import { createPolygonReader, type PolygonReader } from "./polygon-reader.ts";
+import { unwrapAndBurnCalls, wrapCalls, type Call } from "./pool-moves.ts";
+import type {
+    BatchSubmit,
+    Book,
+    FoundFill,
+    LookupResult,
+    MarketMeta,
+    PoolTrader,
+    PostResult,
+    SignedRecord,
+} from "./trader.ts";
 
 type TraderConfig = Pick<
     Config,
@@ -85,6 +100,9 @@ function e6ToCents(value: bigint): string {
     return `${cents / 100n}.${(cents % 100n).toString().padStart(2, "0")}`;
 }
 
+/** How long after a batch call began the owner key may still sign it, so a signed batch's 600 s deadline ends inside the caller's 11-minute window. */
+const SIGN_WINDOW_MS = 30_000;
+
 const priceText = (price: number) => String(Number(price.toFixed(4)));
 
 const REJECT_TEXTS: [RegExp, Extract<PostResult, { kind: "rejected" }>["reason"]][] = [
@@ -109,16 +127,24 @@ const CODE_REASONS = {
     insufficient_balance_or_allowance: "unavailable",
 } as const;
 
-/** The SDK client for the pool's deposit wallet; creating it deploys the wallet when it doesn't exist yet. */
-export async function createPolymarketClient(config: TraderConfig, captures = new AsyncLocalStorage<Capture>()) {
+/** The pool owner key as an SDK signer; the batch driver and the client sign with the same key. */
+export function createPoolSigner(config: TraderConfig, captures: AsyncLocalStorage<Capture>): Signer {
     const account = privateKeyToAccount(config.POLYMARKET_POOL_KEY as Hex);
-    const signer = hashingSigner(
+    return hashingSigner(
         signerFrom(createWalletClient({ account, chain: polygon, transport: http(config.POLYGON_RPC_URL) })),
         captures,
     );
+}
+
+/** The SDK client for the pool's deposit wallet; creating it deploys the wallet when it doesn't exist yet. */
+export async function createPolymarketClient(
+    config: TraderConfig,
+    captures = new AsyncLocalStorage<Capture>(),
+    options: { ignorePinnedWallet?: boolean } = {},
+) {
     return createSecureClient({
-        signer,
-        wallet: config.POLYMARKET_DEPOSIT_WALLET,
+        signer: createPoolSigner(config, captures),
+        ...(options.ignorePinnedWallet ? {} : { wallet: config.POLYMARKET_DEPOSIT_WALLET }),
         apiKey: builderApiKey({
             key: config.POLYMARKET_BUILDER_API_KEY!,
             secret: config.POLYMARKET_BUILDER_API_SECRET!,
@@ -139,10 +165,16 @@ export async function createPolymarketClient(config: TraderConfig, captures = ne
 export async function createPolymarketTrader(
     config: TraderConfig,
     logger: Logger,
+    options: { polygon?: PolygonReader } = {},
 ): Promise<PoolTrader & { wallet: string }> {
     const captures = new AsyncLocalStorage<Capture>();
     const client = await createPolymarketClient(config, captures);
     const builderCode = config.POLYMARKET_BUILDER_CODE;
+    const wallet = client.account.wallet as Address;
+    const owner = createPoolSigner(config, captures);
+    const polygonReader =
+        options.polygon ??
+        createPolygonReader(createPublicClient({ chain: polygon, transport: http(config.POLYGON_RPC_URL) }));
 
     const sign = async (request: Parameters<typeof client.createMarketOrder>[0]): Promise<SignedRecord> => {
         const capture: Capture = {};
@@ -190,8 +222,53 @@ export async function createPolymarketTrader(
         return shares === matchedE6 ? dollars : null;
     };
 
+    // Drives the SDK's batch workflow with the owner key; a clear refusal sent nothing, any other failure may have
+    const submitBatch = async (build: () => Call[], metadata: string): Promise<BatchSubmit> => {
+        let calls: Call[];
+        try {
+            calls = build();
+        } catch (error) {
+            return { kind: "refused", message: error instanceof Error ? error.message : String(error) };
+        }
+        const began = Date.now();
+        try {
+            const workflow = await prepareGaslessTransaction(client, { calls, metadata });
+            let step = await workflow.next();
+            while (!step.done) {
+                const request = step.value;
+                if (request.kind === "requestAddress") step = await workflow.next(await owner.getAddress());
+                else if (request.kind === "signGaslessTypedData") {
+                    // The SDK signs again after a busy relayer; a late signature would outlive the caller's window
+                    if (Date.now() - began > SIGN_WINDOW_MS)
+                        throw new Error("the relayer stayed busy past the signing window");
+                    step = await workflow.next(await owner.signTypedData(request.payload));
+                } else throw new Error(`the relayer workflow asked for ${request.kind}`);
+            }
+            if (!step.value.transactionId) {
+                logger.warn("the relayer took a pool batch but returned no transaction id");
+                return { kind: "unknown" };
+            }
+            return { kind: "submitted", transactionId: step.value.transactionId };
+        } catch (error) {
+            // A 5xx may have reached the relayer, so only a rejection below it is clearly a refusal
+            const refused =
+                error instanceof RateLimitError ||
+                error instanceof UserInputError ||
+                (error instanceof RequestRejectedError && error.status < 500);
+            if (refused) {
+                logger.warn({ err: error }, "the relayer refused a pool batch");
+                return { kind: "refused", message: error.message };
+            }
+            logger.warn({ err: error }, "submitting a pool batch got no clear answer");
+            return { kind: "unknown" };
+        }
+    };
+
+    // The second client, from the same signer without the pinned wallet, is built once per trader
+    let derived: Promise<Address> | undefined;
+
     return {
-        wallet: client.account.wallet,
+        wallet,
 
         async book(tokenId): Promise<Book> {
             const book = await client.fetchOrderBook({ assetId: tokenId });
@@ -335,9 +412,41 @@ export async function createPolymarketTrader(
 
         async transaction(transactionId) {
             const found = await fetchTransaction(client, { transactionId: transactionId });
-            if (found.state === "STATE_CONFIRMED") return "confirmed";
-            if (found.state === "STATE_FAILED" || found.state === "STATE_INVALID") return "failed";
-            return "pending";
+            const state =
+                found.state === "STATE_CONFIRMED"
+                    ? "confirmed"
+                    : found.state === "STATE_FAILED" || found.state === "STATE_INVALID"
+                      ? "failed"
+                      : "pending";
+            return { state, hash: found.transactionHash || null, errorMsg: found.errorMsg || null };
+        },
+
+        usdcBalanceE6: () => polygonReader.usdcBalanceE6(wallet),
+
+        async syncBalance() {
+            await updateBalanceAllowance(client, { assetType: AssetType.COLLATERAL });
+        },
+
+        wrapUsdc: (amountE6) => submitBatch(() => wrapCalls({ amountE6, wallet }), "Wrap native USDC into pUSD"),
+
+        unwrapAndBurn: (o) => submitBatch(() => unwrapAndBurnCalls({ ...o, wallet }), "Unwrap pUSD and burn to Arc"),
+
+        burnEvents: ({ since }) => polygonReader.burnEvents({ wallet, since, now: new Date() }),
+
+        burnLog: (hash) => polygonReader.burnLog({ wallet, hash }),
+
+        async derivedWallet() {
+            const second = (derived ??= createPolymarketClient(config, new AsyncLocalStorage<Capture>(), {
+                ignorePinnedWallet: true,
+            }).then((other) => other.account.wallet as Address));
+            let address: Address;
+            try {
+                address = await second;
+            } catch (error) {
+                if (derived === second) derived = undefined;
+                throw error;
+            }
+            return { configured: wallet, derived: address, hasCode: await polygonReader.hasCode(address) };
         },
 
         async holdings() {

@@ -21,6 +21,9 @@ export type RelayerState =
 
 export type NextPost = { json: Json } | { status: number; body: Json } | "hold";
 
+/** One call of a submitted deposit-wallet batch, as the relayer receives it. */
+export type SubmittedCall = { target: string; data: string; value: string };
+
 export type FakeClob = {
     /** The CLOB root, which is also the relayer, data and RPC root (they live under their own paths). */
     url: string;
@@ -40,8 +43,12 @@ export type FakeClob = {
     tradeQueries: string[];
     /** Answers the next POST /order; "hold" never answers. */
     nextPost(response: NextPost): void;
-    /** Every relayer transaction submitted, in order. */
-    submitted: { id: string; body: Json }[];
+    /** Every relayer transaction the fake accepted, in order, with the calls of its deposit-wallet batch. */
+    submitted: { id: string; body: Json; calls: SubmittedCall[] }[];
+    /** Answers the next POST /submit with this status and body instead of accepting it, or never answers it ("hold"); such a submit is not in `submitted`. */
+    nextSubmit(response: { status: number; body: Json } | "hold"): void;
+    /** Resolves when the next POST /submit arrives. */
+    submitArrived(): Promise<void>;
     setTransactionState(id: string, state: RelayerState): void;
     /** The rows GET /v2/positions serves, filtered by its status parameter. */
     setPositions(rows: FakePosition[]): void;
@@ -101,13 +108,15 @@ export async function startFakeClob(): Promise<FakeClob> {
     let tradesStatus: number | null = null;
     const requests: string[] = [];
     const posted: Json[] = [];
-    const submitted: { id: string; body: Json }[] = [];
+    const submitted: { id: string; body: Json; calls: SubmittedCall[] }[] = [];
     const states = new Map<string, RelayerState>();
     let positions: FakePosition[] = [];
     let positionsPage = 100;
     let tradesPage = Infinity;
     let balance = 0n;
     let next: NextPost | undefined;
+    let nextSubmitAnswer: { status: number; body: Json } | "hold" | undefined;
+    let submitSeen: (() => void) | undefined;
     let arrived: (() => void) | undefined;
 
     const send = (response: ServerResponse, status: number, body: unknown) => {
@@ -135,8 +144,15 @@ export async function startFakeClob(): Promise<FakeClob> {
             return send(response, 200, { address: url.searchParams.get("address"), nonce: "0" });
         }
         if (path === "/submit" && request.method === "POST") {
+            const answer = nextSubmitAnswer;
+            nextSubmitAnswer = undefined;
+            submitSeen?.();
+            submitSeen = undefined;
+            if (answer === "hold") return;
+            if (answer) return send(response, answer.status, answer.body);
             const id = randomUUID();
-            submitted.push({ id, body: JSON.parse(body) as Json });
+            const parsed = JSON.parse(body) as { depositWalletParams?: { calls?: SubmittedCall[] } };
+            submitted.push({ id, body: parsed, calls: parsed.depositWalletParams?.calls ?? [] });
             states.set(id, "STATE_NEW");
             return send(response, 200, { transactionID: id, state: "STATE_NEW", transactionHash: null });
         }
@@ -282,6 +298,8 @@ export async function startFakeClob(): Promise<FakeClob> {
         requests,
         posted,
         submitted,
+        nextSubmit: (response) => void (nextSubmitAnswer = response),
+        submitArrived: () => new Promise<void>((resolve) => (submitSeen = resolve)),
         setTransactionState: (id, state) => void states.set(id, state),
         setPositions: (rows) => void (positions = rows),
         setPositionsPageSize: (size) => void (positionsPage = size),

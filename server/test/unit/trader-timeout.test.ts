@@ -15,6 +15,13 @@ const stuck = {
     redeem: () => hung,
     transaction: () => hung,
     holdings: () => hung,
+    usdcBalanceE6: () => hung,
+    syncBalance: () => hung,
+    wrapUsdc: () => hung,
+    unwrapAndBurn: () => hung,
+    burnEvents: () => hung,
+    burnLog: () => hung,
+    derivedWallet: () => hung,
 } as PoolTrader;
 
 test("a hung read rejects once the time is up", async () => {
@@ -38,7 +45,38 @@ test("a hung post is unknown, so the order stays posted", async () => {
     expect(await trader.post({ orderHash: "0x1", signed: {} })).toEqual({ kind: "unknown" });
 });
 
+test("a hung wrap and a hung unwrapAndBurn are unknown", async () => {
+    const trader = withTimeouts(stuck, 20);
+    expect(await trader.wrapUsdc(5_000_000n)).toEqual({ kind: "unknown" });
+    expect(
+        await trader.unwrapAndBurn({
+            amountE6: 5_000_000n,
+            maxFeeE6: 100_000n,
+            recipient: "0x000000000000000000000000000000000000b0b0",
+        }),
+    ).toEqual({ kind: "unknown" });
+});
+
+test("a wrap that fails outright is not turned into unknown", async () => {
+    const trader = withTimeouts({ ...stuck, wrapUsdc: () => Promise.reject(new Error("bad batch")) }, 20);
+    await expect(trader.wrapUsdc(5_000_000n)).rejects.toThrow("bad batch");
+});
+
+test("hung usdcBalanceE6, syncBalance, burnEvents, burnLog and derivedWallet reject as timed out", async () => {
+    const trader = withTimeouts(stuck, 20);
+    await expect(trader.usdcBalanceE6()).rejects.toThrow(/timed out/);
+    await expect(trader.syncBalance()).rejects.toThrow(/timed out/);
+    await expect(trader.burnEvents({ since: new Date() })).rejects.toThrow(/timed out/);
+    await expect(trader.burnLog(`0x${"ab".repeat(32)}`)).rejects.toThrow(/timed out/);
+    await expect(trader.derivedWallet()).rejects.toThrow(/timed out/);
+});
+
 test("a prompt answer passes through", async () => {
     const trader = withTimeouts({ ...stuck, balanceE6: async () => 5n }, 20);
     expect(await trader.balanceE6()).toBe(5n);
+});
+
+test("a prompt batch answer passes through", async () => {
+    const trader = withTimeouts({ ...stuck, wrapUsdc: async () => ({ kind: "submitted", transactionId: "t1" }) }, 20);
+    expect(await trader.wrapUsdc(5_000_000n)).toEqual({ kind: "submitted", transactionId: "t1" });
 });
