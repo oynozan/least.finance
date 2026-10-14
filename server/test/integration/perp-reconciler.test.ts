@@ -99,6 +99,54 @@ test("a stuck balance over $1 on an idle address is swept to the master and not 
     expect(h.lines.some((line) => line.level === 40 && /swept/i.test(line.msg))).toBe(true);
 });
 
+test("an order placed after the snapshot keeps its address from being swept", async () => {
+    const h = await fresh();
+    const stuck = await idleAddress(h, "5", 77);
+    const client = {
+        usdSend: h.client.usdSend.bind(h.client),
+        state: async (address: string) => {
+            const state = await h.client.state(address as never);
+            if (address === stuck) {
+                const now = new Date();
+                await h.database.collections.perpOrders.insertOne({
+                    _id: new ObjectId(),
+                    accountId: new ObjectId(),
+                    requestId: randomUUID(),
+                    kind: "open",
+                    index: 77,
+                    asset: "BTC",
+                    side: "long",
+                    leverage: 5,
+                    collateral: toDecimal(0n),
+                    notionalE6: toDecimal(0n),
+                    sizeCoin: "0",
+                    cloid: "0x" + "0".repeat(32),
+                    limitPx: "0",
+                    state: "funding",
+                    steps: {},
+                    fill: null,
+                    credited: null,
+                    reason: null,
+                    createdAt: now,
+                    updatedAt: now,
+                });
+            }
+            return state;
+        },
+    };
+    const report = await new PerpReconciler({
+        collections: h.database.collections,
+        client,
+        keyring: h.keyring,
+        logger: pino({ level: "silent" }),
+        config: { PERPS_RECONCILE_TOLERANCE_USD: 5, PERPS_FEE_BPS: h.config.PERPS_FEE_BPS },
+        arcAssets: async () => wei("100000"),
+    }).run();
+
+    expect(report.swept).toBe(0);
+    expect(h.fake.account(stuck)!.freeE6).toBe(e6("5"));
+});
+
 test("our fee left on a closed address is retained, not swept and not owed", async () => {
     const h = await fresh({ feeBps: 100 });
     const { account, position } = await heldPosition(h);

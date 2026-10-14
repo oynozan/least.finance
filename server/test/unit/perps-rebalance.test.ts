@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { expect, test } from "vitest";
 import { requireTestnet } from "../../scripts/live-check-guards.ts";
-import { buildHookData, planRebalance } from "../../scripts/perps-rebalance.ts";
+import { buildHookData, planRebalance, recordIfMined } from "../../scripts/perps-rebalance.ts";
 
 test("planRebalance refuses to leave the treasury below the withdrawal need", () => {
     const base = { direction: "arc-to-hl" as const, amountE6: 100_000_000n };
@@ -45,4 +45,13 @@ test("the script refuses a mainnet URL for perps-check", () => {
     });
     expect(run.status).not.toBe(0);
     expect(run.stderr).toMatch(/testnet/i);
+});
+
+test("a reverted burn is not recorded as in flight", async () => {
+    const rows: string[] = [];
+    const record = async () => void rows.push("sent");
+    expect(await recordIfMined("reverted", record)).toBe(false);
+    expect(rows).toEqual([]);
+    expect(await recordIfMined("success", record)).toBe(true);
+    expect(rows).toEqual(["sent"]);
 });

@@ -80,6 +80,13 @@ const BURN_ABI = parseAbi([
     "function depositForBurnWithHook(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold, bytes hookData)",
 ]);
 
+/** Runs `record` only for a mined burn, so a reverted one never counts as money in flight. */
+export async function recordIfMined(status: string, record: () => Promise<void>): Promise<boolean> {
+    if (status !== "success") return false;
+    await record();
+    return true;
+}
+
 const dollars = (e6: bigint) => `$${formatUnits(e6, 6)}`;
 
 async function main() {
@@ -181,13 +188,9 @@ async function main() {
             );
             const hash = await arc.sendRawTransaction({ serializedTransaction: burn });
             console.log(`Burn sent: ${hash}`);
-            await record("arc_to_hl", hash);
             const receipt = await arc.waitForTransactionReceipt({ hash });
-            console.log(
-                receipt.status === "success"
-                    ? "Mined; the float shows it once Circle forwards it."
-                    : "The burn reverted.",
-            );
+            const mined = await recordIfMined(receipt.status, () => record("arc_to_hl", hash));
+            console.log(mined ? "Mined; the float shows it once Circle forwards it." : "The burn reverted.");
         }
 
         async function hlToArc() {

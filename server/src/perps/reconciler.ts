@@ -92,6 +92,16 @@ export class PerpReconciler {
         return loop ?? Promise.resolve();
     }
 
+    /** Whether an order or a position of the index exists now, read fresh so a trade begun since the snapshot isn't swept. */
+    async #busy(index: number): Promise<boolean> {
+        const { perpOrders, perpPositions } = this.#deps.collections;
+        const [order, position] = await Promise.all([
+            perpOrders.findOne({ index, state: { $in: ["placing", "funding", "posted", "sweeping"] } }),
+            perpPositions.findOne({ index, active: true }),
+        ]);
+        return order !== null || position !== null;
+    }
+
     async run(): Promise<ReconcileReport> {
         const { collections, client, keyring, logger, config } = this.#deps;
         const { perpAccounts, perpPositions, perpOrders, perpRebalances, accounts, perpFloat } = collections;
@@ -147,6 +157,7 @@ export class PerpReconciler {
             if (!state || holding.has(person.index) || moving.has(person.index) || state.positions.length > 0) continue;
             const stuck = state.withdrawableE6 - (keptBy.get(person.index) ?? 0n);
             if (stuck <= STUCK_E6) continue;
+            if (await this.#busy(person.index)) continue;
             try {
                 const sent = await client.usdSend(
                     keyring.perpSignerAt(person.index),
