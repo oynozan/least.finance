@@ -129,6 +129,13 @@ const MAX_RETRY_MS = 30_000;
 
 const SWAPS_UNAVAILABLE = "Swaps aren't available right now.";
 const MAX_SWAPS = 50;
+
+/** The list with the order put in at the top, or in place of its earlier copy. */
+const withSwap = (swaps: SwapOrderView[], order: SwapOrderView) =>
+    swaps.some((o) => o.id === order.id)
+        ? swaps.map((o) => (o.id === order.id ? order : o))
+        : [order, ...swaps].slice(0, MAX_SWAPS);
+
 const REJECTED_WORDING = /reject|declin|denied|cancel/i;
 /** Lamports a Solana wallet needs to pay the network fee (about 0.00001 SOL is quoted). */
 const MIN_FEE_LAMPORTS = BigInt(10_000);
@@ -846,7 +853,8 @@ export class AccountClient {
     /**
      * Opens a swap order and has the wallet sign its transactions one by one, each once the one
      * before has landed. After the last, the paid amount leaves the shown holdings and the hashes
-     * are reported; they are kept until the server acknowledges them.
+     * are reported; they are kept until the server acknowledges them. The order is listed only
+     * once the wallet has sent it: one whose prompt was turned down never started.
      */
     async placeSwap(req: SwapRequest & { reviewedMin: string }, signer: SwapSigner): Promise<SwapResult> {
         const socket = this.#socket;
@@ -862,7 +870,6 @@ export class AccountClient {
         if (!opened.ok) return { status: "failed", message: opened.error.message };
         const { order, txs } = opened.data;
         if (this.#socket !== socket) return { status: "failed", message: SWAPS_UNAVAILABLE };
-        this.#swapUpdated(order);
 
         const hashes: string[] = [];
         try {
@@ -886,6 +893,8 @@ export class AccountClient {
 
         keepUnreported(userId, { orderId: order.id, txHashes: hashes });
         if (this.#socket === socket) {
+            // On its way as soon as the wallet sent it; the server's answer to the report replaces this.
+            this.#showSwap({ ...order, state: "sent", txHashes: hashes, updatedAt: new Date().toISOString() });
             this.#tracking = trackOrder(this.#tracking, order.id, {
                 paid: {
                     wallet: req.wallet,
@@ -974,13 +983,15 @@ export class AccountClient {
         );
     }
 
+    /** Puts an order into the list, or replaces it there, and nothing else. */
+    #showSwap(order: SwapOrderView) {
+        this.#snapshot = { ...this.#snapshot, swaps: withSwap(this.#snapshot.swaps, order) };
+        this.#emit();
+    }
+
     /** Puts an order into the list and settles the holdings rows this client changed for it. */
     #swapUpdated(order: SwapOrderView) {
-        const { swaps } = this.#snapshot;
-        const next = swaps.some((o) => o.id === order.id)
-            ? swaps.map((o) => (o.id === order.id ? order : o))
-            : [order, ...swaps].slice(0, MAX_SWAPS);
-        this.#snapshot = { ...this.#snapshot, swaps: next };
+        this.#snapshot = { ...this.#snapshot, swaps: withSwap(this.#snapshot.swaps, order) };
         const { swapHoldings } = this.#snapshot;
         if (swapHoldings && this.#tracking[order.id]) {
             const settled = settleHoldings(swapHoldings, this.#tracking, order);

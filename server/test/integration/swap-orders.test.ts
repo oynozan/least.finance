@@ -197,7 +197,9 @@ describe("opening orders", () => {
         });
         const stored = await orders().findOne({ _id: new ObjectId(opened_.id) });
         expect(stored).toMatchObject({ state: "created", tool: "fakebridge" });
-        await expect.poll(() => updates.map((update) => update.id)).toEqual([opened_.id]);
+        // Nobody is told of it until the wallet has sent it
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(updates).toEqual([]);
     });
 
     test("enough allowance means only the swap", async () => {
@@ -366,19 +368,37 @@ describe("reporting sent", () => {
         expect(first).toMatchObject({ ok: true, data: { id: made.id, state: "sent", txHashes: [HASH(1), HASH(2)] } });
         const again = await sent(socket, made.id, [HASH(1), HASH(2)]);
         expect(again).toEqual(first);
-        await expect.poll(() => updates.map((update) => update.state)).toEqual(["created", "sent"]);
+        await expect.poll(() => updates.map((update) => update.state)).toEqual(["sent"]);
         await new Promise((resolve) => setTimeout(resolve, 100));
-        expect(updates).toHaveLength(2);
+        expect(updates).toHaveLength(1);
     });
 
-    test("an expired order with no hashes is taken", async () => {
+    test("an expired order with no hashes is taken, and shown from then on", async () => {
         const user = await holder();
-        const { socket } = await bind(user);
+        const { socket, updates } = await bind(user);
         const { order: made } = await opened(socket, request(user));
         await orders().updateOne({ _id: new ObjectId(made.id) }, { $set: { state: "expired" } });
 
         const result = await sent(socket, made.id, [HASH(3)]);
         expect(result).toMatchObject({ ok: true, data: { state: "sent", txHashes: [HASH(3)] } });
+        await expect.poll(() => updates.map((update) => update.state)).toEqual(["sent"]);
+    });
+
+    test("an order the wallet never sent is shown nowhere, even once it expires", async () => {
+        const user = await holder();
+        const { socket, updates } = await bind(user);
+        const { order: made } = await opened(socket, request(user));
+        const expired = await orders().findOneAndUpdate(
+            { _id: new ObjectId(made.id) },
+            { $set: { state: "expired", updatedAt: new Date() } },
+            { returnDocument: "after" },
+        );
+        // As the tracker does when it expires it
+        stack.server.services.bus.emit("swap:updated", { order: expired! });
+
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(updates).toEqual([]);
+        expect((await bind(user)).swaps[0]).toEqual([]);
     });
 
     test("another account's order is not found", async () => {
@@ -391,10 +411,15 @@ describe("reporting sent", () => {
 });
 
 describe("at sign-in", () => {
-    test("swaps are pushed at sign-in", async () => {
+    test("swaps the wallet sent are pushed at sign-in", async () => {
         const user = await holder();
         const first = await bind(user);
-        const { order: open } = await opened(first.socket, request(user));
+        const { order: unsent } = await opened(first.socket, request(user));
+        const { order: open } = await opened(first.socket, request(user, { amountUSD: "50" }));
+        const reported = await first.socket
+            .timeout(5000)
+            .emitWithAck("swap:sent", { orderId: open.id, txHashes: [`0x${"5".repeat(64)}`] });
+        expect(reported).toMatchObject({ ok: true });
 
         const day = 86_400_000;
         const settled = async (state: string, ageDays: number) => {
@@ -412,7 +437,9 @@ describe("at sign-in", () => {
         await settled("done", 8);
 
         const second = await bind(user);
+        // The order still waiting for the wallet is left out
         expect(second.swaps[0]!.map((view) => view.id)).toEqual([open.id, recent]);
+        expect(second.swaps[0]!.map((view) => view.id)).not.toContain(unsent.id);
     });
 });
 

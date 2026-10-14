@@ -14,6 +14,19 @@ import { connect, ethToUsdc, openReview, pickCoin, picker, reviewPanel, setAmoun
 
 const confirmButton = (page: Page) => reviewPanel(page).getByRole("button", { name: "Confirm swap" });
 const sends = async (page: Page) => (await walletRequests(page)).filter((r) => r.method === "eth_sendTransaction");
+const activity = (page: Page) => page.getByRole("region", { name: "Activity" });
+
+/** A swap the wallet never sent never started: PnL lists nothing, as kept in the page and as the server reads it again. */
+async function expectNoSwapListed(page: Page) {
+    await page.getByRole("navigation", { name: "Pages" }).getByRole("link", { name: "PnL", exact: true }).click();
+    await expect(page).toHaveURL(/\/pnl$/);
+    await expect(activity(page)).toContainText("Nothing here yet");
+    await page.reload();
+    await expect(activity(page)).toContainText("Nothing here yet", { timeout: 10_000 });
+    // The swaps arrive a moment after the account; give them time to show if they were going to
+    await page.waitForTimeout(1500);
+    await expect(activity(page).locator("tbody tr")).toHaveCount(0);
+}
 
 test.beforeEach(async ({ page }) => {
     await mockPrivy(page);
@@ -96,6 +109,8 @@ test("rejecting in the wallet changes nothing", async ({ page }) => {
     await trade(page).locator('[data-part="swap:fromToken"]').getByRole("button").click();
     await picker(page).getByRole("option", { name: "ETH", exact: true }).click();
     await expect(picker(page).getByRole("option").filter({ hasText: "Ethereum" }).first()).toContainText("1 ETH");
+    await page.keyboard.press("Escape");
+    await expectNoSwapListed(page);
 });
 
 test("an approval that lands, then a rejected swap, spends no balance", async ({ page }) => {
@@ -115,6 +130,9 @@ test("an approval that lands, then a rejected swap, spends no balance", async ({
     await trade(page).locator('[data-part="swap:fromToken"]').getByRole("button").click();
     await picker(page).getByRole("option", { name: "USDC", exact: true }).click();
     await expect(picker(page).getByRole("option").filter({ hasText: "Ethereum" }).first()).toContainText("100 USDC");
+    // The approval landed, but the swap itself was never sent
+    await page.keyboard.press("Escape");
+    await expectNoSwapListed(page);
 });
 
 test("no route says so", async ({ page }) => {

@@ -481,6 +481,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     });
 
     bus.on("swap:updated", ({ order }) => {
+        // An order the wallet never sent never started: opening or expiring it tells nobody
+        if (order.txHashes.length === 0) return;
         enqueue(order.accountId.toHexString(), async () => {
             try {
                 const room = roomOf(order.accountId);

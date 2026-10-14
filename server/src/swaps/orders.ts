@@ -192,11 +192,18 @@ export class SwapOrders {
         return order;
     }
 
-    /** The open orders and those settled in the last 7 days, newest first. */
+    /**
+     * The orders the wallet sent that are still open or settled in the last 7 days, newest first. One
+     * the wallet never sent (its prompt turned down) never started, so it isn't listed.
+     */
     recent(accountId: ObjectId): Promise<SwapOrderDoc[]> {
         const since = new Date(this.#now() - RECENT_MS);
         return this.#deps.collections.swapOrders
-            .find({ accountId, $or: [{ state: { $in: ["created", "sent"] } }, { updatedAt: { $gte: since } }] })
+            .find({
+                accountId,
+                "txHashes.0": { $exists: true },
+                $or: [{ state: "sent" }, { updatedAt: { $gte: since } }],
+            })
             .sort({ createdAt: -1, _id: -1 })
             .limit(RECENT_LIMIT)
             .toArray();
