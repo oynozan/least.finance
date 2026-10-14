@@ -33,6 +33,8 @@ export type Quote = {
     destinationToken: Address;
     recipient: Address;
     refundTo: string;
+    /** The SOL a Solana wallet needs beyond the deposit, in lamports, and the part of it held as rent. */
+    sol?: { needed: bigint; held: bigint };
     /** In signing order: an approval first. */
     txs: SourceTx[];
 };

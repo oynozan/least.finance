@@ -7,6 +7,7 @@ import { FORWARD_HOOK_DATA } from "../../withdrawals/cctp-burn.ts";
 import { SOLANA_USDC_MINT } from "../../withdrawals/solana-recipient.ts";
 import { toArcWei, type Coin } from "../catalog.ts";
 import type { Iris } from "../iris.ts";
+import type { SolanaRpc } from "../solana.ts";
 import type { BridgeProvider, BridgeStatus, Quote, QuoteRequest } from "./types.ts";
 
 /** The CCTP v2 programs on Solana, from Circle's solana-cctp-contracts. */
@@ -23,6 +24,15 @@ const ETA_SECONDS = 1200;
 
 /** Anchor's instruction discriminator: the first 8 bytes of sha256("global:<name>"). */
 const BURN_DISCRIMINATOR = createHash("sha256").update("global:deposit_for_burn_with_hook").digest().subarray(0, 8);
+export const BURN_DISCRIMINATOR_HEX = BURN_DISCRIMINATOR.toString("hex");
+
+/** The network fee of the burn's two signatures (the wallet and the message account), in lamports. */
+const BURN_FEE_LAMPORTS = 10_000n;
+/** Bytes of a MessageSent account but its message: 8-byte discriminator, rent payer, timestamp and vector length, less the vector's one placeholder byte. */
+const MESSAGE_SENT_OVERHEAD = 52;
+/** Bytes of the CCTP v2 message header and of the burn message before its hook data. */
+const MESSAGE_HEADER_BYTES = 148;
+const BURN_BODY_BYTES = 228;
 
 type Key = { pubkey: string; isSigner: boolean; isWritable: boolean };
 type Logger = { error: (fields: object, message: string) => void };
@@ -86,9 +96,28 @@ function burnData(input: { amount: bigint; arcDomain: number; recipient: Address
 }
 
 /** Solana USDC deposits through CCTP v2: the wallet burns, and Circle's forwarder mints on Arc at the deposit address. */
-export function createCctp(options: { iris: Iris; arcDomain: 26; solanaDomain: 5; logger?: Logger }): BridgeProvider {
-    const { iris, arcDomain, solanaDomain, logger } = options;
+export function createCctp(options: {
+    iris: Iris;
+    rpc: Pick<SolanaRpc, "getMinimumBalanceForRentExemption">;
+    arcDomain: 26;
+    solanaDomain: 5;
+    logger?: Logger;
+}): BridgeProvider {
+    const { iris, rpc, arcDomain, solanaDomain, logger } = options;
     const reported = new Set<string>();
+    // The burn's message account is the same size every time, so its rent is asked of the network once.
+    const messageRent = (bytes: number) => {
+        let rent = rents.get(bytes);
+        if (!rent) {
+            rent = rpc.getMinimumBalanceForRentExemption(bytes).catch((error: unknown) => {
+                rents.delete(bytes);
+                throw error;
+            });
+            rents.set(bytes, rent);
+        }
+        return rent;
+    };
+    const rents = new Map<number, Promise<bigint>>();
 
     return {
         name: "cctp",
@@ -99,6 +128,8 @@ export function createCctp(options: { iris: Iris; arcDomain: 26; solanaDomain: 5
             const { med, high } = await iris.depositFee();
             const maxFee = high / WEI_PER_UNIT;
             if (amount <= maxFee) throw new AppError("bad_request", "That's too small to cover the fee.");
+            const hookBytes = (FORWARD_HOOK_DATA.length - 2) / 2;
+            const held = await messageRent(MESSAGE_SENT_OVERHEAD + MESSAGE_HEADER_BYTES + BURN_BODY_BYTES + hookBytes);
             return {
                 provider: "cctp",
                 ref: `cctp-${randomUUID()}`,
@@ -109,6 +140,7 @@ export function createCctp(options: { iris: Iris; arcDomain: 26; solanaDomain: 5
                 destinationToken: ARC_USDC_ERC20,
                 recipient,
                 refundTo,
+                sol: { needed: held + BURN_FEE_LAMPORTS, held },
                 txs: [
                     {
                         kind: "solana",

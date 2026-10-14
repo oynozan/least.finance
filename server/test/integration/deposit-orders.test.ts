@@ -195,7 +195,12 @@ describe("Solana deposits", () => {
             const [tx] = result.data.txs;
             expect(tx).toMatchObject({
                 kind: "solana",
-                instructions: [{ programId: FAKE_SOLANA_PROGRAM, keys: [{ pubkey: SOLANA, isSigner: true }] }],
+                instructions: [
+                    {
+                        programId: FAKE_SOLANA_PROGRAM,
+                        keys: expect.arrayContaining([expect.objectContaining({ pubkey: SOLANA, isSigner: true })]),
+                    },
+                ],
                 lookupTables: [{ address: table, addresses: entries }],
             });
             expect(result.data.order).toMatchObject({ coin: "solana:USDC", wallet: SOLANA, state: "created" });
@@ -246,6 +251,27 @@ describe("Solana deposits through CCTP", () => {
         });
     });
     afterAll(() => open?.stop());
+
+    test("a CCTP quote states the SOL it needs: the message account's rent plus the network fee", async () => {
+        const user = await open.user();
+        open.privy.setUser(user.userId, [user.wallet, { address: SOLANA, chain: "solana" }]);
+        const socket = await open.socket(user);
+        const opened = (await socket.timeout(5000).emitWithAck("account:open", {})) as Ack<WalletSession>;
+        if (!opened.ok) throw new Error(opened.error.code);
+
+        const relay = vi.spyOn(open.solanaBridge, "quote").mockRejectedValue(new Error("no route"));
+        try {
+            const quote = await socket
+                .timeout(5000)
+                .emitWithAck("deposit:quote", { coin: "solana:USDC", amount: "10", wallet: SOLANA });
+            expect(quote).toMatchObject({
+                ok: true,
+                data: { provider: "cctp", sol: { held: "4092480", needed: "4102480" } },
+            });
+        } finally {
+            relay.mockRestore();
+        }
+    });
 
     test("Relay gives no quote, so a Solana USDC deposit goes through CCTP and is credited once by the watcher", async () => {
         const user = await open.user();

@@ -616,6 +616,13 @@ export class AccountClient {
         if (this.#snapshot.state.status !== "ready" || !socket || !wallet.signer) return "failed";
         if (wallet.solBalance !== null && wallet.solBalance < MIN_FEE_LAMPORTS) return "needs_sol";
         try {
+            // The quote says what the transaction costs in SOL (a CCTP burn also pays rent), so a short wallet is told before an order opens.
+            if (wallet.solBalance !== null) {
+                const quoted = await this.quote(coin, amount, wallet.address);
+                if (this.#socket !== socket) return "failed";
+                if ("code" in quoted) return "failed";
+                if (quoted.sol && wallet.solBalance < BigInt(quoted.sol.needed)) return "needs_sol";
+            }
             const opened = await socket
                 .timeout(CONNECT_TIMEOUT_MS)
                 .emitWithAck("deposit:order", { coin, amount, wallet: wallet.address })

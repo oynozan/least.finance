@@ -250,8 +250,8 @@ test("the Solana fixture parses into one kind: solana transaction with its instr
         DEPOSITORY,
     ]);
     expect(tx.instructions[1]).toMatchObject({
-        keys: [{ pubkey: SOLANA_WALLET, isSigner: true, isWritable: true }, expect.anything()],
-        data: "0xa1b2c3d40000000000000000",
+        keys: expect.arrayContaining([{ pubkey: SOLANA_WALLET, isSigner: true, isWritable: true }]),
+        data: `0x0b9c60da27a3b4138096980000000000${"ab".repeat(32)}`,
     });
     expect(checkQuote(quote, SOLANA_USDC_REQUEST, ALLOWED)).toBe(true);
 });

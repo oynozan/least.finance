@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { motion, useAnimate, useReducedMotion, type Transition } from "motion/react";
+import { previewText } from "@/lib/account/deposit-preview";
 import type { ApiError, DepositQuoteView } from "@/lib/account/state";
 import type { CoinBalance } from "@/server/src/protocol";
 import { NEEDS_SOL, type DepositResult } from "./account-client";
@@ -38,26 +39,6 @@ export function normalizeAmount(text: string) {
     const [whole = "", fraction = ""] = text.split(".");
     if (whole === "" && fraction === "") return null;
     return fraction ? `${whole || "0"}.${fraction}` : whole;
-}
-
-/** "2 s", "3 min". */
-const etaText = (seconds: number) =>
-    seconds < 60 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`;
-
-/** What a quote pays: "≈ $300.00 in about 2 s"; from Solana "You get about 9.97 USDC in about 5 s", with the fee when the amount sent is known in dollars. */
-function previewText(coin: CoinBalance, amount: string | null, payout: DepositQuoteView) {
-    const out = Number(payout.usdcOut);
-    const eta = etaText(payout.etaSeconds);
-    if (coin.chain !== "solana") return `≈ ${formatUsd(out)} in about ${eta}`;
-    const sent =
-        coin.symbol === "USDC"
-            ? Number(amount)
-            : coin.usd !== null && coin.amount !== null && Number(coin.amount) > 0
-              ? (Number(amount) * coin.usd) / Number(coin.amount)
-              : null;
-    const fee = sent === null ? 0 : sent - out;
-    const got = `You get about ${out.toLocaleString("en-US", { maximumFractionDigits: 2 })} USDC in about ${eta}`;
-    return fee >= 0.005 ? `${got} · fee ${formatUsd(fee)}` : got;
 }
 
 type DepositFormProps = {

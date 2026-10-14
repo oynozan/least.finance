@@ -146,8 +146,12 @@ const OTHER_WALLET = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 const DEPOSITORY = "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2";
 const SYSTEM = "11111111111111111111111111111111";
 const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const ATA = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+const COMPUTE_BUDGET = "ComputeBudget111111111111111111111111111111";
 const UNLISTED = "Unlisted1111111111111111111111111111111111";
-const ALLOWED = [DEPOSITORY, SYSTEM, TOKEN, "ComputeBudget111111111111111111111111111111"];
+const ALLOWED = [DEPOSITORY, SYSTEM, TOKEN, ATA, COMPUTE_BUDGET];
+const DEPOSIT_NATIVE = "0d9e0ddf5fd51c06";
+const DEPOSIT_TOKEN = "0b9c60da27a3b413";
 
 const solanaRequest: QuoteRequest = {
     coin: SOL_USDC,
@@ -164,21 +168,53 @@ type Ix = {
     data: `0x${string}`;
 };
 const key = (pubkey: string) => ({ pubkey, isSigner: pubkey === SOLANA_WALLET, isWritable: true });
-const u64 = (n: bigint) => n.toString(16).padStart(16, "0").match(/../g)!.reverse().join("");
-const deposit: Ix = { programId: DEPOSITORY, keys: [key(SOLANA_WALLET)], data: "0xdeadbeef" };
+const le = (n: bigint, bytes: number) =>
+    n
+        .toString(16)
+        .padStart(bytes * 2, "0")
+        .match(/../g)!
+        .reverse()
+        .join("");
+const u64 = (n: bigint) => le(n, 8);
+const ID = "ab".repeat(32);
+
+// Relay's depository deposits, laid out as in relay-depository's lib.rs: discriminator, u64 amount, 32-byte id.
+const depositNative = (sender: string, amount: bigint): Ix => ({
+    programId: DEPOSITORY,
+    keys: [OTHER_WALLET, sender, sender, OTHER_WALLET, SYSTEM].map(key),
+    data: `0x${DEPOSIT_NATIVE}${u64(amount)}${ID}`,
+});
+const depositToken = (sender: string, amount: bigint, mint = SOL_USDC.mint!): Ix => ({
+    programId: DEPOSITORY,
+    keys: [OTHER_WALLET, sender, sender, OTHER_WALLET, mint, OTHER_WALLET, OTHER_WALLET, TOKEN, ATA, SYSTEM].map(key),
+    data: `0x${DEPOSIT_TOKEN}${u64(amount)}${ID}`,
+});
+const computeLimit = (units: number): Ix => ({
+    programId: COMPUTE_BUDGET,
+    keys: [],
+    data: `0x02${le(BigInt(units), 4)}`,
+});
+const computePrice = (microLamports: bigint): Ix => ({
+    programId: COMPUTE_BUDGET,
+    keys: [],
+    data: `0x03${u64(microLamports)}`,
+});
+const createAta = (payer: string, data: `0x${string}` = "0x"): Ix => ({
+    programId: ATA,
+    keys: [payer, OTHER_WALLET, payer, SOL_USDC.mint!, SYSTEM, TOKEN].map(key),
+    data,
+});
 const systemTransfer = (from: string, lamports: bigint): Ix => ({
     programId: SYSTEM,
     keys: [key(from), key(OTHER_WALLET)],
     data: `0x02000000${u64(lamports)}`,
 });
-const tokenTransfer = (tag: "03" | "0c", authority: string, amount: bigint): Ix => ({
+const tokenIx = (tag: string, rest = ""): Ix => ({
     programId: TOKEN,
-    keys:
-        tag === "03"
-            ? [key(OTHER_WALLET), key(OTHER_WALLET), key(authority)]
-            : [key(OTHER_WALLET), key(SOL_USDC.mint!), key(OTHER_WALLET), key(authority)],
-    data: `0x${tag}${u64(amount)}${tag === "0c" ? "06" : ""}`,
+    keys: [OTHER_WALLET, OTHER_WALLET, SOLANA_WALLET].map(key),
+    data: `0x${tag}${rest}`,
 });
+const deposit = depositToken(SOLANA_WALLET, solanaRequest.amount);
 const solanaQuote = (instructions: Ix[], overrides: Partial<Quote> = {}): Quote =>
     quote({
         coin: SOL_USDC.key,
@@ -189,10 +225,19 @@ const solanaQuote = (instructions: Ix[], overrides: Partial<Quote> = {}): Quote 
     });
 const solQuote = (instructions: Ix[]) => solanaQuote(instructions, { coin: "solana:SOL", amountIn: solanaSol.amount });
 
-test("a Solana quote passes with every program on the allowlist", () => {
-    const quoted = solanaQuote([deposit, tokenTransfer("03", SOLANA_WALLET, 10_000_000n)]);
+test("a real-shaped Relay USDC quote and SOL quote pass", () => {
+    const usdc = solanaQuote([
+        computeLimit(200_000),
+        computePrice(1_000n),
+        createAta(SOLANA_WALLET),
+        createAta(SOLANA_WALLET, "0x01"),
+        deposit,
+    ]);
+    const sol = solQuote([computeLimit(200_000), computePrice(1_000n), depositNative(SOLANA_WALLET, 1_000_000_000n)]);
 
-    expect(checkQuote(quoted, solanaRequest, ALLOWED)).toBe(true);
+    expect(checkQuote(usdc, solanaRequest, ALLOWED)).toBe(true);
+    expect(checkQuote(sol, solanaSol, ALLOWED)).toBe(true);
+    expect(checkQuote(solanaQuote([depositToken(SOLANA_WALLET, 9_000_000n)]), solanaRequest, ALLOWED)).toBe(true);
 });
 
 test("an instruction from an unlisted program drops the quote", async () => {
@@ -218,54 +263,110 @@ test("a Solana transaction in an EVM quote, or an EVM one in a Solana quote, is 
     expect(checkQuote(solanaQuote([deposit], { txs: quote().txs }), solanaRequest, ALLOWED)).toBe(false);
 });
 
-test("a System transfer out of the wallet above the quoted amount is refused", () => {
-    const within = solQuote([deposit, systemTransfer(SOLANA_WALLET, 1_000_000_000n)]);
-    const above = solQuote([deposit, systemTransfer(SOLANA_WALLET, 1_000_000_001n)]);
-    const others = solQuote([deposit, systemTransfer(OTHER_WALLET, 9_000_000_000n)]);
+test("the review's five tampered quotes are refused", () => {
+    const u64Max = "ff".repeat(8);
+    const tampered: [string, Quote, QuoteRequest][] = [
+        [
+            "a depository deposit plus a Token transfer out of the wallet",
+            solanaQuote([deposit, tokenIx("03", u64(solanaRequest.amount))]),
+            solanaRequest,
+        ],
+        [
+            "a depository call at 100 times the amount",
+            solanaQuote([depositToken(SOLANA_WALLET, solanaRequest.amount * 100n)]),
+            solanaRequest,
+        ],
+        ["an unlimited Token Approve", solanaQuote([deposit, tokenIx("04", u64Max)]), solanaRequest],
+        ["a Token SetAuthority", solanaQuote([deposit, tokenIx("06", "0201" + "11".repeat(32))]), solanaRequest],
+        [
+            "a System Assign",
+            solQuote([
+                depositNative(SOLANA_WALLET, solanaSol.amount),
+                { ...systemTransfer(SOLANA_WALLET, 0n), data: `0x01000000${"22".repeat(32)}` },
+            ]),
+            solanaSol,
+        ],
+    ];
 
-    expect(checkQuote(within, solanaSol, ALLOWED)).toBe(true);
-    expect(checkQuote(above, solanaSol, ALLOWED)).toBe(false);
-    expect(checkQuote(others, solanaSol, ALLOWED)).toBe(true);
-});
-
-test("a Token transfer above the quoted amount is refused", () => {
-    for (const tag of ["03", "0c"] as const) {
-        const within = solanaQuote([deposit, tokenTransfer(tag, SOLANA_WALLET, 10_000_000n)]);
-        const above = solanaQuote([deposit, tokenTransfer(tag, SOLANA_WALLET, 10_000_001n)]);
-        const others = solanaQuote([deposit, tokenTransfer(tag, OTHER_WALLET, 99_000_000n)]);
-
-        expect(checkQuote(within, solanaRequest, ALLOWED)).toBe(true);
-        expect(checkQuote(above, solanaRequest, ALLOWED)).toBe(false);
-        expect(checkQuote(others, solanaRequest, ALLOWED)).toBe(true);
+    for (const [name, tamperedQuote, asked] of tampered) {
+        expect(checkQuote(tamperedQuote, asked, ALLOWED), name).toBe(false);
     }
 });
 
-test("transfers from the wallet are summed across instructions and transactions", () => {
-    const full = systemTransfer(SOLANA_WALLET, 1_000_000_000n);
-    const fullToken = tokenTransfer("03", SOLANA_WALLET, 10_000_000n);
-    const split = (ixs: Ix[]) => ({ kind: "solana" as const, instructions: ixs, lookupTables: [] });
+test("a second full-amount transfer next to the deposit is refused", () => {
+    const sol = solQuote([depositNative(SOLANA_WALLET, 1_000_000_000n), systemTransfer(SOLANA_WALLET, 1_000_000_000n)]);
+    const usdc = solanaQuote([deposit, tokenIx("0c", u64(solanaRequest.amount) + "06")]);
 
-    expect(checkQuote(solQuote([deposit, full, full]), solanaSol, ALLOWED)).toBe(false);
-    expect(checkQuote(solQuote([deposit, full]), solanaSol, ALLOWED)).toBe(true);
-    expect(checkQuote(solanaQuote([deposit, fullToken, fullToken]), solanaRequest, ALLOWED)).toBe(false);
-    const acrossTxs = solQuote([]);
-    acrossTxs.txs = [split([deposit, full]), split([full])];
-    expect(checkQuote(acrossTxs, solanaSol, ALLOWED)).toBe(false);
+    expect(checkQuote(sol, solanaSol, ALLOWED)).toBe(false);
+    expect(checkQuote(usdc, solanaRequest, ALLOWED)).toBe(false);
 });
 
-test("an uppercase-hex transfer above the quoted amount is refused", () => {
+test("top-level System and Token instructions are refused, whatever they are", () => {
+    for (const ix of [
+        systemTransfer(OTHER_WALLET, 1n),
+        { ...systemTransfer(SOLANA_WALLET, 0n), data: "0x00000000" as const },
+        { ...systemTransfer(SOLANA_WALLET, 0n), data: "0x03000000" as const },
+        { ...systemTransfer(SOLANA_WALLET, 0n), data: "0x0a000000" as const },
+        tokenIx("09"),
+        tokenIx("0d", u64(1n) + "06"),
+        tokenIx("03", u64(1n)),
+    ]) {
+        expect(checkQuote(solanaQuote([deposit, ix]), solanaRequest, ALLOWED)).toBe(false);
+    }
+});
+
+test("deposits are summed across instructions and transactions against the deposit amount", () => {
+    const half = depositToken(SOLANA_WALLET, 5_000_000n);
+    const split = (ixs: Ix[]) => ({ kind: "solana" as const, instructions: ixs, lookupTables: [] });
+
+    expect(checkQuote(solanaQuote([half, half]), solanaRequest, ALLOWED)).toBe(true);
+    expect(checkQuote(solanaQuote([half, half, depositToken(SOLANA_WALLET, 1n)]), solanaRequest, ALLOWED)).toBe(false);
+    const acrossTxs = solanaQuote([]);
+    acrossTxs.txs = [split([deposit]), split([depositToken(SOLANA_WALLET, 1n)])];
+    expect(checkQuote(acrossTxs, solanaRequest, ALLOWED)).toBe(false);
+    expect(checkQuote(solQuote([depositNative(SOLANA_WALLET, 1_000_010_001n)]), solanaSol, ALLOWED)).toBe(false);
+});
+
+test("a depository deposit must be from the wallet, in the quoted coin, with a deposit instruction", () => {
+    const wrongMint = depositToken(SOLANA_WALLET, 1n, OTHER_WALLET);
+    const wrongSender = depositToken(OTHER_WALLET, 1n);
+    const nativeForUsdc = depositNative(SOLANA_WALLET, 1n);
+    const tokenForSol = depositToken(SOLANA_WALLET, 1n);
+    const other = { ...deposit, data: `0x${"00".repeat(8)}${u64(1n)}${ID}` as const };
+    const short = { ...deposit, data: `0x${DEPOSIT_TOKEN}${u64(1n)}` as const };
+
+    for (const ix of [wrongMint, wrongSender, nativeForUsdc, other, short]) {
+        expect(checkQuote(solanaQuote([ix]), solanaRequest, ALLOWED)).toBe(false);
+    }
+    expect(checkQuote(solQuote([tokenForSol]), solanaSol, ALLOWED)).toBe(false);
+    expect(checkQuote(solQuote([depositNative(OTHER_WALLET, 1n)]), solanaSol, ALLOWED)).toBe(false);
+});
+
+test("Compute Budget keeps to a unit limit and a capped unit price", () => {
+    expect(checkQuote(solanaQuote([computePrice(1_000_000n), deposit]), solanaRequest, ALLOWED)).toBe(true);
+    expect(checkQuote(solanaQuote([computePrice(1_000_001n), deposit]), solanaRequest, ALLOWED)).toBe(false);
+    expect(checkQuote(solanaQuote([computeLimit(1_400_001), deposit]), solanaRequest, ALLOWED)).toBe(false);
+    for (const data of ["0x00", "0x01", "0x04", "0x0200"] as const) {
+        const ix = { programId: COMPUTE_BUDGET, keys: [], data };
+        expect(checkQuote(solanaQuote([ix, deposit]), solanaRequest, ALLOWED)).toBe(false);
+    }
+});
+
+test("Associated Token creates only, and only with the wallet paying", () => {
+    expect(checkQuote(solanaQuote([createAta(OTHER_WALLET), deposit]), solanaRequest, ALLOWED)).toBe(false);
+    expect(checkQuote(solanaQuote([createAta(SOLANA_WALLET, "0x02"), deposit]), solanaRequest, ALLOWED)).toBe(false);
+    expect(checkQuote(solanaQuote([createAta(SOLANA_WALLET, "0x0100"), deposit]), solanaRequest, ALLOWED)).toBe(false);
+});
+
+test("an uppercase-hex deposit above the quoted amount is refused", () => {
     const upper = (ix: Ix): Ix => ({ ...ix, data: `0x${ix.data.slice(2).toUpperCase()}` });
 
-    expect(
-        checkQuote(solQuote([deposit, upper(systemTransfer(SOLANA_WALLET, 1_000_000_001n))]), solanaSol, ALLOWED),
-    ).toBe(false);
-    expect(
-        checkQuote(
-            solanaQuote([deposit, upper(tokenTransfer("0c", SOLANA_WALLET, 10_000_001n))]),
-            solanaRequest,
-            ALLOWED,
-        ),
-    ).toBe(false);
+    expect(checkQuote(solanaQuote([upper(depositToken(SOLANA_WALLET, 10_000_001n))]), solanaRequest, ALLOWED)).toBe(
+        false,
+    );
+    expect(checkQuote(solanaQuote([upper(depositToken(SOLANA_WALLET, 10_000_000n))]), solanaRequest, ALLOWED)).toBe(
+        true,
+    );
 });
 
 test("Solana addresses compare exactly, not case-insensitively", () => {

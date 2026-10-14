@@ -30,7 +30,14 @@ beforeAll(async () => {
 afterAll(() => fake.stop());
 
 const logger = { error: vi.fn() };
-const cctp = () => createCctp({ iris: createIris({ baseUrl: fake.url }), arcDomain: 26, solanaDomain: 5, logger });
+const rentCalls: number[] = [];
+const rpc = {
+    getMinimumBalanceForRentExemption: async (bytes: number) => {
+        rentCalls.push(bytes);
+        return BigInt(bytes + 128) * 6960n;
+    },
+};
+const cctp = () => createCctp({ iris: createIris({ baseUrl: fake.url }), rpc, arcDomain: 26, solanaDomain: 5, logger });
 const signal = new AbortController().signal;
 
 test("supports only solana:USDC", () => {
@@ -149,4 +156,79 @@ test("checkQuote lets a CCTP quote call only the CCTP program, whatever the allo
     if (tx?.kind !== "solana") throw new Error("not a Solana transaction");
     const foreign = { ...quote, txs: [{ ...tx, instructions: [{ ...tx.instructions[0]!, programId: WALLET }] }] };
     expect(checkQuote(foreign, REQUEST, [WALLET])).toBe(false);
+});
+
+test("checkQuote refuses a burn with another mintRecipient, domain or amount, or any other instruction", async () => {
+    const quote = await cctp().quote(REQUEST, signal);
+    const [tx] = quote.txs;
+    if (tx?.kind !== "solana") throw new Error("not a Solana transaction");
+    const [burn] = tx.instructions;
+    const changed = (patch: (data: Buffer) => void) => {
+        const data = Buffer.from(burn!.data.slice(2), "hex");
+        patch(data);
+        return { ...quote, txs: [{ ...tx, instructions: [{ ...burn!, data: `0x${data.toString("hex")}` as const }] }] };
+    };
+
+    expect(
+        checkQuote(
+            changed(() => undefined),
+            REQUEST,
+            [],
+        ),
+    ).toBe(true);
+    expect(
+        checkQuote(
+            changed((d) => d.write("ff".repeat(20), 32, "hex")),
+            REQUEST,
+            [],
+        ),
+    ).toBe(false);
+    expect(
+        checkQuote(
+            changed((d) => d.fill(0, 20, 52)),
+            REQUEST,
+            [],
+        ),
+    ).toBe(false);
+    expect(
+        checkQuote(
+            changed((d) => d.writeUInt32LE(0, 16)),
+            REQUEST,
+            [],
+        ),
+    ).toBe(false);
+    expect(
+        checkQuote(
+            changed((d) => d.writeBigUInt64LE(10_000_001n, 8)),
+            REQUEST,
+            [],
+        ),
+    ).toBe(false);
+    expect(
+        checkQuote(
+            changed((d) => d.writeBigUInt64LE(9_999_999n, 8)),
+            REQUEST,
+            [],
+        ),
+    ).toBe(false);
+    expect(
+        checkQuote(
+            changed((d) => d.fill(1, 0, 8)),
+            REQUEST,
+            [],
+        ),
+    ).toBe(false);
+    const other = { ...quote, txs: [{ ...tx, instructions: [burn!, burn!] }] };
+    expect(checkQuote(other, REQUEST, [])).toBe(false);
+});
+
+test("the quote states the SOL it needs: the message account's rent, held by Circle, plus the network fee", async () => {
+    rentCalls.length = 0;
+    const provider = cctp();
+    const first = await provider.quote(REQUEST, signal);
+    await provider.quote(REQUEST, signal);
+
+    // 8-byte discriminator + 45 fields - 1 + a 148-byte message header + a 228-byte burn body + 32 bytes of hook data.
+    expect(rentCalls).toEqual([460]);
+    expect(first.sol).toEqual({ held: 588n * 6960n, needed: 588n * 6960n + 10_000n });
 });

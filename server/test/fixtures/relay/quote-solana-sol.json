@@ -19,23 +19,36 @@
                             {
                                 "keys": [
                                     {
+                                        "pubkey": "RelayDepository111111111111111111111111111",
+                                        "isSigner": false,
+                                        "isWritable": false
+                                    },
+                                    {
                                         "pubkey": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
                                         "isSigner": true,
                                         "isWritable": true
                                     },
                                     {
+                                        "pubkey": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+                                        "isSigner": false,
+                                        "isWritable": false
+                                    },
+                                    {
                                         "pubkey": "DepositVault1111111111111111111111111111111",
                                         "isSigner": false,
                                         "isWritable": true
+                                    },
+                                    {
+                                        "pubkey": "11111111111111111111111111111111",
+                                        "isSigner": false,
+                                        "isWritable": false
                                     }
                                 ],
                                 "programId": "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2",
-                                "data": "e5f6a7b80000000000000000"
+                                "data": "0d9e0ddf5fd51c0600e1f50500000000abababababababababababababababababababababababababababababababab"
                             }
                         ],
-                        "addressLookupTableAddresses": [
-                            "4sKLJ1Qoudh8PJyqBeuKocYdsZvxTcRShUt9aKqwhgvC"
-                        ]
+                        "addressLookupTableAddresses": ["4sKLJ1Qoudh8PJyqBeuKocYdsZvxTcRShUt9aKqwhgvC"]
                     },
                     "check": {
                         "endpoint": "/intents/status/v3?requestId=0x6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",

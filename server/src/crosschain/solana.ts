@@ -15,6 +15,8 @@ export type SolanaRpc = {
     ): Promise<({ confirmationStatus: "processed" | "confirmed" | "finalized"; err: unknown } | null)[]>;
     /** The address list of each lookup table; a missing table is left out. */
     getAddressLookupTables(addresses: string[]): Promise<{ address: string; addresses: string[] }[]>;
+    /** Lamports an account of this many bytes must hold to stay rent-exempt. */
+    getMinimumBalanceForRentExemption(bytes: number): Promise<bigint>;
     /** Null when the account doesn't exist. */
     getAccountInfo(address: string): Promise<{ owner: string; lamports: bigint } | null>;
 };
@@ -90,6 +92,9 @@ export function createSolanaRpc(
                 tables.push({ address: addresses[i]!, addresses: list });
             });
             return tables;
+        },
+        async getMinimumBalanceForRentExemption(bytes) {
+            return BigInt(await call<number>("getMinimumBalanceForRentExemption", [bytes]));
         },
         async getAccountInfo(address) {
             const { value } = await call<{ value: { owner: string; lamports: number } | null }>("getAccountInfo", [

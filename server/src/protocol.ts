@@ -46,6 +46,8 @@ export type DepositQuoteView = {
     usdcOut: UsdcAmount;
     etaSeconds: number;
     provider: string;
+    /** For a Solana deposit that needs SOL beyond the coin: lamports in all, and the part Circle holds as rent, as decimals. */
+    sol?: { needed: string; held: string };
 };
 
 /** One instruction of a Solana transaction, as the wallet rebuilds it. */

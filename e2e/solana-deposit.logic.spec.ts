@@ -12,6 +12,7 @@ import {
 import { Server } from "socket.io";
 import { AccountClient, NEEDS_SOL, type SwapSigner } from "@/components/account-client";
 import { isDepositOpen } from "@/lib/account/balances";
+import { heldSolText, previewText } from "@/lib/account/deposit-preview";
 import { buildDepositTransaction, signWithFreshKeys, withFreshSigners } from "@/lib/account/solana-tx";
 import type { BalancesView, CoinBalance, SolanaInstruction } from "@/server/src/protocol";
 
@@ -22,6 +23,7 @@ const TABLE = key(3);
 const TABLED = key(4);
 const BLOCKHASH = { blockhash: key(9), lastValidBlockHeight: 1234 };
 const COMPUTE_BUDGET = "ComputeBudget111111111111111111111111111111";
+const CCTP_PROGRAM = "CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe";
 
 const deposit: SolanaInstruction = {
     programId: PROGRAM,
@@ -88,7 +90,7 @@ test.describe("the deposit transaction", () => {
 test.describe("one-off signers", () => {
     const placeholder = "11111111111111111111111111111111";
     const burn: SolanaInstruction = {
-        programId: PROGRAM,
+        programId: CCTP_PROGRAM,
         keys: [
             { pubkey: PAYER, isSigner: true, isWritable: false },
             { pubkey: placeholder, isSigner: true, isWritable: true },
@@ -115,6 +117,13 @@ test.describe("one-off signers", () => {
         expect(transaction.signatures[fresh]).not.toBeNull();
     });
 
+    test("a placeholder signer in another program's instruction is kept, never swapped for a new key", async () => {
+        const relay = { ...burn, programId: PROGRAM };
+        const { instructions, keyPairs } = await withFreshSigners([relay]);
+        expect(keyPairs).toEqual([]);
+        expect(instructions).toEqual([relay]);
+    });
+
     test("without placeholders nothing changes", async () => {
         const { instructions, keyPairs } = await withFreshSigners([deposit]);
         expect(keyPairs).toEqual([]);
@@ -136,7 +145,7 @@ const SOL_ROW = (amount: string): CoinBalance => ({
 });
 
 /** A socket.io server standing in for ours: it opens the account, serves one Solana order and records what it is told. */
-async function fakeServer(rows: CoinBalance[]) {
+async function fakeServer(rows: CoinBalance[], sol?: { needed: string; held: string }) {
     const http = createServer();
     const io = new Server(http);
     const events: { name: string; payload: unknown }[] = [];
@@ -152,6 +161,19 @@ async function fakeServer(rows: CoinBalance[]) {
                     orders: [],
                     withdrawals: [],
                     solana: { deposits: true, withdrawals: false },
+                },
+            }),
+        );
+        socket.on("deposit:quote", (_p, ack) =>
+            ack({
+                ok: true,
+                data: {
+                    coin: "solana:USDC",
+                    amount: "5",
+                    usdcOut: "4.98",
+                    etaSeconds: 1200,
+                    provider: "cctp",
+                    ...(sol ? { sol } : {}),
                 },
             }),
         );
@@ -251,6 +273,27 @@ test.describe("solanaDeposit", () => {
         }
     });
 
+    test("a wallet holding less SOL than the quote needs is told before any order opens", async () => {
+        const stack = await fakeServer([SOL_ROW("0.001")], { needed: "4102480", held: "4092480" });
+        try {
+            let prompted = false;
+            const send = async () => {
+                prompted = true;
+                return "sig";
+            };
+            const result = await stack.client.solanaDeposit("solana:USDC", "5", wallet(send, BigInt(4_102_479)));
+            expect(result).toBe("needs_sol");
+            expect(prompted).toBe(false);
+            expect(stack.events.some((e) => e.name === "deposit:order")).toBe(false);
+
+            const enough = await stack.client.solanaDeposit("solana:USDC", "5", wallet(send, BigInt(4_102_480)));
+            expect(enough).toBe("sent");
+            expect(prompted).toBe(true);
+        } finally {
+            await stack.stop();
+        }
+    });
+
     test("the signature is reported with deposit:source and the shown balance drops", async () => {
         const stack = await fakeServer([SOL_ROW("2")]);
         try {
@@ -268,7 +311,7 @@ test.describe("solanaDeposit", () => {
             const names = stack.events
                 .map((e) => e.name)
                 .filter((n) => n.startsWith("deposit:") || n === "solana:blockhash");
-            expect(names).toEqual(["deposit:order", "solana:blockhash", "deposit:source"]);
+            expect(names).toEqual(["deposit:quote", "deposit:order", "solana:blockhash", "deposit:source"]);
             expect(stack.events.find((e) => e.name === "deposit:source")!.payload).toEqual({
                 orderId: "a".repeat(24),
                 txHashes: ["5".repeat(64)],
@@ -288,4 +331,26 @@ test("isOpen follows the session switch: Solana rows are open when deposits are 
     expect(isDepositOpen(solana, true)).toBe(true);
     expect(isDepositOpen(solana, false)).toBe(false);
     expect(isDepositOpen(arc, false)).toBe(true);
+});
+
+test("the fee line adds the SOL Circle holds for a CCTP deposit, and nothing for one that holds none", () => {
+    const usdc = {
+        coin: "solana:USDC",
+        chain: "solana",
+        chainId: null,
+        chainName: "Solana",
+        symbol: "USDC",
+        decimals: 6,
+        wallet: PAYER,
+        amount: "20",
+        spendable: "20",
+        usd: 1,
+    } as CoinBalance;
+    const quote = { coin: "solana:USDC", amount: "10", usdcOut: "9.984", etaSeconds: 1200, provider: "cctp" };
+
+    expect(heldSolText("4092480")).toBe("plus about 0.004 SOL held by Circle for 5 days");
+    expect(previewText(usdc, "10", { ...quote, sol: { needed: "4102480", held: "4092480" } })).toBe(
+        "You get about 9.98 USDC in about 20 min · fee $0.02, plus about 0.004 SOL held by Circle for 5 days",
+    );
+    expect(previewText(usdc, "10", quote)).toBe("You get about 9.98 USDC in about 20 min · fee $0.02");
 });

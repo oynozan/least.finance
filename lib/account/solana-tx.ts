@@ -85,8 +85,10 @@ export function buildDepositTransaction(input: {
 
 /** The address a quote puts where it needs a signer only the app can supply (a one-off key). */
 const FRESH_SIGNER = "11111111111111111111111111111111";
+/** The CCTP v2 Token Messenger Minter, whose burn names a message-event account the app creates with a key of its own. */
+const CCTP_BURN_PROGRAM = "CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe";
 
-/** The instructions with every fresh-signer placeholder swapped for one new key's address, and that key. */
+/** The CCTP burn's instructions with every fresh-signer placeholder swapped for one new key's address, and that key; other programs' instructions are kept as given. */
 export async function withFreshSigners(
     instructions: SolanaInstruction[],
 ): Promise<{ instructions: SolanaInstruction[]; keyPairs: CryptoKeyPair[] }> {
@@ -96,7 +98,7 @@ export async function withFreshSigners(
     for (const instruction of instructions) {
         const keys: SolanaInstruction["keys"] = [];
         for (const key of instruction.keys) {
-            if (!key.isSigner || key.pubkey !== FRESH_SIGNER) {
+            if (instruction.programId !== CCTP_BURN_PROGRAM || !key.isSigner || key.pubkey !== FRESH_SIGNER) {
                 keys.push(key);
                 continue;
             }

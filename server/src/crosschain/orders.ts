@@ -56,6 +56,7 @@ export class DepositOrders {
             usdcOut: formatUsdc(quote.usdcOut),
             etaSeconds: quote.etaSeconds,
             provider: quote.provider,
+            ...(quote.sol ? { sol: { needed: String(quote.sol.needed), held: String(quote.sol.held) } } : {}),
         };
     }
 

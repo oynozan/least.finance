@@ -141,8 +141,10 @@ export class Payouts {
         for (const withdrawal of sending) {
             if (this.#stop?.signal.aborted) return;
             try {
-                if (withdrawal.network === "solana") await this.#paySolana(withdrawal);
-                else await this.#pay(withdrawal);
+                if (withdrawal.network === "solana") {
+                    // A burn still unsent above its approve owns the next nonce, so nothing may be signed past it.
+                    if (!(await this.#paySolana(withdrawal))) return;
+                } else await this.#pay(withdrawal);
             } catch (error) {
                 logger.warn({ err: error, withdrawalId: withdrawal._id.toHexString() }, "Payout failed, will retry");
                 // Later items would sign with a nonce this unsent one still owns.
@@ -203,26 +205,28 @@ export class Payouts {
         return stored ?? (await collections.withdrawals.findOne({ _id: withdrawal._id })) ?? withdrawal;
     }
 
-    /** Sends the approve, then the burn, each once mined; the burn mined moves the withdrawal to `forwarding`. */
-    async #paySolana(found: WithdrawalDoc) {
+    /** Sends the approve, then the burn, each once mined; the burn mined moves the withdrawal to `forwarding`. False while a sent transaction is still unconfirmed. */
+    async #paySolana(found: WithdrawalDoc): Promise<boolean> {
         const { collections, bus } = this.#deps;
         const withdrawal = found.solana?.approveRawTx ? found : await this.#signSolana(found);
-        if (withdrawal.state !== "sending" || !withdrawal.solana?.approveRawTx) return;
+        if (withdrawal.state !== "sending" || !withdrawal.solana?.approveRawTx) return true;
         for (const step of ["approve", "burn"] as const) {
-            if (!(await this.#settle(withdrawal, step))) return;
+            const settled = await this.#settle(withdrawal, step);
+            if (settled !== "mined") return settled === "ended";
         }
         const moved = await collections.withdrawals.findOneAndUpdate(
             { _id: withdrawal._id, state: "sending" },
             { $set: { state: "forwarding", updatedAt: new Date(this.#now()) } },
             { returnDocument: "after" },
         );
-        if (!moved) return;
+        if (!moved) return true;
         const account = await collections.accounts.findOne({ _id: moved.accountId });
         bus.emit("withdrawal:updated", { withdrawal: moved, account });
+        return true;
     }
 
-    /** Broadcasts one stored transaction of a Solana withdrawal and waits for it; true once it is mined successfully. */
-    async #settle(withdrawal: WithdrawalDoc, step: Step): Promise<boolean> {
+    /** Broadcasts one stored transaction of a Solana withdrawal and waits for it: mined successfully, still unconfirmed, or ended (failed or its signatures dropped). */
+    async #settle(withdrawal: WithdrawalDoc, step: Step): Promise<"mined" | "pending" | "ended"> {
         const { client, broadcast, collections } = this.#deps;
         const solana = withdrawal.solana!;
         const rawTx = step === "approve" ? solana.approveRawTx! : solana.burnRawTx!;
@@ -249,7 +253,7 @@ export class Payouts {
                         },
                     },
                 );
-                return false;
+                return "ended";
             }
             if (!alreadySent(error) && !(await this.#seen(stored))) {
                 const passes = (this.#absent.get(key) ?? 0) + 1;
@@ -259,7 +263,7 @@ export class Payouts {
                 }
                 this.#absent.delete(key);
                 await this.#fail(withdrawal, "Rejected by the network");
-                return false;
+                return "ended";
             }
         }
         this.#absent.delete(key);
@@ -270,13 +274,13 @@ export class Payouts {
             if (error instanceof TimeoutError || /timed out|could not be found/i.test(String(error))) return null;
             throw error;
         });
-        if (!receipt) return false;
-        if (receipt.status === "success") return true;
+        if (!receipt) return "pending";
+        if (receipt.status === "success") return "mined";
         await this.#fail(
             withdrawal,
             step === "approve" ? "Approval reverted on the network" : "Burn reverted on the network",
         );
-        return false;
+        return "ended";
     }
 
     /** Logs stalled forwards and asks Iris about the forwarding withdrawal checked longest ago, within its request budget. */

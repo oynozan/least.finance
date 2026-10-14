@@ -139,18 +139,19 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             confirmations: config.DEPOSIT_CONFIRMATIONS,
             receiptTimeoutMs: config.DEPOSIT_RECEIPT_TIMEOUT_MS,
         });
+        const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
         const iris = overrides.iris ?? createIris({ baseUrl: config.CIRCLE_IRIS_URL });
         const bridges = overrides.bridges ?? [
             createRelay({ apiKey: config.RELAY_API_KEY }),
             createCctp({
                 iris,
+                rpc: solana,
                 arcDomain: ARC_DOMAIN,
                 solanaDomain: SOLANA_DOMAIN,
                 logger: logger.child({ component: "cctp" }),
             }),
             createAcross({ apiKey: config.ACROSS_API_KEY, integratorId: config.ACROSS_INTEGRATOR_ID }),
         ];
-        const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
         const prices = overrides.prices ?? lifiPrices();
         const orders = new DepositOrders({
             collections,

@@ -19,6 +19,26 @@ export const FAKE_BRIDGE_ADDRESS = "0x000000000000000000000000000000000000bEEF";
 /** The depository program the fake bridge's Solana transactions go to, as on the server's allowlist. */
 export const FAKE_SOLANA_PROGRAM = "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2";
 
+/** relay-depository's `deposit_native` and `deposit_token` discriminators. */
+const DEPOSIT_NATIVE = "0d9e0ddf5fd51c06";
+const DEPOSIT_TOKEN = "0b9c60da27a3b413";
+
+/** The depository deposit's accounts in the program's order: the sender second and, for a token, the mint fifth. */
+const depositKeys = (sender: string, mint: string | null) => {
+    const other = (pubkey: string) => ({ pubkey, isSigner: false, isWritable: true });
+    return [
+        other("RelayDepository111111111111111111111111111"),
+        { pubkey: sender, isSigner: true, isWritable: true },
+        other(sender),
+        other("DepositVault1111111111111111111111111111111"),
+        ...(mint ? [other(mint)] : []),
+    ];
+};
+
+/** The depository deposit's data: the discriminator, the amount as a little-endian u64 and a 32-byte id. */
+const depositData = (mint: string | null, amount: bigint, ref: Hex): Hex =>
+    `0x${mint ? DEPOSIT_TOKEN : DEPOSIT_NATIVE}${amount.toString(16).padStart(16, "0").match(/../g)!.reverse().join("")}${ref.slice(2).padStart(64, "0")}`;
+
 const ETA_SECONDS = 2;
 /** Rates are cut to millionths of a dollar, so a bigint can carry them. */
 const RATE_SCALE = 1_000_000;
@@ -88,8 +108,8 @@ export class FakeBridge implements BridgeProvider {
                   instructions: [
                       {
                           programId: FAKE_SOLANA_PROGRAM,
-                          keys: [{ pubkey: request.sender, isSigner: true, isWritable: true }],
-                          data: ref,
+                          keys: depositKeys(request.sender, coin.mint),
+                          data: depositData(coin.mint, amount, ref),
                       },
                   ],
                   lookupTables: this.lookupTables,

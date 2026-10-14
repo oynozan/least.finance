@@ -58,6 +58,8 @@ export async function startFakeSolanaRpc() {
                     };
                 });
                 result = { context: { slot: 1 }, value };
+            } else if (method === "getMinimumBalanceForRentExemption") {
+                result = (params[0] + 128) * 6960;
             } else if (method === "getAccountInfo") {
                 const found = accounts.get(params[0]);
                 result = {

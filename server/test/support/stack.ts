@@ -218,15 +218,18 @@ export async function startStack({
     const solanaBridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates, name: "relay", chains: ["solana"] });
     const trader = fakePoolTrader(polymarket);
     const logger = pino({ level: config.LOG_LEVEL });
+    const solana = createSolanaRpc([solanaRpc.url]);
     const server = await startServer(config, logger, {
         sources: createSourceClients({ ethereum: [ethereumUrl], bnb: [bnbUrl] }),
-        solana: createSolanaRpc([solanaRpc.url]),
+        solana,
         iris: createIris({ baseUrl: iris.url }),
         prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
         bridges: [
             bridge,
             solanaBridge,
-            ...(cctp ? [createCctp({ iris: createIris({ baseUrl: iris.url }), arcDomain: 26, solanaDomain: 5 })] : []),
+            ...(cctp
+                ? [createCctp({ iris: createIris({ baseUrl: iris.url }), rpc: solana, arcDomain: 26, solanaDomain: 5 })]
+                : []),
         ],
         trader,
         now,

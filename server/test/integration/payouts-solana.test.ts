@@ -296,6 +296,43 @@ test("a reverted burn ends failed with one refund", async () => {
     expect(await refunds(withdrawal._id)).toBe(1);
 });
 
+test("an approve receipt that times out holds back later withdrawals until the earlier one is failed", async () => {
+    await isolated();
+    const first = await seedSolana("5");
+    const later = await seedArc("1");
+    let receiptsTimeOut = true;
+    const client = new Proxy(chain, {
+        get: (target, property, receiver) =>
+            property === "waitForTransactionReceipt" && receiptsTimeOut
+                ? () => Promise.reject(new Error("timed out waiting for the receipt"))
+                : Reflect.get(target, property, receiver),
+    });
+    let refusedBurn: Hex | null = null;
+    const payouts = worker({
+        client,
+        broadcast: async (rawTx) => {
+            if (rawTx === refusedBurn) throw new Error("insufficient funds for gas * price + value");
+            return chain.sendRawTransaction({ serializedTransaction: rawTx });
+        },
+    });
+
+    await payouts.tick();
+    const waiting = await stateOf(first.withdrawal._id);
+    expect(waiting.state).toBe("sending");
+    expect(waiting.solana!.burnRawTx).not.toBeNull();
+    // The burn above the unsent approve is still unsent, so nothing may be signed above it.
+    expect(await stateOf(later.withdrawal._id)).toMatchObject({ state: "sending", rawTx: null, nonce: null });
+
+    receiptsTimeOut = false;
+    refusedBurn = waiting.solana!.burnRawTx;
+    await payouts.tick();
+
+    expect((await stateOf(first.withdrawal._id)).state).toBe("failed");
+    expect(await refunds(first.withdrawal._id)).toBe(1);
+    expect((await stateOf(later.withdrawal._id)).state).toBe("sent");
+    expect(await chain.getBalance({ address: later.to })).toBe(wei("1"));
+});
+
 test("a burn mined and then Iris down for a long time never refunds and stays forwarding", async () => {
     await isolated();
     const { account, withdrawal } = await seedSolana("6");
