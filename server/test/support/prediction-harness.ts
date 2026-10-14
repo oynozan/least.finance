@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ObjectId } from "mongodb";
-import { pino } from "pino";
+import { pino, type Logger } from "pino";
 import { parseUnits } from "viem";
 import { inject } from "vitest";
 import type { Config } from "../../src/config.ts";
@@ -27,10 +27,12 @@ export const BOOK: Book = {
 
 type Offered = Awaited<ReturnType<MarketService["outcome"]>>;
 
-/** The service, a fake trader and an offered outcome over a throwaway database. */
-export async function predictionHarness(o: { trading?: "on" | "off"; now?: () => number; feeRate?: number } = {}) {
+/** The service, a fake trader and an offered outcome over a throwaway database; the logger is silent and the float target $100 unless given. */
+export async function predictionHarness(
+    o: { trading?: "on" | "off"; now?: () => number; feeRate?: number; logger?: Logger; floatUsd?: number } = {},
+) {
     const database: Database = await connectDatabase(inject("mongoUri"), `test_${randomUUID().replaceAll("-", "")}`);
-    const logger = pino({ level: "silent" });
+    const logger = o.logger ?? pino({ level: "silent" });
     const bus = new Bus();
     const ledger = new Ledger({
         client: database.client,
@@ -70,7 +72,7 @@ export async function predictionHarness(o: { trading?: "on" | "off"; now?: () =>
         },
     };
     const markets = { outcome: async () => offered.current } as unknown as MarketService;
-    const config = { PREDICTIONS_TRADING: o.trading ?? "on", POLYMARKET_FLOAT_USD: 100 } as Config;
+    const config = { PREDICTIONS_TRADING: o.trading ?? "on", POLYMARKET_FLOAT_USD: o.floatUsd ?? 100 } as Config;
     const service = new PredictionService({
         collections: database.collections,
         ledger,

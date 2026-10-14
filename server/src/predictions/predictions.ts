@@ -141,17 +141,22 @@ export class PredictionService {
             ],
             { upsert: true, returnDocument: "after" },
         );
-        if (doc) this.#remember(doc);
-        this.#warnOnFloat(balance);
+        if (doc) {
+            this.#remember(doc);
+            this.#warnOnFloat(freeOf(doc));
+        }
         await this.#checkHolds();
     }
 
-    /** The sum of what open buys reserved; orders from before the float document reserved their whole amount. */
+    /** The sum of what open buys and submitting drains reserved; orders from before the float document reserved their whole amount. */
     async #openHolds(): Promise<{ total: bigint }> {
-        const open = await this.#deps.collections.predictionOrders
-            .find({ side: "buy", state: { $in: ["placing", "posted"] } })
-            .toArray();
-        return { total: open.reduce((sum, order) => sum + reservedOf(order), 0n) };
+        const { predictionOrders, poolRebalances } = this.#deps.collections;
+        const [open, drains] = await Promise.all([
+            predictionOrders.find({ side: "buy", state: { $in: ["placing", "posted"] } }).toArray(),
+            poolRebalances.find({ direction: "polygon_to_arc", state: "submitting" }).toArray(),
+        ]);
+        const orders = open.reduce((sum, order) => sum + reservedOf(order), 0n);
+        return { total: drains.reduce((sum, drain) => sum + fromDecimal(drain.reservedE6), orders) };
     }
 
     /** Reports and repairs a held figure that differs from the open buys; it can only differ through a bug. */
@@ -188,12 +193,12 @@ export class PredictionService {
         };
     }
 
-    #warnOnFloat(balance: bigint) {
+    #warnOnFloat(freeE6: bigint) {
         const target = this.#deps.config.POLYMARKET_FLOAT_USD;
-        const usd = Number(balance) / 1e6;
+        const usd = Number(freeE6) / 1e6;
         const state = usd < target * FLOAT_LOW ? "low" : usd > target * FLOAT_HIGH ? "high" : "ok";
         if (state !== "ok" && state !== this.#floatState)
-            this.#deps.logger.warn({ balanceUSD: usd, targetUSD: target }, `The pool's Polymarket float is ${state}`);
+            this.#deps.logger.warn({ freeUSD: usd, targetUSD: target }, `The pool's Polymarket float is ${state}`);
         this.#floatState = state;
     }
 
@@ -891,6 +896,19 @@ export class PredictionService {
         );
         if (doc) return doc;
         throw this.#short(await this.#deps.collections.poolFloat.findOne({ _id: FLOAT_ID }, { session }));
+    }
+
+    /** Takes a pool move's pUSD from free float inside the caller's transaction; float_short and nothing held if it doesn't fit. */
+    async reserveForMove(session: ClientSession, amountE6: bigint): Promise<void> {
+        if (amountE6 <= 0n) throw new Error("A pool move reserves a positive amount");
+        this.#remember(await this.#reserve(session, amountE6));
+    }
+
+    /** Gives back a pool move's reservation inside the caller's transaction, counting what it spent as unread until a balance read shows it. */
+    async releaseForMove(session: ClientSession, reservedE6: bigint, spentE6: bigint): Promise<void> {
+        if (reservedE6 < 0n || spentE6 < 0n) throw new Error("A pool move can't release a negative amount");
+        const doc = await this.#release(session, reservedE6, spentE6);
+        if (doc) this.#remember(doc);
     }
 
     /** Gives back a reservation and counts what the fill spent until a balance read shows it; an order that held nothing does nothing. */

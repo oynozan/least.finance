@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { pino } from "pino";
 import { afterEach, expect, test, vi } from "vitest";
-import { fromDecimal } from "../../src/db/money.ts";
+import type { PoolRebalanceDoc } from "../../src/db/mongo.ts";
+import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { isAppError } from "../../src/errors.ts";
+import { poolRebalanceRow } from "../support/pool-rebalance-row.ts";
 import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
 
 type Harness = Awaited<ReturnType<typeof predictionHarness>>;
@@ -199,4 +202,187 @@ test("balance equals the sum of rows after concurrent float-limited orders", asy
         const s = await h.state(account._id);
         expect(s.sum).toBe(s.balance);
     }
+});
+
+const capture = () => {
+    const lines: Array<{ level: number; msg: string; [key: string]: unknown }> = [];
+    const logger = pino({ level: "info" }, { write: (line: string) => void lines.push(JSON.parse(line)) });
+    return { lines, logger };
+};
+const warnings = (lines: ReturnType<typeof capture>["lines"]) =>
+    lines.filter((line) => line.level === 40).map((line) => line.msg);
+const drifts = (lines: ReturnType<typeof capture>["lines"]) =>
+    lines.filter((line) => line.msg === "The pool's float holds drifted");
+const reserve = (h: Harness, amountE6: bigint) =>
+    h.ledger.runInTransaction((session) => h.service.reserveForMove(session, amountE6));
+const release = (h: Harness, reservedE6: bigint, spentE6: bigint) =>
+    h.ledger.runInTransaction((session) => h.service.releaseForMove(session, reservedE6, spentE6));
+/** Starts a drain the way the rebalancer does: the submitting row and its reservation in one transaction. */
+const startDrain = async (h: Harness, amountE6: bigint): Promise<PoolRebalanceDoc> => {
+    const row: PoolRebalanceDoc = {
+        ...poolRebalanceRow({ kind: "move", now: new Date() }),
+        active: true,
+        amountE6: toDecimal(amountE6),
+        reservedE6: toDecimal(amountE6),
+    };
+    await h.ledger.runInTransaction(async (session) => {
+        await h.database.collections.poolRebalances.insertOne(row, { session });
+        await h.service.reserveForMove(session, amountE6);
+    });
+    return row;
+};
+/** Ends a drain the way the rebalancer does: the state change and the release in one transaction. */
+const endDrain = (h: Harness, row: PoolRebalanceDoc, state: "forwarding" | "failed", spentE6: bigint) =>
+    h.ledger.runInTransaction(async (session) => {
+        const moved = await h.database.collections.poolRebalances.findOneAndUpdate(
+            { _id: row._id, state: "submitting" },
+            { $set: { state } },
+            { session },
+        );
+        if (moved) await h.service.releaseForMove(session, fromDecimal(moved.reservedE6), spentE6);
+    });
+
+test("reserveForMove holds free float, and beyond it throws float_short with nothing held", async () => {
+    const h = await fresh();
+    await reserve(h, 30_000_000n);
+    expect(await pool(h)).toEqual({ balance: 50_000_000n, held: 30_000_000n, unread: 0n });
+    expect(h.service.maxOrderUSD()).toBe(20);
+
+    const error = await reserve(h, 30_000_000n).catch((e: unknown) => e);
+    expect(codeOf(error)).toBe("float_short");
+    expect(await pool(h)).toEqual({ balance: 50_000_000n, held: 30_000_000n, unread: 0n });
+
+    await reserve(h, 20_000_000n);
+    expect((await pool(h)).held).toBe(50_000_000n);
+});
+
+test("reserveForMove counts what orders already hold", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("100");
+    park(h);
+    await h.service.place(account, input("20"));
+
+    expect(codeOf(await reserve(h, 40_000_000n).catch((e: unknown) => e))).toBe("float_short");
+    expect((await pool(h)).held).toBe(20_000_000n);
+    await reserve(h, 30_000_000n);
+    expect((await pool(h)).held).toBe(50_000_000n);
+});
+
+test("a reservation in a transaction that aborts holds nothing", async () => {
+    const h = await fresh();
+    const aborted = h.ledger.runInTransaction(async (session) => {
+        await h.service.reserveForMove(session, 20_000_000n);
+        throw new Error("the row update failed");
+    });
+    await expect(aborted).rejects.toThrow("the row update failed");
+    expect((await pool(h)).held).toBe(0n);
+});
+
+test("reserveForMove refuses a float read that is too old, with nothing held", async () => {
+    const clock = { t: Date.now() };
+    const h = await fresh({ now: () => clock.t });
+    clock.t += 181_000;
+    expect(codeOf(await reserve(h, 10_000_000n).catch((e: unknown) => e))).toBe("float_short");
+    expect((await pool(h)).held).toBe(0n);
+});
+
+test("a move reserves only a positive amount and releases only non-negative ones", async () => {
+    const h = await fresh();
+    await expect(reserve(h, 0n)).rejects.toThrow("positive");
+    await expect(reserve(h, -5_000_000n)).rejects.toThrow("positive");
+    await reserve(h, 10_000_000n);
+    await expect(release(h, -5_000_000n, 0n)).rejects.toThrow("negative");
+    await expect(release(h, 10_000_000n, -5_000_000n)).rejects.toThrow("negative");
+    expect(await pool(h)).toEqual({ balance: 50_000_000n, held: 10_000_000n, unread: 0n });
+});
+
+test("a release as spent adds to unreadFillsE6 and the next refreshFloat clears it, so free float does not jump back before the read", async () => {
+    const h = await fresh();
+    await reserve(h, 20_000_000n);
+    await release(h, 20_000_000n, 20_000_000n);
+
+    const after = await pool(h);
+    expect(after).toEqual({ balance: 50_000_000n, held: 0n, unread: 20_000_000n });
+    expect(after.balance - after.held - after.unread).toBe(30_000_000n);
+    expect(h.service.maxOrderUSD()).toBe(30);
+
+    h.trader.setBalance(30_000_000n);
+    await h.service.refreshFloat();
+    expect(await pool(h)).toEqual({ balance: 30_000_000n, held: 0n, unread: 0n });
+    expect(h.service.maxOrderUSD()).toBe(30);
+});
+
+test("a release with nothing spent restores free float", async () => {
+    const h = await fresh();
+    await reserve(h, 20_000_000n);
+    expect(h.service.maxOrderUSD()).toBe(30);
+    await release(h, 20_000_000n, 0n);
+
+    expect(await pool(h)).toEqual({ balance: 50_000_000n, held: 0n, unread: 0n });
+    expect(h.service.maxOrderUSD()).toBe(50);
+});
+
+test("the drift check counts a submitting drain's reservation and does not repair it away", async () => {
+    const { lines, logger } = capture();
+    const h = await fresh({ logger });
+    const drain = await startDrain(h, 20_000_000n);
+
+    await h.service.refreshFloat();
+    expect(drifts(lines)).toEqual([]);
+    expect((await pool(h)).held).toBe(20_000_000n);
+
+    // A reservation whose row has left submitting without a release is a real drift
+    await h.database.collections.poolRebalances.updateOne({ _id: drain._id }, { $set: { state: "forwarding" } });
+    await h.service.refreshFloat();
+    expect(drifts(lines)).toEqual([expect.objectContaining({ heldE6: "20000000", expected: "0" })]);
+    expect((await pool(h)).held).toBe(0n);
+});
+
+test("the drift check adds a drain's reservation to the open buys", async () => {
+    const { lines, logger } = capture();
+    const h = await fresh({ logger });
+    const account = await h.seedAccount("100");
+    park(h);
+    await h.service.place(account, input("10"));
+    await startDrain(h, 20_000_000n);
+
+    await h.service.refreshFloat();
+    expect(drifts(lines)).toEqual([]);
+    expect((await pool(h)).held).toBe(30_000_000n);
+});
+
+test("the low alarm fires on free float: balance 100, held 80 warns low though the balance alone does not", async () => {
+    const { lines, logger } = capture();
+    const h = await fresh({ logger }, 100_000_000n);
+    expect(warnings(lines)).toEqual([]);
+
+    await startDrain(h, 80_000_000n);
+    await h.service.refreshFloat();
+    expect(warnings(lines)).toEqual(["The pool's Polymarket float is low"]);
+    expect(lines.find((line) => line.level === 40)).toMatchObject({ freeUSD: 20, targetUSD: 100 });
+    expect(drifts(lines)).toEqual([]);
+});
+
+test("the high alarm reads free float", async () => {
+    const { lines, logger } = capture();
+    const h = await fresh({ logger }, 100_000_000n);
+    h.trader.setBalance(250_000_000n);
+
+    // 250 in the pool but 70 held: free float is 180, under the 200% alarm
+    const drain = await startDrain(h, 70_000_000n);
+    await h.service.refreshFloat();
+    expect(warnings(lines)).toEqual([]);
+
+    await endDrain(h, drain, "failed", 0n);
+    await h.service.refreshFloat();
+    expect(warnings(lines)).toEqual(["The pool's Polymarket float is high"]);
+    expect(lines.find((line) => line.level === 40)).toMatchObject({ freeUSD: 250, targetUSD: 100 });
+});
+
+test("the alarm bands follow the float target the harness is given", async () => {
+    const { lines, logger } = capture();
+    await fresh({ logger, floatUsd: 20 }, 10_000_000n);
+    expect(warnings(lines)).toEqual([]);
+    await fresh({ logger, floatUsd: 20 }, 4_000_000n);
+    expect(warnings(lines)).toEqual(["The pool's Polymarket float is low"]);
 });
