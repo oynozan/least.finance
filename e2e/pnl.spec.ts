@@ -495,3 +495,34 @@ test("phones fit the PnL page without scrolling sideways", async ({ page, isMobi
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(0);
     await shoot(page, "3-phone");
 });
+
+/** How far the chart's bars reach past its own edge, in px. The chart's scrollWidth leaves them out. */
+const overflowOf = (page: Page) =>
+    chart(page).evaluate((el) => {
+        const edge = el.getBoundingClientRect();
+        const reach = Math.max(...[...el.children].map((bar) => bar.getBoundingClientRect().right));
+        return Math.max(
+            edge.left - Math.min(...[...el.children].map((bar) => bar.getBoundingClientRect().left)),
+            reach - edge.right,
+        );
+    });
+
+test("the most bars a range can hold stay inside the chart", async ({ page }) => {
+    // 90 days is the most the All range draws a bar a day for
+    await seedHistory(addressOf(page), [{ kind: "deposit", usdc: "500", daysAgo: 89 }]);
+    await page.goto("/pnl");
+    await connect(page);
+    await balance(page).getByRole("radio", { name: "All" }).click();
+    await expect(chart(page)).toHaveAttribute("aria-valuemax", "90");
+    await expect(chart(page)).toHaveAttribute("aria-valuetext", /\$500\.00$/);
+    expect(await overflowOf(page)).toBeLessThanOrEqual(0);
+});
+
+test("a bar a month for a decade stay inside the chart", async ({ page }) => {
+    await seedHistory(addressOf(page), [{ kind: "deposit", usdc: "500", daysAgo: 3650 }]);
+    await page.goto("/pnl");
+    await connect(page);
+    await balance(page).getByRole("radio", { name: "All" }).click();
+    await expect(chart(page)).toHaveAttribute("aria-valuemax", /^1[12]\d$/);
+    expect(await overflowOf(page)).toBeLessThanOrEqual(0);
+});

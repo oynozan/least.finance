@@ -133,7 +133,7 @@ export function BalanceCard() {
                     aria-valuemax={bars.length}
                     aria-valuenow={(active ?? bars.length - 1) + 1}
                     aria-valuetext={shown ? valueText(chart.unit, shown.start, shown.balance) : undefined}
-                    className="relative mt-8 flex h-[clamp(160px,28vh,260px)] touch-pan-y items-end justify-between gap-[3px] rounded-[18px] outline-2 outline-offset-4 outline-transparent focus-visible:outline-solid sm:gap-1.5"
+                    className="relative mt-8 flex h-[clamp(160px,28vh,260px)] touch-pan-y items-end justify-between rounded-[18px] outline-2 outline-offset-4 outline-transparent focus-visible:outline-solid"
                     onPointerMove={(event) => point(event.clientX)}
                     onPointerDown={(event) => point(event.clientX)}
                     onPointerLeave={(event) => event.pointerType === "mouse" && setPointed(null)}
@@ -155,21 +155,26 @@ export function BalanceCard() {
                     {bars.map((b, i) => {
                         const tone = trendOf(Math.round(b.pnl * 100) / 100);
                         return (
-                            <motion.span
+                            // The gap between bars is cut from each slot, so a crowded chart narrows its gaps with its bars.
+                            <span
                                 // A new range grows its bars in again.
                                 key={`${range}:${i}`}
                                 aria-hidden="true"
-                                className={`max-w-11 min-w-[3px] flex-1 rounded-full ${BAR[tone]}`}
-                                initial={{ height: "0%", opacity: 0 }}
-                                animate={{
-                                    height: `${heightOf(chart, b.balance)}%`,
-                                    opacity: active === null || active === i ? 1 : 0.4,
-                                }}
-                                transition={{
-                                    height: { ...grow, delay: Math.min(i, 40) * 0.012 },
-                                    opacity: { duration: 0.15 },
-                                }}
-                            />
+                                className="flex h-full max-w-11 min-w-0 flex-1 items-end justify-center"
+                            >
+                                <motion.span
+                                    className={`w-[max(1px,calc(100%-3px))] rounded-full sm:w-[max(1px,calc(100%-6px))] ${BAR[tone]}`}
+                                    initial={{ height: "0%", opacity: 0 }}
+                                    animate={{
+                                        height: `${heightOf(chart, b.balance)}%`,
+                                        opacity: active === null || active === i ? 1 : 0.4,
+                                    }}
+                                    transition={{
+                                        height: { ...grow, delay: Math.min(i, 40) * 0.012 },
+                                        opacity: { duration: 0.15 },
+                                    }}
+                                />
+                            </span>
                         );
                     })}
                 </div>
