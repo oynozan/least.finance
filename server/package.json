@@ -19,6 +19,7 @@
         "test:e2e-backend": "node test/e2e/serve.ts"
     },
     "dependencies": {
+        "@nktkas/hyperliquid": "0.33.3",
         "@polymarket/client": "0.13.0",
         "@privy-io/node": "0.35.0",
         "@scure/base": "1.2.6",
