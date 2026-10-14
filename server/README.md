@@ -18,6 +18,19 @@ Withdrawals are paid from the treasury, the wallet at HD index 0 of `DEPOSIT_MNE
 
 **Don't send from the treasury key while the server runs.** The worker signs with the treasury's nonces, so a transaction from elsewhere can clash with a payout or a sweep.
 
+## How Long and Short work
+
+Each person trades from a Hyperliquid account of their own, derived from `DEPOSIT_MNEMONIC` at `m/44'/60'/1'/0/{index}`. Index 0 is the master float, which funds an order with a `usdSend` and takes the money back when the position closes. The collateral leaves the person's Arc balance when they confirm, and the close credits what came back. Real orders go out only while `PERPS_TRADING=on`. The tracker, closes and liquidations run either way, so turning trading off never traps a position. A reconciler checks every 10 minutes that positions match Hyperliquid and that the assets cover the books. It sweeps money stuck on an idle address back to the master and only logs, never changing a position or a balance.
+
+The operator keeps the master funded, at around `PERPS_FLOAT_USD`. Run these from `server/` with the server up, but never while it is paying a withdrawal, since both sign from the treasury key:
+
+```bash
+node --env-file=.env scripts/perps-rebalance.ts arc-to-hl <usd>   # Arc treasury to the master, by CCTP (needs HYPERCORE_CCTP_FORWARDER)
+node --env-file=.env scripts/perps-rebalance.ts hl-to-arc <usd>   # the master back to the Arc treasury
+```
+
+Each prints what it would do and sends nothing without `--yes-send-real-money`. `arc-to-hl` refuses to leave the treasury short of what withdrawals need. Before turning trading on, run `scripts/perps-check.ts` on the testnet (its header says how), then on mainnet open and close a $10 BTC position and try a $5 rebalance each way.
+
 ## Setup
 
 Needs Node 24.12 or later (it runs the TypeScript directly) and MongoDB running as a replica set (deposits are credited in transactions; one node is enough).
