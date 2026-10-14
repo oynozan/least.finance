@@ -46,3 +46,6 @@ next-env.d.ts
 /playwright-report/
 /playwright/.cache/
 /e2e/screenshots/
+
+# git worktrees for parallel builds
+/.worktrees/
