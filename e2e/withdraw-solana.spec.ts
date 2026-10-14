@@ -106,3 +106,70 @@ test("the setup line shows for a wallet with no USDC account", async ({ page }) 
     await expect(sidebar(page).locator("#withdraw-hint")).toHaveText("The smallest withdrawal to Solana is $1.00.");
     await expect(quote).toHaveCount(0);
 });
+
+test("pressing Withdraw below the Solana minimum sends nothing and marks the field invalid", async ({ page }) => {
+    const sent: string[] = [];
+    page.on("websocket", (ws) => ws.on("framesent", (frame) => sent.push(String(frame.payload))));
+    await signIn(page);
+    await openAndFill(page, "0.5");
+    await expect(sidebar(page).locator("#withdraw-hint")).toHaveText("The smallest withdrawal to Solana is $1.00.");
+    await expect(amountField(page)).toHaveAttribute("aria-invalid", "true");
+    // The button reads aria-disabled below the minimum, which a real press still reaches.
+    await withdrawButton(page).click({ force: true });
+    await expect(amountField(page)).toHaveAttribute("aria-invalid", "true");
+    await expect(amountField(page)).toHaveValue("0.5");
+    expect(sent.filter((frame) => frame.includes("withdraw:create") || frame.includes("withdraw:quote"))).toEqual([]);
+});
+
+test("a changed fee re-quotes, shows the new line and sends only when Withdraw is pressed again", async ({ page }) => {
+    // The first withdraw:create is answered quote_changed here and the quotes after the first read a dearer fee.
+    const creates: string[] = [];
+    const quoteIds: string[] = [];
+    let refused = false;
+    await page.routeWebSocket(/socket\.io/, (ws) => {
+        const server = ws.connectToServer();
+        ws.onMessage((message) => {
+            const text = String(message);
+            const frame = /^42(\d+)\["(withdraw:[a-z]+)"/.exec(text);
+            if (frame?.[2] === "withdraw:quote") quoteIds.push(frame[1]!);
+            if (frame?.[2] === "withdraw:create") {
+                creates.push(text);
+                if (!refused) {
+                    refused = true;
+                    const error = { code: "quote_changed", message: "The fee is now 0.4 USDC. Nothing was taken." };
+                    ws.send(`43${frame[1]}[${JSON.stringify({ ok: false, error })}]`);
+                    return;
+                }
+            }
+            server.send(message);
+        });
+        server.onMessage((message) => {
+            const text = String(message);
+            const ack = /^43(\d+)\[([\s\S]*)\]$/.exec(text);
+            if (ack && quoteIds.indexOf(ack[1]!) > 0) {
+                const body = JSON.parse(ack[2]!);
+                body.data = { ...body.data, fee: "0.4", receive: "49.6" };
+                ws.send(`43${ack[1]}[${JSON.stringify(body)}]`);
+            } else ws.send(message);
+        });
+    });
+    await signIn(page);
+    await openAndFill(page, "50");
+    await expect(sidebar(page).locator("#withdraw-quote")).toContainText(FEE_LINE, { timeout: 15_000 });
+    await withdrawButton(page).click();
+    await expect(sidebar(page).locator("#withdraw-hint")).toHaveText(
+        "The fee changed. Check the new amount and press Withdraw again.",
+    );
+    await expect(sidebar(page).locator("#withdraw-quote")).toContainText("Fee 0.40 USDC · you receive 49.60 USDC", {
+        timeout: 15_000,
+    });
+    // Nothing more went out on its own, and the form is still open with the amount.
+    await page.waitForTimeout(1_000);
+    expect(creates).toHaveLength(1);
+    await expect(amountField(page)).toHaveValue("50");
+    await withdrawButton(page).click();
+    await expect(balanceButton(page)).toHaveAccessibleName("Balance $150.00, show deposits");
+    expect(creates).toHaveLength(2);
+    expect(creates[0]).toContain('"reviewedFee":"0.286"');
+    expect(creates[1]).toContain('"reviewedFee":"0.4"');
+});
