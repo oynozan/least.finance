@@ -15,6 +15,7 @@ import { AppError, isAppError, toApiError } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
 import type { Services } from "../services.ts";
 import {
+    activityPage,
     coinWalletAmount,
     depositPage,
     depositReport,
@@ -88,6 +89,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     const perpQuotes = new RateLimiterMemory({ keyPrefix: "perp-quote", points: 60, duration: 60 });
     const perpOrders = new RateLimiterMemory({ keyPrefix: "perp", points: 10, duration: 60 });
     const pnlSeriesLimit = new RateLimiterMemory({ keyPrefix: "pnl-series", points: 30, duration: 60 });
+    const activityList = new RateLimiterMemory({ keyPrefix: "activity-list", points: 60, duration: 60 });
 
     io.use(async (socket, next) => {
         try {
@@ -434,6 +436,17 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 });
                 const account = await boundAccount(socket);
                 return services.pnl.series(account._id, tz);
+            }),
+        );
+
+        socket.on("activity:list", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(activityPage, payload);
+                await activityList.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                });
+                const account = await boundAccount(socket);
+                return services.feed.page(account._id, input);
             }),
         );
     });

@@ -290,6 +290,11 @@ export type ClientToServerEvents = {
     "perp:close": (req: PerpCloseRequest, ack: (result: Ack<{ order: PerpOrderView }>) => void) => void;
     /** The account's balance, PnL and net per day, week or month for 7D, 30D and All, with days cut in the zone `tz`. */
     "pnl:series": (payload: { tz: string }, ack: (result: Ack<PnlSeries>) => void) => void;
+    /** One page of the account's history, newest first; `before` is the `next` of the page before it. */
+    "activity:list": (
+        payload: { before?: string; limit?: number; filter?: ActivityFilter },
+        ack: (result: Ack<ActivityPage>) => void,
+    ) => void;
 };
 
 export type ServerToClientEvents = {
