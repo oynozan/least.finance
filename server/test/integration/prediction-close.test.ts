@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { ObjectId } from "mongodb";
+import { pino } from "pino";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import type { AccountDoc, PositionDoc, PredictionOrderDoc } from "../../src/db/mongo.ts";
 import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { isAppError } from "../../src/errors.ts";
+import { PredictionReconciler } from "../../src/predictions/reconciler.ts";
 import { PredictionTracker } from "../../src/predictions/tracker.ts";
 import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
 
@@ -292,6 +294,123 @@ test("shares bought while a sell is posted stay open after the sell settles", as
     const s = await h.state(account._id);
     expect(kinds(s.rows)).toEqual(["deposit", "prediction_buy", "prediction_sell"]);
     expect(s.sum).toBe(s.balance);
+});
+
+/** A posted sell of the holder's 20 shares, then a $10 buy of the same token that fills while the sell is out */
+async function sellWithBuyDuring(own: Harness) {
+    const { account, position } = await holder(own);
+    own.trader.onNext(TOKEN, "delay");
+    const view = await own.service.close(account, closeInput(position));
+    await until(async () => (await orderOf(own, view.requestId))?.state === "posted");
+    const sell = (await orderOf(own, view.requestId))!;
+    await until(
+        async () => own.trader.posts.some((p) => p.orderHash === sell.orderHash) && !own.service.submitting(sell._id),
+    );
+    const buy = await own.service.place(account, {
+        requestId: randomUUID(),
+        eventId: EVENT,
+        tokenId: TOKEN,
+        amountUSD: "10",
+    });
+    const bought = await settled(own, buy.requestId);
+    expect(bought.state).toBe("filled");
+    return { account, position, view, sell, bought };
+}
+
+test("a buy that fills while a sell is out leaves the position open and records the sold part on the sell order", async () => {
+    const { account, position, view, sell } = await sellWithBuyDuring(h);
+    const seen: PredictionOrderDoc[] = [];
+    const listener = (update: { order: PredictionOrderDoc }) => {
+        if (update.order._id.equals(sell._id)) seen.push(update.order);
+    };
+    h.bus.on("prediction:updated", listener);
+
+    h.trader.settleDelayed(sell.orderHash!, "fill");
+    await tracker.tick();
+    h.bus.off("prediction:updated", listener);
+
+    const order = (await orderOf(h, view.requestId))!;
+    const left = (await positionOf(h, position._id))!;
+    const s = await h.state(account._id);
+    const credited = s.rows.find((row) => row.kind === "prediction_sell")!;
+    expect(order.soldPart).toBeDefined();
+    expect(fromDecimal(order.soldPart!.cost) + fromDecimal(left.cost)).toBe(wei("20"));
+    expect(fromDecimal(order.soldPart!.proceeds)).toBe(fromDecimal(credited.amount));
+    expect(order.soldPart!.at).toBeInstanceOf(Date);
+    expect(await h.database.collections.positions.countDocuments({ accountId: account._id })).toBe(1);
+    expect(left.state).toBe("open");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.soldPart).toBeDefined();
+    expect(fromDecimal(seen[0]!.soldPart!.cost)).toBe(fromDecimal(order.soldPart!.cost));
+});
+
+test("a sell that closes the position sets no soldPart", async () => {
+    const { account, position } = await holder(h);
+    const view = await h.service.close(account, closeInput(position));
+    const order = await settled(h, view.requestId);
+
+    expect(order.state).toBe("filled");
+    expect((await positionOf(h, position._id))!.state).toBe("closed");
+    expect("soldPart" in order).toBe(false);
+});
+
+test("a partial sell fill that fails midway leaves no sold part", async () => {
+    const own = await predictionHarness({ now: () => clock });
+    try {
+        await own.service.refreshFloat();
+        const { account, position, sell } = await sellWithBuyDuring(own);
+        const before = (await positionOf(own, position._id))!;
+        await own.database.collections.accounts.deleteOne({ _id: account._id });
+
+        await expect(own.service.settle(sell, 20_000_000n, 9_600_000n)).rejects.toThrow();
+
+        const order = (await orderOf(own, sell.requestId))!;
+        const after = (await positionOf(own, position._id))!;
+        expect(order.state).toBe("posted");
+        expect("soldPart" in order).toBe(false);
+        expect(after.state).toBe("closing");
+        expect(fromDecimal(after.shares)).toBe(fromDecimal(before.shares));
+        expect(fromDecimal(after.cost)).toBe(fromDecimal(before.cost));
+        expect(
+            await own.database.collections.ledger.countDocuments({ accountId: account._id, kind: "prediction_sell" }),
+        ).toBe(0);
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("after a partial sale the reconciler finds no mismatch", async () => {
+    const own = await predictionHarness({ now: () => clock });
+    try {
+        const logs: { msg: string }[] = [];
+        const logger = pino({ level: "debug" }, { write: (line: string) => void logs.push(JSON.parse(line)) });
+        await own.service.refreshFloat();
+        // The holder's shares never went through the trader
+        own.trader.setHoldings([{ tokenId: TOKEN, sharesE6: 20_000_000n }]);
+        const ownTracker = new PredictionTracker({
+            collections: own.database.collections,
+            service: own.service,
+            trader: () => own.trader,
+            logger: own.logger,
+            pollMs: 0,
+            now: () => clock,
+        });
+        const { sell } = await sellWithBuyDuring(own);
+        own.trader.settleDelayed(sell.orderHash!, "fill");
+        await ownTracker.tick();
+        expect((await orderOf(own, sell.requestId))!.soldPart).toBeDefined();
+
+        await new PredictionReconciler({
+            collections: own.database.collections,
+            trader: () => own.trader,
+            logger,
+            intervalMs: 0,
+        }).tick();
+
+        expect(logs.map((line) => line.msg)).not.toContain("The pool's holdings don't match the positions");
+    } finally {
+        await own.database.close();
+    }
 });
 
 test("the sell quote is net of the fee and over the sellable shares", async () => {

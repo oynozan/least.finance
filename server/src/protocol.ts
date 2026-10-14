@@ -379,6 +379,8 @@ export type PredictionOrderView = {
     amountUSD: UsdcAmount | null;
     shares: string | null;
     positionId: string | null;
+    /** What a sell that left the position open sold, absent when the sell closed it */
+    soldPart?: { costUSD: UsdcAmount; proceedsUSD: UsdcAmount; at: string };
     createdAt: string;
     updatedAt: string;
 };

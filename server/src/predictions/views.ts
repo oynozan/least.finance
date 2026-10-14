@@ -28,6 +28,13 @@ export const orderView = (order: PredictionOrderDoc): PredictionOrderView => ({
           ? formatE6(fromDecimal(order.shares))
           : null,
     positionId: order.positionId?.toHexString() ?? null,
+    ...(order.soldPart && {
+        soldPart: {
+            costUSD: formatUsdc(fromDecimal(order.soldPart.cost)),
+            proceedsUSD: formatUsdc(fromDecimal(order.soldPart.proceeds)),
+            at: order.soldPart.at.toISOString(),
+        },
+    }),
     createdAt: order.createdAt.toISOString(),
     updatedAt: order.updatedAt.toISOString(),
 });

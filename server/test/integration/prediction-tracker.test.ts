@@ -247,7 +247,7 @@ test("a refunded order past its watch is not looked at again", async () => {
     expect((await orderOf(view.requestId))!.state).toBe("failed");
 });
 
-const heldPosition = async () => {
+const holding = async () => {
     const account = await h.seedAccount("0");
     const now = new Date();
     const position = {
@@ -269,6 +269,10 @@ const heldPosition = async () => {
         updatedAt: now,
     };
     await h.database.collections.positions.insertOne(position);
+    return { account, position };
+};
+const heldPosition = async () => {
+    const { account, position } = await holding();
     h.trader.onNext(TOKEN, "unknown");
     const view = await h.service.close(account, {
         requestId: randomUUID(),
@@ -297,6 +301,66 @@ test("a late sell fill closes a position that is still open", async () => {
     const s = await h.state(account._id);
     expect(s.balance).toBe(wei("9.6"));
     expect(s.sum).toBe(s.balance);
+});
+
+const PART = { makingE6: 12_000_000n, takingE6: 5_760_000n };
+
+test("a late sell fill that leaves shares records the sold part", async () => {
+    const { account, position, view, order } = await heldPosition();
+    h.trader.setFound(order.orderHash!, PART);
+    clock += 61_000;
+    await tracker.tick();
+
+    const sold = (await orderOf(view.requestId))!;
+    const left = (await h.database.collections.positions.findOne({ _id: position._id }))!;
+    expect(sold).toMatchObject({ state: "filled", lateFill: "settled" });
+    expect(left.state).toBe("open");
+    expect(fromDecimal(left.shares)).toBe(8_000_000n);
+    expect(fromDecimal(left.cost)).toBe(wei("4"));
+    expect(fromDecimal(sold.soldPart!.cost)).toBe(wei("6"));
+    expect(fromDecimal(sold.soldPart!.proceeds)).toBe(wei("5.76"));
+    const s = await h.state(account._id);
+    expect(s.balance).toBe(wei("5.76"));
+    expect(s.sum).toBe(s.balance);
+});
+
+test("a late partial sell fill booked twice records one sold part", async () => {
+    const { account, view } = await heldPosition();
+    const stored = (await orderOf(view.requestId))!;
+    await Promise.all([
+        h.service.settleLate(stored, PART.makingE6, PART.takingE6),
+        h.service.settleLate(stored, PART.makingE6, PART.takingE6),
+    ]);
+
+    const sold = (await orderOf(view.requestId))!;
+    const s = await h.state(account._id);
+    expect(s.rows.filter((r) => r.kind === "prediction_sell")).toHaveLength(1);
+    expect(fromDecimal(sold.soldPart!.cost)).toBe(wei("6"));
+    expect(fromDecimal(sold.soldPart!.proceeds)).toBe(wei("5.76"));
+    expect(s.balance).toBe(wei("5.76"));
+    expect(s.sum).toBe(s.balance);
+});
+
+test("a partial sell fill delivered twice records one sold part", async () => {
+    const { account, position } = await holding();
+    h.trader.onNext(TOKEN, "delay");
+    const view = await h.service.close(account, {
+        requestId: randomUUID(),
+        positionId: position._id.toHexString(),
+        quotedPrice: 0.48,
+    });
+    const order = await posted(view.requestId);
+    await sent(order);
+
+    await h.service.settle(order, PART.makingE6, PART.takingE6);
+    await h.service.settle(order, PART.makingE6, PART.takingE6);
+
+    const sold = (await orderOf(view.requestId))!;
+    const s = await h.state(account._id);
+    expect(s.rows.filter((r) => r.kind === "prediction_sell")).toHaveLength(1);
+    expect(fromDecimal(sold.soldPart!.cost)).toBe(wei("6"));
+    expect(fromDecimal(sold.soldPart!.proceeds)).toBe(wei("5.76"));
+    expect(s.balance).toBe(wei("5.76"));
 });
 
 test("a late sell fill with the shares gone is orphaned", async () => {

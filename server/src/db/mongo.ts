@@ -133,6 +133,8 @@ export type PredictionOrderDoc = {
     filledShares: Decimal128 | null;
     /** Wei. */
     cost: Decimal128 | null;
+    /** What a sell that left the position open sold, in wei, absent when the sell closed it */
+    soldPart?: { cost: Decimal128; proceeds: Decimal128; at: Date };
     postedAt: Date | null;
     /** When the post got no clear answer; the order is held, never refunded, for a while after. */
     postUnknownAt?: Date | null;

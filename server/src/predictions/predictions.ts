@@ -589,8 +589,8 @@ export class PredictionService {
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
-            const { position, account } = await this.#bookSellFill(session, moved, makingE6, proceeds, "closing", now);
-            return { order: moved, position, account, float: null };
+            const booked = await this.#bookSellFill(session, moved, makingE6, proceeds, "closing", now);
+            return { ...booked, float: null };
         });
         if (!done) return;
         this.#deps.logger.info(
@@ -608,8 +608,8 @@ export class PredictionService {
         proceeds: bigint,
         from: "closing" | "open",
         now: Date,
-    ): Promise<{ position: PositionDoc; account: AccountDoc }> {
-        const { positions, accounts } = this.#deps.collections;
+    ): Promise<{ order: PredictionOrderDoc; position: PositionDoc; account: AccountDoc }> {
+        const { positions, predictionOrders, accounts } = this.#deps.collections;
         const closing = await positions.findOne(
             { _id: moved.positionId!, accountId: moved.accountId, state: from },
             { session },
@@ -633,6 +633,22 @@ export class PredictionService {
             { session, returnDocument: "after" },
         );
         if (!position) throw new Error(`The position wasn't ${from}`);
+        const order = keep
+            ? await predictionOrders.findOneAndUpdate(
+                  { _id: moved._id },
+                  {
+                      $set: {
+                          soldPart: {
+                              cost: toDecimal(fromDecimal(closing.cost) - fromDecimal(position.cost)),
+                              proceeds: toDecimal(proceeds),
+                              at: now,
+                          },
+                      },
+                  },
+                  { session, returnDocument: "after" },
+              )
+            : moved;
+        if (!order) throw new Error("The order vanished");
         const account =
             proceeds > 0n
                 ? await this.#deps.ledger.creditInSession(
@@ -644,7 +660,7 @@ export class PredictionService {
                   )
                 : await accounts.findOne({ _id: moved.accountId }, { session });
         if (!account) throw new Error("The account vanished");
-        return { position, account };
+        return { order, position, account };
     }
 
     /** Fails an order and gives back everything it held; a failed sell reopens its position, and `watchUntil` marks a refund the tracker keeps checking for a late fill. A repeat, or an order that already moved on, does nothing. */
@@ -727,15 +743,8 @@ export class PredictionService {
                     );
                     if (!open || fromDecimal(open.shares) < makingE6) throw new Unbookable();
                     const proceeds = sellProceeds(makingE6, takingE6, meta);
-                    const { position, account } = await this.#bookSellFill(
-                        session,
-                        moved,
-                        makingE6,
-                        proceeds,
-                        "open",
-                        now,
-                    );
-                    return { order: moved, position, account, float: null };
+                    const booked = await this.#bookSellFill(session, moved, makingE6, proceeds, "open", now);
+                    return { ...booked, float: null };
                 }
                 const held = fromDecimal(moved.amount);
                 const spent = e6ToWei(costOfFill(makingE6, takingE6, meta));
