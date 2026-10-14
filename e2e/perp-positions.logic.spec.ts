@@ -9,7 +9,7 @@ import {
     trendOf,
     type LivePerpPosition,
 } from "@/components/wallet-data";
-import { balanceHistory, byNewest, perpActivity } from "@/lib/trade/activity";
+import { byNewest, perpActivity } from "@/lib/trade/activity";
 
 const NOW = Date.UTC(2026, 9, 14, 12);
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -116,26 +116,14 @@ test.describe("perp rows in the sidebar", () => {
 
 test.describe("perps in the PnL feed", () => {
     test("opening a position does not show as a drop in the balance chart", () => {
-        const deposit = {
-            id: "deposit:d",
-            at: new Date(NOW - 2 * DAY),
-            kind: "deposit" as const,
-            title: "Deposit",
-            detail: "",
-            symbols: ["USDC"],
-            amountUSD: 300,
-            change: 300,
-        };
-        const feed = [deposit, ...perpActivity(position())];
-        const days = balanceHistory(feed, 3, new Date(NOW));
-        expect(days.map((d) => d.balance)).toEqual([300, 300, 300]);
+        const feed = perpActivity(position());
+        expect(feed.length).toBeGreaterThan(0);
+        for (const row of feed) expect(row.change).toBe(0);
     });
 
     test("perp_open and perp_close ledger rows are trades, not deposits", () => {
         const feed = perpActivity(position({ state: "closed", proceedsUSD: "112", settledAt: iso(NOW - 60_000) }));
         expect(feed.map((a) => a.kind)).toEqual(["long", "close"]);
-        const days = balanceHistory(feed, 1, new Date(NOW));
-        expect(days[0]).toMatchObject({ deposited: 0, pnl: 12, realized: 12 });
         expect(feed[1]).toMatchObject({ title: "Closed Long BTC at 5x", change: 12 });
     });
 

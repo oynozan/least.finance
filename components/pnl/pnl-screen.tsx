@@ -25,7 +25,7 @@ export function PnlScreen() {
                                     animate={{ opacity: 1, y: 0, scale: 1 }}
                                     transition={rise}
                                 >
-                                    <BalanceCard activity={state.activity} now={state.now} />
+                                    <BalanceCard />
                                 </motion.div>
                                 <motion.div
                                     initial={{ opacity: 0, y: 24, scale: 0.98 }}

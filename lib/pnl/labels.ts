@@ -10,6 +10,12 @@ export function parseStart(start: string): Date {
     return new Date(year, month - 1, day);
 }
 
+/** A moment's local calendar date as YYYY-MM-DD, the form a bucket's start takes. */
+export function localDate(at: Date): string {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+}
+
 /** The Balance card's heading for a bucket: "Balance on Mar 3", "Balance, week of Mar 3", "Balance in March". */
 export function headingFor(unit: PnlUnit, start: string): string {
     const date = parseStart(start);

@@ -2,18 +2,33 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useAccount, type Account } from "@/components/account-provider";
+import { localDate } from "@/lib/pnl/labels";
 import { nextSeriesRequest, saveSeries, storedSeries, subscribeSeries } from "@/lib/pnl/series-store";
 import type { PnlSeries } from "@/server/src/protocol";
 
 /** One event fires several pushes, so the series is asked for once they stop. */
 const DEBOUNCE_MS = 400;
 
+const MINUTE = 60_000;
+
 const subscribeNever = () => () => undefined;
+const subscribeMinute = (onChange: () => void) => {
+    const timer = setInterval(onChange, MINUTE);
+    return () => clearInterval(timer);
+};
 /** The browser's time zone, in the browser only: the server doesn't know the person's. */
 const useZone = () =>
     useSyncExternalStore(
         subscribeNever,
         () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+        () => null,
+    );
+
+/** The browser's local date, in the browser only: it turns over at midnight, when the last bar is a new day. */
+const useToday = () =>
+    useSyncExternalStore(
+        subscribeMinute,
+        () => localDate(new Date()),
         () => null,
     );
 
@@ -29,6 +44,7 @@ async function ask(load: Account["loadPnlSeries"], tz: string): Promise<boolean 
 export function usePnlSeries(): { series: PnlSeries | null; failed: boolean } {
     const { pnl, loadPnlSeries } = useAccount();
     const tz = useZone();
+    const today = useToday();
     const series = useSyncExternalStore(
         subscribeSeries,
         () => (tz ? storedSeries(tz) : null),
@@ -43,9 +59,9 @@ export function usePnlSeries(): { series: PnlSeries | null; failed: boolean } {
         load.current = loadPnlSeries;
     });
 
-    // At once on mount and after every bind.
+    // At once on mount, after every bind and when the date turns over.
     useEffect(() => {
-        if (!tz || pnl.bound === 0) return;
+        if (!tz || !today || pnl.bound === 0) return;
         let live = true;
         void ask(load.current, tz).then((result) => {
             if (live && result !== null) setFailed(result);
@@ -53,7 +69,7 @@ export function usePnlSeries(): { series: PnlSeries | null; failed: boolean } {
         return () => {
             live = false;
         };
-    }, [tz, pnl.bound]);
+    }, [tz, today, pnl.bound]);
 
     // After the pushes stop; the count the page mounted with was answered by the ask above.
     const seen = useRef(pnl.changed);

@@ -25,8 +25,6 @@ export type Activity = {
     pending?: boolean;
 };
 
-const DAY = 86_400_000;
-
 export function depositActivity(deposit: { key: string; amountUSD: number; at: Date; pending?: boolean }): Activity {
     return {
         id: `deposit:${deposit.key}`,
@@ -186,49 +184,3 @@ export function pendingBuyActivity(buy: {
 
 /** Newest first. */
 export const byNewest = (a: Activity, b: Activity) => b.at.getTime() - a.at.getTime();
-
-export type BalanceDay = {
-    /** Midnight, local time. */
-    day: Date;
-    /** At the end of the day. */
-    balance: number;
-    /** Realized PnL and fees that day; deposits and withdrawals aren't PnL. */
-    pnl: number;
-    /** Just the PnL of positions closed that day, which says how the day went; fees alone don't. */
-    realized: number;
-    deposited: number;
-};
-
-/** The balance at the end of each of the last `days` days, today last. */
-export function balanceHistory(activity: readonly Activity[], days: number, now: Date): BalanceDay[] {
-    const today = new Date(now);
-    today.setHours(0, 0, 0, 0);
-    const first = today.getTime() - (days - 1) * DAY;
-    let balance = 0;
-    for (const a of activity) if (a.at.getTime() < first) balance += a.change;
-    const out: BalanceDay[] = [];
-    for (let i = 0; i < days; i++) {
-        const start = first + i * DAY;
-        let pnl = 0;
-        let realized = 0;
-        let deposited = 0;
-        for (const a of activity) {
-            const t = a.at.getTime();
-            if (t < start || t >= start + DAY) continue;
-            if (a.kind === "deposit" || a.kind === "withdrawal") deposited += a.change;
-            else pnl += a.change;
-            if (a.kind === "close") realized += a.change;
-        }
-        balance += pnl + deposited;
-        out.push({ day: new Date(start), balance, pnl, realized, deposited });
-    }
-    return out;
-}
-
-/** Days back to the oldest activity, today included. */
-export function daysSince(activity: readonly Activity[], now: Date) {
-    const oldest = Math.min(...activity.map((a) => a.at.getTime()), now.getTime());
-    const today = new Date(now);
-    today.setHours(0, 0, 0, 0);
-    return Math.max(1, Math.ceil((today.getTime() - oldest) / DAY) + 1);
-}

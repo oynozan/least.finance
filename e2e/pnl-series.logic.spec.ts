@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 import { Server } from "socket.io";
 import { AccountClient } from "@/components/account-client";
 import type { ApiError } from "@/lib/account/state";
-import { headingFor, hoverLine, nounFor, parseStart, valueText } from "@/lib/pnl/labels";
+import { headingFor, hoverLine, localDate, nounFor, parseStart, valueText } from "@/lib/pnl/labels";
 import { nextSeriesRequest, resetPnlStores, saveSeries, storedSeries, subscribeSeries } from "@/lib/pnl/series-store";
 import type { PnlSeries } from "@/server/src/protocol";
 
@@ -69,6 +69,14 @@ test("parseStart gives local midnight on the date, also on daylight saving days"
         if (zone === undefined) delete process.env.TZ;
         else process.env.TZ = zone;
     }
+});
+
+test("localDate is the calendar date in the browser's zone and turns over at local midnight", () => {
+    expect(localDate(new Date(2026, 0, 5, 9, 30))).toBe("2026-01-05");
+    expect(localDate(new Date(2026, 2, 8, 23, 59, 59, 999))).toBe("2026-03-08");
+    expect(localDate(new Date(2026, 2, 9, 0, 0, 0, 0))).toBe("2026-03-09");
+    expect(localDate(new Date(2026, 11, 31, 23, 59))).toBe("2026-12-31");
+    expect(parseStart(localDate(new Date(2026, 9, 14, 17, 45)))).toEqual(new Date(2026, 9, 14));
 });
 
 test.describe("the series store", () => {

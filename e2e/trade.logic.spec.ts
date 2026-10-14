@@ -25,14 +25,7 @@ import {
 } from "@/lib/trade/operations/shared";
 import { quoteRows } from "@/lib/trade/prediction-quote";
 import { TRADE } from "@/lib/trade/registry";
-import {
-    balanceHistory,
-    daysSince,
-    depositActivity,
-    predictionActivity,
-    withdrawalActivity,
-    type Activity,
-} from "@/lib/trade/activity";
+import { predictionActivity, withdrawalActivity } from "@/lib/trade/activity";
 import type { PositionView } from "@/server/src/protocol";
 import { HOLDINGS, LOADED_CATALOG as CATALOG, MARKETS, PRICES } from "./trade-fixtures";
 
@@ -839,50 +832,10 @@ test.describe("the amount's dropdown", () => {
     });
 });
 
-test.describe("balance history", () => {
-    const now = new Date(2026, 9, 9, 15, 0);
+test.describe("activity rows", () => {
     const at = (daysAgo: number, hour = 12) => new Date(2026, 9, 9 - daysAgo, hour);
-    /** A row that moved the balance by `change`: a realized close, or a fee. */
-    const row = (id: string, kind: Activity["kind"], change: number, daysAgo: number): Activity => ({
-        id,
-        at: at(daysAgo),
-        kind,
-        title: id,
-        detail: "",
-        symbols: ["USDC"],
-        amountUSD: 100,
-        change,
-    });
-    const closes = [
-        row("c1", "close", 86.4, 21),
-        row("c2", "close", -54.2, 15),
-        row("c3", "close", 128.75, 10),
-        row("c4", "close", -112.3, 5),
-        row("c5", "close", 64.1, 2),
-    ];
 
-    test("a bar a day, ending today, with deposits apart from PnL", () => {
-        const activity = [
-            depositActivity({ key: "a", amountUSD: 500, at: at(10) }),
-            depositActivity({ key: "b", amountUSD: 100, at: at(2) }),
-            ...closes,
-        ];
-        const days = balanceHistory(activity, 7, now);
-        expect(days).toHaveLength(7);
-        expect(days.at(-1)!.day).toEqual(new Date(2026, 9, 9));
-        // Everything before the first day is carried in.
-        const before = activity.filter((a) => a.at < days[0].day).reduce((sum, a) => sum + a.change, 0);
-        expect(days[0].balance).toBeCloseTo(before + days[0].pnl + days[0].deposited, 6);
-        const twoDaysAgo = days.at(-3)!;
-        expect(twoDaysAgo.deposited).toBe(100);
-        // The balance ends at the sum of every change.
-        expect(days.at(-1)!.balance).toBeCloseTo(
-            activity.reduce((sum, a) => sum + a.change, 0),
-            6,
-        );
-    });
-
-    test("a withdrawal lowers that day's balance and isn't PnL", () => {
+    test("a withdrawal row takes its amount off the balance", () => {
         const to = "0x1234567890abcdef1234567890abcdef12345678";
         const withdrawal = withdrawalActivity({ id: "w1", amountUSD: 50, at: at(1), pending: false, to });
         expect(withdrawal).toMatchObject({
@@ -893,22 +846,6 @@ test.describe("balance history", () => {
             amountUSD: 50,
             change: -50,
         });
-        const activity = [depositActivity({ key: "a", amountUSD: 500, at: at(3) }), withdrawal, ...closes];
-        const days = balanceHistory(activity, 7, now);
-        const day = days.at(-2)!;
-        expect(day.deposited).toBe(-50);
-        expect(day.pnl).toBe(0);
-        expect(day.realized).toBe(0);
-        expect(day.balance).toBeCloseTo(days.at(-3)!.balance - 50, 6);
-    });
-
-    test("fees alone don't count as a day's realized PnL", () => {
-        const trades = [row("f1", "swap", -0.03, 29), row("f2", "buy", -1.2, 26), ...closes];
-        const days = balanceHistory(trades, 30, now);
-        const feeOnly = days.filter((d) => d.pnl !== 0 && d.realized === 0);
-        expect(feeOnly.length).toBeGreaterThan(0);
-        for (const d of feeOnly) expect(d.pnl).toBeLessThan(0);
-        expect(daysSince(trades, now)).toBe(30);
     });
 
     const position = (over: Partial<PositionView>): PositionView => ({
@@ -929,7 +866,7 @@ test.describe("balance history", () => {
         ...over,
     });
 
-    test("a won position adds its realized gain to the day it settled, and the bar is a gain", () => {
+    test("a won position is a close row with its realized gain", () => {
         const rows = predictionActivity(position({ state: "won", payoutUSD: "20", settledAt: at(1).toISOString() }));
         expect(rows.map((r) => r.id)).toEqual(["prediction:p1:open", "prediction:p1:settle"]);
         expect(rows[0]).toMatchObject({ kind: "predict", title: "Yes on Will it rain?", amountUSD: 10, change: 0 });
@@ -939,32 +876,11 @@ test.describe("balance history", () => {
             change: 10,
             symbols: ["USDC"],
         });
-        const days = balanceHistory([depositActivity({ key: "d", amountUSD: 100, at: at(5) }), ...rows], 7, now);
-        const day = days.at(-2)!;
-        expect(day.realized).toBe(10);
-        expect(day.pnl).toBe(10);
-        expect(days.at(-3)!.realized).toBe(0);
-        expect(days.at(-1)!.balance).toBe(110);
-    });
-
-    test("a position settled 10 days ago still counts in the 30-day chart", () => {
-        const rows = predictionActivity(
-            position({
-                state: "won",
-                payoutUSD: "20",
-                openedAt: at(12).toISOString(),
-                settledAt: at(10).toISOString(),
-            }),
-        );
-        const days = balanceHistory([depositActivity({ key: "d", amountUSD: 100, at: at(20) }), ...rows], 30, now);
-        expect(days.at(-11)!.realized).toBe(10);
-        expect(days.at(-1)!.balance).toBe(110);
     });
 
     test("a lost position is a realized loss", () => {
         const rows = predictionActivity(position({ state: "lost", settledAt: at(1).toISOString() }));
         expect(rows[1]).toMatchObject({ kind: "close", title: "Lost Yes on Will it rain?", change: -10 });
-        expect(balanceHistory(rows, 7, now).at(-2)!.realized).toBe(-10);
     });
 
     test("a sold position realizes proceeds less cost", () => {
@@ -980,8 +896,6 @@ test.describe("balance history", () => {
             expect(rows).toHaveLength(1);
             expect(rows[0]).toMatchObject({ id: "prediction:p1:open", change: 0 });
         }
-        const days = balanceHistory(predictionActivity(position({})), 7, now);
-        expect(days.every((d) => d.realized === 0 && d.balance === 0)).toBe(true);
         expect(predictionActivity(position({}), true)[0]!.pending).toBe(true);
     });
 });
