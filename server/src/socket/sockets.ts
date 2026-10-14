@@ -6,6 +6,7 @@ import type { Identity } from "../auth/identity.ts";
 import { solanaOpen } from "../crosschain/solana-switch.ts";
 import { orderView, sourceTxView } from "../crosschain/views.ts";
 import { swapOrderView } from "../swaps/views.ts";
+import { perpOrderView, perpUpdate } from "../perps/views.ts";
 import { positionView, predictionUpdate } from "../predictions/views.ts";
 import { accountView, depositView } from "../deposits/views.ts";
 import { formatUsdc } from "../db/money.ts";
@@ -18,6 +19,9 @@ import {
     depositPage,
     depositReport,
     parse,
+    perpClose,
+    perpOrder,
+    perpQuote,
     predictionClose,
     predictionOrder,
     predictionQuote,
@@ -80,6 +84,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     const withdrawLimits = new RateLimiterMemory({ keyPrefix: "withdraw-limits", points: 30, duration: 60 });
     const withdrawQuotes = new RateLimiterMemory({ keyPrefix: "withdraw-quote", points: 30, duration: 60 });
     const predictionOrders = new RateLimiterMemory({ keyPrefix: "prediction", points: 10, duration: 60 });
+    const perpQuotes = new RateLimiterMemory({ keyPrefix: "perp-quote", points: 60, duration: 60 });
+    const perpOrders = new RateLimiterMemory({ keyPrefix: "perp", points: 10, duration: 60 });
 
     io.use(async (socket, next) => {
         try {
@@ -160,6 +166,13 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                         socket.emit("positions", await services.predictions.positions(account));
                     } catch (error) {
                         logger.warn({ err: error }, "Couldn't read positions at sign-in");
+                    }
+                });
+                enqueue(account._id.toHexString(), async () => {
+                    try {
+                        socket.emit("perps", await services.perps.positions(account));
+                    } catch (error) {
+                        logger.warn({ err: error }, "Couldn't read perp positions at sign-in");
                     }
                 });
                 enqueue(account._id.toHexString(), async () => {
@@ -377,6 +390,39 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 return services.predictions.close(await boundAccount(socket), input);
             }),
         );
+
+        socket.on("perp:quote", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(perpQuote, payload);
+                await perpQuotes.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many quotes. Try again shortly.");
+                });
+                await boundAccount(socket);
+                return services.perps.quote(input);
+            }),
+        );
+
+        socket.on("perp:order", (payload, ack) =>
+            reply(ack, async () => {
+                const input = parse(perpOrder, payload);
+                await perpOrders.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many orders. Try again shortly.");
+                });
+                const placed = await services.perps.place(await boundAccount(socket), input);
+                return { order: perpOrderView(placed.order), account: accountView(placed.account) };
+            }),
+        );
+
+        socket.on("perp:close", (payload, ack) =>
+            reply(ack, async () => {
+                parse(perpClose, payload);
+                await perpOrders.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many orders. Try again shortly.");
+                });
+                await boundAccount(socket);
+                throw new AppError("unavailable", "Couldn't close right now. Your position is still open.");
+            }),
+        );
     });
 
     bus.on("deposit:credited", ({ deposit, account }) => {
@@ -480,6 +526,21 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push a prediction update");
+            }
+        });
+    });
+
+    bus.on("perp:updated", (update) => {
+        enqueue(update.account._id.toHexString(), async () => {
+            try {
+                const room = roomOf(update.account._id);
+                const payload = perpUpdate(update);
+                for (const socket of await io.in(room).fetchSockets()) {
+                    if (socket.data.identity.userId === update.account.privyUserId) socket.emit("perp:update", payload);
+                    else socket.leave(room);
+                }
+            } catch (error) {
+                logger.warn({ err: error }, "Couldn't push a perp update");
             }
         });
     });

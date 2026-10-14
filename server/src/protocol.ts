@@ -200,7 +200,7 @@ export type ErrorCode =
     | "price_moved"
     /** The pool can't cover an order this size right now. */
     | "float_short"
-    /** The position is already being sold under another request. */
+    /** The position is already being sold under another request, or the asset is already held. */
     | "position_busy"
     | "trading_off"
     /** LI.FI has no route for the swap. */
@@ -277,6 +277,15 @@ export type ClientToServerEvents = {
         payload: { requestId: string; positionId: string; quotedPrice: number },
         ack: (result: Ack<PredictionOrderView>) => void,
     ) => void;
+    /** What opening a position would cost right now; nothing is held. */
+    "perp:quote": (req: PerpQuoteRequest, ack: (result: Ack<PerpQuoteView>) => void) => void;
+    /** Opens a position; the outcome follows as a `perp:update`. A repeated `requestId` is the same order. */
+    "perp:order": (
+        req: PerpOrderRequest,
+        ack: (result: Ack<{ order: PerpOrderView; account: AccountView }>) => void,
+    ) => void;
+    /** Closes a whole position; the outcome follows as a `perp:update`. A repeated `requestId` is the same order. */
+    "perp:close": (req: PerpCloseRequest, ack: (result: Ack<{ order: PerpOrderView }>) => void) => void;
 };
 
 export type ServerToClientEvents = {
@@ -301,6 +310,10 @@ export type ServerToClientEvents = {
     "position:settled": (payload: PositionSettled) => void;
     /** The account's positions and in-flight orders, pushed after `account:open`. */
     positions: (payload: PositionsView) => void;
+    /** A perp order changed state; carries the position it opened or closed and the account's new balance. */
+    "perp:update": (payload: PerpUpdate) => void;
+    /** The account's perp positions and in-flight orders, pushed after `account:open`. */
+    perps: (payload: PerpsView) => void;
 };
 
 /** What the socket handshake carries in `auth`. */
@@ -452,6 +465,63 @@ export type PerpMarketsView = {
     /** The most one order may take from the float right now, in dollars; null while trading is off. */
     maxOrderUSD: string | null;
 };
+
+export type PerpQuoteRequest = { asset: string; side: "long" | "short"; leverage: number; collateralUSD: string };
+
+/** What opening the position would cost right now; prices are decimal strings, "about" figures are estimates. */
+export type PerpQuoteView = {
+    entryPx: string;
+    sizeCoin: string;
+    notionalUSD: UsdcAmount;
+    takerFeeUSD: UsdcAmount;
+    ourFeeUSD: UsdcAmount;
+    liquidationPx: string;
+    fundingPerHour: string;
+    marginUSD: UsdcAmount;
+};
+
+export type PerpOrderRequest = PerpQuoteRequest & { requestId: string };
+
+export type PerpCloseRequest = { requestId: string; positionId: string };
+
+export type PerpPositionView = {
+    id: string;
+    asset: string;
+    side: "long" | "short";
+    leverage: number;
+    sizeCoin: string;
+    entryPx: string | null;
+    collateralUSD: UsdcAmount;
+    liquidationPx: string | null;
+    markPx: string | null;
+    unrealizedPnlUSD: UsdcAmount;
+    cumFundingUSD: UsdcAmount;
+    state: "open" | "closing" | "closed" | "liquidated";
+    proceedsUSD: UsdcAmount | null;
+    openedAt: string;
+    settledAt: string | null;
+    updatedAt: string;
+};
+
+export type PerpOrderView = {
+    id: string;
+    requestId: string;
+    kind: "open" | "close";
+    state: string;
+    /** The message the person is shown when the order didn't go through or only partly did. */
+    reason: string | null;
+    positionId: string | null;
+    filledSizeCoin: string | null;
+    requestedSizeCoin: string;
+    collateralUSD: UsdcAmount;
+    creditedUSD: UsdcAmount | null;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type PerpsView = { positions: PerpPositionView[]; orders: PerpOrderView[] };
+
+export type PerpUpdate = { order: PerpOrderView; position: PerpPositionView | null; account: AccountView };
 
 /** How far back a price history reaches; its points are 15 minutes, 1 hour, 6 hours, 1 day and 1 day apart. */
 export type PriceRange = "1d" | "7d" | "30d" | "90d" | "1y";

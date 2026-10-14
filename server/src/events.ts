@@ -4,6 +4,8 @@ import type {
     AccountDoc,
     DepositDoc,
     DepositOrderDoc,
+    PerpOrderDoc,
+    PerpPositionDoc,
     PositionDoc,
     PredictionOrderDoc,
     SwapOrderDoc,
@@ -24,6 +26,8 @@ type Events = {
     "swap:holdings": [{ accountId: ObjectId; privyUserId: string; view: SwapHoldingsView }];
     /** Fired after a prediction order settles, once its transaction commits. */
     "prediction:updated": [{ order: PredictionOrderDoc; position: PositionDoc | null; account: AccountDoc }];
+    /** Fired when a perp order changes state, once the change has committed. */
+    "perp:updated": [{ order: PerpOrderDoc; position: PerpPositionDoc | null; account: AccountDoc }];
     /** Fired after a position is paid or lost at its market's resolution, once its transaction commits. */
     "position:settled": [{ position: PositionDoc; account: AccountDoc }];
     /** Fired when a withdrawal is created or changes state. */

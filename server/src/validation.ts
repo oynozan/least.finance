@@ -97,6 +97,23 @@ export const predictionClose = sellQuote.extend({
     quotedPrice: z.number().gt(0).lt(1),
 });
 
+export const perpQuote = z.object({
+    asset: z.string().regex(/^[A-Z0-9]{2,12}$/, "an asset such as BTC"),
+    side: z.enum(["long", "short"]),
+    leverage: z.number().int().min(1).max(100),
+    collateralUSD: z
+        .string()
+        .regex(/^\d{1,9}(\.\d{1,6})?$/, "an amount such as 10.50")
+        .refine((amount) => Number(amount) > 0, "an amount over zero"),
+});
+
+export const perpOrder = perpQuote.extend({ requestId: z.string().regex(UUID, "a UUID") });
+
+export const perpClose = z.object({
+    requestId: z.string().regex(UUID, "a UUID"),
+    positionId: z.string().regex(/^[0-9a-f]{24}$/i, "a position id"),
+});
+
 const swapSide = z.object({
     token: z.string().trim().min(1).max(16),
     network: z.enum(NETWORKS.map((network) => network.id) as [NetworkId, ...NetworkId[]]),

@@ -30,6 +30,7 @@ import { MarketHistory } from "./markets/history.ts";
 import { MarketService } from "./markets/markets.ts";
 import { withPerpTimeouts, type HyperliquidClient } from "./perps/client.ts";
 import { PerpMarkets } from "./perps/markets.ts";
+import { PerpService } from "./perps/perps.ts";
 import { createNktkasClient } from "./perps/nktkas-client.ts";
 import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
@@ -311,6 +312,17 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             config,
             logger: logger.child({ component: "perps" }),
         });
+        const perps = new PerpService({
+            collections,
+            ledger,
+            markets: perpMarkets,
+            client: perpClient,
+            keyring,
+            bus,
+            logger: logger.child({ component: "perps" }),
+            config,
+        });
+        perpMarkets.setMaxOrderUSD(() => perps.maxOrderUSD());
         const sweeper = new Sweeper({
             client,
             keyring,
@@ -360,6 +372,8 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         });
         // Orders a restart left placing never reached Polymarket; refund them before anyone can order
         await service.recover();
+        // Perp orders a restart interrupted are refunded or settled before anyone can order
+        await perps.recover();
         let connecting: NodeJS.Timeout | null = null;
         let closed = false;
         const connectTrader = inFlight(async () => {
@@ -395,6 +409,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             markets,
             marketHistory,
             perpMarkets,
+            perps,
             predictions: service,
             priceHistory,
             swapCatalog,
@@ -416,6 +431,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         swapCatalog.start();
         priceHistory.start();
         perpMarkets.start();
+        perps.start();
         swapTracker.start();
         predictionTracker.start();
         predictionResolver.start();
@@ -439,6 +455,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             async close() {
                 closed = true;
                 service.stopOrders();
+                perps.stopOrders();
                 if (connecting) clearTimeout(connecting);
                 await predictionReconciler.stop();
                 await predictionRedeemer.stop();
@@ -447,6 +464,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await swapTracker.stop();
                 await swapCatalog.stop();
                 await priceHistory.stop();
+                await perps.stop();
                 await perpMarkets.stop();
                 await markets.stop();
                 await tracker.stop();

@@ -12,6 +12,7 @@ import type { Bus } from "./events.ts";
 import type { MarketHistory } from "./markets/history.ts";
 import type { MarketService } from "./markets/markets.ts";
 import type { PerpMarkets } from "./perps/markets.ts";
+import type { PerpService } from "./perps/perps.ts";
 import type { PredictionService } from "./predictions/predictions.ts";
 import type { PriceHistory } from "./prices/history.ts";
 import type { Sessions } from "./sessions.ts";
@@ -38,6 +39,7 @@ export type Services = {
     markets: MarketService;
     marketHistory: MarketHistory;
     perpMarkets: PerpMarkets;
+    perps: PerpService;
     predictions: PredictionService;
     priceHistory: PriceHistory;
     swapCatalog: SwapCatalog;
