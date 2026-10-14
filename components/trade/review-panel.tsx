@@ -7,11 +7,20 @@ import { submitIntent } from "@/lib/trade/execute";
 import type { TradeCtx } from "@/lib/trade/context";
 import { formatUnits } from "@/lib/trade/format";
 import { networkName } from "@/lib/trade/networks";
+import { quoteRows as perpQuoteRows } from "@/lib/trade/perp-quote";
 import { quoteRows } from "@/lib/trade/prediction-quote";
 import { swapQuoteRows } from "@/lib/trade/swap-quote";
 import { isSwapIntent, kindOf, swapSides, toSwapRequest } from "@/lib/trade/swap-request";
 import { walletHoldings } from "@/lib/trade/wallet-holdings";
-import type { QuoteView, SwapOrderView, SwapQuoteView, SwapRequest } from "@/server/src/protocol";
+import type {
+    PerpQuoteRequest,
+    PerpQuoteView,
+    QuoteView,
+    SwapOrderView,
+    SwapQuoteView,
+    SwapRequest,
+} from "@/server/src/protocol";
+import { OFFLINE_COPY } from "@/components/account-client";
 import { useAccount } from "@/components/account-provider";
 import { useLinkOtherWallet } from "@/components/arc-wallet";
 import { CloseIcon } from "@/components/icons";
@@ -171,6 +180,8 @@ const same = (a: SwapRequest, b: SwapRequest) =>
 
 type SwapAnswer = { key: string; quote: SwapQuoteView } | { key: string; error: string };
 
+type PerpAnswer = { key: string; quote: PerpQuoteView } | { key: string; error: string };
+
 function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void }) {
     const { view, wallet, catalog, maxOrderUSD } = useTrade();
     const account = useAccount();
@@ -288,12 +299,56 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const quote =
         quoted && quoted.tokenId === tokenId && Number(quoted.amountUSD) === Number(amountUSD) ? quoted : null;
     const other = market?.outcomes.length === 2 ? market.outcomes.find((o) => o.id !== outcome?.id) : undefined;
+
+    // A perp is opened for real once signed in and the server's trading is on (an intent exists only then).
+    const perp = intent?.type === "perp" ? intent : null;
+    const perpLive = !!perp && wallet.status === "connected";
+    const perpRequest = useMemo<PerpQuoteRequest | null>(
+        () =>
+            perp && perpLive && showing && !done && accountState.status === "ready"
+                ? { asset: perp.asset, side: perp.side, leverage: perp.leverage, collateralUSD: perp.collateralUSD }
+                : null,
+        [perp, perpLive, showing, done, accountState.status],
+    );
+    const perpKey = perpRequest ? JSON.stringify(perpRequest) : null;
+    const askPerp = useRef(account.quotePerp);
+    useEffect(() => {
+        askPerp.current = account.quotePerp;
+    });
+    const [perpAnswer, setPerpAnswer] = useState<PerpAnswer | null>(null);
+    const perpAsked = useRef(false);
+    useEffect(() => {
+        if (!perpKey) return;
+        const asked = JSON.parse(perpKey) as PerpQuoteRequest;
+        let current = true;
+        const refresh = () =>
+            void askPerp.current(asked).then((result) => {
+                if (!current) return;
+                setPerpAnswer(
+                    "entryPx" in result ? { key: perpKey, quote: result } : { key: perpKey, error: result.message },
+                );
+            });
+        // The first quote comes as the panel opens; a later change waits for typing to settle.
+        const first = setTimeout(refresh, perpAsked.current ? QUOTE_DEBOUNCE_MS : 0);
+        perpAsked.current = true;
+        const timer = setInterval(refresh, QUOTE_REFRESH_MS);
+        return () => {
+            current = false;
+            clearTimeout(first);
+            clearInterval(timer);
+        };
+    }, [perpKey]);
+    // Only an answer to the request on screen; a stale one would show the wrong price.
+    const perpQuote = perpKey && perpAnswer?.key === perpKey && "quote" in perpAnswer ? perpAnswer.quote : null;
+    const perpError = perpKey && perpAnswer?.key === perpKey && "error" in perpAnswer ? perpAnswer.error : null;
     const preview =
         live && quote && outcome
             ? { ...view.preview, rows: quoteRows(quote, outcome.label, other?.label, outcome.chance) }
-            : swapQuote
-              ? { ...view.preview, rows: swapQuoteRows(swapQuote, swapCtx) }
-              : view.preview;
+            : perp && perpQuote
+              ? { ...view.preview, rows: perpQuoteRows(perpQuote, perp) }
+              : swapQuote
+                ? { ...view.preview, rows: swapQuoteRows(swapQuote, swapCtx) }
+                : view.preview;
     const problemNow = problem?.key === intentKey ? problem.message : null;
 
     const confirmSwap = async () => {
@@ -335,6 +390,14 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             setSent(intentKey);
             return;
         }
+        if (perpLive && perp && perpQuote) {
+            const result = account.placePerp({ ...perp, requestId: crypto.randomUUID() }, perpQuote);
+            // Offline changes nothing; the person is told so here.
+            if (!result.sent) setRefusal(OFFLINE_COPY);
+            setAccepted(result.sent);
+            setSent(intentKey);
+            return;
+        }
         setSending(true);
         await submitIntent(view.intent);
         setSending(false);
@@ -351,7 +414,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
               ? "Confirm in your wallet"
               : view.cta.replace(/^Review/, "Confirm");
     // A swap waits for LI.FI's quote of what is on screen.
-    const awaitingQuote = !!swapIntent && !!request && !swapQuote;
+    const awaitingQuote = (!!swapIntent && !!request && !swapQuote) || (perpLive && !perpQuote);
     const blocked =
         !done &&
         wallet.status !== "disconnected" &&
@@ -365,7 +428,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                 : `Connect ${needs(missing)} wallet to pay with ${sides.from.token} on ${networkName(sides.from.network)}.`
             : null;
     const connectMessage = toConnect ? `Connect ${shortenAddress(toConnect)} to pay.` : null;
-    const swapNotice = missingMessage ?? connectMessage ?? problemNow ?? swapError;
+    const swapNotice = missingMessage ?? connectMessage ?? problemNow ?? swapError ?? perpError;
 
     return (
         <motion.div
@@ -398,7 +461,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                     ) : refusal ? (
                         <p className="text-[17px] leading-snug text-loss">{refusal}</p>
                     ) : accepted ? (
-                        <p className="text-[17px] leading-snug">Prediction placed.</p>
+                        <p className="text-[17px] leading-snug">{perp ? "Position opened." : "Prediction placed."}</p>
                     ) : live && prediction ? (
                         <p className="text-[17px] leading-snug">Nothing was sent.</p>
                     ) : (

@@ -249,7 +249,17 @@ function Provide({
     refreshHoldings?: () => void;
     children: ReactNode;
 }) {
-    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, walletCoins, perpTrading);
+    const { perps } = useAccount();
+    // An open or closing position (a pending one included) holds its asset.
+    const heldAssets = perps.positions
+        .filter((p) => p.state === "open" || p.state === "closing")
+        .map((p) => p.asset)
+        .join(",");
+    const openPerps = useMemo(
+        () => (heldAssets ? heldAssets.split(",").map((asset) => ({ asset })) : undefined),
+        [heldAssets],
+    );
+    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, walletCoins, perpTrading, openPerps);
     const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;
     const marketId = watched?.kind === "choice" && watched.value ? watched.value : null;
     useEffect(() => {

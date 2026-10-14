@@ -637,3 +637,58 @@ test.describe("withdrawals", () => {
         expect(ready(state).pendingWithdrawals.map((p) => p.requestId)).toEqual(["req-2"]);
     });
 });
+
+test.describe("optimistic perps", () => {
+    const pendingPosition = {
+        id: "pending:req-p",
+        asset: "BTC",
+        side: "long" as const,
+        leverage: 5,
+        sizeCoin: "0.0076",
+        entryPx: "66000",
+        collateralUSD: "100",
+        liquidationPx: "53000",
+        markPx: null,
+        unrealizedPnlUSD: "0",
+        cumFundingUSD: "0",
+        state: "open" as const,
+        proceedsUSD: null,
+        notice: null,
+        openedAt: new Date(Date.UTC(2026, 9, 14)).toISOString(),
+        settledAt: null,
+        updatedAt: new Date(Date.UTC(2026, 9, 14)).toISOString(),
+    };
+    const accepted: AccountAction = {
+        type: "perpAccepted",
+        requestId: "req-p",
+        position: pendingPosition,
+        collateralWei: toWei("100"),
+        connection: 1,
+    };
+    const placing = {
+        id: oid(7),
+        requestId: "req-p",
+        kind: "open" as const,
+        state: "placing",
+        reason: null,
+        positionId: null,
+        filledSizeCoin: null,
+        requestedSizeCoin: "0.0076",
+        collateralUSD: "100",
+        creditedUSD: null,
+        createdAt: new Date(Date.UTC(2026, 9, 14)).toISOString(),
+        updatedAt: new Date(Date.UTC(2026, 9, 14)).toISOString(),
+    };
+
+    test("optimisticBalance counts a pending perp open once, and not again after the server's account arrives", () => {
+        const pending = run([accepted], open("300", 1));
+        expect(optimisticBalance(pending)).toBe(toWei("200"));
+        const held = run(
+            [{ type: "perp", update: { order: placing, position: null, account: account("200", 2) } }],
+            pending,
+        );
+        expect(optimisticBalance(held)).toBe(toWei("200"));
+        // The pending position stays until the fill replaces it.
+        expect(held.status === "ready" && held.perps.positions.map((p) => p.id)).toEqual(["pending:req-p"]);
+    });
+});

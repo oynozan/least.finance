@@ -31,6 +31,10 @@ import type {
     CoinBalance,
     DepositOrderView,
     DepositQuoteView,
+    PerpOrderRequest,
+    PerpQuoteRequest,
+    PerpQuoteView,
+    PerpsView,
     PositionView,
     PositionsView,
     QuoteView,
@@ -99,6 +103,14 @@ export type Account = {
     /** Sells a whole position, counted at once; the outcome arrives as a push. */
     closePosition: (position: PositionView, sellPrice: number | null) => void;
     dismissTradeNotice: () => void;
+    /** The server's perp positions and in-flight orders; a pending open's position is among them. */
+    perps: PerpsView;
+    /** What opening a perp position would cost right now. */
+    quotePerp: (req: PerpQuoteRequest) => Promise<PerpQuoteView | ApiError>;
+    /** Opens a perp position on the quote shown, counted at once; the outcome arrives as a push. */
+    placePerp: (req: PerpOrderRequest, quote: PerpQuoteView) => { requestId: string; sent: boolean };
+    /** Closes a whole perp position; the outcome arrives as a push. */
+    closePerp: (positionId: string) => Promise<void>;
     /** The account's recent withdrawals, newest first. */
     withdrawals: WithdrawalView[];
     /** Withdrawals asked for that the server hasn't shown back yet, newest first. */
@@ -122,10 +134,13 @@ const IDLE: AccountSnapshot = {
     tradeNotice: null,
 };
 const NO_PREDICTIONS: PositionsView = { positions: [], orders: [] };
+const NO_PERPS: PerpsView = { positions: [], orders: [] };
 const NO_OPTIMISTIC: OptimisticTrade[] = [];
 const NO_WITHDRAWALS: WithdrawalView[] = [];
 const NO_PENDING_WITHDRAWALS: PendingWithdrawal[] = [];
 const UNAVAILABLE: ApiError = { code: "unavailable", message: "Predictions aren't available right now." };
+
+const UNAVAILABLE_PERP: ApiError = { code: "unavailable", message: "Long and short aren't available right now." };
 
 const UNAVAILABLE_WITHDRAW: ApiError = { code: "unavailable", message: "Withdrawals aren't available right now." };
 
@@ -284,6 +299,9 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             placePrediction={(input) => client.placePrediction(input)}
             closePosition={(position, sellPrice) => client.closePosition(position, sellPrice)}
             dismissTradeNotice={() => client.dismissTradeNotice()}
+            quotePerp={(req) => client.quotePerp(req)}
+            placePerp={(req, quote) => client.placePerp(req, quote)}
+            closePerp={(positionId) => client.closePerp(positionId)}
             withdrawLimits={() => client.withdrawLimits()}
             withdrawQuote={(amount, to) => client.withdrawQuote(amount, to)}
             withdraw={(amount, to, reviewedFee) => client.withdraw(amount, to, reviewedFee)}
@@ -309,6 +327,9 @@ function Provide({
     placePrediction = () => ({ requestId: "", sent: false }),
     closePosition = () => undefined,
     dismissTradeNotice = () => undefined,
+    quotePerp = async () => UNAVAILABLE_PERP,
+    placePerp = (req) => ({ requestId: req.requestId, sent: false }),
+    closePerp = async () => undefined,
     withdrawLimits = async () => UNAVAILABLE_WITHDRAW,
     withdrawQuote = async () => UNAVAILABLE_WITHDRAW,
     withdraw = async () => "failed",
@@ -329,6 +350,9 @@ function Provide({
     placePrediction?: Account["placePrediction"];
     closePosition?: Account["closePosition"];
     dismissTradeNotice?: () => void;
+    quotePerp?: Account["quotePerp"];
+    placePerp?: Account["placePerp"];
+    closePerp?: Account["closePerp"];
     withdrawLimits?: Account["withdrawLimits"];
     withdrawQuote?: Account["withdrawQuote"];
     withdraw?: Account["withdraw"];
@@ -363,6 +387,10 @@ function Provide({
         placePrediction,
         closePosition,
         dismissTradeNotice,
+        perps: state.status === "ready" ? state.perps : NO_PERPS,
+        quotePerp,
+        placePerp,
+        closePerp,
         withdrawals: state.status === "ready" ? state.withdrawals : NO_WITHDRAWALS,
         pendingWithdrawals: state.status === "ready" ? state.pendingWithdrawals : NO_PENDING_WITHDRAWALS,
         withdrawLimits,

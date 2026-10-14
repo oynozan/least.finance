@@ -3,12 +3,14 @@ import { parseGwei, toHex } from "viem";
 import {
     accountReducer,
     initialAccountState,
+    pendingPerpId,
     toWei,
     type AccountAction,
     type AccountState,
     type ApiError,
     type DepositQuoteView,
     type Hex,
+    type PerpPositionView,
     type PositionView,
     type PredictionFailure,
     type QuoteView,
@@ -31,6 +33,9 @@ import { networkName, type NetworkCheck } from "@/lib/wallet/network";
 import type {
     BalancesView,
     ClientToServerEvents,
+    PerpOrderRequest,
+    PerpQuoteRequest,
+    PerpQuoteView,
     ServerToClientEvents,
     SwapHoldingsView,
     SwapOrderView,
@@ -102,7 +107,7 @@ const FAILURE_COPY: Record<PredictionFailure, string> = {
     unavailable: "Polymarket isn't answering. Nothing was spent.",
     rejected: "Your prediction didn't go through. Nothing was spent.",
 };
-const OFFLINE_COPY = "You're offline. Nothing was spent.";
+export const OFFLINE_COPY = "You're offline. Nothing was spent.";
 const SELL_FAILED_COPY = "Couldn't sell right now. Your position is back.";
 const WITHDRAW_FAILED_COPY = "Didn't go through. Your balance is back.";
 /** The price sent when none is known; the exchange takes the best bid anyway, within a cent of it. */
@@ -224,6 +229,19 @@ export class AccountClient {
             const { order } = update;
             if (order.state !== "failed") return;
             this.#tradeNotice(order.side === "sell" ? SELL_FAILED_COPY : FAILURE_COPY[order.reason ?? "rejected"]);
+        });
+        socket.on("perp:update", (update) => {
+            this.#dispatch({ type: "perp", update });
+            const { order, position } = update;
+            // A rejection, a partial fill or a liquidation carries the words the person is told.
+            if (
+                order.reason &&
+                (order.state === "rejected" || order.state === "filled" || position?.state === "liquidated")
+            )
+                this.#tradeNotice(order.reason);
+        });
+        socket.on("perps", (perps) => {
+            this.#dispatch({ type: "perpsSnapshot", perps, connection: this.#connection });
         });
         socket.on("withdrawal:update", ({ withdrawal, account }) => {
             this.#dispatch({ type: "withdrawal", withdrawal, account });
@@ -539,6 +557,91 @@ export class AccountClient {
                 this.#dispatch({ type: "predict-failed", requestId });
                 this.#tradeNotice(result.error.message);
             });
+    }
+
+    /** What opening a perp position would cost right now. */
+    async quotePerp(req: PerpQuoteRequest): Promise<PerpQuoteView | ApiError> {
+        const socket = this.#socket;
+        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        const result = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("perp:quote", req)
+            .catch(() => null);
+        if (!result) return UNREACHABLE;
+        return result.ok ? result.data : result.error;
+    }
+
+    /**
+     * Opens a perp position and counts it at once: the collateral leaves the shown balance and a pending
+     * position with the quote's size and entry stands in. The server's push decides the outcome;
+     * only a refusal rolls it back here, and a missing answer leaves it accepted.
+     */
+    placePerp(req: PerpOrderRequest, quote: PerpQuoteView): { requestId: string; sent: boolean } {
+        const { requestId } = req;
+        const socket = this.#socket;
+        this.#tradeNotice(null);
+        if (this.#snapshot.state.status !== "ready" || !socket?.connected) {
+            this.#tradeNotice(OFFLINE_COPY);
+            return { requestId, sent: false };
+        }
+        const now = new Date().toISOString();
+        const position: PerpPositionView = {
+            id: pendingPerpId(requestId),
+            asset: req.asset,
+            side: req.side,
+            leverage: req.leverage,
+            sizeCoin: quote.sizeCoin,
+            entryPx: quote.entryPx,
+            collateralUSD: req.collateralUSD,
+            liquidationPx: quote.liquidationPx,
+            markPx: null,
+            unrealizedPnlUSD: "0",
+            cumFundingUSD: "0",
+            state: "open",
+            proceedsUSD: null,
+            notice: null,
+            openedAt: now,
+            settledAt: null,
+            updatedAt: now,
+        };
+        this.#dispatch({
+            type: "perpAccepted",
+            requestId,
+            position,
+            collateralWei: toWei(req.collateralUSD),
+            connection: this.#connection,
+        });
+        void socket
+            .timeout(REPORT_TIMEOUT_MS)
+            .emitWithAck("perp:order", req)
+            .catch(() => null)
+            .then((result) => {
+                if (this.#socket !== socket || !result) return;
+                if (result.ok) {
+                    const { account, order } = result.data;
+                    this.#dispatch({ type: "perp", update: { order, position: null, account } });
+                    return;
+                }
+                this.#dispatch({ type: "perpFailed", requestId });
+                this.#tradeNotice(result.error.message);
+            });
+        return { requestId, sent: true };
+    }
+
+    /** Closes a whole perp position; the server's push says how it went, and a refusal is shown here. */
+    async closePerp(positionId: string): Promise<void> {
+        const socket = this.#socket;
+        this.#tradeNotice(null);
+        if (this.#snapshot.state.status !== "ready" || !socket?.connected) {
+            this.#tradeNotice(OFFLINE_COPY);
+            return;
+        }
+        const result = await socket
+            .timeout(REPORT_TIMEOUT_MS)
+            .emitWithAck("perp:close", { requestId: crypto.randomUUID(), positionId })
+            .catch(() => null);
+        if (this.#socket !== socket || !result || result.ok) return;
+        this.#tradeNotice(result.error.message);
     }
 
     dismissTradeNotice() {

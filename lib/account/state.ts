@@ -10,6 +10,10 @@ import type {
     DepositView,
     Hex,
     PositionSettled,
+    PerpOrderView,
+    PerpPositionView,
+    PerpUpdate,
+    PerpsView,
     PositionView,
     PositionsView,
     PredictionFailure,
@@ -34,6 +38,10 @@ export type {
     DepositView,
     Hex,
     PositionSettled,
+    PerpOrderView,
+    PerpPositionView,
+    PerpUpdate,
+    PerpsView,
     PositionView,
     PositionsView,
     PredictionFailure,
@@ -98,6 +106,20 @@ export type PendingWithdrawal = {
 
 export type OptimisticTrade = OptimisticBuy | OptimisticSell;
 
+/** A perp open the client has accepted: its collateral is counted against the balance until the server's order shows it. */
+export type OptimisticPerp = {
+    requestId: string;
+    /** Wei. */
+    collateralWei: bigint;
+    /** The socket connection it was sent on; a later snapshot without it means it never arrived. */
+    connection: number;
+};
+
+/** The id of the position shown while its open is in flight. */
+export const pendingPerpId = (requestId: string) => `pending:${requestId}`;
+
+export const isPendingPerp = (position: { id: string }) => position.id.startsWith("pending:");
+
 export type AccountState =
     | { status: "idle" }
     | { status: "connecting" }
@@ -122,6 +144,10 @@ export type AccountState =
           predictions: PositionsView;
           /** Newest first; counted against the balance until the server's order shows up. */
           optimistic: OptimisticTrade[];
+          /** The server's view of the account's perp positions and in-flight orders; a pending open's position is in it too. */
+          perps: PerpsView;
+          /** Newest first; perp opens accepted here and not yet settled by the server. */
+          optimisticPerps: OptimisticPerp[];
           /** Newest first, as the server last said. */
           withdrawals: WithdrawalView[];
           /** Newest first; counted against the balance until the server's view of the request arrives. */
@@ -147,6 +173,12 @@ export type AccountAction =
     | { type: "placed"; order: PredictionOrderView; account: AccountView }
     | { type: "prediction"; update: PredictionUpdate }
     | { type: "positions"; positions: PositionsView; connection: number }
+    | { type: "perp"; update: PerpUpdate }
+    | { type: "perpsSnapshot"; perps: PerpsView; connection: number }
+    /** A perp open is on its way: its collateral leaves the shown balance and `position` stands in until the fill. */
+    | { type: "perpAccepted"; requestId: string; position: PerpPositionView; collateralWei: bigint; connection: number }
+    /** The server turned the open down, or it never got there. */
+    | { type: "perpFailed"; requestId: string }
     /** A position was paid or lost when its market resolved. */
     | { type: "position-settled"; position: PositionView; account: AccountView }
     | { type: "withdraw"; withdrawal: PendingWithdrawal }
@@ -186,6 +218,8 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 // Positions follow as their own push after the session.
                 predictions: state.status === "ready" ? state.predictions : { positions: [], orders: [] },
                 optimistic: state.status === "ready" ? state.optimistic : [],
+                perps: state.status === "ready" ? state.perps : { positions: [], orders: [] },
+                optimisticPerps: state.status === "ready" ? state.optimisticPerps : [],
                 withdrawals: action.session.withdrawals,
                 pendingWithdrawals: (state.status === "ready" ? state.pendingWithdrawals : []).filter(
                     (p) => !action.session.withdrawals.some((w) => w.requestId === p.requestId),
@@ -275,6 +309,66 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 }),
             };
         }
+        case "perpAccepted": {
+            if (state.status !== "ready") return state;
+            if (state.optimisticPerps.some((t) => t.requestId === action.requestId)) return state;
+            const entry = {
+                requestId: action.requestId,
+                collateralWei: action.collateralWei,
+                connection: action.connection,
+            };
+            return {
+                ...state,
+                optimisticPerps: [entry, ...state.optimisticPerps],
+                perps: { ...state.perps, positions: [action.position, ...state.perps.positions] },
+            };
+        }
+        case "perpFailed":
+            if (state.status !== "ready") return state;
+            return dropPendingPerp(state, action.requestId);
+        case "perp": {
+            if (state.status !== "ready") return state;
+            const { order, position } = action.update;
+            const next = withAccount(state, action.update.account);
+            const held = state.perps.orders.find((o) => o.id === order.id);
+            if (held && held.updatedAt > order.updatedAt) return next;
+            const settled = order.state === "filled" || order.state === "rejected" || order.state === "done";
+            // The fill takes the pending position's place in the list.
+            const pendingId = pendingPerpId(order.requestId);
+            let positions = next.perps.positions;
+            if (position) {
+                const at = positions.findIndex((p) => p.id === pendingId);
+                const rest = positions.filter((p) => p.id !== pendingId);
+                const added = keepNewerPerp(rest, position);
+                positions =
+                    at >= 0 && added.length === rest.length + 1
+                        ? [...added.slice(1, at + 1), added[0]!, ...added.slice(at + 1)]
+                        : added;
+            }
+            const withUpdate: Ready = { ...next, perps: { orders: upsert(next.perps.orders, order), positions } };
+            return settled ? dropPendingPerp(withUpdate, order.requestId, !!position) : withUpdate;
+        }
+        case "perpsSnapshot": {
+            if (state.status !== "ready") return state;
+            const known = new Set(action.perps.orders.map((o) => o.requestId));
+            const optimisticPerps = state.optimisticPerps.filter(
+                (t) => t.connection >= action.connection || known.has(t.requestId),
+            );
+            const orders = mergePerpOrders(state.perps.orders, action.perps.orders);
+            const pendingIds = new Set(optimisticPerps.map((t) => pendingPerpId(t.requestId)));
+            const heldPositions = new Map(state.perps.positions.map((p) => [p.id, p]));
+            const positions = action.perps.positions.map((p) => {
+                const heldOne = heldPositions.get(p.id);
+                return heldOne && heldOne.updatedAt > p.updatedAt ? heldOne : p;
+            });
+            // A push can be newer than the read, so a position its order names stays.
+            const named = new Set(orders.filter((o) => !action.perps.orders.includes(o)).map((o) => o.positionId));
+            const shown = new Set(positions.map((p) => p.id));
+            const kept = state.perps.positions.filter(
+                (p) => !shown.has(p.id) && (pendingIds.has(p.id) || named.has(p.id)),
+            );
+            return { ...state, optimisticPerps, perps: { orders, positions: [...kept, ...positions] } };
+        }
         case "withdraw":
             if (state.status !== "ready") return state;
             if (state.pendingWithdrawals.some((p) => p.requestId === action.withdrawal.requestId)) return state;
@@ -316,6 +410,38 @@ type Ready = Extract<AccountState, { status: "ready" }>;
 
 /** Replaces the entry with the same id, or adds it on top. */
 const upsert = <T extends { id: string }>(items: T[], item: T): T[] => [item, ...items.filter((i) => i.id !== item.id)];
+
+/** Adds the perp position, unless the one held is newer. */
+const keepNewerPerp = (positions: PerpPositionView[], position: PerpPositionView): PerpPositionView[] => {
+    const held = positions.find((p) => p.id === position.id);
+    return held && held.updatedAt > position.updatedAt ? positions : upsert(positions, position);
+};
+
+/** The snapshot's in-flight orders, with settled ones a push brought kept, and a newer held version winning. */
+function mergePerpOrders(held: PerpOrderView[], snapshot: PerpOrderView[]): PerpOrderView[] {
+    const heldById = new Map(held.map((o) => [o.id, o]));
+    const orders = snapshot.map((o) => {
+        const known = heldById.get(o.id);
+        return known && known.updatedAt > o.updatedAt ? known : o;
+    });
+    const kept = new Set(orders.map((o) => o.id));
+    // Settled orders aren't in a snapshot
+    for (const o of held)
+        if (!kept.has(o.id) && (o.state === "filled" || o.state === "rejected" || o.state === "done")) orders.push(o);
+    return orders;
+}
+
+/** Takes the pending open away with its position; `keepPosition` leaves a real position of the same request alone. */
+function dropPendingPerp(state: Ready, requestId: string, keepPosition = false): Ready {
+    const pendingId = pendingPerpId(requestId);
+    return {
+        ...state,
+        optimisticPerps: state.optimisticPerps.filter((t) => t.requestId !== requestId),
+        perps: keepPosition
+            ? state.perps
+            : { ...state.perps, positions: state.perps.positions.filter((p) => p.id !== pendingId) },
+    };
+}
 
 /** Newest created first. */
 const newestFirst = (a: WithdrawalView, b: WithdrawalView) =>
@@ -405,10 +531,16 @@ export function optimisticBalance(state: AccountState): bigint | null {
     // A withdrawal the server has is already debited (or refunded) in `account.balance`; only unanswered ones are owed.
     const owed = state.pendingWithdrawals.reduce((sum, p) => sum + p.amount, BigInt(0));
     const afterDeposits = state.pending.reduce((sum, p) => sum + p.amount, state.balance - owed);
-    return state.optimistic.reduce((sum, t) => {
+    const afterTrades = state.optimistic.reduce((sum, t) => {
         if (t.side === "sell") return settled.has(t.requestId) ? sum : sum + t.proceedsWei;
         return placed.has(t.requestId) ? sum : sum - t.amountWei;
     }, afterDeposits);
+    // A perp open the server has is already debited in `account.balance`, and a close is credited only when it settles.
+    const opened = new Set(state.perps.orders.map((o) => o.requestId));
+    return state.optimisticPerps.reduce(
+        (sum, t) => (opened.has(t.requestId) ? sum : sum - t.collateralWei),
+        afterTrades,
+    );
 }
 
 export type HistoryRow = {

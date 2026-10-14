@@ -19,6 +19,8 @@ export type TradeCtx = {
     maxOrderUSD?: number | null;
     /** Whether Long and Short can open positions: the server's markets have loaded and its order limit is set. */
     perpTrading?: { maxOrderUSD: number | null; loaded: boolean };
+    /** The account's perp positions that are open or closing, which hold their asset. */
+    openPerps?: readonly { asset: string }[];
 };
 
 /**

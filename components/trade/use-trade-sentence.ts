@@ -13,10 +13,11 @@ export function useTradeSentence(
     maxOrderUSD: number | null = null,
     wallet?: TradeCtx["wallet"],
     perpTrading?: TradeCtx["perpTrading"],
+    openPerps?: TradeCtx["openPerps"],
 ) {
     const ctx = useMemo<TradeCtx>(
-        () => ({ catalog, holdings, wallet, maxOrderUSD, perpTrading }),
-        [catalog, holdings, wallet, maxOrderUSD, perpTrading],
+        () => ({ catalog, holdings, wallet, maxOrderUSD, perpTrading, openPerps }),
+        [catalog, holdings, wallet, maxOrderUSD, perpTrading, openPerps],
     );
     const [state, setState] = useState<SentenceState<TradeTerms>>(() => initialState(TRADE, DEFAULT_VERB, ctx));
     // Coins that load after the sentence, or a new signing wallet's, re-default everything the person didn't choose.

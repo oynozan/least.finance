@@ -82,3 +82,34 @@ test.describe("perp markets in the sentence", () => {
         expect(heard).toBe(1);
     });
 });
+
+test.describe("perp checks", () => {
+    test("collateral 9.99 shows 'Positions start at $10.'", () => {
+        const view9 = run("long", ctxOf(view()), [slot("collateralUSD", "9.99")]);
+        expect(view9.blocking).toMatchObject({ message: "Positions start at $10." });
+    });
+
+    test("$10 at 1x shows 'A position starts at $11. Raise the collateral or the leverage.'", () => {
+        const view1 = run("long", ctxOf(view()), [slot("collateralUSD", "10"), slot("leverage", "1")]);
+        expect(view1.blocking).toMatchObject({
+            message: "A position starts at $11. Raise the collateral or the leverage.",
+        });
+        const ok = run("long", ctxOf(view()), [slot("collateralUSD", "11"), slot("leverage", "1")]);
+        expect(ok.blocking).toBeUndefined();
+    });
+
+    test("a held BTC position blocks a second BTC Long with 'You already hold a BTC position. Close it first.'", () => {
+        const ctx = ctxOf(view(), { openPerps: [{ asset: "BTC" }] });
+        expect(run("long", ctx).blocking).toMatchObject({
+            message: "You already hold a BTC position. Close it first.",
+        });
+        expect(run("short", ctx).blocking).toMatchObject({
+            message: "You already hold a BTC position. Close it first.",
+        });
+    });
+
+    test("a different asset is not blocked", () => {
+        const ctx = ctxOf(view(), { openPerps: [{ asset: "BTC" }] });
+        expect(run("long", ctx, [slot("asset", "ETH")]).blocking).toBeUndefined();
+    });
+});

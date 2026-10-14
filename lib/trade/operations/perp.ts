@@ -1,4 +1,4 @@
-import { VERB, canonicalDecimal, type Choice } from "@/lib/sentence";
+import { VERB, canonicalDecimal, type Choice, type Issue } from "@/lib/sentence";
 import { LEVERAGE_STEPS } from "../catalog";
 import { operation, priceOf, token, type TradeCtx } from "../context";
 import { formatUsd, formatUsdShort } from "../format";
@@ -16,6 +16,9 @@ const UNAVAILABLE = {
     message: "Long and short aren't available right now.",
     cta: "Not available right now",
 } as const;
+
+const MIN_COLLATERAL = 10;
+const MIN_POSITION = 11;
 
 const market = (ctx: TradeCtx, asset: string) => ctx.catalog.perps.find((m) => m.asset === asset);
 
@@ -94,7 +97,7 @@ export const perp = operation({
         collateralUSD: {
             ...usdAmount(
                 (_v: Values & Fixed, ctx) => ({
-                    min: { ...minimum(10), message: "Positions start at $10." },
+                    min: { ...minimum(MIN_COLLATERAL), message: "Positions start at $10." },
                     max: spendCap(ctx),
                 }),
                 (v) => `A ${formatUsdShort(Number(v.collateralUSD) * (Number(v.leverage) || 1))} position`,
@@ -118,7 +121,28 @@ export const perp = operation({
         const leverage = clampLeverage(ctx, next.asset, next.leverage);
         return leverage === next.leverage ? next : { ...next, leverage };
     },
-    check: (_v, ctx) => (ctx.perpTrading?.loaded && ctx.perpTrading.maxOrderUSD !== null ? [] : [UNAVAILABLE]),
+    check: (v, ctx) => {
+        if (!(ctx.perpTrading?.loaded && ctx.perpTrading.maxOrderUSD !== null)) return [UNAVAILABLE];
+        const collateral = Number(v.collateralUSD) || 0;
+        const issues: Issue<keyof Values>[] = [];
+        if (collateral >= MIN_COLLATERAL && collateral * (Number(v.leverage) || 1) < MIN_POSITION) {
+            issues.push({
+                code: "below_minimum",
+                severity: "error",
+                message: `A position starts at $${MIN_POSITION}. Raise the collateral or the leverage.`,
+                cta: "Raise collateral or leverage",
+            });
+        }
+        if (ctx.openPerps?.some((p) => p.asset === v.asset)) {
+            issues.push({
+                code: "position_open",
+                severity: "error",
+                message: `You already hold a ${v.asset} position. Close it first.`,
+                cta: "Position already open",
+            });
+        }
+        return issues;
+    },
     toIntent: (v): Extract<TransactionIntent, { type: "perp" }> => ({
         type: "perp",
         side: v.side,
