@@ -18,6 +18,7 @@ import { readBalances } from "./crosschain/balances.ts";
 import { createSourceClients, type SourceClients } from "./crosschain/chains.ts";
 import { lifiPrices, type PriceFeed } from "./crosschain/prices.ts";
 import { ARC_DOMAIN, createIris, SOLANA_DOMAIN, type Iris } from "./crosschain/iris.ts";
+import { IrisLimiter } from "./crosschain/iris-limiter.ts";
 import { createSolanaRpc, readSolanaBalances, type SolanaRpc } from "./crosschain/solana.ts";
 import { connectDatabase } from "./db/mongo.ts";
 import { formatUsdc } from "./db/money.ts";
@@ -144,6 +145,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         });
         const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
         const iris = overrides.iris ?? createIris({ baseUrl: config.CIRCLE_IRIS_URL });
+        const irisLimiter = new IrisLimiter();
         const bridges = overrides.bridges ?? [
             createRelay({ apiKey: config.RELAY_API_KEY }),
             createCctp({
@@ -192,6 +194,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             logger: logger.child({ component: "payouts" }),
             broadcast: overrides.payoutBroadcast,
             iris,
+            irisLimiter,
         });
         const sessions = new Sessions({
             accounts,

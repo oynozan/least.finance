@@ -4,6 +4,7 @@ import { HttpRequestError, keccak256, parseGwei, TimeoutError, type Address, typ
 import type { HDAccount } from "viem/accounts";
 import { MIN_BASE_FEE, type ArcClient } from "../chain/arc.ts";
 import { IrisError, ARC_DOMAIN, type Iris } from "../crosschain/iris.ts";
+import { IrisLimiter } from "../crosschain/iris-limiter.ts";
 import type { Collections, WithdrawalDoc } from "../db/mongo.ts";
 import { fromDecimal } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
@@ -17,9 +18,6 @@ const RECEIPT_TIMEOUT_MS = 30_000;
 /** Gas for the USDC approve and for the burn, which can't be estimated before the approve is mined. */
 const APPROVE_GAS = 120_000n;
 const BURN_GAS = 600_000n;
-/** Iris is asked at most this often in total, and not at all for a while after it said to slow down. */
-const IRIS_MAX_PER_SECOND = 5;
-const IRIS_BACKOFF_MS = 5 * 60_000;
 /** How often a stalled or failed forward is logged per withdrawal. */
 const STALL_LOG_MS = 60 * 60_000;
 /** Passes an unrecognised refusal may leave the transaction unseen before the withdrawal is given up. */
@@ -37,6 +35,8 @@ type Deps = {
     broadcast?: (rawTx: Hex) => Promise<Hex>;
     /** Where forwards are followed; without it Solana withdrawals wait in `forwarding`. */
     iris?: Iris;
+    /** The Iris request budget this shares with the other holders of it; a private one by default. */
+    irisLimiter?: IrisLimiter;
     /** The TokenMessengerV2 burns go to; the mainnet one by default. */
     tokenMessenger?: Address;
     /** The USDC ERC-20 view that is approved and burned; Arc's by default. */
@@ -71,9 +71,7 @@ export class Payouts {
     /** Passes each withdrawal's unexplained refusal has gone by without its transaction turning up. */
     readonly #absent = new Map<string, number>();
     #unsubscribe: (() => void) | null = null;
-    /** When Iris was asked, within the last second. */
-    #irisAsked: number[] = [];
-    #irisBackoffUntil = 0;
+    readonly #irisLimiter: IrisLimiter;
     /** The last time each forwarding withdrawal's stall or failure was logged. */
     readonly #logged = new Map<string, number>();
     /** What Iris last said about each forwarding withdrawal. */
@@ -84,6 +82,7 @@ export class Payouts {
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#irisLimiter = deps.irisLimiter ?? new IrisLimiter();
     }
 
     start() {
@@ -303,10 +302,7 @@ export class Payouts {
         }
 
         const next = forwarding[0];
-        if (!next || now < this.#irisBackoffUntil) return;
-        this.#irisAsked = this.#irisAsked.filter((at) => now - at < 1_000);
-        if (this.#irisAsked.length >= IRIS_MAX_PER_SECOND) return;
-        this.#irisAsked.push(now);
+        if (!next || !this.#irisLimiter.take(now)) return;
         const id = next._id.toHexString();
         await collections.withdrawals.updateOne(
             { _id: next._id, state: "forwarding" },
@@ -317,8 +313,7 @@ export class Payouts {
         try {
             message = await iris.message({ domain: ARC_DOMAIN, burnTxHash: next.solana!.burnTxHash! });
         } catch (error) {
-            if (error instanceof IrisError && error.kind === "rate_limited")
-                this.#irisBackoffUntil = now + IRIS_BACKOFF_MS;
+            if (error instanceof IrisError && error.kind === "rate_limited") this.#irisLimiter.backoff(now);
             logger.warn({ err: error, withdrawalId: id }, "Iris couldn't be asked about a Solana withdrawal");
             return;
         }

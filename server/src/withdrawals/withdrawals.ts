@@ -4,7 +4,7 @@ import { parseUnits, type Address } from "viem";
 import type { ArcClient } from "../chain/arc.ts";
 import { NATIVE_DECIMALS } from "../chain/arc.ts";
 import type { AccountDoc, Collections, WithdrawalDoc } from "../db/mongo.ts";
-import { formatUsdc, fromDecimal, toDecimal } from "../db/money.ts";
+import { e6ToWei, formatUsdc, fromDecimal, toDecimal } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
 import type { Config } from "../config.ts";
 import { solanaOpen } from "../crosschain/solana-switch.ts";
@@ -59,7 +59,7 @@ export class Withdrawals {
 
     async limits(account: AccountDoc): Promise<{ max: bigint; min: bigint }> {
         const balance = fromDecimal(account.balance);
-        const free = await this.#treasuryFree();
+        const free = await this.treasuryFree();
         return { max: balance < free ? balance : free, min: this.#deps.minWithdraw };
     }
 
@@ -78,7 +78,12 @@ export class Withdrawals {
     }
 
     create(account: AccountDoc, input: CreateInput): Promise<WithdrawalDoc> {
-        const run = this.#lock.catch(() => undefined).then(() => this.#create(account, input));
+        return this.withTreasuryLock(() => this.#create(account, input));
+    }
+
+    /** Runs `fn` alone among creates and other lock holders, in the order they asked. */
+    withTreasuryLock<T>(fn: () => Promise<T>): Promise<T> {
+        const run = this.#lock.catch(() => undefined).then(fn);
         this.#lock = run;
         return run;
     }
@@ -127,7 +132,7 @@ export class Withdrawals {
             throw new AppError("bad_request", `The smallest withdrawal is ${dollars(minWithdraw)}.`);
         }
 
-        const free = await this.#treasuryFree();
+        const free = await this.treasuryFree();
         if (wei > free) {
             throw new AppError(
                 "insufficient_funds",
@@ -180,7 +185,7 @@ export class Withdrawals {
                 );
             }
         }
-        const free = await this.#treasuryFree();
+        const free = await this.treasuryFree();
         if (priced.wei > free) {
             throw new AppError(
                 "insufficient_funds",
@@ -237,15 +242,17 @@ export class Withdrawals {
         return withdrawal;
     }
 
-    /** The treasury's balance less what pending payouts will take and the gas reserve. */
-    async #treasuryFree(): Promise<bigint> {
+    /** The treasury's balance less what pending payouts and a pool top-up still to be burned will take, and the gas reserve. */
+    async treasuryFree(): Promise<bigint> {
         const { collections, client, treasury } = this.#deps;
-        const [balance, sending] = await Promise.all([
+        const [balance, sending, toPool] = await Promise.all([
             client.getBalance({ address: treasury }),
             collections.withdrawals.find({ state: "sending" }).toArray(),
+            collections.poolRebalances.find({ direction: "arc_to_polygon", state: "sending" }).toArray(),
         ]);
         const owed = sending.reduce((sum, doc) => sum + fromDecimal(doc.amount), 0n);
-        const free = balance - owed - TREASURY_GAS_RESERVE;
+        const leaving = toPool.reduce((sum, doc) => sum + e6ToWei(fromDecimal(doc.amountE6)), 0n);
+        const free = balance - owed - leaving - TREASURY_GAS_RESERVE;
         return free > 0n ? free : 0n;
     }
 }
