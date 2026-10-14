@@ -34,6 +34,7 @@ import { PerpService } from "./perps/perps.ts";
 import { PerpTracker } from "./perps/tracker.ts";
 import { PerpReconciler, arcHoldings } from "./perps/reconciler.ts";
 import { createNktkasClient } from "./perps/nktkas-client.ts";
+import { PnlService } from "./pnl/pnl.ts";
 import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
 import { PredictionReconciler } from "./predictions/reconciler.ts";
@@ -200,6 +201,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             rules: { chainId: ARC_CHAIN_ID, minDeposit: formatUsdc(config.DEPOSIT_MIN_USDC) },
             solana: { deposits: config.SOLANA_DEPOSITS === "on", withdrawals: config.SOLANA_WITHDRAWALS === "on" },
         });
+        const pnl = new PnlService({ collections, logger: logger.child({ component: "pnl" }), now: overrides.now });
         const watcher = new DepositWatcher({
             clients: config.ARC_RPC_URLS.map((url) => createArcClient([url])),
             collections,
@@ -420,6 +422,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             accounts,
             deposits,
             sessions,
+            pnl,
             watcher,
             balances,
             orders,

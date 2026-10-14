@@ -13,6 +13,7 @@ import type { MarketHistory } from "./markets/history.ts";
 import type { MarketService } from "./markets/markets.ts";
 import type { PerpMarkets } from "./perps/markets.ts";
 import type { PerpService } from "./perps/perps.ts";
+import type { PnlService } from "./pnl/pnl.ts";
 import type { PredictionService } from "./predictions/predictions.ts";
 import type { PriceHistory } from "./prices/history.ts";
 import type { Sessions } from "./sessions.ts";
@@ -32,6 +33,7 @@ export type Services = {
     accounts: AccountService;
     deposits: DepositService;
     sessions: Sessions;
+    pnl: PnlService;
     watcher: DepositWatcher;
     balances: WalletBalances;
     orders: DepositOrders;
