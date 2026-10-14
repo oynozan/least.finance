@@ -248,6 +248,14 @@ const isolated = async () => {
 const unreachable = async () => {
     throw new Error("fetch failed");
 };
+/** A client whose transactions are never confirmed, so a receipt wait ends unconfirmed. */
+const receiptsNeverArrive = () =>
+    new Proxy(chain, {
+        get: (target, property, receiver) =>
+            property === "waitForTransactionReceipt"
+                ? () => Promise.reject(new Error("timed out waiting for the receipt"))
+                : Reflect.get(target, property, receiver),
+    });
 const gasSpent = async (hashes: (string | null)[]) => {
     let total = 0n;
     for (const hash of hashes) {
@@ -489,26 +497,120 @@ test("an Arc withdrawal, a Solana withdrawal and a rebalance interleaved take di
     expect(await chain.getTransactionCount({ address: signer.address })).toBe(nonceBefore + 6);
 });
 
-test("a withdrawal signed while a rebalance's bytes are stored and unsent takes a nonce above its burn", async () => {
+test("a new withdrawal is not signed while a rebalance's stored transactions are unconfirmed, and takes the nonce above its burn once they are sent", async () => {
     await isolated();
     const row = await seedRebalance("4");
     await worker({ broadcast: unreachable }).tick();
     const stored = await rowOf(row._id);
     expect(stored.arc.burnNonce).not.toBeNull();
     const withdrawal = await seedArc("1");
-    const client = new Proxy(chain, {
-        get: (target, property, receiver) =>
-            property === "waitForTransactionReceipt"
-                ? () => Promise.reject(new Error("timed out waiting for the receipt"))
-                : Reflect.get(target, property, receiver),
-    });
+    signing.mockClear();
 
-    await worker({ client, broadcast: async (rawTx) => keccak256(rawTx) }).tick();
+    await worker({ client: receiptsNeverArrive(), broadcast: async (rawTx) => keccak256(rawTx) }).tick();
 
-    expect((await withdrawalOf(withdrawal._id)).nonce).toBe(stored.arc.burnNonce! + 1);
-    const after = await rowOf(row._id);
-    expect(after.arc.approveRawTx).toBe(stored.arc.approveRawTx);
-    expect(after.arc.burnRawTx).toBe(stored.arc.burnRawTx);
+    const held = await withdrawalOf(withdrawal._id);
+    expect([held.state, held.nonce, held.rawTx]).toEqual(["sending", null, null]);
+    expect(signing).not.toHaveBeenCalled();
+    const unsent = await rowOf(row._id);
+    expect(unsent.state).toBe("sending");
+    expect(unsent.arc).toEqual(stored.arc);
+
+    const order: Hex[] = [];
+    await worker({
+        broadcast: async (rawTx) => {
+            order.push(keccak256(rawTx));
+            return chain.sendRawTransaction({ serializedTransaction: rawTx });
+        },
+    }).tick();
+
+    const paid = await withdrawalOf(withdrawal._id);
+    expect(paid.state).toBe("sent");
+    expect(paid.nonce).toBe(stored.arc.burnNonce! + 1);
+    expect(order).toEqual([stored.arc.approveTxHash, stored.arc.burnTxHash, paid.txHash]);
+    expect((await rowOf(row._id)).state).toBe("forwarding");
+});
+
+test.each(["Arc", "Solana"] as const)(
+    "a withdrawal to %s queued while the node is unreachable is not signed above a stored rebalance, and is once it is sent",
+    async (network) => {
+        await isolated();
+        const row = await seedRebalance("4");
+        await worker({ broadcast: unreachable }).tick();
+        const stored = await rowOf(row._id);
+        const withdrawal = await (network === "Arc" ? seedArc("1") : seedSolana("1"));
+        signing.mockClear();
+
+        await worker({ broadcast: unreachable }).tick();
+
+        const held = await withdrawalOf(withdrawal._id);
+        expect([held.state, held.nonce, held.rawTx, held.solana?.approveRawTx ?? null]).toEqual([
+            "sending",
+            null,
+            null,
+            null,
+        ]);
+        expect(signing).not.toHaveBeenCalled();
+        expect((await rowOf(row._id)).arc).toEqual(stored.arc);
+
+        await worker().tick();
+
+        const paid = await withdrawalOf(withdrawal._id);
+        expect(paid.state).toBe(network === "Arc" ? "sent" : "forwarding");
+        expect(paid.nonce ?? paid.solana?.approveNonce).toBe(stored.arc.burnNonce! + 1);
+        expect((await rowOf(row._id)).state).toBe("forwarding");
+    },
+);
+
+test("a burn refused at broadcast after a withdrawal was queued ends failed and the withdrawal takes the nonce the burn never used", async () => {
+    await isolated();
+    const row = await seedRebalance("4");
+    await worker({ broadcast: unreachable }).tick();
+    const stored = await rowOf(row._id);
+    const withdrawal = await seedArc("1");
+    const nonceBefore = await chain.getTransactionCount({ address: signer.address });
+
+    await worker({
+        broadcast: async (rawTx) => {
+            if (keccak256(rawTx) === stored.arc.burnTxHash) {
+                throw new Error("insufficient funds for gas * price + value");
+            }
+            return chain.sendRawTransaction({ serializedTransaction: rawTx });
+        },
+    }).tick();
+
+    expect((await rowOf(row._id)).state).toBe("failed");
+    const paid = await withdrawalOf(withdrawal._id);
+    expect(paid.state).toBe("sent");
+    expect(paid.nonce).toBe(stored.arc.burnNonce);
+    expect(await chain.getTransactionCount({ address: signer.address, blockTag: "pending" })).toBe(nonceBefore + 2);
+    expect(await chain.getTransactionCount({ address: signer.address })).toBe(nonceBefore + 2);
+});
+
+test("a withdrawal that already carries its bytes is sent ahead of a stored rebalance, and a new one after it", async () => {
+    await isolated();
+    const first = await seedArc("1");
+    await worker({ broadcast: unreachable }).tick();
+    const row = await seedRebalance("4");
+    await worker({ client: receiptsNeverArrive(), broadcast: async (rawTx) => keccak256(rawTx) }).tick();
+    const second = await seedArc("1");
+    const signed = await withdrawalOf(first._id);
+    const stored = await rowOf(row._id);
+    expect(stored.arc.approveNonce).toBe(signed.nonce! + 1);
+    const order: Hex[] = [];
+
+    await worker({
+        broadcast: async (rawTx) => {
+            order.push(keccak256(rawTx));
+            return chain.sendRawTransaction({ serializedTransaction: rawTx });
+        },
+    }).tick();
+
+    const last = await withdrawalOf(second._id);
+    expect(last.state).toBe("sent");
+    expect(last.nonce).toBe(stored.arc.burnNonce! + 1);
+    expect(order).toEqual([signed.txHash, stored.arc.approveTxHash, stored.arc.burnTxHash, last.txHash]);
+    expect((await withdrawalOf(first._id)).state).toBe("sent");
+    expect((await rowOf(row._id)).state).toBe("forwarding");
 });
 
 test("a burn mined and nothing else ever re-burns", async () => {

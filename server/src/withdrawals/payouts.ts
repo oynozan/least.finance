@@ -151,9 +151,16 @@ export class Payouts {
             logger.warn({ err: error }, "Following Solana withdrawals failed"),
         );
         const sending = await collections.withdrawals.find({ state: "sending" }).sort({ _id: 1 }).toArray();
+        let storedPaid = false;
         for (const withdrawal of sending) {
             if (this.#stop?.signal.aborted) return;
             try {
+                const signed = withdrawal.network === "solana" ? withdrawal.solana?.approveRawTx : withdrawal.rawTx;
+                // Anything signed now would sit above a top-up's stored transactions, so those are sent first.
+                if (!signed && !storedPaid) {
+                    if (!(await this.#payRebalances(true))) return;
+                    storedPaid = true;
+                }
                 if (withdrawal.network === "solana") {
                     // A burn still unsent above its approve owns the next nonce, so nothing may be signed past it.
                     if (!(await this.#paySolana(withdrawal))) return;
@@ -164,22 +171,33 @@ export class Payouts {
                 return;
             }
         }
+        await this.#payRebalances(false);
+    }
+
+    /** Pays the `sending` pool top-ups oldest first, only the signed ones when asked; false when one is unconfirmed or couldn't be sent. */
+    async #payRebalances(signedOnly: boolean): Promise<boolean> {
+        const { collections, logger } = this.#deps;
         const rebalances = await collections.poolRebalances
-            .find({ direction: "arc_to_polygon", state: "sending" })
+            .find(
+                signedOnly
+                    ? { direction: "arc_to_polygon", state: "sending", "arc.approveRawTx": { $ne: null } }
+                    : { direction: "arc_to_polygon", state: "sending" },
+            )
             .sort({ _id: 1 })
             .toArray();
         for (const rebalance of rebalances) {
-            if (this.#stop?.signal.aborted) return;
+            if (this.#stop?.signal.aborted) return false;
             try {
-                if (!(await this.#payRebalance(rebalance))) return;
+                if (!(await this.#payRebalance(rebalance))) return false;
             } catch (error) {
                 logger.warn(
                     { err: error, rebalanceId: rebalance._id.toHexString() },
                     "Pool rebalance payout failed, will retry",
                 );
-                return;
+                return false;
             }
         }
+        return true;
     }
 
     /** Signs the approve and the burn of a Solana withdrawal on consecutive nonces and stores both before either is sent. */
