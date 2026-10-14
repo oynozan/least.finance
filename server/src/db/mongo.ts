@@ -224,6 +224,8 @@ export type PerpPositionDoc = {
     /** E6 entry fee Hyperliquid took. */
     openedFee: Decimal128;
     state: PerpPositionState;
+    /** When a poll first found the position gone with no reducing fill; cleared when it shows again. */
+    missingSince?: Date;
     /** True while the state is `open` or `closing`; the unique open-position key rests on it. */
     active: boolean;
     /** Wei credited when the position settled. */

@@ -391,8 +391,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         });
         // Orders a restart left placing never reached Polymarket; refund them before anyone can order
         await service.recover();
-        // Perp orders a restart interrupted are refunded or settled before anyone can order
-        await perps.recover();
         let connecting: NodeJS.Timeout | null = null;
         let closed = false;
         const connectTrader = inFlight(async () => {
@@ -442,6 +440,10 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         httpServer.headersTimeout = 20_000;
         const io = attachSockets(httpServer, services);
         await listen(httpServer, config.PORT, config.HOST);
+        // Perp orders a restart interrupted are settled in the background; each step is guarded by its state change
+        void perps
+            .recover()
+            .catch((error: unknown) => logger.error({ err: error, component: "perps" }, "Perp recovery failed"));
         watcher.start();
         sweeper.start();
         payouts.start();

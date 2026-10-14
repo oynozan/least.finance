@@ -83,7 +83,10 @@ test("a position that vanishes with no liquidation fill is closed", async () => 
     const position = await held(h, account);
     h.fake.liquidate(await h.addressOf(account._id), "BTC");
     const client = { ...h.client, fills: async () => [] } as HyperliquidClient;
-    await trackerOf(h, client).pass(Date.now());
+    const tracker = trackerOf(h, client);
+    await tracker.pass(Date.now());
+    h.clock.at += 20_000;
+    await tracker.pass(Date.now() + 20_000);
 
     expect(await positionOf(h, position._id)).toMatchObject({ state: "closed", active: false });
     const [order] = await closeOrders(h);
@@ -273,4 +276,40 @@ test("stop() finishes within one timeout when a lookup hangs", async () => {
     const started = Date.now();
     await tracker.stop();
     expect(Date.now() - started).toBeLessThan(300);
+});
+
+test("an empty state with no reducing fill does not close a position until a second read agrees", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const position = await held(h, account);
+    const address = await h.addressOf(account._id);
+    h.fake.vanish(address, "BTC");
+    const client = { ...h.client, fills: async () => [] } as HyperliquidClient;
+    const tracker = trackerOf(h, client);
+
+    await tracker.pass(Date.now());
+    expect(await positionOf(h, position._id)).toMatchObject({ state: "open", active: true });
+    expect(await closeOrders(h)).toHaveLength(0);
+
+    h.clock.at += 20_000;
+    await tracker.pass(Date.now() + 20_000);
+    expect(await positionOf(h, position._id)).toMatchObject({ state: "closed", active: false });
+
+    const other = await h.seedAccount("1000");
+    const back = await held(h, other);
+    h.fake.vanish(await h.addressOf(other._id), "BTC");
+    const closing = {
+        tid: 1,
+        oid: 1,
+        cloid: null,
+        asset: "BTC",
+        sizeCoin: "0.01",
+        px: "65000",
+        feeE6: 0n,
+        dir: "Close Long",
+        liquidation: false,
+        time: Date.now() + 60_000,
+    };
+    await trackerOf(h, { ...h.client, fills: async () => [closing] } as HyperliquidClient).pass(Date.now() + 40_000);
+    expect(await positionOf(h, back._id)).toMatchObject({ state: "closed", active: false });
 });

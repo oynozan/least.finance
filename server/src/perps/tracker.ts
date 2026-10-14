@@ -279,7 +279,10 @@ export class PerpTracker {
             fromDecimal(before.cumFundingE6) !== real.cumFundingE6;
         const updated = await perpPositions.findOneAndUpdate(
             { _id: position._id, active: true },
-            { $set: changed ? { snapshot, updatedAt: snapshot.at } : { snapshot } },
+            {
+                $set: changed ? { snapshot, updatedAt: snapshot.at } : { snapshot },
+                ...(position.missingSince ? { $unset: { missingSince: "" as const } } : {}),
+            },
             { returnDocument: "after" },
         );
         if (!updated || !changed) return;

@@ -38,6 +38,8 @@ const WEI_PER_E6 = 1_000_000_000_000n;
 /** How long Hyperliquid honours a posted order, and how much longer a missing one is given to show up. */
 const ORDER_LIFE_MS = 30_000;
 const MISSING_GRACE_MS = 5_000;
+/** The least time between two reads that both show a position gone: the fastest poll. */
+const GONE_AGAIN_MS = 5_000;
 /** A transfer nonce older than this may be past Hyperliquid's acceptance window. */
 const NONCE_LIFE_MS = 24 * 3_600_000;
 
@@ -551,7 +553,8 @@ export class PerpService {
         const feeE6 = await this.#feeOf(order, address, Number(sizeCoin) * Number(avgPx));
         const state = await this.#deps.client.state(address);
         const margin = state?.positions.find((p) => p.asset === order.asset)?.marginUsedE6 ?? 0n;
-        const ourFeeE6 = ourFeeOf(fromDecimal(order.notionalE6), this.#deps.config.PERPS_FEE_BPS / 10_000);
+        const filledE6 = BigInt(Math.round(Number(sizeCoin) * Number(avgPx) * 1e6));
+        const ourFeeE6 = ourFeeOf(filledE6, this.#deps.config.PERPS_FEE_BPS / 10_000);
         const spare = weiToE6(fromDecimal(order.collateral)) - margin - feeE6 - ourFeeE6;
         const sweep = minE6(state?.withdrawableE6 ?? 0n, spare > 0n ? spare : 0n);
         const moved = await this.#startSweep(
@@ -560,6 +563,7 @@ export class PerpService {
             { kind: "filled", sizeCoin, avgPx, feeE6: feeE6.toString() },
             sweep,
             sweep,
+            ourFeeE6,
         );
         if (moved) await this.#finishSweep(moved);
     }
@@ -660,6 +664,7 @@ export class PerpService {
         outcome: Outcome,
         sweepE6: bigint,
         creditE6: bigint,
+        ourFeeE6 = 0n,
     ): Promise<PerpOrderDoc | null> {
         const { perpOrders } = this.#deps.collections;
         const nonce = sweepE6 > 0n ? nextNonce(this.#deps.keyring.perpAddressAt(order.index)) : null;
@@ -674,6 +679,7 @@ export class PerpService {
                         "steps.sweepNonce": nonce,
                         "steps.sweepAt": new Date(this.#now()),
                         "steps.creditE6": creditE6.toString(),
+                        "steps.ourFeeE6": ourFeeE6.toString(),
                         updatedAt: new Date(this.#now()),
                     },
                 },
@@ -775,7 +781,7 @@ export class PerpService {
 
     /** Sends the stored sweep and, once the master has the money, credits it and settles the order. A repeat does nothing. */
     async #finishSweep(stored: PerpOrderDoc): Promise<void> {
-        const { perpOrders, perpPositions, accounts } = this.#deps.collections;
+        const { perpOrders, perpPositions, perpAccounts, accounts } = this.#deps.collections;
         const order = await this.#pay(stored);
         if (!order) return;
         const outcome = order.steps.outcome as Outcome;
@@ -836,6 +842,13 @@ export class PerpService {
                     updatedAt: at,
                 };
                 await perpPositions.insertOne(position, { session });
+                const retained = BigInt((moved.steps.ourFeeE6 as string | undefined) ?? "0");
+                if (retained > 0n)
+                    await perpAccounts.updateOne(
+                        { index: order.index },
+                        { $inc: { retainedE6: toDecimal(retained) } },
+                        { session },
+                    );
             }
             const account =
                 creditWei > 0n
@@ -1164,12 +1177,10 @@ export class PerpService {
         await this.#emit(order, position);
     }
 
-    /** The free balance minus the fees of ours that stay on the address; the rest is the person's. */
+    /** The free balance minus the fees of ours kept on the address; the rest is the person's. */
     async #sweepable(index: number, state: AccountState | null): Promise<bigint> {
-        const filled = await this.#deps.collections.perpOrders.find({ index, kind: "open", state: "filled" }).toArray();
-        const rate = this.#deps.config.PERPS_FEE_BPS / 10_000;
-        const kept = filled.reduce((sum, o) => sum + ourFeeOf(fromDecimal(o.notionalE6), rate), 0n);
-        const free = (state?.withdrawableE6 ?? 0n) - kept;
+        const account = await this.#deps.collections.perpAccounts.findOne({ index });
+        const free = (state?.withdrawableE6 ?? 0n) - retainedOf(account);
         return free > 0n ? free : 0n;
     }
 
@@ -1326,10 +1337,29 @@ export class PerpService {
             if (shrunk && opened) void this.#emit(opened, shrunk);
             return;
         }
+        const reducing = [...mine.values()].some(
+            (f) => f.time >= fresh.openedAt.getTime() && (f.liquidation || /^(close|liquidated)/i.test(f.dir)),
+        );
+        if (!reducing) {
+            // One empty read isn't proof: the ledger follows the fills, so a second read has to agree
+            const since = fresh.missingSince?.getTime();
+            if (since === undefined) {
+                await perpPositions.updateOne(
+                    { _id: fresh._id, state: "open" },
+                    { $set: { missingSince: new Date(this.#now()) } },
+                );
+                this.#deps.logger.warn({ position: fresh._id.toHexString() }, "A position is missing on Hyperliquid");
+                return;
+            }
+            if (this.#now() - since < GONE_AGAIN_MS) return;
+        }
         const _id = new ObjectId();
         // A later id than any order, so every close still sweeping this address goes first
         if (await this.#sharesAddress(fresh.index, _id)) return;
-        const sweep = await this.#sweepable(fresh.index, state);
+        // Read again inside the lock: another settle may have swept since the tracker's read
+        const current = await this.#deps.client.state(this.#deps.keyring.perpAddressAt(fresh.index));
+        if (current?.positions.some((p) => p.asset === fresh.asset)) return;
+        const sweep = await this.#sweepable(fresh.index, current);
         const at = new Date(this.#now());
         const order: PerpOrderDoc = {
             _id,
