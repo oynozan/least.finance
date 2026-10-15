@@ -1,31 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useConnectWallet } from "@privy-io/react-auth";
 import { MotionConfig, motion, type Variants } from "motion/react";
 import { submitIntent } from "@/lib/trade/execute";
-import type { TradeCtx } from "@/lib/trade/context";
-import { formatUnits } from "@/lib/trade/format";
+import { formatUnits, formatUsd } from "@/lib/trade/format";
 import type { TransactionIntent } from "@/lib/trade/intent";
-import { networkName } from "@/lib/trade/networks";
 import { quoteRows as perpQuoteRows } from "@/lib/trade/perp-quote";
 import { quoteRows } from "@/lib/trade/prediction-quote";
-import { swapQuoteRows } from "@/lib/trade/swap-quote";
-import { isSwapIntent, kindOf, swapSides, toSwapRequest } from "@/lib/trade/swap-request";
-import { walletHoldings } from "@/lib/trade/wallet-holdings";
-import type {
-    PerpQuoteRequest,
-    PerpQuoteView,
-    QuoteView,
-    SwapOrderView,
-    SwapQuoteView,
-    SwapRequest,
-} from "@/server/src/protocol";
+import { isSpotIntent, toTradeRequest } from "@/lib/trade/spot-request";
+import type { TradeOrderRequest } from "@/server/src/trading/types";
+import type { PerpQuoteRequest, PerpQuoteView, QuoteView } from "@/server/src/protocol";
 import { OFFLINE_COPY } from "@/components/account-client";
 import { useAccount } from "@/components/account-provider";
-import { useLinkOtherWallet } from "@/components/arc-wallet";
 import { CloseIcon } from "@/components/icons";
-import { shortenAddress } from "@/components/wallet-data";
 import { spring } from "@/components/sentence/motion";
 import { useSidebar } from "@/components/sidebar";
 import { useTrade } from "./trade-provider";
@@ -43,7 +30,6 @@ const CONNECT: Record<string, string> = {
 
 const QUOTE_DEBOUNCE_MS = 300;
 const QUOTE_REFRESH_MS = 10_000;
-const SWAP_REFRESH_MS = 15_000;
 
 const sections: Variants = {
     hidden: {},
@@ -102,31 +88,14 @@ export function ReviewPanel() {
     );
 }
 
-/** What became of a swap the wallet sent, in the words of the spec. */
-function swapOutcome(order: SwapOrderView): { text: string; bad: boolean } {
-    const { from, to } = order;
-    switch (order.state) {
-        case "done":
-            return { text: `Received ${formatUnits(Number(to.received ?? to.amount), to.token)}.`, bad: false };
-        case "partial":
-            return {
-                text: `Received ${formatUnits(Number(to.received ?? 0), to.receivedSymbol ?? to.token)} on ${networkName(to.network)} instead of ${to.token}.`,
-                bad: true,
-            };
-        case "refunded":
-            return {
-                text: `The swap didn't go through. Your ${formatUnits(Number(from.amount), from.token)} is back on ${networkName(from.network)}.`,
-                bad: true,
-            };
-        case "failed":
-        case "expired":
-            return {
-                text: `The swap failed, so your ${from.token} stayed in your wallet. Only the network fee was spent.`,
-                bad: true,
-            };
-        default:
-            return { text: "Swap sent.", bad: false };
-    }
+/** What a confirmed trade did, at the prices shown. */
+function tradeOutcome(req: TradeOrderRequest): string {
+    const price = Number(req.quotedPriceUSD);
+    if (req.verb === "buy") return `Bought ≈ ${formatUnits(Number(req.amountUSD) / price, req.symbol)}.`;
+    const units = Number(req.units);
+    if (req.verb === "sell") return `Sold ${formatUnits(units, req.symbol)} for ≈ ${formatUsd(units * price)}.`;
+    const got = (units * price) / Number(req.quotedToPriceUSD);
+    return `Swapped ${formatUnits(units, req.symbol)} for ≈ ${formatUnits(got, req.toSymbol ?? "")}.`;
 }
 
 /** The confirm button's class, shared by every action the panel ends with. */
@@ -159,28 +128,6 @@ function ActionButton({
     );
 }
 
-/** Links the wallet kind a swap still needs; only mounted while signed in, where Privy is there. */
-function ConnectKind({ kind }: { kind: "evm" | "solana" }) {
-    const link = useLinkOtherWallet();
-    return <ActionButton label="Connect" onClick={() => link(kind)} />;
-}
-
-/** Opens Privy's wallet connect for a linked wallet that isn't connected in this browser. */
-function ConnectHere({ address }: { address: string }) {
-    const { connectWallet } = useConnectWallet();
-    const walletChainType = address.startsWith("0x") ? "ethereum-only" : "solana-only";
-    return <ActionButton label="Connect" onClick={() => connectWallet({ walletChainType })} />;
-}
-
-const same = (a: SwapRequest, b: SwapRequest) =>
-    a.from.token === b.from.token &&
-    a.from.network === b.from.network &&
-    a.to.token === b.to.token &&
-    a.to.network === b.to.network &&
-    Number(a.amountUSD) === Number(b.amountUSD);
-
-type SwapAnswer = { key: string; quote: SwapQuoteView } | { key: string; error: string };
-
 type PerpAnswer = { key: string; quote: PerpQuoteView } | { key: string; error: string };
 
 function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void }) {
@@ -188,6 +135,8 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const account = useAccount();
     const [sent, setSent] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
+    // What the trade just confirmed came to, in the words the done line uses.
+    const [summary, setSummary] = useState<string | null>(null);
     const [accepted, setAccepted] = useState(false);
     // The server's refusal of the prediction just confirmed; the notice itself clears after a few seconds.
     const [refusal, setRefusal] = useState<string | null>(null);
@@ -202,69 +151,24 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const done = sent !== null && sent === intentKey;
     const notice = view.blocking ?? view.issues.find((issue) => issue.severity === "warning");
 
-    // A swap, buy or sell is real once signed in: LI.FI quotes it and the person's own wallet signs it.
-    const swapIntent = isSwapIntent(intent) ? intent : null;
-    const { swapHoldings, signers, connected, swaps, state: accountState } = account;
-    const swapCtx = useMemo<TradeCtx>(
-        () => ({
-            catalog,
-            holdings: null,
-            wallet: swapHoldings ? walletHoldings(swapHoldings.rows, swapHoldings.read, signers) : null,
-        }),
-        [catalog, swapHoldings, signers],
+    // Buy, Sell and Swap run from the account balance once signed in: no wallet signs, and the fill is instant.
+    const spotIntent = isSpotIntent(intent) ? intent : null;
+    const { holdings, state: accountState } = account;
+    const tradeRequest = useMemo(
+        () =>
+            spotIntent && wallet.status === "connected" && accountState.status === "ready"
+                ? toTradeRequest(
+                      spotIntent,
+                      {
+                          price: (symbol) => catalog.tokens.find((t) => t.symbol === symbol)?.priceUSD ?? null,
+                          held: (symbol) => Number(holdings.find((h) => h.symbol === symbol)?.units ?? 0),
+                          heldText: (symbol) => holdings.find((h) => h.symbol === symbol)?.units ?? "0",
+                      },
+                      "",
+                  )
+                : null,
+        [spotIntent, wallet.status, accountState.status, catalog.tokens, holdings],
     );
-    const [swapId, setSwapId] = useState<string | null>(null);
-    const [placing, setPlacing] = useState(false);
-    const [problem, setProblem] = useState<{ key: string; message: string } | null>(null);
-    const [answer, setAnswer] = useState<SwapAnswer | null>(null);
-    const built =
-        swapIntent && showing && !done && !view.blocking && wallet.status === "connected"
-            ? toSwapRequest(swapIntent, swapCtx, signers, connected)
-            : null;
-    const request = built && !("missing" in built) && !("connect" in built) ? built : null;
-    const missing = built && "missing" in built ? built.missing : null;
-    const toConnect = built && "connect" in built ? built.connect : null;
-    const requestKey = request && accountState.status === "ready" ? JSON.stringify(request) : null;
-    const askSwap = useRef(account.quoteSwap);
-    useEffect(() => {
-        askSwap.current = account.quoteSwap;
-    });
-    const requote = useRef<(() => void) | null>(null);
-    const swapAsked = useRef(false);
-    useEffect(() => {
-        if (!requestKey) return;
-        const asked = JSON.parse(requestKey) as SwapRequest;
-        let current = true;
-        const refresh = () =>
-            void askSwap.current(asked).then((result) => {
-                if (!current) return;
-                setAnswer(
-                    "error" in result
-                        ? { key: requestKey, error: result.error.message }
-                        : { key: requestKey, quote: result },
-                );
-            });
-        requote.current = refresh;
-        // The first quote comes as the panel opens; a later request waits for typing to settle.
-        const first = setTimeout(refresh, swapAsked.current ? QUOTE_DEBOUNCE_MS : 0);
-        swapAsked.current = true;
-        const timer = setInterval(refresh, SWAP_REFRESH_MS);
-        return () => {
-            current = false;
-            requote.current = null;
-            clearTimeout(first);
-            clearInterval(timer);
-        };
-    }, [requestKey]);
-    // Only an answer to the request on screen; a stale one would show the wrong amount.
-    const swapQuote =
-        requestKey && request && answer?.key === requestKey && "quote" in answer && same(answer.quote.request, request)
-            ? answer.quote
-            : null;
-    const swapError = requestKey && answer?.key === requestKey && "error" in answer ? answer.error : null;
-    const sides = swapIntent ? swapSides(swapIntent, swapCtx) : null;
-    const placed = swapId ? swaps.find((o) => o.id === swapId) : undefined;
-
     // A prediction is placed for real once signed in with the server's trading on.
     const prediction = intent?.type === "prediction" ? intent : null;
     const live = !!prediction && wallet.status === "connected" && maxOrderUSD !== null;
@@ -349,34 +253,22 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             ? { ...view.preview, rows: quoteRows(quote, outcome.label, other?.label, outcome.chance) }
             : perp && perpQuote
               ? { ...view.preview, rows: perpQuoteRows(perpQuote, perp) }
-              : swapQuote
-                ? { ...view.preview, rows: swapQuoteRows(swapQuote, swapCtx) }
-                : view.preview;
-    const problemNow = problem?.key === intentKey ? problem.message : null;
-
-    const confirmSwap = async () => {
-        if (!request || !swapQuote || placing) return;
-        setPlacing(true);
-        setProblem(null);
-        const result = await account.placeSwap(request, swapQuote.toAmountMin);
-        setPlacing(false);
-        // A wallet rejection says nothing; the button is simply "Confirm swap" again.
-        if (result.status === "sent") {
-            setSwapId(result.order.id);
-            setSent(intentKey);
-        } else if (result.status === "failed") {
-            setProblem({ key: intentKey, message: result.message });
-            requote.current?.();
-        } else if (result.status === "switch_failed") {
-            setProblem({ key: intentKey, message: `Switch your wallet to ${result.network} and try again.` });
-        }
-    };
+              : view.preview;
 
     const confirm = async () => {
         if (done) return onDone();
         if (wallet.status === "disconnected") return wallet.connect();
         if (!view.intent || view.blocking) return;
-        if (swapIntent) return void (await confirmSwap());
+        if (spotIntent) {
+            if (!tradeRequest) return;
+            const result = account.placeTrade({ ...tradeRequest, requestId: crypto.randomUUID() });
+            // Offline changes nothing; the person is told so here.
+            if (!result.sent) setRefusal(OFFLINE_COPY);
+            setAccepted(result.sent);
+            setSummary(tradeOutcome(tradeRequest));
+            setSent(intentKey);
+            return;
+        }
         if (live && prediction && market && outcome) {
             // Counted at once; a refusal replaces the done line here, or opens the sidebar if this is closed by then.
             const estimate = (Number(prediction.amountUSD) / outcome.price).toFixed(6).replace(/\.?0+$/, "");
@@ -414,25 +306,12 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
           ? (CONNECT[view.verb.id] ?? "Connect")
           : view.blocking
             ? (view.blocking.cta ?? view.cta)
-            : placing
-              ? "Confirm in your wallet"
-              : view.cta.replace(/^Review/, "Confirm");
-    // A swap waits for LI.FI's quote of what is on screen.
-    const awaitingQuote = (!!swapIntent && !!request && !swapQuote) || (perpLive && !perpQuote);
+            : view.cta.replace(/^Review/, "Confirm");
+    // A trade waits for the prices it is made at; a perp for its quote.
+    const awaitingQuote = (!!spotIntent && !tradeRequest) || (perpLive && !perpQuote);
     const blocked =
-        !done &&
-        wallet.status !== "disconnected" &&
-        (!!view.blocking || wallet.status === "loading" || awaitingQuote || (!!swapIntent && !request));
-    // Where a missing wallet is needed, in the spec's words.
-    const needs = (kind: "evm" | "solana") => (kind === "solana" ? "a Solana" : "an EVM");
-    const missingMessage =
-        missing && sides
-            ? kindOf(sides.to.network) === missing
-                ? `Connect ${needs(missing)} wallet to receive ${sides.to.token} on ${networkName(sides.to.network)}.`
-                : `Connect ${needs(missing)} wallet to pay with ${sides.from.token} on ${networkName(sides.from.network)}.`
-            : null;
-    const connectMessage = toConnect ? `Connect ${shortenAddress(toConnect)} to pay.` : null;
-    const swapNotice = missingMessage ?? connectMessage ?? problemNow ?? swapError ?? perpError;
+        !done && wallet.status !== "disconnected" && (!!view.blocking || wallet.status === "loading" || awaitingQuote);
+    const swapNotice = perpError;
 
     return (
         <motion.div
@@ -456,16 +335,12 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                     role="status"
                     className="flex flex-col gap-3"
                 >
-                    {swapIntent ? (
-                        <p
-                            className={`text-[17px] leading-snug ${placed && swapOutcome(placed).bad ? "text-loss" : ""}`}
-                        >
-                            {placed ? swapOutcome(placed).text : "Swap sent."}
-                        </p>
-                    ) : refusal ? (
+                    {refusal ? (
                         <p className="text-[17px] leading-snug text-loss">{refusal}</p>
                     ) : accepted ? (
-                        <p className="text-[17px] leading-snug">{perp ? "Position opened." : "Prediction placed."}</p>
+                        <p className="text-[17px] leading-snug">
+                            {spotIntent ? summary : perp ? "Position opened." : "Prediction placed."}
+                        </p>
                     ) : live && prediction ? (
                         <p className="text-[17px] leading-snug">Nothing was sent.</p>
                     ) : (
@@ -500,12 +375,6 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                 </motion.p>
             )}
 
-            {!done && swapQuote?.needsApproval && !swapNotice && (
-                <motion.p variants={rise} className="text-[15px] leading-snug text-muted">
-                    Approve {swapQuote.request.from.token} in your wallet, then confirm the swap.
-                </motion.p>
-            )}
-
             {!done && swapNotice && (
                 <motion.p variants={rise} role="alert" className="text-[15px] leading-snug text-loss">
                     {swapNotice}
@@ -519,13 +388,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             )}
 
             <motion.div variants={rise} className="mt-auto pt-2">
-                {!done && missing ? (
-                    <ConnectKind kind={missing} />
-                ) : !done && toConnect ? (
-                    <ConnectHere address={toConnect} />
-                ) : (
-                    <ActionButton label={label} blocked={blocked} disabled={sending || placing} onClick={confirm} />
-                )}
+                <ActionButton label={label} blocked={blocked} disabled={sending} onClick={confirm} />
             </motion.div>
         </motion.div>
     );

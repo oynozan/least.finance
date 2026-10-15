@@ -17,6 +17,8 @@ import {
     type WithdrawLimits,
 } from "@/lib/account/state";
 import { sellableShares } from "@/components/wallet-data";
+import { estimateTrade } from "@/lib/account/spot";
+import type { CoinWithdrawRequest, TradeOrderRequest } from "@/server/src/trading/types";
 import { dropAfterSend, loadCachedBalances, needsRefresh, saveCachedBalances } from "@/lib/account/balances";
 import {
     clearUnreported,
@@ -115,6 +117,7 @@ const FAILURE_COPY: Record<PredictionFailure, string> = {
     unavailable: "Polymarket isn't answering. Nothing was spent.",
     rejected: "Your prediction didn't go through. Nothing was spent.",
 };
+const PRICE_MOVED_COPY = "The price moved, so the trade didn't go through. Nothing was spent.";
 export const OFFLINE_COPY = "You're offline. Nothing was spent.";
 const SELL_FAILED_COPY = "Couldn't sell right now. Your position is back.";
 const WITHDRAW_FAILED_COPY = "Didn't go through. Your balance is back.";
@@ -263,6 +266,15 @@ export class AccountClient {
             this.#dispatch({ type: "withdrawal", withdrawal, account });
             if (withdrawal.state === "failed")
                 this.#notify({ kind: "reverted", message: WITHDRAW_FAILED_COPY, withdrawal: true });
+        });
+        socket.on("holdings:update", ({ holdings }) => {
+            this.#dispatch({ type: "holdings", holdings });
+        });
+        socket.on("trade:filled", (trade) => {
+            this.#dispatch({ type: "spot-settled", requestId: trade.requestId });
+        });
+        socket.on("holding:withdrawal", (withdrawal) => {
+            this.#dispatch({ type: "coin-withdrawal", withdrawal });
         });
         socket.on("position:settled", ({ position, account }) => {
             this.#dispatch({ type: "position-settled", position, account });
@@ -701,6 +713,71 @@ export class AccountClient {
             .catch(() => null);
         if (this.#socket !== socket || !result || result.ok) return;
         this.#tradeNotice(result.error.message);
+    }
+
+    /**
+     * Buys, sells or swaps from the balance and counts it at once; the answer settles it with the server's balance and
+     * coins, a refusal rolls it back with the server's message, and a missing answer leaves it counted.
+     */
+    placeTrade(req: TradeOrderRequest): { requestId: string; sent: boolean } {
+        const { requestId } = req;
+        const socket = this.#socket;
+        const estimate = estimateTrade(req);
+        this.#tradeNotice(null);
+        if (this.#snapshot.state.status !== "ready" || !socket?.connected || !estimate) {
+            this.#tradeNotice(OFFLINE_COPY);
+            return { requestId, sent: false };
+        }
+        this.#dispatch({ type: "spot", trade: estimate });
+        void socket
+            .timeout(REPORT_TIMEOUT_MS)
+            .emitWithAck("trade:order", req)
+            .catch(() => null)
+            .then((result) => {
+                if (this.#socket !== socket || !result) return;
+                if (result.ok) {
+                    this.#dispatch({
+                        type: "spot-filled",
+                        requestId,
+                        balance: result.balance,
+                        holdings: result.holdings,
+                    });
+                    return;
+                }
+                this.#dispatch({ type: "spot-failed", requestId });
+                this.#tradeNotice(result.code === "price_moved" ? PRICE_MOVED_COPY : result.message);
+            });
+        return { requestId, sent: true };
+    }
+
+    /** Sends a held coin to the person's own address and counts it as gone at once; a refusal puts it back with the server's message. */
+    withdrawHolding(req: CoinWithdrawRequest): { requestId: string; sent: boolean } {
+        const { requestId } = req;
+        const socket = this.#socket;
+        this.#tradeNotice(null);
+        if (this.#snapshot.state.status !== "ready" || !socket?.connected) {
+            this.#tradeNotice(OFFLINE_COPY);
+            return { requestId, sent: false };
+        }
+        this.#dispatch({ type: "coin-send", send: { requestId, symbol: req.symbol, units: req.units } });
+        void socket
+            .timeout(REPORT_TIMEOUT_MS)
+            .emitWithAck("holding:withdraw", req)
+            .catch(() => null)
+            .then((result) => {
+                if (this.#socket !== socket || !result) return;
+                if (result.ok) {
+                    this.#dispatch({
+                        type: "coin-withdrawal",
+                        withdrawal: result.withdrawal,
+                        holdings: result.holdings,
+                    });
+                    return;
+                }
+                this.#dispatch({ type: "coin-send-failed", requestId });
+                this.#tradeNotice(result.message);
+            });
+        return { requestId, sent: true };
     }
 
     dismissTradeNotice() {

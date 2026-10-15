@@ -1,4 +1,5 @@
 import { formatUnits, parseUnits } from "viem";
+import type { CoinWithdrawalView, HoldingView } from "@/server/src/trading/types";
 import type {
     AccountView,
     ApiError,
@@ -28,6 +29,8 @@ import type {
 } from "@/server/src/protocol";
 
 export type {
+    CoinWithdrawalView,
+    HoldingView,
     AccountView,
     ApiError,
     DepositOrderView,
@@ -106,6 +109,43 @@ export type PendingWithdrawal = {
 
 export type OptimisticTrade = OptimisticBuy | OptimisticSell;
 
+/** A Buy, Sell or Swap from the balance that is sent and not yet filled: its balance change and coins count at once. */
+export type OptimisticSpot = {
+    requestId: string;
+    /** Wei; negative for a buy, positive for a sell, zero for a swap. */
+    balanceWei: bigint;
+    paid: { symbol: string; units: string };
+    got: { symbol: string; units: string; network: string };
+};
+
+/** A coin send the server hasn't answered yet: its units count as gone from the holding. */
+export type PendingCoinSend = { requestId: string; symbol: string; units: string };
+
+/** A coin amount in whole units of 1e-18, so sums stay exact. */
+const COIN_SCALE = BigInt(10) ** BigInt(18);
+
+const parseCoin = (units: string): bigint => {
+    const [whole = "0", fraction = ""] = units.split(".");
+    return BigInt(whole || "0") * COIN_SCALE + BigInt(fraction.slice(0, 18).padEnd(18, "0"));
+};
+
+const formatCoin = (scaled: bigint): string => {
+    const digits = (scaled < BigInt(0) ? -scaled : scaled).toString().padStart(19, "0");
+    const fraction = digits.slice(-18).replace(/0+$/, "");
+    return `${scaled < BigInt(0) ? "-" : ""}${digits.slice(0, -18)}${fraction ? `.${fraction}` : ""}`;
+};
+
+/** Adds `change` (a coin amount, negative to take) to the holding of `symbol`, dropping a holding that reaches zero. */
+function moveHolding(holdings: HoldingView[], symbol: string, change: string, network: string): HoldingView[] {
+    const delta = parseCoin(change.replace(/^-/, "")) * BigInt(change.startsWith("-") ? -1 : 1);
+    const found = holdings.find((h) => h.symbol === symbol);
+    const units = (found ? parseCoin(found.units) : BigInt(0)) + delta;
+    const rest = holdings.filter((h) => h.symbol !== symbol);
+    if (units <= BigInt(0)) return rest;
+    const next = { symbol, units: formatCoin(units), network: found?.network ?? network };
+    return found ? holdings.map((h) => (h.symbol === symbol ? next : h)) : [...rest, next];
+}
+
 /** A perp open the client has accepted: its collateral is counted against the balance until the server's order shows it. */
 export type OptimisticPerp = {
     requestId: string;
@@ -175,6 +215,14 @@ export type AccountState =
           withdrawals: WithdrawalView[];
           /** Newest first; counted against the balance until the server's view of the request arrives. */
           pendingWithdrawals: PendingWithdrawal[];
+          /** The coins the account holds, as the server last said. */
+          holdings: HoldingView[];
+          /** Newest first; trades from the balance sent and not yet filled. */
+          optimisticSpot: OptimisticSpot[];
+          /** Newest first, as the server last said. */
+          coinWithdrawals: CoinWithdrawalView[];
+          /** Newest first; coin sends the server hasn't answered. */
+          pendingCoinSends: PendingCoinSend[];
       };
 
 export type AccountAction =
@@ -208,7 +256,21 @@ export type AccountAction =
     /** The server turned the withdrawal down. */
     | { type: "withdraw-refused"; requestId: string }
     /** The view comes with the account that has its debit or refund in. */
-    | { type: "withdrawal"; withdrawal: WithdrawalView; account: AccountView };
+    | { type: "withdrawal"; withdrawal: WithdrawalView; account: AccountView }
+    /** The server's holdings, from a push. */
+    | { type: "holdings"; holdings: HoldingView[] }
+    /** A trade from the balance is on its way: the balance and holdings move at once. */
+    | { type: "spot"; trade: OptimisticSpot }
+    /** The server refused the trade, or it never got there: the balance and holdings move back. */
+    | { type: "spot-failed"; requestId: string }
+    /** The trade filled: the answer's balance (USDC) and holdings replace the estimate. */
+    | { type: "spot-filled"; requestId: string; balance: string; holdings: HoldingView[] }
+    /** The trade filled, as pushed: the estimate gives way to what the pushes say. */
+    | { type: "spot-settled"; requestId: string }
+    | { type: "coin-send"; send: PendingCoinSend }
+    | { type: "coin-send-failed"; requestId: string }
+    /** A coin withdrawal moved on; `holdings` come with an answer and are absent on a push. */
+    | { type: "coin-withdrawal"; withdrawal: CoinWithdrawalView; holdings?: HoldingView[] };
 
 export const initialAccountState: AccountState = { status: "idle" };
 
@@ -247,6 +309,11 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 pendingWithdrawals: (state.status === "ready" ? state.pendingWithdrawals : []).filter(
                     (p) => !action.session.withdrawals.some((w) => w.requestId === p.requestId),
                 ),
+                holdings: action.session.holdings ?? [],
+                // A fresh session already has what trades and sends sent on the old connection did.
+                optimisticSpot: [],
+                coinWithdrawals: state.status === "ready" ? state.coinWithdrawals : [],
+                pendingCoinSends: [],
             });
         }
         case "order": {
@@ -426,6 +493,47 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 withdrawals: [withdrawal, ...state.withdrawals.filter((w) => w.id !== withdrawal.id)].sort(newestFirst),
             };
         }
+        case "holdings":
+            if (state.status !== "ready") return state;
+            return { ...state, holdings: action.holdings };
+        case "spot":
+            if (state.status !== "ready") return state;
+            if (state.optimisticSpot.some((t) => t.requestId === action.trade.requestId)) return state;
+            return { ...state, optimisticSpot: [action.trade, ...state.optimisticSpot] };
+        case "spot-failed":
+        case "spot-settled":
+            if (state.status !== "ready") return state;
+            return { ...state, optimisticSpot: state.optimisticSpot.filter((t) => t.requestId !== action.requestId) };
+        case "spot-filled":
+            if (state.status !== "ready") return state;
+            return {
+                ...state,
+                balance: toWei(action.balance),
+                holdings: action.holdings,
+                optimisticSpot: state.optimisticSpot.filter((t) => t.requestId !== action.requestId),
+            };
+        case "coin-send":
+            if (state.status !== "ready") return state;
+            if (state.pendingCoinSends.some((p) => p.requestId === action.send.requestId)) return state;
+            return { ...state, pendingCoinSends: [action.send, ...state.pendingCoinSends] };
+        case "coin-send-failed":
+            if (state.status !== "ready") return state;
+            return {
+                ...state,
+                pendingCoinSends: state.pendingCoinSends.filter((p) => p.requestId !== action.requestId),
+            };
+        case "coin-withdrawal": {
+            if (state.status !== "ready") return state;
+            const { withdrawal } = action;
+            const pendingCoinSends = state.pendingCoinSends.filter((p) => p.requestId !== withdrawal.requestId);
+            const next = { ...state, pendingCoinSends, ...(action.holdings ? { holdings: action.holdings } : {}) };
+            return {
+                ...next,
+                coinWithdrawals: [withdrawal, ...state.coinWithdrawals.filter((w) => w.id !== withdrawal.id)].sort(
+                    (a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0),
+                ),
+            };
+        }
         case "position-settled": {
             if (state.status !== "ready") return state;
             const next = withAccount(state, action.account);
@@ -571,10 +679,21 @@ export function optimisticBalance(state: AccountState): bigint | null {
     }, afterDeposits);
     // A perp open the server has is already debited in `account.balance`, and a close is credited only when it settles.
     const opened = new Set(state.perps.orders.map((o) => o.requestId));
-    return state.optimisticPerps.reduce(
+    const afterPerps = state.optimisticPerps.reduce(
         (sum, t) => (opened.has(t.requestId) ? sum : sum - t.collateralWei),
         afterTrades,
     );
+    return state.optimisticSpot.reduce((sum, t) => sum + t.balanceWei, afterPerps);
+}
+
+/** The coins to show: the server's, with trades and sends still on their way applied. */
+export function optimisticHoldings(state: AccountState): HoldingView[] {
+    if (state.status !== "ready") return [];
+    const afterTrades = state.optimisticSpot.reduceRight((held, t) => {
+        const taken = t.paid.symbol === "USDC" ? held : moveHolding(held, t.paid.symbol, `-${t.paid.units}`, "");
+        return t.got.symbol === "USDC" ? taken : moveHolding(taken, t.got.symbol, t.got.units, t.got.network);
+    }, state.holdings);
+    return state.pendingCoinSends.reduce((held, p) => moveHolding(held, p.symbol, `-${p.units}`, ""), afterTrades);
 }
 
 export type HistoryRow = {

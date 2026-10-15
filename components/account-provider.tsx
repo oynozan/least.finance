@@ -16,16 +16,19 @@ import { usePrivy, useWallets } from "@privy-io/react-auth";
 import {
     historyRows,
     optimisticBalance,
+    optimisticHoldings,
     toUsdc,
     type AccountState,
     type ApiError,
     type HistoryRow,
+    type CoinWithdrawalView,
+    type HoldingView,
     type OptimisticTrade,
     type PendingWithdrawal,
 } from "@/lib/account/state";
+import type { CoinWithdrawRequest, TradeOrderRequest } from "@/server/src/trading/types";
 import { sameWallet } from "@/lib/account/balances";
 import { API_URL } from "@/lib/api";
-import type { Signers } from "@/lib/trade/swap-request";
 import { ensureNetwork } from "@/lib/wallet/network";
 import type {
     ActivityFilter,
@@ -129,6 +132,14 @@ export type Account = {
     withdrawQuote: (amount: string, to: string) => Promise<WithdrawQuote | ApiError>;
     /** Withdraws `amount` USDC to the linked wallet `to` (with the fee shown for a Solana one); the amount is counted at once. */
     withdraw: (amount: string, to: string, reviewedFee?: string) => Promise<"sent" | "refused" | "failed" | "changed">;
+    /** The coins the account holds, with trades and sends still on their way counted. */
+    holdings: HoldingView[];
+    /** Buys, sells or swaps from the balance, counted at once; a refusal rolls it back and shows as the trade notice. */
+    placeTrade: (req: TradeOrderRequest) => { requestId: string; sent: boolean };
+    /** Sends units of a held coin to an address, counted at once. */
+    withdrawHolding: (req: CoinWithdrawRequest) => { requestId: string; sent: boolean };
+    /** The account's coin sends, newest first. */
+    coinWithdrawals: CoinWithdrawalView[];
 };
 
 type PlaceInput = Parameters<AccountClient["placePrediction"]>[0];
@@ -145,6 +156,8 @@ const IDLE: AccountSnapshot = {
 const NO_PREDICTIONS: PositionsView = { positions: [], orders: [] };
 const NO_PERPS: PerpsView = { positions: [], orders: [] };
 const NO_OPTIMISTIC: OptimisticTrade[] = [];
+const NO_HOLDINGS: HoldingView[] = [];
+const NO_COIN_WITHDRAWALS: CoinWithdrawalView[] = [];
 const NO_WITHDRAWALS: WithdrawalView[] = [];
 const NO_PENDING_WITHDRAWALS: PendingWithdrawal[] = [];
 const UNAVAILABLE: ApiError = { code: "unavailable", message: "Predictions aren't available right now." };
@@ -154,6 +167,9 @@ const UNAVAILABLE_PERP: ApiError = { code: "unavailable", message: "Long and sho
 const UNAVAILABLE_WITHDRAW: ApiError = { code: "unavailable", message: "Withdrawals aren't available right now." };
 
 const UNAVAILABLE_PNL: ApiError = { code: "unavailable", message: "Your history isn't available right now." };
+
+/** The wallets that sign: the EVM one for the eight EVM networks, the Solana one for Solana. */
+export type Signers = { evm?: string; solana?: string };
 
 const NO_SIGNERS: Signers = {};
 
@@ -219,10 +235,6 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         if (accountReady) refreshBalances();
     }, [accountReady, refreshBalances]);
     const refreshSwapHoldings = useCallback(() => client.refreshSwapHoldings(), [client]);
-    // A wallet linked mid-session has no swap coins read yet.
-    useEffect(() => {
-        if (accountReady) refreshSwapHoldings();
-    }, [accountReady, refreshSwapHoldings, walletKey]);
 
     const deposit = async (amount: string, from: string): Promise<DepositResult> => {
         const wallet = wallets.find((w) => w.address.toLowerCase() === from.toLowerCase());
@@ -313,6 +325,8 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             withdrawLimits={() => client.withdrawLimits()}
             withdrawQuote={(amount, to) => client.withdrawQuote(amount, to)}
             withdraw={(amount, to, reviewedFee) => client.withdraw(amount, to, reviewedFee)}
+            placeTrade={(req) => client.placeTrade(req)}
+            withdrawHolding={(req) => client.withdrawHolding(req)}
         >
             {children}
         </Provide>
@@ -343,6 +357,8 @@ function Provide({
     withdrawLimits = async () => UNAVAILABLE_WITHDRAW,
     withdrawQuote = async () => UNAVAILABLE_WITHDRAW,
     withdraw = async () => "failed",
+    placeTrade = (req) => ({ requestId: req.requestId, sent: false }),
+    withdrawHolding = (req) => ({ requestId: req.requestId, sent: false }),
     children,
 }: {
     snapshot: AccountSnapshot;
@@ -368,6 +384,8 @@ function Provide({
     withdrawLimits?: Account["withdrawLimits"];
     withdrawQuote?: Account["withdrawQuote"];
     withdraw?: Account["withdraw"];
+    placeTrade?: Account["placeTrade"];
+    withdrawHolding?: Account["withdrawHolding"];
     children: ReactNode;
 }) {
     const { state, notice } = snapshot;
@@ -411,6 +429,10 @@ function Provide({
         withdrawLimits,
         withdrawQuote,
         withdraw,
+        holdings: state.status === "ready" ? optimisticHoldings(state) : NO_HOLDINGS,
+        placeTrade,
+        withdrawHolding,
+        coinWithdrawals: state.status === "ready" ? state.coinWithdrawals : NO_COIN_WITHDRAWALS,
     };
     return <AccountContext value={value}>{children}</AccountContext>;
 }

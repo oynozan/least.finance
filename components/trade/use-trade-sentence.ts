@@ -21,9 +21,17 @@ export function useTradeSentence(
     );
     const [state, setState] = useState<SentenceState<TradeTerms>>(() => initialState(TRADE, DEFAULT_VERB, ctx));
     // Coins that load after the sentence, or a new signing wallet's, re-default everything the person didn't choose.
-    const [fitted, setFitted] = useState(wallet);
-    if (fitted !== wallet) {
-        setFitted(wallet);
+    // The coins the account holds decide what Sell and Swap start on, so a change in which are held refits too.
+    const fit = `${
+        holdings
+            ? Object.keys(holdings)
+                  .filter((symbol) => holdings[symbol])
+                  .join()
+            : ""
+    }|${wallet ? 1 : 0}`;
+    const [fitted, setFitted] = useState(fit);
+    if (fitted !== fit) {
+        setFitted(fit);
         setState((current) => refit(TRADE, current, ctx));
     }
     const view = useMemo(() => resolve(TRADE, state, ctx), [state, ctx]);

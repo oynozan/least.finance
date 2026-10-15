@@ -1,8 +1,7 @@
 import type { Bound, Choice, NumberSpec } from "@/lib/sentence";
 import { QUOTE, type Token } from "../catalog";
-import { heldOn, heldTotal, priceOf, spendableUSD, token, type TradeCtx } from "../context";
+import { held, priceOf, spendableUSD, type TradeCtx } from "../context";
 import { formatUnits, formatUsd, formatUsdShort } from "../format";
-import { networkName, type NetworkId } from "../networks";
 
 /** Where the amount slider tops out while no wallet caps it. */
 const UNCAPPED_MAX_USD = 10_000;
@@ -34,69 +33,18 @@ export const minimum = (value: number): Bound => ({
     cta: `Minimum ${formatUsdShort(value)}`,
 });
 
-const entriesOf = (ctx: TradeCtx, symbol: string) => token(ctx, symbol)?.networks ?? [];
-
-const homeOf = (ctx: TradeCtx, symbol: string): NetworkId => token(ctx, symbol)?.home ?? "ethereum";
-
-/** Units a cap allows on a network, or null while unknown, with a real wallet's gas reserve held back */
-function spendableOn(ctx: TradeCtx, symbol: string, network: NetworkId): number | null {
-    const units = heldOn(ctx, symbol, network);
-    if (units === null) return null;
-    const reserve = ctx.wallet ? (entriesOf(ctx, symbol).find((e) => e.network === network)?.reserve ?? 0) : 0;
-    return Math.max(units - reserve, 0);
-}
-
-/** Caps a sale or swap at what the wallet holds of the coin on that network, with no cap while that or its price is unknown */
-export function holdingCapOn(ctx: TradeCtx, symbol: string, network: NetworkId): Bound | undefined {
-    const units = spendableOn(ctx, symbol, network);
+/** Caps a sale or swap at the account's holding of the coin, with no cap while the holding or the price is unknown */
+export function holdingCap(ctx: TradeCtx, symbol: string): Bound | undefined {
+    const units = held(ctx, symbol);
     const price = priceOf(ctx, symbol);
     if (units === null || price === null) return undefined;
     const value = units * price;
-    const where = `${symbol} on ${networkName(network)}`;
     return {
         value,
         message:
-            value === 0 ? `You don't hold any ${where}.` : `That's more than your ${formatUsd(value)} of ${where}.`,
+            value === 0 ? `You don't hold any ${symbol}.` : `That's more than your ${formatUsd(value)} of ${symbol}.`,
         cta: `Not enough ${symbol}`,
     };
-}
-
-type UsdcRow = { network: NetworkId; usd: number };
-
-/** The wallet's spendable USDC on each network in the coin's order, empty while unknown */
-function usdcRows(ctx: TradeCtx): UsdcRow[] {
-    return entriesOf(ctx, QUOTE).flatMap(({ network }) => {
-        const units = spendableOn(ctx, QUOTE, network);
-        // A USDC is a dollar
-        return units === null ? [] : [{ network, usd: units }];
-    });
-}
-
-const richest = (rows: UsdcRow[]) =>
-    rows.reduce<UsdcRow | undefined>((best, row) => (!best || row.usd > best.usd ? row : best), undefined);
-
-/** Caps a purchase at the most USDC the wallet holds on one network, with no cap while any USDC network is unknown */
-export function usdcCap(ctx: TradeCtx): Bound | undefined {
-    const rows = usdcRows(ctx);
-    const best = richest(rows);
-    if (!best || rows.length < entriesOf(ctx, QUOTE).length) return undefined;
-    return {
-        value: best.usd,
-        message:
-            best.usd === 0
-                ? `You don't hold any ${QUOTE}.`
-                : `You have ${formatUsd(best.usd)} ${QUOTE} on ${networkName(best.network)} to spend.`,
-        cta: `Not enough ${QUOTE}`,
-    };
-}
-
-/** The network a purchase pays from, the coin's own if its USDC covers the amount, else where USDC is largest */
-export function buyPayNetwork(ctx: TradeCtx, network: NetworkId, amountUSD: number): NetworkId | null {
-    const here = spendableOn(ctx, QUOTE, network);
-    if (here === null) return null;
-    if (here >= amountUSD) return network;
-    const best = richest(usdcRows(ctx));
-    return best && best.usd > 0 ? best.network : network;
 }
 
 /** Caps spending at the stablecoin balance; no cap while disconnected. */
@@ -115,7 +63,7 @@ const usdOrDash = (value: number | null) => (value === null ? "—" : formatUsd(
 
 /** A coin as a picker row with what you hold across networks once read, none included, else its price */
 export function coinChoice(ctx: TradeCtx, coin: Token, options: { disabled?: string } = {}): Choice {
-    const units = heldTotal(ctx, coin.symbol);
+    const units = held(ctx, coin.symbol);
     const price = priceOf(ctx, coin.symbol);
     return {
         value: coin.symbol,
@@ -129,21 +77,13 @@ export function coinChoice(ctx: TradeCtx, coin: Token, options: { disabled?: str
     };
 }
 
-/** Units of a coin the wallet can spend across the networks it has read, or null while none has been */
-function spendableTotal(ctx: TradeCtx, symbol: string): number | null {
-    const known = entriesOf(ctx, symbol)
-        .map(({ network }) => spendableOn(ctx, symbol, network))
-        .filter((units) => units !== null);
-    return known.length ? known.reduce((sum, units) => sum + units, 0) : null;
-}
-
-/** The coin other than the stablecoin that the wallet can spend the most dollars of, if it can spend any */
+/** The coin other than the stablecoin that the account holds the most dollars of, if it holds any */
 export function largestHolding(ctx: TradeCtx): string | undefined {
     let best: string | undefined;
     let most = 0;
     for (const { symbol } of ctx.catalog.tokens) {
         // A coin with no price yet can't be ranked against the others
-        const value = symbol === QUOTE ? 0 : (spendableTotal(ctx, symbol) ?? 0) * (priceOf(ctx, symbol) ?? 0);
+        const value = symbol === QUOTE ? 0 : (held(ctx, symbol) ?? 0) * (priceOf(ctx, symbol) ?? 0);
         if (value > most) {
             best = symbol;
             most = value;
@@ -152,80 +92,8 @@ export function largestHolding(ctx: TradeCtx): string | undefined {
     return best;
 }
 
-/** Disables coins the wallet can't pay with: none held, or none above the gas kept back; only once a wallet is read */
+/** Disables a coin the account holds none of; nothing while the holdings are unknown */
 export function unheld(ctx: TradeCtx, symbol: string) {
-    const total = heldTotal(ctx, symbol);
-    if (total === null) return undefined;
-    const networks = entriesOf(ctx, symbol);
-    const spendable = networks.some(({ network }) => (spendableOn(ctx, symbol, network) ?? 0) > 0);
-    if (spendable || (total > 0 && !networks.length)) return undefined;
-    return total > 0 ? "Too little for gas" : `You don't hold any ${symbol}`;
-}
-
-/** Why a pay row can't be used: nothing there, or no more than the gas kept back; nothing while unknown */
-function payBlock(units: number | null, spendable: number | null) {
-    if (units === null || spendable === null) return undefined;
-    if (units === 0) return "Nothing here";
-    return spendable > 0 ? undefined : "Too little for gas";
-}
-
-/** A coin's networks as picker rows, with unusable pay rows and the other side's pair disabled */
-export function networkChoices(
-    ctx: TradeCtx,
-    symbol: string,
-    side: "pay" | "receive",
-    other?: { token: string; network: string },
-): Choice<NetworkId>[] {
-    return entriesOf(ctx, symbol).map((entry) => {
-        const units = heldOn(ctx, symbol, entry.network);
-        const price = priceOf(ctx, symbol);
-        const same = other?.token === symbol && other.network === entry.network;
-        const empty = side === "pay" ? payBlock(units, spendableOn(ctx, symbol, entry.network)) : undefined;
-        return {
-            value: entry.network,
-            label: networkName(entry.network),
-            description: entry.label,
-            ...(units !== null
-                ? { detail: formatUnits(units, symbol), subdetail: usdOrDash(price === null ? null : units * price) }
-                : {}),
-            icon: { set: "coin", id: symbol, badge: { set: "network", id: entry.network } },
-            disabled: empty ?? (same ? "Same as the other side" : undefined),
-        };
-    });
-}
-
-/** Whether a coin's network can be kept, which it can't be if absent, unusable on the pay side, or a wrapped form that arrived without its coin */
-export function networkFits(ctx: TradeCtx, symbol: string, network: string, side: "pay" | "receive", strayed = false) {
-    const row = networkChoices(ctx, symbol, side).find((c) => c.value === network);
-    const wrapped = entriesOf(ctx, symbol).find((e) => e.network === network)?.wrapped;
-    return !!row && !row.disabled && !(strayed && wrapped);
-}
-
-/** The network a paying coin starts on, where the wallet holds the most it can spend, else one not read yet, else its home */
-export function defaultPayNetwork(ctx: TradeCtx, symbol: string): NetworkId {
-    const home = homeOf(ctx, symbol);
-    const networks = entriesOf(ctx, symbol).map((entry) => entry.network);
-    const units = (network: NetworkId) => heldOn(ctx, symbol, network) ?? 0;
-    // A network not read yet might hold some, so it is usable too
-    const usable = networks.filter((network) => (spendableOn(ctx, symbol, network) ?? 1) > 0);
-    const among = usable.length ? usable : networks;
-    const most = Math.max(...among.map(units));
-    return (
-        among.find((network) => most > 0 && units(network) === most) ?? (among.includes(home) ? home : among[0]) ?? home
-    );
-}
-
-/** The network a received coin starts on, beside the pay side unless the coin is wrapped there */
-export function defaultReceiveNetwork(
-    ctx: TradeCtx,
-    symbol: string,
-    pay?: { token: string; network: string },
-): NetworkId {
-    const home = homeOf(ctx, symbol);
-    if (pay?.token === symbol) {
-        if (home !== pay.network) return home;
-        return entriesOf(ctx, symbol).find((e) => e.network !== pay.network)?.network ?? home;
-    }
-    const there = entriesOf(ctx, symbol).find((e) => e.network === pay?.network);
-    return there && !there.wrapped ? there.network : home;
+    const units = held(ctx, symbol);
+    return units === null || units > 0 ? undefined : `You don't hold any ${symbol}`;
 }

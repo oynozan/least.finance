@@ -14,7 +14,6 @@ import type { SwapHoldingsView, SwapOrderView, SwapQuoteView } from "@/server/sr
 import { swapActivity } from "@/lib/trade/activity";
 import { CATALOG, TOKENS } from "@/lib/trade/catalog";
 import type { TradeCtx } from "@/lib/trade/context";
-import { toSwapRequest } from "@/lib/trade/swap-request";
 import { formatEta, swapQuoteRows } from "@/lib/trade/swap-quote";
 
 const EVM = "0xAbCdEf0000000000000000000000000000000001";
@@ -153,52 +152,6 @@ const ctx = (units: Record<string, Record<string, number>> = {}): TradeCtx => ({
     holdings: null,
     wallet: { units, unread: [] },
 });
-const BOTH = { evm: EVM, solana: SOL };
-
-test("a swap maps straight to a request with the wallets of each network's kind", () => {
-    const intent = {
-        type: "swap" as const,
-        fromToken: "ETH",
-        fromNetwork: "base" as const,
-        toToken: "SOL",
-        toNetwork: "solana" as const,
-        amountUSD: "10",
-    };
-    expect(toSwapRequest(intent, ctx(), BOTH, BOTH)).toEqual({
-        from: { token: "ETH", network: "base" },
-        to: { token: "SOL", network: "solana" },
-        amountUSD: "10",
-        wallet: EVM,
-        receiver: SOL,
-    });
-    expect(toSwapRequest(intent, ctx(), { evm: EVM }, BOTH)).toEqual({ missing: "solana" });
-    expect(toSwapRequest(intent, ctx(), { solana: SOL }, BOTH)).toEqual({ missing: "evm" });
-});
-
-test("buy pays USDC where the wallet holds it and sell pays the coin for USDC on its network", () => {
-    const buy = {
-        type: "spot" as const,
-        side: "buy" as const,
-        token: "ETH",
-        network: "base" as const,
-        amountUSD: "50",
-    };
-    const richOnEthereum = ctx({ USDC: { ethereum: 500, base: 5 } });
-    expect(toSwapRequest(buy, richOnEthereum, BOTH, BOTH)).toMatchObject({
-        from: { token: "USDC", network: "ethereum" },
-        to: { token: "ETH", network: "base" },
-    });
-    expect(toSwapRequest(buy, ctx({ USDC: { base: 80 } }), BOTH, BOTH)).toMatchObject({
-        from: { token: "USDC", network: "base" },
-    });
-    const sell = { ...buy, side: "sell" as const };
-    expect(toSwapRequest(sell, richOnEthereum, BOTH, BOTH)).toMatchObject({
-        from: { token: "ETH", network: "base" },
-        to: { token: "USDC", network: "base" },
-        amountUSD: "50",
-    });
-});
-
 const quote = (): SwapQuoteView => ({
     request: {
         from: { token: "ETH", network: "ethereum" },
@@ -308,37 +261,4 @@ test("with storage throwing, the hashes are still reported once bound", async ()
     await reportUnreported("w3", new Set(), async (e) => (sent.push(e.orderId), true), true);
     expect(sent).toEqual(["b3"]);
     expect(loadUnreported("w3")).toEqual([]);
-});
-
-test("the paying wallet must be connected here; the receiver need only be linked", () => {
-    const intent = {
-        type: "swap" as const,
-        fromToken: "ETH",
-        fromNetwork: "base" as const,
-        toToken: "SOL",
-        toNetwork: "solana" as const,
-        amountUSD: "10",
-    };
-    // Linked but not connected here: connect it.
-    expect(toSwapRequest(intent, ctx(), BOTH, {})).toEqual({ connect: EVM });
-    expect(toSwapRequest(intent, ctx(), BOTH, { solana: SOL })).toEqual({ connect: EVM });
-    // Another connected wallet is not the one that pays.
-    expect(toSwapRequest(intent, ctx(), BOTH, { evm: "0x0000000000000000000000000000000000000002" })).toEqual({
-        connect: EVM,
-    });
-    // Connected (any case) it signs, and the receiver can be linked only.
-    expect(toSwapRequest(intent, ctx(), BOTH, { evm: EVM.toLowerCase() })).toMatchObject({
-        wallet: EVM,
-        receiver: SOL,
-    });
-    // A Solana payer is matched exactly.
-    const back = {
-        ...intent,
-        fromToken: "SOL",
-        fromNetwork: "solana" as const,
-        toToken: "ETH",
-        toNetwork: "base" as const,
-    };
-    expect(toSwapRequest(back, ctx(), BOTH, { evm: EVM })).toEqual({ connect: SOL });
-    expect(toSwapRequest(back, ctx(), BOTH, { solana: SOL })).toMatchObject({ wallet: SOL, receiver: EVM });
 });

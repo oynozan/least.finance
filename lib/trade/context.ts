@@ -28,7 +28,7 @@ export type TradeCtx = {
  * about (Swap's destination, Buy/Sell's coin, a perp's market). Switching
  * verbs carries them over, and their pills glide instead of being replaced.
  */
-export type TradeTerms = { amountUSD: string; token: string; tokenNetwork: string };
+export type TradeTerms = { amountUSD: string; token: string };
 
 export const { operation, registry } = schema<TradeTerms, TradeCtx>();
 

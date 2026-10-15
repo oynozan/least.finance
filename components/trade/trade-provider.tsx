@@ -6,7 +6,7 @@ import type { MarketView } from "@/server/src/protocol";
 import type { SentenceAction, SentenceView } from "@/lib/sentence";
 import { API_URL } from "@/lib/api";
 import { CATALOG, QUOTE, TOKENS, type Catalog } from "@/lib/trade/catalog";
-import type { TradeCtx, WalletHoldings } from "@/lib/trade/context";
+import type { TradeCtx } from "@/lib/trade/context";
 import type { TransactionIntent } from "@/lib/trade/intent";
 import { toTokens } from "@/lib/trade/live-coins";
 import { toPredictionMarket } from "@/lib/trade/markets";
@@ -17,9 +17,7 @@ import {
     subscribePerpMarkets,
     watchPerpMarkets,
 } from "@/lib/trade/perp-markets-store";
-import { walletHoldings } from "@/lib/trade/wallet-holdings";
 import { useAccount } from "@/components/account-provider";
-import { depositWalletAddress, solanaWalletAddress, useActiveWallet } from "@/components/arc-wallet";
 import { walletEnabled } from "@/components/wallet-provider";
 import { createCoinsStore } from "./coins-store";
 import { createMarketsStore, type MarketsStore } from "./markets-store";
@@ -39,8 +37,6 @@ type TradeState = {
     maxOrderUSD: number | null;
     /** Every question seen, with the sell prices that value open positions. */
     known: ReadonlyMap<string, MarketView>;
-    /** Asks for fresh swap coins in the signing wallets; absent while signed out. */
-    refreshHoldings?: () => void;
 };
 
 const NO_KNOWN: ReadonlyMap<string, MarketView> = new Map();
@@ -70,35 +66,26 @@ const NO_SIGN_IN: WalletStatus = { status: "disconnected", connect: () => undefi
 function SignedOutTradeProvider({ children }: { children: ReactNode }) {
     const { catalog, store, search, known } = useLiveCatalog();
     return (
-        <Provide
-            wallet={NO_SIGN_IN}
-            holdings={null}
-            walletCoins={null}
-            catalog={catalog}
-            store={store}
-            search={search}
-            known={known}
-        >
+        <Provide wallet={NO_SIGN_IN} holdings={null} catalog={catalog} store={store} search={search} known={known}>
             {children}
         </Provide>
     );
 }
 
 function PrivyTradeProvider({ children }: { children: ReactNode }) {
-    const { ready, authenticated, user } = usePrivy();
+    const { ready, authenticated } = usePrivy();
     const { login } = useLogin();
-    const { balance, predictions, swapHoldings, refreshSwapHoldings } = useAccount();
+    const { balance, predictions, holdings: coins } = useAccount();
     const { catalog, store, search, maxOrderUSD, perpTrading, known } = useLiveCatalog();
-    const active = useActiveWallet();
-    // The wallets that will sign: the active EVM one for the eight EVM networks, the active Solana one (else the first linked) for Solana.
-    const evm = user ? depositWalletAddress(user, active) : undefined;
-    const solana = user ? solanaWalletAddress(user, active) : undefined;
-    const wallet = useMemo<WalletHoldings | null>(
-        () => (swapHoldings ? walletHoldings(swapHoldings.rows, swapHoldings.read, { evm, solana }) : null),
-        [swapHoldings, evm, solana],
+    // USDC is what the account has deposited and pays for Buy, Predict, Long and Short; the coins it holds are what Sell and Swap spend.
+    // Until it loads, nothing is capped rather than everything.
+    const holdings = useMemo(
+        () =>
+            balance == null
+                ? null
+                : { ...Object.fromEntries(coins.map((h) => [h.symbol, Number(h.units)])), [QUOTE]: balance },
+        [balance, coins],
     );
-    // USDC is what the account has deposited, and still pays for Predict, Long and Short. Until it loads, nothing is capped rather than everything.
-    const holdings = useMemo(() => (balance == null ? null : { [QUOTE]: balance }), [balance]);
     // The questions of open positions are read on a timer, whether or not they are trending.
     const heldKey = predictions.positions
         .filter((p) => p.state === "open")
@@ -114,7 +101,6 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             <Provide
                 wallet={{ status: "loading" }}
                 holdings={null}
-                walletCoins={null}
                 catalog={catalog}
                 store={store}
                 search={search}
@@ -129,7 +115,6 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             <Provide
                 wallet={{ status: "disconnected", connect: () => login({ loginMethods: ["wallet"] }) }}
                 holdings={null}
-                walletCoins={null}
                 catalog={catalog}
                 store={store}
                 search={search}
@@ -143,14 +128,12 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
         <Provide
             wallet={{ status: "connected" }}
             holdings={holdings}
-            walletCoins={wallet}
             catalog={catalog}
             store={store}
             search={search}
             maxOrderUSD={maxOrderUSD}
             perpTrading={perpTrading}
             known={known}
-            refreshHoldings={refreshSwapHoldings}
         >
             {children}
         </Provide>
@@ -226,27 +209,22 @@ function useLiveCatalog(): {
 function Provide({
     wallet,
     holdings,
-    walletCoins,
     catalog,
     store,
     search,
     maxOrderUSD = null,
     perpTrading,
     known = NO_KNOWN,
-    refreshHoldings,
     children,
 }: {
     wallet: WalletStatus;
     holdings: Record<string, number> | null;
-    /** The signing wallets' coins per network; null until they load, and while signed out. */
-    walletCoins: WalletHoldings | null;
     catalog: Catalog;
     store: MarketsStore;
     search: MarketSearch;
     maxOrderUSD?: number | null;
     perpTrading?: TradeCtx["perpTrading"];
     known?: ReadonlyMap<string, MarketView>;
-    refreshHoldings?: () => void;
     children: ReactNode;
 }) {
     const { perps } = useAccount();
@@ -259,7 +237,7 @@ function Provide({
         () => (heldAssets ? heldAssets.split(",").map((asset) => ({ asset })) : undefined),
         [heldAssets],
     );
-    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, walletCoins, perpTrading, openPerps);
+    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, undefined, perpTrading, openPerps);
     const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;
     const marketId = watched?.kind === "choice" && watched.value ? watched.value : null;
     useEffect(() => {
@@ -267,8 +245,6 @@ function Provide({
         return () => store.watch(null);
     }, [store, marketId]);
     return (
-        <TradeContext value={{ view, dispatch, wallet, search, catalog, maxOrderUSD, known, refreshHoldings }}>
-            {children}
-        </TradeContext>
+        <TradeContext value={{ view, dispatch, wallet, search, catalog, maxOrderUSD, known }}>{children}</TradeContext>
     );
 }

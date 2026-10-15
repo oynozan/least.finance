@@ -1,29 +1,16 @@
 import { VERB, canonicalDecimal } from "@/lib/sentence";
 import { QUOTE } from "../catalog";
-import { operation, priceOf, type TradeCtx } from "../context";
+import { operation, priceOf } from "../context";
 import { formatUnits, formatUsd } from "../format";
 import type { TransactionIntent } from "../intent";
-import { networkName, type NetworkId } from "../networks";
-import {
-    buyPayNetwork,
-    coinChoice,
-    defaultPayNetwork,
-    defaultReceiveNetwork,
-    holdingCapOn,
-    largestHolding,
-    minimum,
-    networkChoices,
-    networkFits,
-    unheld,
-    usdAmount,
-    usdcCap,
-} from "./shared";
+import { coinChoice, holdingCap, largestHolding, minimum, spendCap, unheld, usdAmount } from "./shared";
 
 type Side = "buy" | "sell";
-type Values = { token: string; network: NetworkId; amountUSD: string };
+type Values = { token: string; amountUSD: string };
 type Fixed = { side: Side };
 
-const FEE_RATE = 0.002;
+/** The smallest trade the server fills, in dollars. */
+const MIN_TRADE_USD = 0.1;
 
 /**
  * "I want to [Buy] [10 USD] of [SOL]."
@@ -57,7 +44,6 @@ export const spot = operation({
             prompt: "Which coin?",
             hint: "Coin you trade",
             term: "token",
-            then: "network",
             missing: { message: "Pick a coin.", cta: "Pick a coin" },
             // Trades are priced in the stablecoin, so it isn't on offer here.
             choices: (v: Values & Fixed, ctx) =>
@@ -67,24 +53,11 @@ export const spot = operation({
                         coinChoice(ctx, t, { disabled: v.side === "sell" ? unheld(ctx, t.symbol) : undefined }),
                     ),
         },
-        network: {
-            kind: "choice",
-            prompt: "On which network?",
-            hint: "Network of the coin",
-            term: "tokenNetwork",
-            missing: { message: "Pick a network.", cta: "Pick a network" },
-            choices: (v: Values & Fixed, ctx) => networkChoices(ctx, v.token, v.side === "sell" ? "pay" : "receive"),
-        },
         amountUSD: usdAmount(
             (v: Values & Fixed, ctx) => ({
-                min: minimum(1),
-                // A coin the wallet can't sell is already blocked by its pill
-                max:
-                    v.side === "buy"
-                        ? usdcCap(ctx)
-                        : unheld(ctx, v.token)
-                          ? undefined
-                          : holdingCapOn(ctx, v.token, v.network),
+                min: minimum(MIN_TRADE_USD),
+                // A coin the account can't sell is already blocked by its pill
+                max: v.side === "buy" ? spendCap(ctx) : unheld(ctx, v.token) ? undefined : holdingCap(ctx, v.token),
             }),
             (v, ctx) => {
                 const price = priceOf(ctx, v.token);
@@ -94,76 +67,39 @@ export const spot = operation({
             },
         ),
     },
-    defaults: (ctx: TradeCtx) => ({ token: "SOL", network: defaultReceiveNetwork(ctx, "SOL"), amountUSD: "10" }),
+    defaults: () => ({ token: "SOL", amountUSD: "10" }),
     template: (v) =>
         v.side === "buy"
             ? [VERB, { slot: "amountUSD" }, "of", { slot: "token" }, "."]
             : [VERB, { slot: "amountUSD" }, "of my", { slot: "token" }, "."],
+    // A coin the account doesn't hold is sold as the one it holds the most of
     normalize: (next, cause, fixed, ctx) => {
-        const side = fixed.side === "sell" ? "pay" : "receive";
-        const entered = cause.type === "enter" ? cause.changed : [];
-        const strayed = entered.includes("token") !== entered.includes("network");
-        // After a pick the network stays where it fits; on enter and refit only a chosen one does
-        const pinned = cause.type === "slot" || cause.chosen.includes("network");
-        // A coin the wallet doesn't hold is sold as the one it holds the most of
-        const token =
-            cause.type !== "slot" && side === "pay" && unheld(ctx, next.token)
-                ? (largestHolding(ctx) ?? next.token)
-                : next.token;
-        const keep =
-            token === next.token &&
-            !(cause.type === "slot" && cause.slot === "token") &&
-            pinned &&
-            networkFits(ctx, token, next.network, side, strayed);
-        if (keep) return next;
-        const network = side === "pay" ? defaultPayNetwork(ctx, token) : defaultReceiveNetwork(ctx, token);
-        return { ...next, token, network };
+        if (fixed.side !== "sell" || cause.type === "slot" || !unheld(ctx, next.token)) return next;
+        const token = largestHolding(ctx);
+        return token ? { ...next, token } : next;
     },
     toIntent: (v): Extract<TransactionIntent, { type: "spot" }> => ({
         type: "spot",
         side: v.side,
         token: v.token,
-        network: v.network,
         amountUSD: canonicalDecimal(v.amountUSD),
     }),
     preview: (v, ctx) => {
         const amount = Number(v.amountUSD) || 0;
         const price = priceOf(ctx, v.token);
-        const fee = amount * FEE_RATE;
         // Nothing to estimate before the coin has a price
-        const coins = amount && price ? `≈ ${formatUnits(amount / price, v.token)}` : "—";
-        const paidFrom = buyPayNetwork(ctx, v.network, amount);
-        const rows =
-            v.side === "buy"
-                ? [
-                      {
-                          id: "pay",
-                          label: "You pay",
-                          value: amount ? `${formatUsd(amount)} ${QUOTE}` : "—",
-                          primary: true,
-                      },
-                      { id: "get", label: "You get", value: coins, primary: true },
-                      {
-                          id: "from",
-                          label: "Paid from",
-                          value: paidFrom ? `${QUOTE} on ${networkName(paidFrom)}` : QUOTE,
-                      },
-                  ]
-                : [
-                      { id: "pay", label: "You sell", value: coins, primary: true },
-                      {
-                          id: "get",
-                          label: "You get",
-                          value: amount ? `≈ ${formatUsd(amount - fee)} ${QUOTE}` : "—",
-                          primary: true,
-                      },
-                      { id: "to", label: "Received on", value: `${QUOTE} on ${networkName(v.network)}` },
-                  ];
+        const coins = amount && price ? formatUnits(amount / price, v.token) : "—";
+        const dollars = amount ? `${formatUsd(amount)} ${QUOTE}` : "—";
         return {
+            title: "No fees, we cover network costs.",
             rows: [
-                ...rows,
-                { id: "price", label: "Price", value: price ? `${formatUsd(price)} per ${v.token}` : "—" },
-                { id: "fee", label: "Fee", value: amount ? `≈ ${formatUsd(fee)}` : "—" },
+                v.side === "buy"
+                    ? { id: "pay", label: "You pay", value: dollars, primary: true }
+                    : { id: "pay", label: "You pay", value: coins, primary: true },
+                v.side === "buy"
+                    ? { id: "get", label: "You get ≈", value: coins, primary: true }
+                    : { id: "get", label: "You get ≈", value: dollars, primary: true },
+                { id: "when", label: "Arrives", value: "Instant" },
             ],
         };
     },
