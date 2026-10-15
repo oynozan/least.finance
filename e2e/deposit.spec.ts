@@ -27,7 +27,7 @@ const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "
 const maxButton = (page: Page) => sidebar(page).getByRole("button", { name: "Max" });
 const cancelButton = (page: Page) => sidebar(page).getByRole("button", { name: "Cancel deposit" });
 /** The form's button while the wallet is asked to approve. */
-const confirming = (page: Page) => sidebar(page).getByRole("button", { name: "Confirm in wallet" });
+const confirming = (page: Page) => sidebar(page).getByText("Confirm the deposit in your wallet.");
 const hint = (page: Page) => sidebar(page).locator("#deposit-hint");
 // Read out, not shown: the wallet's balance, or why the amount is too much.
 const wallet = (page: Page) => sidebar(page).locator("#deposit-wallet");

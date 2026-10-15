@@ -6,6 +6,7 @@ import { formatUnits } from "@/lib/trade/format";
 import type { CoinBalance } from "@/server/src/protocol";
 import { NEEDS_SOL, type DepositResult } from "./account-client";
 import { CloseIcon } from "./icons";
+import { ProgressGlyph } from "./progress-fill";
 import { formatUsd } from "./wallet-data";
 import styles from "./wallet-sidebar.module.css";
 
@@ -17,6 +18,7 @@ const GAS_RESERVE = 0.01;
 export const MAX_DECIMALS = 6;
 
 const OVER_WALLET = "That's more than your wallet holds, after gas.";
+const IN_WALLET = "Confirm the deposit in your wallet.";
 const NOT_SIGNABLE = "Connect this wallet to deposit from it.";
 /** A dollar amount is typed to the cent. */
 const USD_DECIMALS = 2;
@@ -157,6 +159,7 @@ export function DepositForm({
     // Only problems are written out; the wallet's balance is for screen readers.
     const hint =
         walletProblem ??
+        (sending ? IN_WALLET : null) ??
         issue ??
         estimate ??
         (isArc && walletBalance === null ? "Couldn't read your wallet's balance." : null);
@@ -261,11 +264,20 @@ export function DepositForm({
                     className={`${styles.deposit} ${styles.confirmDeposit}`}
                     // Not `disabled`, which would drop keyboard focus while the wallet opens.
                     aria-disabled={!canSend || undefined}
+                    aria-busy={sending || undefined}
                     whileHover={canSend ? { scale: 1.04 } : undefined}
                     whileTap={canSend ? { scale: 0.94 } : undefined}
                     transition={spring}
                 >
-                    {sending ? "Confirm in wallet" : "Deposit"}
+                    {/* The label keeps its room while a spinner stands in, so the amount field never gets squeezed. */}
+                    <span className={sending ? "invisible" : undefined}>Deposit</span>
+                    {sending && (
+                        <span className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
+                            <span className="relative flex size-3.5 items-center justify-center">
+                                <ProgressGlyph phase="running" />
+                            </span>
+                        </span>
+                    )}
                 </motion.button>
                 <motion.button
                     type="button"
