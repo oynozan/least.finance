@@ -146,10 +146,20 @@ export class Payouts {
     }
 
     async #pass() {
+        try {
+            await this.#payAll();
+        } finally {
+            // After the payouts, so an Iris that is slow to answer never holds one back.
+            if (!this.#stop?.signal.aborted) {
+                await this.#followForwards().catch((error: unknown) =>
+                    this.#deps.logger.warn({ err: error }, "Following Solana withdrawals failed"),
+                );
+            }
+        }
+    }
+
+    async #payAll() {
         const { collections, logger } = this.#deps;
-        await this.#followForwards().catch((error: unknown) =>
-            logger.warn({ err: error }, "Following Solana withdrawals failed"),
-        );
         const sending = await collections.withdrawals.find({ state: "sending" }).sort({ _id: 1 }).toArray();
         let storedPaid = false;
         for (const withdrawal of sending) {
@@ -511,7 +521,9 @@ export class Payouts {
         try {
             message = await iris.message({ domain: ARC_DOMAIN, burnTxHash: next.solana!.burnTxHash! });
         } catch (error) {
-            if (error instanceof IrisError && error.kind === "rate_limited") this.#irisLimiter.backoff(now);
+            if (error instanceof IrisError && (error.kind === "rate_limited" || error.kind === "timeout")) {
+                this.#irisLimiter.backoff(now);
+            }
             logger.warn({ err: error, withdrawalId: id }, "Iris couldn't be asked about a Solana withdrawal");
             return;
         }

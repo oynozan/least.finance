@@ -37,6 +37,28 @@ test("a 429 is rate_limited", async () => {
     fake.failWith(null);
 });
 
+test("a request that outlives the timeout is a timeout", async () => {
+    const hanging = createIris({
+        baseUrl: fake.url,
+        timeoutMs: 20,
+        fetch: (_url, init) =>
+            new Promise<Response>((_resolve, reject) =>
+                init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+            ),
+    });
+    const error = await hanging.message({ domain: 26, burnTxHash: BURN }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(IrisError);
+    expect(error).toMatchObject({ kind: "timeout" });
+});
+
+test("a connection that fails outright is unavailable, not a timeout", async () => {
+    const refused = createIris({
+        baseUrl: fake.url,
+        fetch: () => Promise.reject(new TypeError("fetch failed")),
+    });
+    await expect(refused.message({ domain: 26, burnTxHash: BURN })).rejects.toMatchObject({ kind: "unavailable" });
+});
+
 test("message maps a missing message to null and complete with forwardTxHash", async () => {
     const iris = createIris({ baseUrl: fake.url });
     expect(await iris.message({ domain: 26, burnTxHash: BURN })).toBeNull();

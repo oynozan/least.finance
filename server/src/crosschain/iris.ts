@@ -31,9 +31,9 @@ export type Iris = {
     message(input: { domain: number; burnTxHash: Hex | string }): Promise<IrisMessage | null>;
 };
 
-/** Iris couldn't be asked or answered badly; `rate_limited` means back off. */
+/** Iris couldn't be asked or answered badly; `rate_limited` and `timeout` mean back off. */
 export class IrisError extends Error {
-    readonly kind: "rate_limited" | "unavailable";
+    readonly kind: "rate_limited" | "timeout" | "unavailable";
 
     constructor(kind: IrisError["kind"], message: string, options?: { cause?: unknown }) {
         super(message, options);
@@ -65,7 +65,8 @@ export function createIris(options: { baseUrl: string; fetch?: typeof fetch; tim
         try {
             response = await send(`${base}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
         } catch (error) {
-            throw new IrisError("unavailable", "Iris couldn't be reached", { cause: error });
+            const timedOut = error instanceof Error && error.name === "TimeoutError";
+            throw new IrisError(timedOut ? "timeout" : "unavailable", "Iris couldn't be reached", { cause: error });
         }
         if (response.status === 429) throw new IrisError("rate_limited", "Iris is rate limiting");
         if (response.status === 404) return { status: 404, body: null };

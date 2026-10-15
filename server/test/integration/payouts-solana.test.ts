@@ -6,7 +6,7 @@ import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { afterAll, beforeAll, expect, inject, test, vi } from "vitest";
 import { createKeyring } from "../../src/accounts/keyring.ts";
 import { arcChain } from "../../src/chain/arc.ts";
-import { createIris } from "../../src/crosschain/iris.ts";
+import { createIris, IrisError, type Iris } from "../../src/crosschain/iris.ts";
 import { connectDatabase, type Database } from "../../src/db/mongo.ts";
 import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { Ledger } from "../../src/deposits/ledger.ts";
@@ -394,6 +394,50 @@ test("Iris answering 429 backs off and leaves the state unchanged", async () => 
     clock += 10 * MINUTE;
     await payouts.tick();
     expect((await stateOf(withdrawal._id)).state).toBe("sent");
+});
+
+test("Iris timing out backs off like a 429, and leaves the state unchanged", async () => {
+    await isolated();
+    const burnTxHash: Hex = `0x${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
+    const { withdrawal } = await seedSolana("2", { state: "forwarding", burnTxHash });
+    let asked = 0;
+    const timingOut: Iris = {
+        ...createIris({ baseUrl: iris.url }),
+        message: async () => {
+            asked++;
+            throw new IrisError("timeout", "Iris couldn't be reached");
+        },
+    };
+    const payouts = worker({ iris: timingOut });
+
+    await payouts.tick();
+    expect(asked).toBe(1);
+    clock += 2_000;
+    await payouts.tick();
+    expect(asked).toBe(1);
+    expect((await stateOf(withdrawal._id)).state).toBe("forwarding");
+
+    clock += 10 * MINUTE;
+    await payouts.tick();
+    expect(asked).toBe(2);
+});
+
+test("a slow Iris never holds back an Arc payout", async () => {
+    await isolated();
+    const burnTxHash: Hex = `0x${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
+    await seedSolana("1", { state: "forwarding", burnTxHash });
+    const { withdrawal } = await seedArc("1");
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const slow: Iris = { ...createIris({ baseUrl: iris.url }), message: () => gate.then(() => null) };
+
+    const ticking = worker({ iris: slow }).tick();
+    try {
+        await expect.poll(async () => (await stateOf(withdrawal._id)).state).toBe("sent");
+    } finally {
+        release();
+        await ticking;
+    }
 });
 
 test("restart in sending with stored raw transactions re-sends the same bytes and the person is paid once", async () => {
