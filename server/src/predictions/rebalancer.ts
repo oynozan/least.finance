@@ -3,15 +3,28 @@ import type { Logger } from "pino";
 import { getAddress, type Address } from "viem";
 import { IrisError, type Iris } from "../crosschain/iris.ts";
 import type { IrisLimiter } from "../crosschain/iris-limiter.ts";
-import type { Collections, PoolRebalanceDoc, PoolRebalanceState } from "../db/mongo.ts";
+import {
+    isDuplicateKey,
+    type Collections,
+    type PoolDirection,
+    type PoolRebalanceDoc,
+    type PoolRebalanceState,
+} from "../db/mongo.ts";
 import { formatE6, fromDecimal, toDecimal, weiToE6 } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
 import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import { maxFeeWithHeadroom } from "../withdrawals/cctp-burn.ts";
 import type { Withdrawals } from "../withdrawals/withdrawals.ts";
-import { movedLast24hE6, poolFreeFloatE6, type PoolConfig } from "./pool-inputs.ts";
-import { planPoolMove, usdToE6 } from "./pool-plan.ts";
+import {
+    DIRECTIONS,
+    movedLast24hE6,
+    newPoolRebalance,
+    poolFreeFloatE6,
+    readDecisionInputs,
+    type PoolConfig,
+} from "./pool-inputs.ts";
+import { decidePoolMove, planPoolMove, usdToE6 } from "./pool-plan.ts";
 import type { PredictionService } from "./predictions.ts";
 import { announce, FLOWS, flowKey, stateChange, type FlowContext } from "./rebalance-flows.ts";
 import { HourlyLog, POOL_ERRORS, rowFields } from "./rebalance-log.ts";
@@ -22,6 +35,8 @@ import type { PoolTrader } from "./trader.ts";
 const TICK_MS = 2_000;
 /** How often a row in a slow state is followed. */
 const SLOW_MS = 30_000;
+/** How often the float is weighed against the bands. */
+const EVALUATE_EVERY_MS = 60_000;
 /** How often the pool wallet is read for idle native USDC. */
 const IDLE_EVERY_MS = 10 * 60_000;
 /** Idle native USDC above this is warned about. */
@@ -69,6 +84,8 @@ export class PoolRebalancer {
     readonly #irisSeen = new Map<string, unknown>();
     /** When each slow row was last followed, by `id:state`. */
     #followedAt = new Map<string, number>();
+    /** When the bands were last weighed. */
+    #evaluatedAt = -Infinity;
     /** When the pool wallet was last read for idle USDC. */
     #idleReadAt = 0;
     /** The configured pool wallet, once the derived-wallet check passed in this process. */
@@ -153,7 +170,134 @@ export class PoolRebalancer {
         for (const id of this.#irisSeen.keys()) if (!open.has(id)) this.#irisSeen.delete(id);
         const submitting = new Set(rows.filter((row) => row.state === "submitting").map((row) => row._id.toString()));
         for (const id of this.#pendingSend) if (!submitting.has(id)) this.#pendingSend.delete(id);
+        await this.#evaluate();
         await this.#warnOnIdleUsdc(trader);
+    }
+
+    /** Once a minute, with trading on, weighs the pool's free float against the bands and queues the one `auto` move it calls for; a failure only warns. */
+    async #evaluate() {
+        if (this.#deps.config.PREDICTIONS_TRADING !== "on" || this.#stop?.signal.aborted) return;
+        const now = this.#now();
+        if (now - this.#evaluatedAt < EVALUATE_EVERY_MS) return;
+        this.#evaluatedAt = now;
+        try {
+            await this.#decide(now);
+        } catch (error) {
+            this.#log.once("decide", "warn", { err: error }, "Couldn't decide a pool move");
+        }
+    }
+
+    /** Decides from one read of the inputs; a move that passes the advisory guard becomes a `queued` row for the start path. */
+    async #decide(now: number) {
+        const { collections, config, logger } = this.#deps;
+        const inputs = await readDecisionInputs(collections, config, now);
+        for (const direction of DIRECTIONS) {
+            if (inputs.halted[direction])
+                this.#log.once(`halted:${direction}`, "error", { direction }, POOL_ERRORS.halted);
+        }
+        if (inputs.active > 0 || inputs.freeE6 === null || inputs.floatAt === null) return;
+
+        const decision = decidePoolMove({
+            tradingOn: inputs.tradingOn,
+            targetE6: inputs.targetE6,
+            freeE6: inputs.freeE6,
+            floatAt: inputs.floatAt,
+            now,
+            lastMoveAt: inputs.lastMoveAt,
+            pauseMs: inputs.pauseMs,
+            minMoveE6: inputs.minMoveE6,
+            maxMoveE6: inputs.maxMoveE6,
+            halted: inputs.halted,
+        });
+        if (!decision.move) {
+            if (decision.why === "stale_float") {
+                this.#log.once(
+                    "stale-float",
+                    "warn",
+                    { floatAgeSeconds: Math.round((now - inputs.floatAt) / 1000) },
+                    "The pool's float read is too old to decide a pool move",
+                );
+            }
+            return;
+        }
+
+        const { direction, reason, amountE6 } = decision.move;
+        if (!(await this.#advise(direction, amountE6, inputs.freeE6, now))) return;
+        const row = newPoolRebalance({
+            kind: "move",
+            direction,
+            source: "auto",
+            reason,
+            amountE6,
+            now: new Date(this.#now()),
+        });
+        try {
+            await collections.poolRebalances.insertOne(row);
+        } catch (error) {
+            if (!isDuplicateKey(error)) throw error;
+            logger.info(rowFields(row), "Another pool move was already active, so the automatic one was dropped");
+            return;
+        }
+        logger.info(
+            {
+                ...rowFields(row),
+                reason,
+                freeUSD: formatE6(inputs.freeE6),
+                targetUSD: formatE6(inputs.targetE6),
+            },
+            "A pool move was queued by the bands",
+        );
+    }
+
+    /** Whether a decided move passes the caps, the day total and the Arc reserve as they stand; a refusal is logged and queues nothing, so a low treasury cannot fail rows into a halt. */
+    async #advise(direction: PoolDirection, amountE6: bigint, freeFloatE6: bigint, now: number): Promise<boolean> {
+        const { collections, config, withdrawals } = this.#deps;
+        const fields = { direction, amountUSD: formatE6(amountE6) };
+        let treasuryFreeE6 = 0n;
+        if (direction === "arc_to_polygon") {
+            try {
+                treasuryFreeE6 = weiToE6(await withdrawals.treasuryFree());
+            } catch (error) {
+                this.#log.once(
+                    "treasury-read",
+                    "warn",
+                    { ...fields, err: error },
+                    "Couldn't read the treasury, so a pool move isn't decided",
+                );
+                return false;
+            }
+        }
+        const plan = planPoolMove({
+            direction,
+            amountE6,
+            maxMoveE6: usdToE6(config.POOL_REBALANCE_MAX_MOVE_USD),
+            treasuryFreeE6,
+            arcReserveE6: usdToE6(config.POOL_REBALANCE_ARC_RESERVE_USD),
+            movedTodayE6: direction === "arc_to_polygon" ? await movedLast24hE6(collections, now) : 0n,
+            maxDayE6: usdToE6(config.POOL_REBALANCE_MAX_DAY_USD),
+            freeFloatE6,
+        });
+        if (plan.ok) return true;
+        if (plan.kind === "reserve") {
+            this.#log.once(
+                TREASURY_LOW_KEY,
+                "error",
+                {
+                    ...fields,
+                    treasuryFreeUSD: formatE6(treasuryFreeE6),
+                    reserveUSD: config.POOL_REBALANCE_ARC_RESERVE_USD,
+                },
+                POOL_ERRORS.treasuryLow,
+            );
+        } else {
+            this.#log.once(
+                `skipped:${plan.kind}`,
+                "info",
+                { ...fields, kind: plan.kind, refusal: plan.reason },
+                "An automatic pool move was skipped by its limits",
+            );
+        }
+        return false;
     }
 
     /** Every 10 minutes reads the wallet's native USDC and warns hourly when over $1 with no row wrapping it. */

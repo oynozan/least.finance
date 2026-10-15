@@ -34,7 +34,7 @@ export class HourlyLog {
         this.#now = now;
     }
 
-    once(key: string, level: "warn" | "error", fields: object, message: string): void {
+    once(key: string, level: "info" | "warn" | "error", fields: object, message: string): void {
         const at = this.#now();
         const last = this.#last.get(key);
         if (last !== undefined && at - last < HOUR_MS) return;
