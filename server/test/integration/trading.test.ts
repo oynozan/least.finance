@@ -224,6 +224,23 @@ describe("account trading", () => {
         });
     });
 
+    test("a $0.10 trade fills though its coin amount is rounded down", async () => {
+        const { socket } = await person(stack);
+        ok(await trade(socket, { verb: "buy", symbol: "BNB", amountUSD: "0.1" }));
+        ok(await trade(socket, { verb: "buy", symbol: "BNB", amountUSD: "10" }));
+        // $0.10 of BNB at $600, rounded down to 8 places as the app sends it, is $0.099996
+        ok(await trade(socket, { verb: "sell", symbol: "BNB", units: "0.00016666" }));
+        ok(
+            await trade(socket, {
+                verb: "swap",
+                symbol: "BNB",
+                toSymbol: "USDT",
+                units: "0.00016666",
+                quotedToPriceUSD: "1",
+            }),
+        );
+    });
+
     test("an unknown coin and bad input are refused", async () => {
         const { socket } = await person(stack);
         expect(await trade(socket, { verb: "buy", symbol: "NOPE", amountUSD: "10" })).toMatchObject({

@@ -35,6 +35,8 @@ export const isTradeError = (error: unknown): error is TradeError => error insta
 const MIN_TRADE = 10n ** 17n;
 /** The share of the quoted price the server's own may be worse by, in basis points. */
 const PRICE_TOLERANCE_BPS = 100n;
+/** The least a fill may come to: a $0.10 trade still fills once its coin amount is rounded down and the price moves within tolerance. */
+const MIN_FILL = MIN_TRADE - (MIN_TRADE * PRICE_TOLERANCE_BPS) / 10_000n;
 const SCALE = 10n ** BigInt(UNIT_DECIMALS);
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -207,7 +209,7 @@ export class TradeService {
             if (from.price * 10_000n > quoted * (10_000n + PRICE_TOLERANCE_BPS)) throw movedError();
             const units = floorToDecimals((amount * SCALE) / from.price, from.decimals);
             const cost = ceilDiv(units * from.price, SCALE);
-            if (units <= 0n || cost < MIN_TRADE) throw belowMinimum();
+            if (units <= 0n || cost < MIN_FILL) throw belowMinimum();
             return {
                 verb: "buy",
                 from,
@@ -230,7 +232,7 @@ export class TradeService {
             // Cheaper than the app showed by more than the tolerance
             if (from.price * 10_000n < quoted * (10_000n - PRICE_TOLERANCE_BPS)) throw movedError();
             const usd = (units * from.price) / SCALE;
-            if (usd < MIN_TRADE) throw belowMinimum();
+            if (usd < MIN_FILL) throw belowMinimum();
             return {
                 verb: "sell",
                 from,
@@ -255,7 +257,7 @@ export class TradeService {
         if (from.price * quotedTo * 10_000n < quoted * to.price * (10_000n - PRICE_TOLERANCE_BPS)) throw movedError();
         const usd = (units * from.price) / SCALE;
         const got = floorToDecimals((usd * SCALE) / to.price, to.decimals);
-        if (usd < MIN_TRADE || got <= 0n) throw belowMinimum();
+        if (usd < MIN_FILL || got <= 0n) throw belowMinimum();
         return {
             verb: "swap",
             from,
