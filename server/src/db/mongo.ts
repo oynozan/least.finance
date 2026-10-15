@@ -1,5 +1,6 @@
 import { MongoClient, MongoServerError, type Collection, type Db, type Decimal128, type ObjectId } from "mongodb";
 import type { Hex, OrderState, SwapNetworkId, SwapOrderState, WithdrawalState } from "../protocol.ts";
+import type { CoinWithdrawalDoc, HedgeDoc, HoldingDoc, TradeDoc } from "../trading/docs.ts";
 import { mergeAccountsByPerson, type MigrationReport } from "./migrations.ts";
 
 /** A person's account. Addresses are stored lowercase. */
@@ -86,7 +87,10 @@ export type LedgerEntryDoc = {
         | "withdrawal_refund"
         | "perp_open"
         | "perp_refund"
-        | "perp_close";
+        | "perp_close"
+        | "trade_buy"
+        | "trade_sell"
+        | "trade_swap";
     /** Signed wei. */
     amount: Decimal128;
     balanceAfter: Decimal128;
@@ -485,6 +489,10 @@ export type Collections = {
     withdrawals: Collection<WithdrawalDoc>;
     swapOrders: Collection<SwapOrderDoc>;
     swapIps: Collection<SwapIpDoc>;
+    holdings: Collection<HoldingDoc>;
+    trades: Collection<TradeDoc>;
+    hedges: Collection<HedgeDoc>;
+    coinWithdrawals: Collection<CoinWithdrawalDoc>;
     cursors: Collection<CursorDoc>;
     counters: Collection<CounterDoc>;
 };
@@ -525,6 +533,10 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             withdrawals: db.collection("withdrawals"),
             swapOrders: db.collection("swap_orders"),
             swapIps: db.collection("swap_ips"),
+            holdings: db.collection("holdings"),
+            trades: db.collection("trades"),
+            hedges: db.collection("hedges"),
+            coinWithdrawals: db.collection("coin_withdrawals"),
             cursors: db.collection("cursors"),
             counters: db.collection("counters"),
         };
@@ -561,6 +573,10 @@ async function ensureIndexes({
     perpOrders,
     perpPositions,
     poolRebalances,
+    holdings,
+    trades,
+    hedges,
+    coinWithdrawals,
 }: Collections) {
     await Promise.all([
         accounts.createIndexes([
@@ -640,6 +656,17 @@ async function ensureIndexes({
                 unique: true,
                 partialFilterExpression: { active: true },
             },
+        ]),
+        holdings.createIndexes([{ key: { accountId: 1, symbol: 1 }, name: "account_symbol_unique", unique: true }]),
+        trades.createIndexes([
+            { key: { accountId: 1, requestId: 1 }, name: "request_unique", unique: true },
+            { key: { hedged: 1, symbol: 1 }, name: "hedged_symbol" },
+            { key: { accountId: 1, _id: -1 }, name: "account_trades" },
+        ]),
+        hedges.createIndexes([{ key: { state: 1, createdAt: 1 }, name: "state_created" }]),
+        coinWithdrawals.createIndexes([
+            { key: { accountId: 1, requestId: 1 }, name: "request_unique", unique: true },
+            { key: { state: 1, createdAt: 1 }, name: "state_created" },
         ]),
         poolRebalances.createIndexes([
             { key: { state: 1, createdAt: 1 }, name: "state_created" },

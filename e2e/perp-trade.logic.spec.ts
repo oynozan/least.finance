@@ -96,6 +96,7 @@ async function fakeServer(onOrder: (ack: (result: unknown) => void, payload: Rec
                     orders: [],
                     withdrawals: [],
                     solana: { deposits: true, withdrawals: true },
+                    holdings: [],
                 },
             }),
         );
@@ -276,6 +277,7 @@ test.describe("placing a perp", () => {
                 orders: [],
                 withdrawals: [],
                 solana: { deposits: false, withdrawals: false },
+                holdings: [],
             },
         };
         const loaded = [{ type: "connecting" as const }, session].reduce(accountReducer, initialAccountState);
@@ -330,6 +332,7 @@ test.describe("placing a perp", () => {
                     orders: [],
                     withdrawals: [],
                     solana: { deposits: false, withdrawals: false },
+                    holdings: [],
                 },
             },
             { type: "perpAccepted", requestId: REQ, position: pending, collateralWei: toWei("100"), connection: 1 },
@@ -343,6 +346,7 @@ test.describe("placing a perp", () => {
                     orders: [],
                     withdrawals: [],
                     solana: { deposits: false, withdrawals: false },
+                    holdings: [],
                 },
             },
             { type: "perpsSnapshot", perps: { positions: [], orders: [held] }, connection: 2 },

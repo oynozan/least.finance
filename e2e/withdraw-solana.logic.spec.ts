@@ -139,6 +139,7 @@ async function fakeServer(create: (payload: Record<string, unknown>) => unknown)
                     orders: [],
                     withdrawals: [],
                     solana: { deposits: true, withdrawals: true },
+                    holdings: [],
                 },
             }),
         );
@@ -261,6 +262,7 @@ test.describe("history", () => {
                 orders: [],
                 withdrawals: [],
                 solana: { deposits: true, withdrawals: true },
+                holdings: [],
             },
         });
         const label = () => {

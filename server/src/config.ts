@@ -185,6 +185,11 @@ const fields = z.object({
     /** Minutes to wait after a move before deciding again. */
     POOL_REBALANCE_PAUSE_MIN: z.coerce.number().min(0).default(5),
 
+    /** Held coins are sent out to the person's wallet only while this is on; off, requests are refused. */
+    COIN_WITHDRAWALS: z.enum(["on", "off"]).default("off"),
+    /** The hedger buys and sells the net of account trades on the market only while this is on. */
+    TRADE_HEDGING: z.enum(["on", "off"]).default("off"),
+
     /** Real orders go to Hyperliquid only while this is on. */
     PERPS_TRADING: z.enum(["on", "off"]).default("off"),
     HYPERLIQUID_API_URL: z.url().default("https://api.hyperliquid.xyz"),

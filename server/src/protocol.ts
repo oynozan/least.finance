@@ -1,8 +1,12 @@
 /**
  * The wire contract between the server and the web client, over both
  * HTTP and socket.io. The client imports this file as types only, so it
- * must stay free of imports and runtime code.
+ * must stay free of runtime code and import only types.
  */
+
+import type { HoldingView, TradingClientEvents, TradingServerEvents } from "./trading/types.ts";
+
+export type { HoldingView };
 
 export type Hex = `0x${string}`;
 
@@ -172,6 +176,8 @@ export type WalletSession = {
     withdrawals: WithdrawalView[];
     /** Which Solana flows are open. */
     solana: { deposits: boolean; withdrawals: boolean };
+    /** The coins the account holds from trading. */
+    holdings: HoldingView[];
 };
 
 /** The outcome of a deposit transaction the client reported. */
@@ -216,7 +222,7 @@ export type ApiError = { code: ErrorCode; message: string };
 /** Every socket acknowledgement, and every HTTP error body as `{ error }`. */
 export type Ack<T> = { ok: true; data: T } | { ok: false; error: ApiError };
 
-export type ClientToServerEvents = {
+export type ClientToServerEvents = TradingClientEvents & {
     /** Binds the socket to the signed-in Privy user's account, opening it on first use. */
     "account:open": (payload: Record<string, never>, ack: (result: Ack<WalletSession>) => void) => void;
     "deposits:list": (payload: { before?: string; limit?: number }, ack: (result: Ack<DepositPage>) => void) => void;
@@ -297,7 +303,7 @@ export type ClientToServerEvents = {
     ) => void;
 };
 
-export type ServerToClientEvents = {
+export type ServerToClientEvents = TradingServerEvents & {
     /** A withdrawal changed state. */
     "withdrawal:update": (payload: { withdrawal: WithdrawalView; account: AccountView }) => void;
     "deposit:credited": (payload: { deposit: DepositView; account: AccountView }) => void;

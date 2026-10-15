@@ -204,6 +204,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             deposits,
             orders,
             withdrawals,
+            collections,
             rules: { chainId: ARC_CHAIN_ID, minDeposit: formatUsdc(config.DEPOSIT_MIN_USDC) },
             solana: { deposits: config.SOLANA_DEPOSITS === "on", withdrawals: config.SOLANA_WITHDRAWALS === "on" },
         });

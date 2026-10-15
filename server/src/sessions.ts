@@ -9,12 +9,15 @@ import { withdrawalView } from "./withdrawals/views.ts";
 import type { Withdrawals } from "./withdrawals/withdrawals.ts";
 import { AppError } from "./errors.ts";
 import type { DepositRules, WalletSession } from "./protocol.ts";
+import { listHoldings } from "./trading/holdings.ts";
+import type { Collections } from "./db/mongo.ts";
 
 type Deps = {
     accounts: AccountService;
     deposits: DepositService;
     orders: DepositOrders;
     withdrawals: Withdrawals;
+    collections: Pick<Collections, "holdings">;
     rules: DepositRules;
     solana: { deposits: boolean; withdrawals: boolean };
 };
@@ -42,6 +45,7 @@ export class Sessions {
             orders: (await this.#deps.orders.open(current._id)).map(orderView),
             withdrawals: (await this.#deps.withdrawals.recent(current._id)).map(withdrawalView),
             solana: this.#deps.solana,
+            holdings: await listHoldings(this.#deps.collections, current._id),
         };
     }
 
