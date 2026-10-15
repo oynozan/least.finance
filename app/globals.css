@@ -123,4 +123,14 @@
         border: 0;
         -webkit-tap-highlight-color: transparent;
     }
+
+    /* Without this a field keeps the browser's inset border and system font. */
+    input,
+    textarea,
+    select {
+        font: inherit;
+        color: inherit;
+        letter-spacing: inherit;
+        border: 0;
+    }
 }

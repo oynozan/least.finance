@@ -293,6 +293,15 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* An address in the same field: smaller, so more of it shows before it scrolls. */
+.addressInput {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0;
+    font-variant-numeric: normal;
+    text-overflow: ellipsis;
+}
+
 .amountInput::placeholder {
     color: var(--muted);
 }

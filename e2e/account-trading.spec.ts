@@ -62,6 +62,7 @@ async function openSidebar(page: Page) {
 
 test("Buy, Sell and Swap run from the balance with no wallet popup, and Send is refused while off", async ({
     page,
+    isMobile,
 }) => {
     test.setTimeout(120_000);
     await signIn(page);
@@ -105,6 +106,10 @@ test("Buy, Sell and Swap run from the balance with no wallet popup, and Send is 
 
     // Send is refused while coin withdrawals are off, and the units come back to the holding
     const held = (await holdings(page).textContent())!.match(/[\d.,]+ ETH/)![0];
+    // Send slides in on hover, or a tap on touch, as Close does on a position.
+    const eth = holdings(page).getByRole("listitem").filter({ hasText: /ETH/ });
+    if (isMobile) await eth.tap();
+    else await eth.hover();
     await holdings(page).getByRole("button", { name: "Send ETH" }).click();
     await holdings(page)
         .getByRole("textbox", { name: /^Amount of ETH to send/ })
