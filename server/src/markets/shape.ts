@@ -62,9 +62,10 @@ export function shapeEvent(event: GammaEvent, now: Date): MarketView | null {
     let picked: MarketOutcomeView[] = [];
 
     const moneyline = offered.find((market) => market.sportsMarketType === "moneyline");
-    if (offered.length === 1) {
+    // Only an event's sole market is a plain question, a lone survivor of several still needs its own name
+    if (offered.length === 1 && event.markets.length === 1) {
         picked = outcomes(offered[0]!, none);
-    } else if (offered.length > 1 && offered.every(isYesNo)) {
+    } else if (offered.length > 0 && offered.every(isYesNo)) {
         picked = offered
             .map((market) => {
                 const yes = outcomes(market, (m) => m.image ?? null).find((outcome) => outcome.label === "YES");

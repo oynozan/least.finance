@@ -55,6 +55,32 @@ test("several YES/NO markets become one outcome each, by chance", () => {
     }
 });
 
+// An event of this id with every market closed except the ones keep picks
+function leaving(id: string, keep: (market: Raw) => boolean) {
+    const source = raw(id);
+    for (const market of source.markets) if (!keep(market)) market.closed = true;
+    return shapeEvent(gammaEvent.parse(source), now);
+}
+
+test("the one offered YES/NO market of a larger event is labelled with its own name", () => {
+    const source = event(samples.multi);
+    const picked = source.markets.find((m) => m.groupItemTitle === "Marine Le Pen")!;
+    const view = leaving(samples.multi, (m) => m.groupItemTitle === "Marine Le Pen")!;
+    expect(source.markets.length).toBeGreaterThan(1);
+    expect(view.title).toBe(source.title);
+    expect(view.outcomes.map((o) => [o.label, o.tokenId, o.tone])).toEqual([
+        ["Marine Le Pen", picked.clobTokenIds[0], "gain"],
+    ]);
+});
+
+test("the one offered market of a larger sports event is kept only when it is the moneyline", () => {
+    const moneyline = event(samples.sports).markets.find((m) => m.sportsMarketType === "moneyline")!;
+    const view = leaving(samples.sports, (m) => m.sportsMarketType === "moneyline")!;
+    expect(view.outcomes.map((o) => o.tokenId)).toEqual(moneyline.clobTokenIds);
+    expect(leaving(samples.sports, (m) => m.groupItemTitle === "Game 3 Winner")).toBeNull();
+    expect(leaving(samples.sports, (m) => m.groupItemTitle === "O/U 3.5 Games")).toBeNull();
+});
+
 test("a sports event keeps only its moneyline market", () => {
     const source = event(samples.sports);
     expect(source.markets.length).toBeGreaterThan(1);
