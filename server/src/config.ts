@@ -143,8 +143,8 @@ const fields = z.object({
         .default("least-finance"),
     /** The share of each swap kept as our fee, from 0 up to but not including 0.1 (10%). */
     LIFI_FEE: z.coerce.number().min(0).lt(0.1).default(0),
-    /** How often the swap coins' prices are re-read from LI.FI. */
-    SWAPS_CATALOG_SYNC_MS: z.coerce.number().int().min(10_000).default(300_000),
+    /** How often the swap coins' prices are re-read from LI.FI; trades refuse a price not read for three of these. */
+    SWAPS_CATALOG_SYNC_MS: z.coerce.number().int().min(10_000).default(60_000),
     /** How often sent swaps are checked for ones that are due a status call. */
     SWAPS_POLL_MS: z.coerce.number().int().min(100).default(2_000),
 

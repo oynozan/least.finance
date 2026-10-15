@@ -12,6 +12,9 @@ type Deps = {
     now?: () => number;
 };
 
+/** How many syncs a read price may go unrefreshed before it counts as no price. */
+const STALE_AFTER_SYNCS = 3;
+
 const CHAIN_IDS = NETWORKS.map((network) => network.chainId);
 const NETWORK_OF = new Map(NETWORKS.map((network) => [network.id, network]));
 const KIND_OF = new Map(NETWORKS.map((network) => [network.chainId, network.kind]));
@@ -54,7 +57,7 @@ export class SwapCatalog {
         }
     }
 
-    /** One refresh; a failed or empty read leaves the last prices in place. */
+    /** One refresh; a failed or empty read leaves the last prices in place, until they are too old to serve. */
     async tick(signal?: AbortSignal): Promise<void> {
         if (signal?.aborted) return;
         try {
@@ -102,8 +105,10 @@ export class SwapCatalog {
         };
     }
 
-    /** The coin's last read price, or null when it has none or isn't a swap coin. */
+    /** The coin's last read price, or null when it has none, isn't a swap coin, or the list hasn't been read for three syncs. */
     priceOf(symbol: string): number | null {
+        // Every price comes from the same read, so one time covers them all; an old price must not fill a trade
+        if (this.#readAt === null || this.#now() - this.#readAt > STALE_AFTER_SYNCS * this.#deps.syncMs) return null;
         return this.#prices.get(symbol) ?? null;
     }
 }

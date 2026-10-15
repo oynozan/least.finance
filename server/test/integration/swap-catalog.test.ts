@@ -128,6 +128,37 @@ describe("swap catalog", () => {
         expect(swapCatalog.view()).toEqual(before);
     });
 
+    test("a price not read again within three syncs is no price until a read succeeds", async () => {
+        let clock = 1_000_000;
+        let reading = true;
+        const eth = { chainId: 1, address: NATIVE_EVM, symbol: "ETH", decimals: 18, priceUSD: 2500 };
+        const swapCatalog = new SwapCatalog({
+            lifi: {
+                tokens: async () => {
+                    if (!reading) throw new Error("LI.FI is down");
+                    return [eth];
+                },
+            },
+            logger,
+            syncMs: 60_000,
+            now: () => clock,
+        });
+        await swapCatalog.tick();
+
+        clock += 3 * 60_000;
+        expect(swapCatalog.priceOf("ETH")).toBe(2500);
+
+        reading = false;
+        await swapCatalog.tick();
+        clock += 1;
+        expect(swapCatalog.priceOf("ETH")).toBeNull();
+        expect(swapCatalog.view().coins.find((coin) => coin.symbol === "ETH")?.priceUSD).toBeNull();
+
+        reading = true;
+        await swapCatalog.tick();
+        expect(swapCatalog.priceOf("ETH")).toBe(2500);
+    });
+
     test("a coin is served with no price before the first read", () => {
         const swapCatalog = new SwapCatalog({ lifi: { tokens: async () => [] }, logger, syncMs: 10_000 });
 

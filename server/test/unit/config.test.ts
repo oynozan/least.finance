@@ -304,7 +304,7 @@ describe("loadConfig", () => {
         expect(config.LIFI_API_KEY).toBeUndefined();
         expect(config.LIFI_INTEGRATOR).toBe("least-finance");
         expect(config.LIFI_FEE).toBe(0);
-        expect(config.SWAPS_CATALOG_SYNC_MS).toBe(300_000);
+        expect(config.SWAPS_CATALOG_SYNC_MS).toBe(60_000);
     });
 
     it("reads the LI.FI settings, treating a blank key as unset", () => {
