@@ -147,6 +147,27 @@ describe("CoinSender on EVM", () => {
         expect(await held("ETH")).toBe(125n * 10n ** 16n);
     });
 
+    test("a withdrawal refused when signed leaves its nonce for the next one", async () => {
+        const refusedDoc = await queue("LINK", "5", "ethereum");
+        clock += 1;
+        const next = await queue("ETH", "0.1", "ethereum");
+        chain.failNext("prepare", new Error("execution reverted"));
+        await sender().tick();
+        expect((await reload(refusedDoc))?.state).toBe("failed");
+        expect((await reload(next))?.nonce).toBe(0);
+        expect(chain.prepared.map((entry) => entry.tx.nonce)).toEqual([0]);
+    });
+
+    test("a withdrawal refused at broadcast leaves its nonce for the next one", async () => {
+        const refusedDoc = await queue("ETH", "0.5", "ethereum");
+        clock += 1;
+        const next = await queue("ETH", "0.1", "ethereum");
+        chain.failNext("broadcast", new Error("insufficient funds for gas * price + value"));
+        await sender().tick();
+        expect((await reload(refusedDoc))?.state).toBe("failed");
+        expect((await reload(next))?.nonce).toBe(0);
+    });
+
     test("a reverted transfer is given back", async () => {
         const doc = await queue("USDT", "3", "ethereum");
         const worker = sender();

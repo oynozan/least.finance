@@ -288,7 +288,10 @@ export class TradeHedger {
             await chain.broadcast(network, prepared);
         } catch (error) {
             if (alreadySent(error)) return;
-            if (refused(error)) return this.#fail(claimed, `The network refused it: ${firstLine(error)}`);
+            if (refused(error)) {
+                await this.#fail(claimed, `The network refused it: ${firstLine(error)}`);
+                return chain.release(network, prepared.nonce);
+            }
             throw error;
         }
         await this.#move(claimed, "sending", { state: "sent" });

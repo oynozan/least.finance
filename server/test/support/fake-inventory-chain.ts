@@ -21,6 +21,7 @@ export type FakeInventoryChain = InventoryChain & {
 /** A chain that signs nothing real: hashes come from the intent and the nonce, nonces from the chain's count and a floor. */
 export function fakeInventoryChain(): FakeInventoryChain {
     const floors = new Map<EvmNetworkId, number>();
+    const released = new Map<EvmNetworkId, Set<number>>();
     const failures: { call: string; error: Error }[] = [];
     const take = (call: string) => {
         const at = failures.findIndex((failure) => failure.call === call);
@@ -37,12 +38,22 @@ export function fakeInventoryChain(): FakeInventoryChain {
             for (const { tx } of fake.prepared) fake.receipts.set(tx.hash, status);
         },
         async nextNonce(network) {
+            const free = released.get(network);
+            if (free && free.size > 0) {
+                const lowest = Math.min(...free);
+                free.delete(lowest);
+                return lowest;
+            }
             const nonce = floors.get(network) ?? 0;
             floors.set(network, nonce + 1);
             return nonce;
         },
         reserve(network, nonce) {
             floors.set(network, Math.max(floors.get(network) ?? 0, nonce + 1));
+            released.get(network)?.delete(nonce);
+        },
+        release(network, nonce) {
+            released.set(network, (released.get(network) ?? new Set()).add(nonce));
         },
         async prepare(network, intent, nonce) {
             take("prepare");

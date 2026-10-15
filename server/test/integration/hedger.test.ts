@@ -279,6 +279,19 @@ describe("TradeHedger selling", () => {
         expect(second.reason).toMatch(/refused/);
     });
 
+    test("a sell the network refuses at broadcast leaves its nonce for the next", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        chain.failNext("broadcast", new Error("insufficient funds for gas * price + value"));
+        const worker = hedger();
+        await worker.tick();
+        expect((await hedgeList())[0]).toMatchObject({ state: "failed" });
+
+        await trade("sell", "ETH", 1, 2000);
+        await worker.tick();
+        expect((await hedgeList())[1]).toMatchObject({ state: "sent" });
+        expect(chain.prepared.map((entry) => entry.tx.nonce)).toEqual([0, 0]);
+    });
+
     test("a reverted sell fails the hedge", async () => {
         await trade("sell", "ETH", 1, 2000);
         const worker = hedger();

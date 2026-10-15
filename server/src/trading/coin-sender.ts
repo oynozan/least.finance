@@ -150,16 +150,18 @@ export class CoinSender {
                 { _id: doc._id, state: "sending", nonce: null },
                 { $set: { nonce, updatedAt: new Date(this.#now()) } },
             );
-            if (stored.modifiedCount === 0) return;
+            if (stored.modifiedCount === 0) return chain.release(network, nonce);
         } else {
             chain.reserve(network, nonce);
         }
+        // Nothing has gone out on a nonce with no hash, so a refusal gives it back
+        const unused = doc.txHash === null;
 
         let prepared: PreparedTx;
         try {
             prepared = await chain.prepare(network, intent, nonce);
         } catch (error) {
-            if (refused(error)) return this.#fail(doc, `The network refused it: ${firstLine(error)}`);
+            if (refused(error)) return this.#refuse(doc, error, unused ? nonce : null, network);
             throw error;
         }
         await this.#deps.collections.coinWithdrawals.updateOne(
@@ -177,9 +179,15 @@ export class CoinSender {
                 );
                 return;
             }
-            if (refused(error)) return this.#fail(doc, `The network refused it: ${firstLine(error)}`);
+            if (refused(error)) return this.#refuse(doc, error, unused ? nonce : null, network);
             throw error;
         }
+    }
+
+    /** Fails a withdrawal the network refused, then frees its nonce when no transaction went out on it. */
+    async #refuse(doc: CoinWithdrawalDoc, error: unknown, unusedNonce: number | null, network: EvmNetworkId) {
+        await this.#fail(doc, `The network refused it: ${firstLine(error)}`);
+        if (unusedNonce !== null) this.#deps.chain.release(network, unusedNonce);
     }
 
     async #processSolana(doc: CoinWithdrawalDoc, entry: CoinEntry) {

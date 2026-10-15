@@ -2,6 +2,7 @@ import { encodeFunctionData, erc20Abi, keccak256, TransactionReceiptNotFoundErro
 import type { HDAccount } from "viem/accounts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
 import type { PublicClient } from "viem";
+import { refused } from "./send-errors.ts";
 
 export type TxIntent = { to: Address; data: Hex; value: bigint };
 
@@ -16,6 +17,8 @@ export type InventoryChain = {
     nextNonce(network: EvmNetworkId): Promise<number>;
     /** Keeps nonces at or below this one from being handed out again, for one recorded before a restart. */
     reserve(network: EvmNetworkId, nonce: number): void;
+    /** Gives back a nonce no transaction was sent on, so the next send fills the gap instead of queueing behind it. */
+    release(network: EvmNetworkId, nonce: number): void;
     prepare(network: EvmNetworkId, tx: TxIntent, nonce?: number): Promise<PreparedTx>;
     broadcast(network: EvmNetworkId, prepared: PreparedTx): Promise<void>;
     /** Null while the transaction is unknown or unmined. */
@@ -36,6 +39,7 @@ export function createInventoryChain(options: {
 }): InventoryChain {
     const { account, clients } = options;
     const floors = new Map<EvmNetworkId, number>();
+    const released = new Map<EvmNetworkId, Set<number>>();
     const queues = new Map<EvmNetworkId, Promise<unknown>>();
 
     // Nonces are read and handed out one at a time per network
@@ -55,6 +59,14 @@ export function createInventoryChain(options: {
                     address: account.address,
                     blockTag: "pending",
                 });
+                const free = released.get(network) ?? new Set<number>();
+                // A given back nonce the chain has moved past was used by something else
+                for (const nonce of free) if (nonce < pending) free.delete(nonce);
+                const lowest = free.size > 0 ? Math.min(...free) : null;
+                if (lowest !== null) {
+                    free.delete(lowest);
+                    return lowest;
+                }
                 const nonce = Math.max(pending, floors.get(network) ?? 0);
                 floors.set(network, nonce + 1);
                 return nonce;
@@ -62,13 +74,19 @@ export function createInventoryChain(options: {
 
         reserve(network, nonce) {
             floors.set(network, Math.max(floors.get(network) ?? 0, nonce + 1));
+            released.get(network)?.delete(nonce);
+        },
+
+        release(network, nonce) {
+            released.set(network, (released.get(network) ?? new Set<number>()).add(nonce));
         },
 
         async prepare(network, tx, nonce) {
             const client = clients[network];
-            const useNonce = nonce ?? (await chain.nextNonce(network));
+            // Gas is estimated before a nonce is taken, so a refused transaction leaves no gap
             const gas = await client.estimateGas({ account: account.address, ...tx });
             const fees = await client.estimateFeesPerGas();
+            const useNonce = nonce ?? (await chain.nextNonce(network));
             const raw = await account.signTransaction({
                 chainId: client.chain!.id,
                 to: tx.to,
@@ -115,7 +133,12 @@ export function createInventoryChain(options: {
                 data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amount] }),
                 value: 0n,
             });
-            await chain.broadcast(network, prepared);
+            try {
+                await chain.broadcast(network, prepared);
+            } catch (error) {
+                if (refused(error)) chain.release(network, prepared.nonce);
+                throw error;
+            }
             const receipt = await clients[network].waitForTransactionReceipt({
                 hash: prepared.hash,
                 timeout: APPROVAL_WAIT_MS,
