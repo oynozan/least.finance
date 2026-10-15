@@ -151,9 +151,35 @@ test("a bridged deposit shows each step and lands in the balance", async ({ page
 
     if (isMobile) await balanceOf(page).tap();
     else await balanceOf(page).hover();
-    await expect(sidebarOf(page).getByRole("list", { name: "History" })).toContainText(
-        "+$300.00 from 0.1 ETH on Ethereum",
-    );
+    const history = sidebarOf(page).getByRole("list", { name: "History" });
+    // Read in one go, though the "from" part only shows while the row is open
+    await expect(history).toContainText("+$300.00 from 0.1 ETH on Ethereum");
+
+    // Closed, the row is one line: the coin, the amount and when
+    const row = history.getByRole("listitem").filter({ hasText: "+$300.00" });
+    const detail = row.getByText("from 0.1 ETH on Ethereum");
+    const shown = () =>
+        detail.evaluate((el) => {
+            const box = el.closest<HTMLElement>('[class*="depositDetail"]')!;
+            return { height: box.getBoundingClientRect().height, opacity: Number(getComputedStyle(box).opacity) };
+        });
+    await expect.poll(shown).toEqual({ height: 0, opacity: 0 });
+    // Once the list has finished dealing its rows out
+    await expect.poll(async () => (await row.boundingBox())!.height).toBe(42);
+    const closed = (await row.boundingBox())!;
+
+    // Pointed at (or tapped), it grows downward to show where it came from
+    if (isMobile) await row.tap();
+    else await row.hover();
+    await expect.poll(async () => (await shown()).opacity).toBe(1);
+    await expect.poll(async () => (await row.boundingBox())!.height).toBeGreaterThan(closed.height + 10);
+    expect(Math.abs((await row.boundingBox())!.y - closed.y)).toBeLessThan(1);
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: `e2e/screenshots/${test.info().project.name}-history-row-open.png` });
+
+    if (isMobile) await row.tap();
+    else await balanceOf(page).hover();
+    await expect.poll(shown).toEqual({ height: 0, opacity: 0 });
 });
 
 test("a USDT deposit from BNB Chain approves, then sends", async ({ page }) => {

@@ -633,18 +633,79 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* The coin, the amount and when on one 42 px line; the details under it open only while the row is pointed at,
+   focused or tapped, growing the row downward. Half the line's height rounds it into a pill until then. */
 .depositRow {
     position: relative;
     flex-shrink: 0;
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: 42px auto;
     align-items: center;
-    gap: 10px;
-    height: 42px;
+    column-gap: 10px;
     padding: 0 16px 0 10px;
-    border-radius: 999px;
+    border-radius: 21px;
     background: var(--pill-hover);
     box-shadow: 0 4px 10px -6px rgb(0 0 0 / 0.2);
     transform-origin: 50% 0;
+    outline: none;
+}
+
+.depositRow:focus-visible {
+    box-shadow:
+        0 0 0 2px rgb(255 255 255 / 0.28),
+        0 4px 10px -6px rgb(0 0 0 / 0.2);
+}
+
+.depositRow > .depositWhen {
+    grid-column: 3;
+    grid-row: 1;
+}
+
+/* Rows closed: no height at all. Opening waits a beat, so a pointer passing over the list leaves it still. */
+.depositDetail {
+    grid-column: 2 / 4;
+    grid-row: 2;
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition:
+        grid-template-rows 220ms ease,
+        opacity 160ms ease;
+}
+
+.depositDetail > span {
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Leading space included, it reads straight on from the amount: "+$9.97 from 0.0041 ETH on Ethereum". */
+.depositDetail > span > span {
+    display: block;
+    padding-bottom: 12px;
+    font-size: 13px;
+    line-height: 1.35;
+    color: var(--muted);
+    overflow-wrap: anywhere;
+}
+
+.depositRow[data-open="true"] .depositDetail,
+.depositRow:focus-visible .depositDetail {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    transition:
+        grid-template-rows 420ms var(--spring) 90ms,
+        opacity 220ms ease 120ms;
+}
+
+@media (hover: hover) {
+    .depositRow:hover .depositDetail {
+        grid-template-rows: 1fr;
+        opacity: 1;
+        transition:
+            grid-template-rows 420ms var(--spring) 90ms,
+            opacity 220ms ease 120ms;
+    }
 }
 
 .depositCoin {
@@ -664,22 +725,12 @@
     font-variant-numeric: tabular-nums;
 }
 
-.depositOrigin {
-    color: var(--muted);
-    font-weight: 400;
-}
-
 .depositWhen {
     min-width: 0;
     font-size: 13px;
     line-height: 1.2;
     text-align: right;
     color: var(--muted);
-}
-
-/* A withdrawal's recipient stays whole, and its status keeps to the right edge; the status shrinks and wraps. */
-.withdrawalAmount {
-    flex: 1 0 auto;
 }
 
 .depositPending {

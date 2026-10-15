@@ -368,6 +368,8 @@ function WalletSection({
     const [pinned, setPinned] = useState(false);
     // Deposit opens the coin list; picking a coin opens the amount field. Withdraw opens its own form.
     const [stage, setStage] = useState<"closed" | "coins" | "amount" | "withdraw">("closed");
+    // The history row a tap opened; a mouse opens rows by pointing instead.
+    const [openRow, setOpenRow] = useState<string | null>(null);
     // The coin row picked, whose wallet the deposit is sent from.
     const [picked, setPicked] = useState<CoinBalance | null>(null);
     // The form closed: the button that opened it gets focus again.
@@ -547,26 +549,39 @@ function WalletSection({
                     >
                         <ol ref={historyRef} className={styles.history} aria-label="History">
                             <AnimatePresence>
-                                {entries.map((row, i) => (
-                                    <motion.li
-                                        key={row.kind === "deposit" ? row.key : `withdrawal:${row.key}`}
-                                        layout
-                                        custom={i}
-                                        variants={depositRow}
-                                        className={styles.depositRow}
-                                        data-pending={
-                                            (row.kind === "deposit" ? row.pending : row.state === "sending") ||
-                                            undefined
-                                        }
-                                        style={{ zIndex: entries.length - i }}
-                                    >
-                                        {row.kind === "deposit" ? (
-                                            <DepositEntryRow row={row} />
-                                        ) : (
-                                            <WithdrawalEntryRow row={row} />
-                                        )}
-                                    </motion.li>
-                                ))}
+                                {entries.map((row, i) => {
+                                    const key = row.kind === "deposit" ? row.key : `withdrawal:${row.key}`;
+                                    // Where it came from or went to: shown under the row while it's pointed at, focused or tapped.
+                                    const detailed = row.kind === "withdrawal" || !!row.origin;
+                                    return (
+                                        <motion.li
+                                            key={key}
+                                            layout
+                                            custom={i}
+                                            variants={depositRow}
+                                            className={styles.depositRow}
+                                            data-pending={
+                                                (row.kind === "deposit" ? row.pending : row.state === "sending") ||
+                                                undefined
+                                            }
+                                            data-open={(detailed && openRow === key) || undefined}
+                                            tabIndex={detailed ? 0 : undefined}
+                                            // A mouse opens it by pointing; a tap opens it and the next one closes it.
+                                            onPointerUp={(event) =>
+                                                detailed &&
+                                                event.pointerType !== "mouse" &&
+                                                setOpenRow((open) => (open === key ? null : key))
+                                            }
+                                            style={{ zIndex: entries.length - i }}
+                                        >
+                                            {row.kind === "deposit" ? (
+                                                <DepositEntryRow row={row} />
+                                            ) : (
+                                                <WithdrawalEntryRow row={row} />
+                                            )}
+                                        </motion.li>
+                                    );
+                                })}
                             </AnimatePresence>
                         </ol>
                         <ScrollEdges />
@@ -577,19 +592,28 @@ function WalletSection({
     );
 }
 
+/** A row's details, closed until the row opens; read straight on from the amount. */
+function EntryDetail({ children }: { children: ReactNode }) {
+    return (
+        <span className={styles.depositDetail}>
+            <span>
+                <span>{children}</span>
+            </span>
+        </span>
+    );
+}
+
 function DepositEntryRow({ row }: { row: DepositEntry }) {
     return (
         <>
             <CoinIcon symbol={row.origin ? row.origin.coin.split(":")[1]! : "USDC"} className={styles.depositCoin} />
-            <span className={styles.depositAmount}>
-                +{formatUsd(toUsdc(row.amount))}
-                {row.origin && (
-                    <span className={styles.depositOrigin}>
-                        {" from "}
-                        {row.origin.amount} {coinLabel(row.origin.coin)}
-                    </span>
-                )}
-            </span>
+            <span className={styles.depositAmount}>+{formatUsd(toUsdc(row.amount))}</span>
+            {row.origin && (
+                <EntryDetail>
+                    {" from "}
+                    {row.origin.amount} {coinLabel(row.origin.coin)}
+                </EntryDetail>
+            )}
             {row.pending ? (
                 <span className={`${styles.depositWhen} ${styles.depositPending}`}>
                     <span className={styles.pendingDot} aria-hidden="true" />
@@ -607,13 +631,11 @@ function WithdrawalEntryRow({ row }: { row: WithdrawalEntry }) {
     return (
         <>
             <CoinIcon symbol="USDC" className={styles.depositCoin} />
-            <span className={`${styles.depositAmount} ${styles.withdrawalAmount}`}>
-                −{formatUsd(toUsdc(row.amount))}
-                <span className={styles.depositOrigin}>
-                    {" to "}
-                    {shortenAddress(row.to)}
-                </span>
-            </span>
+            <span className={styles.depositAmount}>−{formatUsd(toUsdc(row.amount))}</span>
+            <EntryDetail>
+                {" to "}
+                {shortenAddress(row.to)}
+            </EntryDetail>
             {progress ? (
                 <span className={`${styles.depositWhen} ${styles.depositPending}`}>
                     <span className={styles.pendingDot} aria-hidden="true" />
