@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
 import { Server } from "socket.io";
 import { AccountClient } from "@/components/account-client";
+import { answerStamp } from "@/components/pnl/use-activity-feed";
 import type { ApiError } from "@/lib/account/state";
 import {
     NO_FEED,
@@ -659,5 +660,31 @@ test.describe("the account client's page plumbing", () => {
         } finally {
             await stack.stop();
         }
+    });
+});
+
+test.describe("when the feed asks for its newest page again", () => {
+    test("after a bind or a push from the server, and not while neither has come", async () => {
+        const stack = await fakeServer((_payload, ack) => ack({ ok: true, data: page([], null) }));
+        try {
+            await stack.open();
+            const opened = answerStamp(stack.client.getSnapshot().pnl);
+            expect(answerStamp(stack.client.getSnapshot().pnl)).toBe(opened);
+            // A Buy, Sell or Swap moves the PnL, which the server tells the socket
+            for (const socket of stack.io.sockets.sockets.values()) socket.emit("pnl:changed");
+            await expect.poll(() => stack.client.getSnapshot().pnl.changed).toBe(1);
+            const pushed = answerStamp(stack.client.getSnapshot().pnl);
+            expect(pushed).not.toBe(opened);
+            for (const socket of stack.io.sockets.sockets.values()) socket.emit("pnl:changed");
+            await expect.poll(() => stack.client.getSnapshot().pnl.changed).toBe(2);
+            expect(answerStamp(stack.client.getSnapshot().pnl)).not.toBe(pushed);
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("a push count on one bind never reads as another bind's", () => {
+        expect(answerStamp({ bound: 1, changed: 23 })).not.toBe(answerStamp({ bound: 12, changed: 3 }));
+        expect(answerStamp({ bound: 2, changed: 0 })).not.toBe(answerStamp({ bound: 3, changed: 0 }));
     });
 });

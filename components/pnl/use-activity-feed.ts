@@ -18,6 +18,9 @@ export type ActivityFeed = {
     loadMore: () => void;
 };
 
+/** What a filter's newest page was answered at, being the bind and the pushes counted since, so a new one of either asks again */
+export const answerStamp = (pnl: { bound: number; changed: number }) => `${pnl.bound}:${pnl.changed}`;
+
 /** The Activity card's rows under one filter: the server's history pages with the live rows over them, older pages on request */
 export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[]): ActivityFeed {
     const { pnl, loadActivityPage, withdrawals } = useAccount();
@@ -33,22 +36,23 @@ export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[
     useEffect(() => {
         load.current = loadActivityPage;
     });
-    // The bind each filter's newest page was last answered at
-    const answeredAt = useRef<Partial<Record<ActivityFilter, number>>>({});
+    // The stamp each filter's newest page was last answered at
+    const answeredAt = useRef<Partial<Record<ActivityFilter, string>>>({});
     // The filters with an older page on its way, so a second click is ignored at once
     const asking = useRef(new Set<ActivityFilter>());
 
     // Nothing is bound between one account and the next, so what was loaded is not carried over
     if (pnl.bound === 0 && feed !== NO_FEED) dispatch({ type: "reset" });
 
-    // The newest page of the filter once it is bound, and again after every bind; a failure is asked again after RETRY_MS
+    // The newest page of the filter once it is bound, and again after every bind and push; a failure is asked again after RETRY_MS
+    const { bound, changed } = pnl;
     useEffect(() => {
-        if (pnl.bound === 0) {
+        if (bound === 0) {
             answeredAt.current = {};
             return;
         }
-        if (answeredAt.current[filter] === pnl.bound) return;
-        const bound = pnl.bound;
+        const stamp = answerStamp({ bound, changed });
+        if (answeredAt.current[filter] === stamp) return;
         let current = true;
         let timer: ReturnType<typeof setTimeout> | undefined;
         void load.current({ filter }).then((answer) => {
@@ -57,14 +61,14 @@ export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[
                 timer = setTimeout(() => setAttempt((n) => n + 1), RETRY_MS);
                 return;
             }
-            answeredAt.current[filter] = bound;
+            answeredAt.current[filter] = stamp;
             dispatch({ type: "first", filter, page: answer });
         });
         return () => {
             current = false;
             clearTimeout(timer);
         };
-    }, [filter, pnl.bound, attempt]);
+    }, [filter, bound, changed, attempt]);
 
     const pages = feed[filter];
     const next = pages.next;
