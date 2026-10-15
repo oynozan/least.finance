@@ -155,11 +155,13 @@ test.describe("preventing invalid sentences", () => {
 
     test("leverage can be typed, within the market's cap", () => {
         expect(run("long", [slot("leverage", "7")]).view.text).toBe("I want to Long BTC at 7x leverage with 100 USD.");
-        expect(run("long", [slot("leverage", "12.5x")]).view.slots.leverage).toMatchObject({ value: "12.5" });
-        // Over BTC's 50x, or not a number: ignored.
+        expect(run("long", [slot("leverage", "12x")]).view.slots.leverage).toMatchObject({ value: "12" });
+        // Over BTC's 50x, not a number, or not a whole number (the server takes integers): ignored.
         const start = run("long").state;
         expect(reduce(TRADE, start, slot("leverage", "70"), connected)).toBe(start);
         expect(reduce(TRADE, start, slot("leverage", "lots"), connected)).toBe(start);
+        expect(reduce(TRADE, start, slot("leverage", "12.5x"), connected)).toBe(start);
+        expect(reduce(TRADE, start, slot("leverage", "7.0"), connected)).toBe(start);
         // A typed 30x on BTC drops to SOL's 20x cap.
         expect(run("long", [slot("leverage", "30"), slot("asset", "SOL")]).view.text).toBe(
             "I want to Long SOL at 20x leverage with 100 USD.",

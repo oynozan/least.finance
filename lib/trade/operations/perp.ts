@@ -28,9 +28,9 @@ function clampLeverage(ctx: TradeCtx, asset: string, leverage: string) {
     return Number(leverage) <= max ? leverage : String(max);
 }
 
-/** "7", "7x", "12.5" -> a leverage the market allows, in steps of 0.1. */
+/** "7", "7x" -> a whole-number leverage the market allows */
 function parseLeverage(ctx: TradeCtx, asset: string, text: string) {
-    const match = /^\s*(\d{1,3}(?:\.\d)?)\s*x?\s*$/i.exec(text);
+    const match = /^\s*(\d{1,3})\s*x?\s*$/i.exec(text);
     if (!match) return null;
     const leverage = Number(match[1]);
     const max = market(ctx, asset)?.maxLeverage ?? 1;
