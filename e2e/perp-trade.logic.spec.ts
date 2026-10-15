@@ -135,8 +135,9 @@ test.describe("perp review rows", () => {
             "Most you can lose",
         ]);
         const value = (label: string) => rows.find((r) => r.label === label)?.value;
-        expect(value("Position")).toContain("$500");
-        expect(value("Position")).toContain("0.00757 BTC");
+        expect(value("Position")).toBe("$500");
+        // The coin and the leverage go under it, smaller
+        expect(rows.find((r) => r.label === "Position")?.note).toBe("0.00757 BTC, 5 × $100");
         expect(value("Entry price (about)")).toBe("$66,000");
         expect(value("Liquidation price (about)")).toContain("$53,100");
         expect(value("Liquidation price (about)")).toContain("funding");

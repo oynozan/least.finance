@@ -103,6 +103,33 @@ test("confirm lowers the balance and adds the position at once while the fake ho
     await expect(close).toHaveAccessibleDescription("Closing opens when the position is filled.");
 });
 
+test("the review card keeps the position, entry and liquidation in view, and folds the rest away until pointed at", async ({
+    page,
+}) => {
+    await page.goto("/");
+    await connect(page);
+    await openPerp(page, { side: "Long" });
+    await reviewButton(page).click();
+    const details = reviewPanel(page).getByRole("region", { name: "Details" });
+    // The quote is in, its fees and funding with it, though folded away
+    await expect(details).toContainText("Funding");
+    const folded = details.locator("[data-preview-details]");
+    const height = () => folded.evaluate((el) => el.getBoundingClientRect().height);
+    await expect.poll(height).toBe(0);
+    for (const label of ["Position", "Entry price (about)", "Liquidation price (about)"])
+        await expect(details.getByText(label, { exact: true })).toBeVisible();
+
+    const card = details.locator("[data-preview-card]");
+    await card.hover();
+    await expect.poll(height).toBeGreaterThan(60);
+    await expect(details.getByText("Most you can lose", { exact: true })).toBeVisible();
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: "e2e/screenshots/desktop-review-card-open.png" });
+
+    await page.mouse.move(5, 5);
+    await expect.poll(height).toBe(0);
+});
+
 test("the real fill replaces the numbers in place", async ({ page }) => {
     await perpControl.dropNext();
     await page.goto("/");

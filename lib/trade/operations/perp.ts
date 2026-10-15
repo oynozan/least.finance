@@ -159,9 +159,8 @@ export const perp = operation({
                 {
                     id: "size",
                     label: "Position",
-                    value: collateral
-                        ? `${formatUsdShort(collateral * leverage)} (${leverage} × ${formatUsdShort(collateral)})`
-                        : "—",
+                    value: collateral ? formatUsdShort(collateral * leverage) : "—",
+                    ...(collateral > 0 && { note: `${leverage} × ${formatUsdShort(collateral)}` }),
                     primary: true,
                 },
                 { id: "risk", label: "Most you can lose", value: collateral ? formatUsd(collateral) : "—" },

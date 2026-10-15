@@ -140,6 +140,8 @@ export type PreviewRow = {
     tone?: Tone;
     /** The rows that matter most ("You pay", "You get"); listed first, larger. */
     primary?: boolean;
+    /** A smaller line under a primary row's value, such as its network: "on Arbitrum". */
+    note?: string;
 };
 
 export type Preview = {

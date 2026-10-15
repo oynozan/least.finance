@@ -18,7 +18,8 @@ export function quoteRows(
         {
             id: "size",
             label: "Position",
-            value: `${formatUsdShort(Number(quote.notionalUSD))} (${ctx.leverage} × ${formatUsdShort(collateral)}), ${quote.sizeCoin} ${ctx.asset}`,
+            value: formatUsdShort(Number(quote.notionalUSD)),
+            note: `${quote.sizeCoin} ${ctx.asset}, ${ctx.leverage} × ${formatUsdShort(collateral)}`,
             primary: true,
         },
         { id: "entry", label: "Entry price (about)", value: price(quote.entryPx), primary: true },
