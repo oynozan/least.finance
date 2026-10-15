@@ -4,7 +4,7 @@
  * must stay free of runtime code and import only types.
  */
 
-import type { HoldingView, TradingClientEvents, TradingServerEvents } from "./trading/types.ts";
+import type { HoldingView, TradeView, TradingClientEvents, TradingServerEvents } from "./trading/types.ts";
 
 export type { HoldingView };
 
@@ -655,7 +655,8 @@ export type ActivityItem =
     | { kind: "swap"; at: string; order: SwapOrderView }
     | { kind: "prediction"; at: string; part: "open" | "settle"; position: PositionView }
     | { kind: "sale"; at: string; order: PredictionOrderView }
-    | { kind: "perp"; at: string; part: "open" | "settle"; position: PerpPositionView };
+    | { kind: "perp"; at: string; part: "open" | "settle"; position: PerpPositionView }
+    | { kind: "trade"; at: string; trade: TradeView };
 
 /** Newest first, with `next` an opaque cursor for older items and null on the last page */
 export type ActivityPage = { items: ActivityItem[]; next: string | null };

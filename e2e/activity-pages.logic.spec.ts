@@ -154,6 +154,30 @@ const activity = (id: string, atMs: number, over: Partial<Activity> = {}): Activ
 const page = (items: ActivityItem[], next: string | null): ActivityPage => ({ items, next });
 
 test.describe("mapping", () => {
+    test("a trade from the balance maps to a row of its verb with both coins", () => {
+        const trade = {
+            id: hex(9),
+            requestId: "r9",
+            verb: "swap" as const,
+            paidSymbol: "BNB",
+            paidUnits: "0.5",
+            gotSymbol: "ETH",
+            gotUnits: "0.1",
+            usd: "250",
+            at: iso(NOW.getTime() - 1000),
+        };
+        const row = activityFromItem({ kind: "trade", at: trade.at, trade }, ctx);
+        expect(row).toMatchObject({
+            id: `trade:${hex(9)}`,
+            kind: "swap",
+            title: "Swapped BNB to ETH",
+            symbols: ["BNB", "ETH"],
+            amountUSD: 250,
+            change: 0,
+        });
+        expect(itemKey({ kind: "trade", at: trade.at, trade })).toBe(`trade:${hex(9)}`);
+    });
+
     test("each part maps to the same Activity id the live rows use", () => {
         const p = position(1);
         const perpPos = perp(2);

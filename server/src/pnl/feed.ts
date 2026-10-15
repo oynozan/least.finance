@@ -7,6 +7,7 @@ import { perpPositionView } from "../perps/views.ts";
 import { orderView, positionView } from "../predictions/views.ts";
 import type { ActivityFilter, ActivityItem, ActivityPage } from "../protocol.ts";
 import { swapOrderView } from "../swaps/views.ts";
+import { tradeView } from "../trading/views.ts";
 import { withdrawalView } from "../withdrawals/views.ts";
 
 const DEFAULT_LIMIT = 50;
@@ -193,6 +194,19 @@ const SOURCES: Source[] = [
                 (bound) => ask.collections.perpPositions.find({ accountId: ask.accountId, ...bound }),
                 settledAt,
                 (doc, at) => ({ kind: "perp", at, part: "settle", position: perpPositionView(doc) }),
+            ),
+    },
+    {
+        name: "trades",
+        group: "trades",
+        read: (ask, rank) =>
+            newest(
+                ask,
+                rank,
+                "createdAt",
+                (bound) => ask.collections.trades.find({ accountId: ask.accountId, ...bound }),
+                (doc) => doc.createdAt,
+                (doc, at) => ({ kind: "trade", at, trade: tradeView(doc) }),
             ),
     },
 ];

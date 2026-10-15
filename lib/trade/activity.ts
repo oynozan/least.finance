@@ -8,6 +8,7 @@ import type {
     SwapOrderState,
     SwapOrderView,
 } from "@/server/src/protocol";
+import type { TradeView } from "@/server/src/trading/types";
 import { networkName } from "./networks";
 import { shortenAddress } from "@/components/wallet-data";
 
@@ -185,6 +186,27 @@ export function saleActivity(order: PredictionOrderView): Activity | null {
     };
 }
 
+/** A Buy, Sell or Swap from the balance: what was paid and what arrived, with no change to the balance beyond the trade itself. */
+export function tradeActivity(trade: TradeView): Activity {
+    const paid = Number(trade.paidUnits);
+    const got = Number(trade.gotUnits);
+    const verbs = { buy: "Bought", sell: "Sold", swap: "Swapped" } as const;
+    const coin = trade.verb === "buy" ? trade.gotSymbol : trade.paidSymbol;
+    return {
+        id: `trade:${trade.id}`,
+        at: new Date(trade.at),
+        kind: trade.verb,
+        title:
+            trade.verb === "swap"
+                ? `Swapped ${trade.paidSymbol} to ${trade.gotSymbol}`
+                : `${verbs[trade.verb]} ${coin}`,
+        detail: `${formatUnits(paid, trade.paidSymbol)} for ${formatUnits(got, trade.gotSymbol)}`,
+        symbols: trade.verb === "swap" ? [trade.paidSymbol, trade.gotSymbol] : [coin],
+        amountUSD: Number(trade.usd),
+        change: 0,
+    };
+}
+
 /** A buy the server hasn't filled yet. */
 export function pendingBuyActivity(buy: {
     id: string;
@@ -246,6 +268,8 @@ export function activityFromItem(
             return partOf(perpActivity(item.position), item.part);
         case "sale":
             return saleActivity(item.order);
+        case "trade":
+            return tradeActivity(item.trade);
     }
 }
 

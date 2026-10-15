@@ -21,6 +21,8 @@ export function itemKey(item: ActivityItem): string {
             return `prediction:${item.position.id}:${item.part}`;
         case "perp":
             return `perp:${item.position.id}:${item.part}`;
+        case "trade":
+            return `trade:${item.trade.id}`;
     }
 }
 

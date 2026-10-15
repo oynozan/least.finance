@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ObjectId } from "mongodb";
+import { Decimal128, ObjectId } from "mongodb";
 import { pino } from "pino";
 import { afterAll, beforeAll, expect, inject, test } from "vitest";
 import { connectDatabase, type Database } from "../../src/db/mongo.ts";
@@ -39,6 +39,8 @@ function keyOf(item: ActivityItem): FeedKey {
             return { atMs, rank: 5, id: item.order.id };
         case "perp":
             return { atMs, rank: item.part === "open" ? 6 : 7, id: item.position.id };
+        case "trade":
+            return { atMs, rank: 8, id: item.trade.id };
     }
 }
 
@@ -323,6 +325,42 @@ test("a run logs pnl.feed with ms and a count per source", async () => {
         sales: 1,
         perpOpens: 1,
         perpSettles: 1,
+        trades: 0,
     });
     expect(mine[1]!.rows).toMatchObject({ deposits: 2, withdrawals: 1, swaps: 0, perpSettles: 0 });
+});
+
+test("a buy from the balance is a trades row with its fill", async () => {
+    const accountId = new ObjectId();
+    await seedRows(database.collections, accountId, [{ kind: "deposit", usdc: "5", at: slot(1) }]);
+    const { insertedId } = await database.collections.trades.insertOne({
+        _id: new ObjectId(),
+        accountId,
+        requestId: randomUUID(),
+        verb: "buy",
+        symbol: "BNB",
+        toSymbol: null,
+        paidSymbol: "USDC",
+        paidUnits: Decimal128.fromString("1"),
+        gotSymbol: "BNB",
+        gotUnits: Decimal128.fromString("0.002"),
+        usd: Decimal128.fromString("1"),
+        priceUSD: "500",
+        toPriceUSD: null,
+        hedged: false,
+        createdAt: slot(0),
+    });
+
+    const all = await feed.page(accountId, {});
+    const onlyTrades = await feed.page(accountId, { filter: "trades" });
+    const onlyCash = await feed.page(accountId, { filter: "deposits" });
+
+    expect(all.items.map((item) => item.kind)).toEqual(["trade", "deposit"]);
+    expect(onlyTrades.items).toEqual([
+        expect.objectContaining({
+            kind: "trade",
+            trade: expect.objectContaining({ id: insertedId.toHexString(), gotSymbol: "BNB", gotUnits: "0.002" }),
+        }),
+    ]);
+    expect(onlyCash.items.map((item) => item.kind)).toEqual(["deposit"]);
 });
