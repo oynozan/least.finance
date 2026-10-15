@@ -31,7 +31,7 @@ async function signInAndPick(page: Page) {
     return address;
 }
 
-test("Solana rows are open and a Solana deposit shows the 'You get about' line", async ({ page }) => {
+test("Solana rows are open and a Solana deposit shows what it's worth", async ({ page }) => {
     await signInAndPick(page);
     const row = coinsOf(page).getByRole("button", { name: /^SOL on Solana, 2 SOL/ });
     await expect(row).toBeVisible({ timeout: 20_000 });
@@ -40,7 +40,8 @@ test("Solana rows are open and a Solana deposit shows the 'You get about' line",
 
     await row.click();
     await amountOf(page).fill("1");
-    await expect(hintOf(page)).toHaveText(/^You get about 150 USDC in about \d+ s/, { timeout: 20_000 });
+    // At the catalog price, worked out as it's typed (the fake prices SOL at $147.20)
+    await expect(hintOf(page)).toHaveText("≈ $147.20");
     await expect(hintOf(page)).not.toHaveAttribute("data-tone", "error");
 });
 
@@ -52,7 +53,9 @@ test("confirming shows sent, in a block, bridging, delivered, and the explorer l
         .getByRole("button", { name: /^SOL on Solana, 2 SOL/ })
         .click({ timeout: 20_000 });
     await amountOf(page).fill("1");
-    await expect(hintOf(page)).toContainText("You get about", { timeout: 20_000 });
+    await expect(hintOf(page)).toHaveText("≈ $147.20");
+    // The Solana wallet can sign a moment after sign-in; until then Deposit waits
+    await expect(depositOf(page)).not.toHaveAttribute("aria-disabled", { timeout: 20_000 });
     await depositOf(page).click();
 
     await expect(stepOf(page, "Sending")).toHaveAttribute("data-step", "active", { timeout: 20_000 });

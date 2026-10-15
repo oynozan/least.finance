@@ -32,7 +32,6 @@ import type {
     ActivityPage,
     CoinBalance,
     DepositOrderView,
-    DepositQuoteView,
     PerpOrderRequest,
     PerpQuoteRequest,
     PerpQuoteView,
@@ -87,8 +86,8 @@ export type Account = {
     placeSwap: (req: SwapRequest, reviewedMin: string) => Promise<SwapResult>;
     /** Bridge orders still open, newest first. */
     orders: DepositOrderView[];
-    /** What `amount` of `coin` would pay out on Arc, from the wallet the deposit uses. */
-    quote: (coin: string, amount: string, wallet: string) => Promise<DepositQuoteView | ApiError>;
+    /** Whether a deposit can be sent from this wallet now: it's connected in this browser and can sign. */
+    canDepositFrom: (wallet: string) => boolean;
     /** Bridges `amount` of `coin` into the account from the wallet the deposit uses. */
     depositCoin: (coin: string, amount: string, wallet: string) => Promise<DepositResult>;
     /** Sends a deposit of `amount` USDC (a decimal string) on Arc from the wallet `from`. */
@@ -159,8 +158,6 @@ const UNAVAILABLE_PNL: ApiError = { code: "unavailable", message: "Your history 
 const NO_SIGNERS: Signers = {};
 
 const NO_SWAPS: ApiError = { code: "unavailable", message: "Swaps aren't available right now." };
-
-const NO_WALLET: ApiError = { code: "bad_request", message: "Connect a wallet to deposit." };
 
 const AccountContext = createContext<Account | null>(null);
 
@@ -241,12 +238,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         }
     };
 
-    // All three act for the wallet of the row picked, not the active one.
-    const quote = (coin: string, amount: string, from: string) =>
-        wallets.some((w) => w.address.toLowerCase() === from.toLowerCase()) || solanaSigner?.address === from
-            ? client.quote(coin, amount, from)
-            : Promise.resolve(NO_WALLET);
-
+    // Both act for the wallet of the row picked, not the active one.
     const depositCoin = async (coin: string, amount: string, from: string): Promise<DepositResult> => {
         if (coin.startsWith("solana:")) {
             if (solanaSigner?.address !== from) return "failed";
@@ -302,8 +294,10 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             quoteSwap={(req) => client.quoteSwap(req)}
             placeSwap={placeSwap}
             deposit={deposit}
-            quote={quote}
             depositCoin={depositCoin}
+            canDepositFrom={(wallet) =>
+                wallets.some((w) => sameWallet(w.address, wallet)) || solanaSigner?.address === wallet
+            }
             refreshBalances={refreshBalances}
             refreshSwapHoldings={refreshSwapHoldings}
             dismissNotice={() => client.dismissNotice()}
@@ -330,8 +324,8 @@ function Provide({
     signers = NO_SIGNERS,
     connected = NO_SIGNERS,
     deposit = async () => "failed",
-    quote = async () => NO_WALLET,
     depositCoin = async () => "failed",
+    canDepositFrom = () => false,
     quoteSwap = async () => ({ error: NO_SWAPS }),
     placeSwap = async () => ({ status: "failed", message: NO_SWAPS.message }),
     dismissNotice = () => undefined,
@@ -355,8 +349,8 @@ function Provide({
     signers?: Signers;
     connected?: Signers;
     deposit?: Account["deposit"];
-    quote?: Account["quote"];
     depositCoin?: Account["depositCoin"];
+    canDepositFrom?: Account["canDepositFrom"];
     quoteSwap?: Account["quoteSwap"];
     placeSwap?: Account["placeSwap"];
     dismissNotice?: () => void;
@@ -394,8 +388,8 @@ function Provide({
         quoteSwap,
         placeSwap,
         orders: state.status === "ready" ? state.orders : [],
-        quote,
         depositCoin,
+        canDepositFrom,
         deposit,
         dismissNotice,
         predictions: state.status === "ready" ? state.predictions : NO_PREDICTIONS,

@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { motion, useAnimate, useReducedMotion, type Transition } from "motion/react";
-import { previewText } from "@/lib/account/deposit-preview";
-import type { ApiError, DepositQuoteView } from "@/lib/account/state";
+import { formatUnits } from "@/lib/trade/format";
 import type { CoinBalance } from "@/server/src/protocol";
 import { NEEDS_SOL, type DepositResult } from "./account-client";
 import { CloseIcon } from "./icons";
@@ -18,8 +17,11 @@ const GAS_RESERVE = 0.01;
 export const MAX_DECIMALS = 6;
 
 const OVER_WALLET = "That's more than your wallet holds, after gas.";
-/** How long the amount rests before the quote is asked for. */
-const QUOTE_DELAY_MS = 400;
+const NOT_SIGNABLE = "Connect this wallet to deposit from it.";
+/** A dollar amount is typed to the cent. */
+const USD_DECIMALS = 2;
+/** A coin amount worked out from dollars keeps at most this many decimals. */
+const COIN_PLACES = 8;
 
 /** The most the wallet can send and still pay for gas, to the cent. */
 export const maxDeposit = (walletBalance: number) => Math.max(0, Math.floor((walletBalance - GAS_RESERVE) * 100) / 100);
@@ -32,6 +34,12 @@ export function cleanAmount(text: string, decimals: number) {
         .split(".");
     if (rest.length === 0) return whole;
     return `${whole}.${rest.join("").slice(0, decimals)}`;
+}
+
+/** `value` rounded down to `places` decimals, without trailing zeros: never more than was typed. A hair over 1 absorbs float noise, so 0.3 / 0.1 is 3. */
+function floorTo(value: number, places: number) {
+    const scale = 10 ** places;
+    return (Math.floor(value * scale * (1 + 1e-12)) / scale).toFixed(places).replace(/\.?0+$/, "");
 }
 
 /** "25." → "25", ".5" → "0.5"; null when there's no number yet. */
@@ -48,25 +56,39 @@ type DepositFormProps = {
     walletBalance: number | null | undefined;
     minDeposit: number;
     onSubmit: (amount: string) => Promise<DepositResult>;
-    /** What an amount of a bridged coin would pay out on Arc; leave out for USDC on Arc. */
-    preview?: (amount: string) => Promise<DepositQuoteView | ApiError>;
+    /** The coin's dollar price, kept fresh by the page; null until known. Leave out for USDC on Arc. */
+    price?: number | null;
+    /** Whether the coin's wallet can sign here yet; a Solana wallet takes a moment after sign-in. */
+    signable?: boolean;
     onClose: () => void;
 };
 
 /** The amount to send from the wallet, in place of the deposit button. */
-export function DepositForm({ coin, walletBalance, minDeposit, onSubmit, preview, onClose }: DepositFormProps) {
+export function DepositForm({
+    coin,
+    walletBalance,
+    minDeposit,
+    onSubmit,
+    price = null,
+    signable = true,
+    onClose,
+}: DepositFormProps) {
     const [text, setText] = useState("");
     const [sending, setSending] = useState(false);
     const [walletProblem, setWalletProblem] = useState<string | null>(null);
-    const [quoted, setQuoted] = useState<{ amount: string; result: DepositQuoteView | ApiError } | null>(null);
-    // USDC on Arc keeps its dollar path; any other coin is typed in its own units.
+    // USDC on Arc keeps its dollar path; any other coin is typed in its own units, or in dollars once its unit is clicked.
     const isArc = coin.coin === "arc:USDC";
-    const decimals = isArc ? MAX_DECIMALS : coin.decimals;
+    const [unit, setUnit] = useState<"coin" | "usd">("coin");
+    const inUsd = !isArc && unit === "usd" && price !== null;
+    const decimals = isArc ? MAX_DECIMALS : inUsd ? USD_DECIMALS : coin.decimals;
 
     const [field, animateField] = useAnimate<HTMLLabelElement>();
     const reduceMotion = useReducedMotion();
 
-    const amount = normalizeAmount(text);
+    const typed = normalizeAmount(text);
+    // What's sent is always in the coin's own units; dollars are worked out at the price the page holds.
+    const toCoin = (usd: number) => floorTo(usd / price!, Math.min(coin.decimals, COIN_PLACES));
+    const amount = typed === null || !inUsd ? typed : toCoin(Number(typed));
     const value = amount === null ? 0 : Number(amount);
     const max = isArc
         ? walletBalance == null
@@ -78,35 +100,21 @@ export function DepositForm({ coin, walletBalance, minDeposit, onSubmit, preview
     const isOver = (v: number) => max !== null && v > max;
     // More than the wallet holds shows on the amount itself: red, with a shake.
     const over = isOver(value);
-    // The quote that belongs to the amount showing, once it has come back.
-    const quote = preview && quoted?.amount === amount ? quoted.result : null;
-    const quoteError = quote && "code" in quote ? quote.message : null;
-    const payout = quote && !("code" in quote) ? quote : null;
     const issue =
         amount === null || value === 0 || over
             ? null
             : isArc && value < minDeposit
               ? `The minimum deposit is ${formatUsd(minDeposit)}.`
-              : quoteError;
-    const canSend = amount !== null && value > 0 && !over && issue === null && !sending;
+              : null;
+    const canSend = amount !== null && value > 0 && !over && issue === null && signable && !sending;
 
-    // Asks for the quote once the amount has rested; an answer for an amount since changed is dropped.
-    const ask = useRef(preview);
-    useEffect(() => {
-        ask.current = preview;
-    });
-    const quoting = preview !== undefined;
-    useEffect(() => {
-        if (!quoting || amount === null || Number(amount) === 0) return;
-        let current = true;
-        const timer = setTimeout(() => {
-            void ask.current?.(amount).then((result) => current && setQuoted({ amount, result }));
-        }, QUOTE_DELAY_MS);
-        return () => {
-            current = false;
-            clearTimeout(timer);
-        };
-    }, [quoting, amount]);
+    /** Switches between the coin and dollars, carrying the amount over at the price. */
+    const switchUnit = () => {
+        if (price === null) return;
+        const next = unit === "coin" ? "usd" : "coin";
+        if (typed !== null) setText(next === "usd" ? floorTo(value * price, USD_DECIMALS) : (amount ?? ""));
+        setUnit(next);
+    };
 
     const shake = () => {
         if (!reduceMotion)
@@ -116,6 +124,7 @@ export function DepositForm({ coin, walletBalance, minDeposit, onSubmit, preview
     const submit = async (event: FormEvent) => {
         event.preventDefault();
         if (over) return shake();
+        if (!signable && amount !== null && value > 0) return setWalletProblem(NOT_SIGNABLE);
         if (!canSend || amount === null) return;
         setSending(true);
         setWalletProblem(null);
@@ -123,6 +132,7 @@ export function DepositForm({ coin, walletBalance, minDeposit, onSubmit, preview
         setSending(false);
         // Turned down in the wallet: the amount stays, ready to try again.
         if (result === "cancelled") return;
+        if (typeof result === "object") return setWalletProblem(result.refused);
         if (result === "needs_sol") return setWalletProblem(NEEDS_SOL);
         if (result === "failed") return setWalletProblem("Your wallet couldn't send the deposit. Try again.");
         if (result === "switch_failed")
@@ -137,12 +147,18 @@ export function DepositForm({ coin, walletBalance, minDeposit, onSubmit, preview
         onClose();
     };
 
+    // Worked out here as the amount is typed, at the price the page holds: the other unit's figure.
+    const estimate =
+        isArc || price === null || amount === null || value === 0 || over
+            ? null
+            : inUsd
+              ? `≈ ${formatUnits(value, coin.symbol)}`
+              : `≈ ${formatUsd(value * price)}`;
     // Only problems are written out; the wallet's balance is for screen readers.
-    const preText = payout ? previewText(coin, amount, payout) : null;
     const hint =
         walletProblem ??
         issue ??
-        preText ??
+        estimate ??
         (isArc && walletBalance === null ? "Couldn't read your wallet's balance." : null);
     const held = isArc ? walletBalance : coin.amount === null ? null : Number(coin.amount);
     const wallet = over
@@ -197,24 +213,44 @@ export function DepositForm({ coin, walletBalance, minDeposit, onSubmit, preview
                         value={text}
                         onChange={(event) => {
                             const next = cleanAmount(event.target.value, decimals);
-                            const nextValue = Number(normalizeAmount(next) ?? 0);
+                            const nextTyped = Number(normalizeAmount(next) ?? 0);
+                            const nextValue = inUsd ? Number(toCoin(nextTyped)) : nextTyped;
                             // Shakes on the way past the wallet, not while deleting back down.
                             if (isOver(nextValue) && nextValue > value) shake();
                             setText(next);
                             setWalletProblem(null);
                         }}
                     />
-                    {!isArc && (
-                        <span className={styles.amountUnit} aria-hidden="true">
-                            {coin.symbol}
-                        </span>
-                    )}
+                    {!isArc &&
+                        (price === null ? (
+                            <span className={styles.amountUnit} aria-hidden="true">
+                                {coin.symbol}
+                            </span>
+                        ) : (
+                            <button
+                                type="button"
+                                className={`${styles.amountUnit} ${styles.unitToggle}`}
+                                aria-label={inUsd ? `Type the amount in ${coin.symbol}` : "Type the amount in USD"}
+                                disabled={sending}
+                                onClick={switchUnit}
+                            >
+                                {inUsd ? "USD" : coin.symbol}
+                            </button>
+                        ))}
                     {max !== null && max > 0 && (
                         <button
                             type="button"
                             className={styles.maxButton}
                             disabled={sending}
-                            onClick={() => setText(isArc ? String(max) : (coin.spendable ?? String(max)))}
+                            onClick={() =>
+                                setText(
+                                    isArc
+                                        ? String(max)
+                                        : inUsd
+                                          ? floorTo(Number(coin.spendable ?? max) * price!, USD_DECIMALS)
+                                          : (coin.spendable ?? String(max)),
+                                )
+                            }
                         >
                             Max
                         </button>

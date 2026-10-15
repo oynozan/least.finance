@@ -66,7 +66,9 @@ export type DepositNotice =
     | { kind: "reverted"; message: string; withdrawal?: true };
 
 /** How the wallet took a deposit: turned down, failed to send, or sent (and now being confirmed). */
-export type DepositResult = "cancelled" | "failed" | "sent" | "switch_failed" | "wrong_network" | "needs_sol";
+/** `refused` is the server's reason for not opening the deposit, such as "That's too small to cover the fee." */
+export type DepositResult =
+    "cancelled" | "failed" | "sent" | "switch_failed" | "wrong_network" | "needs_sol" | { refused: string };
 
 /** What a Solana wallet without SOL for the network fee is told before any order is opened. */
 export const NEEDS_SOL = "You need a little SOL to send from Solana.";
@@ -730,7 +732,8 @@ export class AccountClient {
                 .timeout(CONNECT_TIMEOUT_MS)
                 .emitWithAck("deposit:order", { coin, amount, wallet: wallet.from })
                 .catch(() => null);
-            if (!opened?.ok || this.#socket !== socket) return "failed";
+            if (!opened || this.#socket !== socket) return "failed";
+            if (!opened.ok) return { refused: opened.error.message };
             const { order, txs } = opened.data;
             this.#dispatch({ type: "order", order });
 
@@ -780,14 +783,15 @@ export class AccountClient {
             if (wallet.solBalance !== null) {
                 const quoted = await this.quote(coin, amount, wallet.address);
                 if (this.#socket !== socket) return "failed";
-                if ("code" in quoted) return "failed";
+                if ("code" in quoted) return { refused: quoted.message };
                 if (quoted.sol && wallet.solBalance < BigInt(quoted.sol.needed)) return "needs_sol";
             }
             const opened = await socket
                 .timeout(CONNECT_TIMEOUT_MS)
                 .emitWithAck("deposit:order", { coin, amount, wallet: wallet.address })
                 .catch(() => null);
-            if (!opened?.ok || this.#socket !== socket) return "failed";
+            if (!opened || this.#socket !== socket) return "failed";
+            if (!opened.ok) return { refused: opened.error.message };
             const { order, txs } = opened.data;
             this.#dispatch({ type: "order", order });
             const tx = txs[0];

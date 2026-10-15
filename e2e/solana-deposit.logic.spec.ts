@@ -12,7 +12,6 @@ import {
 import { Server } from "socket.io";
 import { AccountClient, NEEDS_SOL, type SwapSigner } from "@/components/account-client";
 import { isDepositOpen } from "@/lib/account/balances";
-import { heldSolText, previewText } from "@/lib/account/deposit-preview";
 import { buildDepositTransaction, signWithFreshKeys, withFreshSigners } from "@/lib/account/solana-tx";
 import type { BalancesView, CoinBalance, SolanaInstruction } from "@/server/src/protocol";
 
@@ -331,26 +330,4 @@ test("isOpen follows the session switch: Solana rows are open when deposits are 
     expect(isDepositOpen(solana, true)).toBe(true);
     expect(isDepositOpen(solana, false)).toBe(false);
     expect(isDepositOpen(arc, false)).toBe(true);
-});
-
-test("the fee line adds the SOL Circle holds for a CCTP deposit, and nothing for one that holds none", () => {
-    const usdc = {
-        coin: "solana:USDC",
-        chain: "solana",
-        chainId: null,
-        chainName: "Solana",
-        symbol: "USDC",
-        decimals: 6,
-        wallet: PAYER,
-        amount: "20",
-        spendable: "20",
-        usd: 1,
-    } as CoinBalance;
-    const quote = { coin: "solana:USDC", amount: "10", usdcOut: "9.984", etaSeconds: 1200, provider: "cctp" };
-
-    expect(heldSolText("4092480")).toBe("plus about 0.004 SOL held by Circle for 5 days");
-    expect(previewText(usdc, "10", { ...quote, sol: { needed: "4102480", held: "4092480" } })).toBe(
-        "You get about 9.98 USDC in about 20 min · fee $0.02, plus about 0.004 SOL held by Circle for 5 days",
-    );
-    expect(previewText(usdc, "10", quote)).toBe("You get about 9.98 USDC in about 20 min · fee $0.02");
 });

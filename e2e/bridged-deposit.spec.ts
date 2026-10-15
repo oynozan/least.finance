@@ -70,11 +70,56 @@ async function fill(page: Page, row: RegExp, amount: string) {
 
 const sends = async (page: Page) => (await walletRequests(page)).filter((r) => r.method === "eth_sendTransaction");
 
+test("clicking the coin types the amount in dollars and back, worked out in the page with no quote", async ({
+    page,
+}) => {
+    let quotes = 0;
+    await page.routeWebSocket(/socket\.io/, (ws) => {
+        const server = ws.connectToServer();
+        ws.onMessage((message) => {
+            if (typeof message === "string" && message.includes('"deposit:quote"')) quotes += 1;
+            server.send(message);
+        });
+    });
+    await signIn(page);
+    await moveWalletTo(page, "0x13b2");
+    await fill(page, /^ETH on Ethereum/, "0.1");
+    await expect(hintOf(page)).toHaveText("≈ $321.04");
+
+    await page.getByRole("button", { name: "Type the amount in USD" }).click();
+    const back = page.getByRole("button", { name: "Type the amount in ETH" });
+    await expect(back).toHaveText("USD");
+    await expect(amountOf(page)).toHaveValue("321.04");
+    await expect(hintOf(page)).toHaveText("≈ 0.1 ETH");
+    await amountOf(page).fill("642.08");
+    await expect(hintOf(page)).toHaveText("≈ 0.2 ETH");
+
+    // Back to the coin, carrying the amount over
+    await back.click();
+    await expect(amountOf(page)).toHaveValue("0.2");
+    await expect(hintOf(page)).toHaveText("≈ $642.08");
+    expect(quotes).toBe(0);
+});
+
+test("a deposit typed in dollars sends the coin it comes to", async ({ page }) => {
+    await signIn(page);
+    await moveWalletTo(page, "0x13b2");
+    await fill(page, /^ETH on Ethereum/, "");
+    await page.getByRole("button", { name: "Type the amount in USD" }).click();
+    await amountOf(page).fill("321.04");
+    await depositOf(page).click();
+    // 0.1 ETH, in wei
+    await expect
+        .poll(async () => (await sends(page)).map((r) => (r.params?.[0] as { value?: string }).value))
+        .toContain("0x16345785d8a0000");
+});
+
 test("a bridged deposit shows each step and lands in the balance", async ({ page, isMobile }) => {
     await signIn(page);
     await moveWalletTo(page, "0x13b2");
     await fill(page, /^ETH on Ethereum/, "0.1");
-    await expect(hintOf(page)).toHaveText("≈ $300.00 in about 2 s");
+    // Worked out in the page at the catalog price (the fake prices ETH at $3,210.40)
+    await expect(hintOf(page)).toHaveText("≈ $321.04");
 
     // The status line is one element throughout, so a screen reader announces what changes in it.
     const region = await statusOf(page).elementHandle();

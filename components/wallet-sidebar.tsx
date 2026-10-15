@@ -15,7 +15,7 @@ import {
 } from "motion/react";
 import { sameWallet as sameAddress } from "@/lib/account/balances";
 import { toUsdc, type HistoryRow, type PendingWithdrawal } from "@/lib/account/state";
-import type { ApiError, DepositQuoteView } from "@/lib/account/state";
+import type { ApiError } from "@/lib/account/state";
 import type {
     CoinBalance,
     DepositOrderView,
@@ -220,7 +220,7 @@ function SignedInWallet() {
                 tradeNotice={account.tradeNotice}
                 onDeposit={account.deposit}
                 onDepositCoin={account.depositCoin}
-                quote={account.quote}
+                canDepositFrom={account.canDepositFrom}
                 orders={account.orders}
                 onStartDeposit={account.dismissNotice}
                 balances={account.balances}
@@ -302,7 +302,8 @@ type WalletSectionProps = {
     onDeposit: (amount: string, wallet: string) => Promise<DepositResult>;
     /** Bridges `amount` of a coin on another chain into the account. */
     onDepositCoin: (coin: string, amount: string, wallet: string) => Promise<DepositResult>;
-    quote: (coin: string, amount: string, wallet: string) => Promise<DepositQuoteView | ApiError>;
+    /** Whether the wallet can sign a deposit in this browser yet. */
+    canDepositFrom: (wallet: string) => boolean;
     /** Bridge orders still open, newest first. */
     orders: DepositOrderView[];
     onStartDeposit: () => void;
@@ -342,7 +343,7 @@ function WalletSection({
     tradeNotice,
     onDeposit,
     onDepositCoin,
-    quote,
+    canDepositFrom,
     orders,
     onStartDeposit,
     balances,
@@ -360,6 +361,8 @@ function WalletSection({
     onWithdraw,
     onStartWithdraw,
 }: WalletSectionProps) {
+    // Coin prices the page keeps fresh: the deposit form works out dollars from them as it's typed.
+    const { catalog } = useTrade();
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
     const [pinned, setPinned] = useState(false);
@@ -434,14 +437,17 @@ function WalletSection({
                 <DepositForm
                     coin={coin!}
                     walletBalance={walletBalance}
+                    signable={canDepositFrom(coin!.wallet)}
                     minDeposit={minDeposit}
                     onSubmit={(amount) =>
                         coin!.coin === "arc:USDC"
                             ? onDeposit(amount, coin!.wallet)
                             : onDepositCoin(coin!.coin, amount, coin!.wallet)
                     }
-                    preview={
-                        coin!.coin === "arc:USDC" ? undefined : (amount) => quote(coin!.coin, amount, coin!.wallet)
+                    price={
+                        coin!.coin === "arc:USDC"
+                            ? undefined
+                            : (catalog.tokens.find((token) => token.symbol === coin!.symbol)?.priceUSD ?? null)
                     }
                     onClose={() => {
                         setStage("closed");
