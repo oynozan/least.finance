@@ -9,8 +9,8 @@ import { quoteRows as perpQuoteRows } from "@/lib/trade/perp-quote";
 import { quoteRows } from "@/lib/trade/prediction-quote";
 import { isSpotIntent, toTradeRequest } from "@/lib/trade/spot-request";
 import type { TradeOrderRequest } from "@/server/src/trading/types";
-import type { PerpQuoteRequest, PerpQuoteView, QuoteView } from "@/server/src/protocol";
-import { OFFLINE_COPY } from "@/components/account-client";
+import type { ApiError, PerpQuoteRequest, PerpQuoteView, QuoteView } from "@/server/src/protocol";
+import { OFFLINE_COPY, type Placed } from "@/components/account-client";
 import { useAccount } from "@/components/account-provider";
 import { CloseIcon } from "@/components/icons";
 import { spring } from "@/components/sentence/motion";
@@ -129,6 +129,15 @@ function ActionButton({
 }
 
 type PerpAnswer = { key: string; quote: PerpQuoteView } | { key: string; error: string };
+/** The server's answer to a prediction quote: the quote, or the refusal an order this size would meet too. */
+type QuoteAnswer = { tokenId: string; amountUSD: string; quote: QuoteView | null; refusal: string | null };
+
+/** A quote refusal that would refuse the order as well, in the words the review shows; other failures only drop the quote. */
+function quoteRefusal(error: ApiError): string | null {
+    if (error.code === "below_minimum") return error.message;
+    if (error.code === "market_closed") return "This market just closed.";
+    return null;
+}
 
 function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void }) {
     const { view, wallet, catalog, maxOrderUSD } = useTrade();
@@ -138,11 +147,29 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     // What the trade just confirmed came to, in the words the done line uses.
     const [summary, setSummary] = useState<string | null>(null);
     const [accepted, setAccepted] = useState(false);
-    // The server's refusal of the prediction just confirmed; the notice itself clears after a few seconds.
+    // Waiting on the server's answer to the order just confirmed.
+    const [placing, setPlacing] = useState(false);
+    // The server's refusal of the order just confirmed; the notice itself clears after a few seconds.
     const [refusal, setRefusal] = useState<string | null>(null);
+    // An accepted order that fails later (a prediction that doesn't fill, a rejected perp) is told as the notice.
     const refused = account.tradeNotice?.message ?? null;
     if (accepted && refused && refused !== refusal) setRefusal(refused);
-    const [quoted, setQuoted] = useState<QuoteView | null>(null);
+    // Each confirm's answer is shown only while it is the latest.
+    const attempt = useRef(0);
+    const follow = (placed: Placed) => {
+        const mine = ++attempt.current;
+        setRefusal(placed.sent ? null : OFFLINE_COPY);
+        setAccepted(false);
+        setPlacing(placed.sent);
+        if (!placed.sent) return;
+        void placed.answer.then((message) => {
+            if (attempt.current !== mine) return;
+            setPlacing(false);
+            if (message) setRefusal(message);
+            else setAccepted(true);
+        });
+    };
+    const [quoteAnswer, setQuoteAnswer] = useState<QuoteAnswer | null>(null);
     // A confirmed perp's own pending position blocks its sentence, so the review keeps the intent while the sentence is unchanged.
     const [kept, setKept] = useState<{ text: string; intent: TransactionIntent } | null>(null);
     const intent = view.intent ?? (kept && kept.text === view.text ? kept.intent : null);
@@ -190,7 +217,12 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
         let current = true;
         const refresh = () =>
             void ask.current({ eventId, tokenId, amountUSD }).then((result) => {
-                if (current) setQuoted("shares" in result ? result : null);
+                if (!current) return;
+                setQuoteAnswer(
+                    "shares" in result
+                        ? { tokenId, amountUSD, quote: result, refusal: null }
+                        : { tokenId, amountUSD, quote: null, refusal: quoteRefusal(result) },
+                );
             });
         // The first quote comes as the panel opens; a later amount waits for typing to settle.
         const first = setTimeout(refresh, asked.current ? QUOTE_DEBOUNCE_MS : 0);
@@ -202,9 +234,14 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             clearInterval(timer);
         };
     }, [eventId, tokenId, amountUSD]);
-    // Only a quote for the amount on screen; a stale one would show the wrong cost.
-    const quote =
-        quoted && quoted.tokenId === tokenId && Number(quoted.amountUSD) === Number(amountUSD) ? quoted : null;
+    // Only an answer for the amount on screen; a stale one would show the wrong cost.
+    const answered =
+        quoteAnswer && quoteAnswer.tokenId === tokenId && Number(quoteAnswer.amountUSD) === Number(amountUSD)
+            ? quoteAnswer
+            : null;
+    const quote = answered?.quote ?? null;
+    // A refusal the order would meet too: a minimum risen with the price since the sentence was checked, say
+    const quoteRefused = eventId ? (answered?.refusal ?? null) : null;
     const other = market?.outcomes.length === 2 ? market.outcomes.find((o) => o.id !== outcome?.id) : undefined;
 
     // A perp is opened for real once signed in and the server's trading is on (an intent exists only then).
@@ -261,35 +298,31 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
         if (!view.intent || view.blocking) return;
         if (spotIntent) {
             if (!tradeRequest) return;
-            const result = account.placeTrade({ ...tradeRequest, requestId: crypto.randomUUID() });
-            // Offline changes nothing; the person is told so here.
-            if (!result.sent) setRefusal(OFFLINE_COPY);
-            setAccepted(result.sent);
+            follow(account.placeTrade({ ...tradeRequest, requestId: crypto.randomUUID() }));
             setSummary(tradeOutcome(tradeRequest));
             setSent(intentKey);
             return;
         }
         if (live && prediction && market && outcome) {
+            if (quoteRefused) return;
             // Counted at once; a refusal replaces the done line here, or opens the sidebar if this is closed by then.
             const estimate = (Number(prediction.amountUSD) / outcome.price).toFixed(6).replace(/\.?0+$/, "");
-            const result = account.placePrediction({
-                eventId: prediction.marketId,
-                tokenId: prediction.outcomeId,
-                amountUSD: prediction.amountUSD,
-                quotedPrice: quote?.worstPrice ?? outcome.price,
-                question: market.question,
-                outcome: outcome.label,
-                shares: quote?.shares ?? estimate,
-            });
-            setAccepted(result.sent);
+            follow(
+                account.placePrediction({
+                    eventId: prediction.marketId,
+                    tokenId: prediction.outcomeId,
+                    amountUSD: prediction.amountUSD,
+                    quotedPrice: quote?.worstPrice ?? outcome.price,
+                    question: market.question,
+                    outcome: outcome.label,
+                    shares: quote?.shares ?? estimate,
+                }),
+            );
             setSent(intentKey);
             return;
         }
         if (perpLive && perp && perpQuote) {
-            const result = account.placePerp({ ...perp, requestId: crypto.randomUUID() }, perpQuote);
-            // Offline changes nothing; the person is told so here.
-            if (!result.sent) setRefusal(OFFLINE_COPY);
-            setAccepted(result.sent);
+            follow(account.placePerp({ ...perp, requestId: crypto.randomUUID() }, perpQuote));
             setKept({ text: view.text, intent: perp });
             setSent(intentKey);
             return;
@@ -310,8 +343,10 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     // A trade waits for the prices it is made at; a perp for its quote.
     const awaitingQuote = (!!spotIntent && !tradeRequest) || (perpLive && !perpQuote);
     const blocked =
-        !done && wallet.status !== "disconnected" && (!!view.blocking || wallet.status === "loading" || awaitingQuote);
-    const swapNotice = perpError;
+        !done &&
+        wallet.status !== "disconnected" &&
+        (!!view.blocking || wallet.status === "loading" || awaitingQuote || !!quoteRefused);
+    const swapNotice = perpError ?? quoteRefused;
 
     return (
         <motion.div
@@ -337,12 +372,18 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                 >
                     {refusal ? (
                         <p className="text-[17px] leading-snug text-loss">{refusal}</p>
+                    ) : placing ? (
+                        <p className="text-[17px] leading-snug text-muted">
+                            {spotIntent
+                                ? "Filling your trade…"
+                                : perp
+                                  ? "Opening your position…"
+                                  : "Placing your prediction…"}
+                        </p>
                     ) : accepted ? (
                         <p className="text-[17px] leading-snug">
                             {spotIntent ? summary : perp ? "Position opened." : "Prediction placed."}
                         </p>
-                    ) : live && prediction ? (
-                        <p className="text-[17px] leading-snug">Nothing was sent.</p>
                     ) : (
                         <>
                             <p className="text-[17px] leading-snug">

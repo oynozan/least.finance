@@ -119,6 +119,9 @@ const FAILURE_COPY: Record<PredictionFailure, string> = {
 };
 const PRICE_MOVED_COPY = "The price moved, so the trade didn't go through. Nothing was spent.";
 export const OFFLINE_COPY = "You're offline. Nothing was spent.";
+
+/** An order handed to the server: `answer` settles with the refusal's words, or null once accepted or left unanswered. */
+export type Placed = { requestId: string; sent: boolean; answer: Promise<string | null> };
 const SELL_FAILED_COPY = "Couldn't sell right now. Your position is back.";
 const WITHDRAW_FAILED_COPY = "Didn't go through. Your balance is back.";
 /** The price sent when none is known; the exchange takes the best bid anyway, within a cent of it. */
@@ -550,13 +553,13 @@ export class AccountClient {
         question: string;
         outcome: string;
         shares: string;
-    }): { requestId: string; sent: boolean } {
+    }): Placed {
         const requestId = crypto.randomUUID();
         const socket = this.#socket;
         this.#tradeNotice(null);
         if (this.#snapshot.state.status !== "ready" || !socket?.connected) {
             this.#tradeNotice(OFFLINE_COPY);
-            return { requestId, sent: false };
+            return { requestId, sent: false, answer: Promise.resolve(OFFLINE_COPY) };
         }
         const { question, outcome, shares, ...wire } = input;
         this.#dispatch({
@@ -574,21 +577,22 @@ export class AccountClient {
                 connection: this.#connection,
             },
         });
-        void socket
+        const answer = socket
             .timeout(REPORT_TIMEOUT_MS)
             .emitWithAck("prediction:order", { requestId, ...wire })
             .catch(() => null)
             .then((result) => {
-                if (this.#socket !== socket || !result) return;
+                if (this.#socket !== socket || !result) return null;
                 if (result.ok) {
                     const { account, ...order } = result.data;
                     this.#dispatch({ type: "placed", order, account });
-                    return;
+                    return null;
                 }
                 this.#dispatch({ type: "predict-failed", requestId });
                 this.#tradeNotice(result.error.message);
+                return result.error.message;
             });
-        return { requestId, sent: true };
+        return { requestId, sent: true, answer };
     }
 
     /**
@@ -647,13 +651,13 @@ export class AccountClient {
      * position with the quote's size and entry stands in. The server's push decides the outcome;
      * only a refusal rolls it back here, and a missing answer leaves it accepted.
      */
-    placePerp(req: PerpOrderRequest, quote: PerpQuoteView): { requestId: string; sent: boolean } {
+    placePerp(req: PerpOrderRequest, quote: PerpQuoteView): Placed {
         const { requestId } = req;
         const socket = this.#socket;
         this.#tradeNotice(null);
         if (this.#snapshot.state.status !== "ready" || !socket?.connected) {
             this.#tradeNotice(OFFLINE_COPY);
-            return { requestId, sent: false };
+            return { requestId, sent: false, answer: Promise.resolve(OFFLINE_COPY) };
         }
         const now = new Date().toISOString();
         const position: PerpPositionView = {
@@ -682,21 +686,22 @@ export class AccountClient {
             collateralWei: toWei(req.collateralUSD),
             connection: this.#connection,
         });
-        void socket
+        const answer = socket
             .timeout(REPORT_TIMEOUT_MS)
             .emitWithAck("perp:order", req)
             .catch(() => null)
             .then((result) => {
-                if (this.#socket !== socket || !result) return;
+                if (this.#socket !== socket || !result) return null;
                 if (result.ok) {
                     const { account, order } = result.data;
                     this.#dispatch({ type: "perp", update: { order, position: null, account } });
-                    return;
+                    return null;
                 }
                 this.#dispatch({ type: "perpFailed", requestId });
                 this.#tradeNotice(result.error.message);
+                return result.error.message;
             });
-        return { requestId, sent: true };
+        return { requestId, sent: true, answer };
     }
 
     /** Closes a whole perp position; the server's push says how it went, and a refusal is shown here. */
@@ -719,22 +724,22 @@ export class AccountClient {
      * Buys, sells or swaps from the balance and counts it at once; the answer settles it with the server's balance and
      * coins, a refusal rolls it back with the server's message, and a missing answer leaves it counted.
      */
-    placeTrade(req: TradeOrderRequest): { requestId: string; sent: boolean } {
+    placeTrade(req: TradeOrderRequest): Placed {
         const { requestId } = req;
         const socket = this.#socket;
         const estimate = estimateTrade(req);
         this.#tradeNotice(null);
         if (this.#snapshot.state.status !== "ready" || !socket?.connected || !estimate) {
             this.#tradeNotice(OFFLINE_COPY);
-            return { requestId, sent: false };
+            return { requestId, sent: false, answer: Promise.resolve(OFFLINE_COPY) };
         }
         this.#dispatch({ type: "spot", trade: estimate });
-        void socket
+        const answer = socket
             .timeout(REPORT_TIMEOUT_MS)
             .emitWithAck("trade:order", req)
             .catch(() => null)
             .then((result) => {
-                if (this.#socket !== socket || !result) return;
+                if (this.#socket !== socket || !result) return null;
                 if (result.ok) {
                     this.#dispatch({
                         type: "spot-filled",
@@ -742,12 +747,14 @@ export class AccountClient {
                         balance: result.balance,
                         holdings: result.holdings,
                     });
-                    return;
+                    return null;
                 }
                 this.#dispatch({ type: "spot-failed", requestId });
-                this.#tradeNotice(result.code === "price_moved" ? PRICE_MOVED_COPY : result.message);
+                const message = result.code === "price_moved" ? PRICE_MOVED_COPY : result.message;
+                this.#tradeNotice(message);
+                return message;
             });
-        return { requestId, sent: true };
+        return { requestId, sent: true, answer };
     }
 
     /** Sends a held coin to the person's own address and counts it as gone at once; a refusal puts it back with the server's message. */

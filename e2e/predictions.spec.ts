@@ -216,7 +216,7 @@ test("offline at confirm says so and spends nothing", async ({ page }) => {
         .click();
     const reviewPanel = page.getByRole("complementary", { name: "Review" });
     await expect(reviewPanel.getByText("Prediction placed.")).toHaveCount(0);
-    await expect(reviewPanel.getByText("Nothing was sent.")).toBeVisible();
+    await expect(reviewPanel.getByText("You're offline. Nothing was spent.")).toBeVisible();
     await reviewPanel.getByRole("button", { name: "Done" }).click();
     await walletButton(page).click();
     await expect(status(page)).toHaveText("You're offline. Nothing was spent.");

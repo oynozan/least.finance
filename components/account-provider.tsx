@@ -56,6 +56,7 @@ import {
     type AccountSnapshot,
     type DepositNotice,
     type DepositResult,
+    type Placed,
     type SwapResult,
 } from "./account-client";
 import { arc } from "./arc";
@@ -104,7 +105,7 @@ export type Account = {
     /** What a prediction buy would cost and return right now. */
     quotePrediction: (input: { eventId: string; tokenId: string; amountUSD: string }) => Promise<QuoteView | ApiError>;
     /** Places a prediction buy, counted at once; the outcome arrives as a push. */
-    placePrediction: (input: PlaceInput) => { requestId: string; sent: boolean };
+    placePrediction: (input: PlaceInput) => Placed;
     /** Sells a whole position, counted at once; the outcome arrives as a push. */
     closePosition: (position: PositionView, sellPrice: number | null) => void;
     dismissTradeNotice: () => void;
@@ -113,7 +114,7 @@ export type Account = {
     /** What opening a perp position would cost right now. */
     quotePerp: (req: PerpQuoteRequest) => Promise<PerpQuoteView | ApiError>;
     /** Opens a perp position on the quote shown, counted at once; the outcome arrives as a push. */
-    placePerp: (req: PerpOrderRequest, quote: PerpQuoteView) => { requestId: string; sent: boolean };
+    placePerp: (req: PerpOrderRequest, quote: PerpQuoteView) => Placed;
     /** Closes a whole perp position; the outcome arrives as a push. */
     closePerp: (positionId: string) => Promise<void>;
     /** How many times a socket bound to the account and the server pushed `pnl:changed`; the series is asked again on either. */
@@ -135,7 +136,7 @@ export type Account = {
     /** The coins the account holds, with trades and sends still on their way counted. */
     holdings: HoldingView[];
     /** Buys, sells or swaps from the balance, counted at once; a refusal rolls it back and shows as the trade notice. */
-    placeTrade: (req: TradeOrderRequest) => { requestId: string; sent: boolean };
+    placeTrade: (req: TradeOrderRequest) => Placed;
     /** Sends units of a held coin to an address, counted at once. */
     withdrawHolding: (req: CoinWithdrawRequest) => { requestId: string; sent: boolean };
     /** The account's coin sends, newest first. */
@@ -346,18 +347,18 @@ function Provide({
     refreshBalances = () => undefined,
     refreshSwapHoldings = () => undefined,
     quotePrediction = async () => UNAVAILABLE,
-    placePrediction = () => ({ requestId: "", sent: false }),
+    placePrediction = () => ({ requestId: "", sent: false, answer: Promise.resolve(null) }),
     closePosition = () => undefined,
     dismissTradeNotice = () => undefined,
     quotePerp = async () => UNAVAILABLE_PERP,
-    placePerp = (req) => ({ requestId: req.requestId, sent: false }),
+    placePerp = (req) => ({ requestId: req.requestId, sent: false, answer: Promise.resolve(null) }),
     closePerp = async () => undefined,
     loadPnlSeries = async () => UNAVAILABLE_PNL,
     loadActivityPage = async () => UNAVAILABLE_PNL,
     withdrawLimits = async () => UNAVAILABLE_WITHDRAW,
     withdrawQuote = async () => UNAVAILABLE_WITHDRAW,
     withdraw = async () => "failed",
-    placeTrade = (req) => ({ requestId: req.requestId, sent: false }),
+    placeTrade = (req) => ({ requestId: req.requestId, sent: false, answer: Promise.resolve(null) }),
     withdrawHolding = (req) => ({ requestId: req.requestId, sent: false }),
     children,
 }: {
