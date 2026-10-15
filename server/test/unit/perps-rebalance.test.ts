@@ -1,7 +1,28 @@
 import { spawnSync } from "node:child_process";
-import { expect, test } from "vitest";
+import { randomUUID } from "node:crypto";
+import { ObjectId } from "mongodb";
+import { afterAll, beforeAll, expect, inject, test } from "vitest";
 import { requireTestnet } from "../../scripts/live-check-guards.ts";
-import { buildHookData, markArrived, maxFeeOf, planRebalance, recordIfMined } from "../../scripts/perps-rebalance.ts";
+import {
+    buildHookData,
+    countBusy,
+    markArrived,
+    maxFeeOf,
+    owedOf,
+    planRebalance,
+    recordIfMined,
+    refusalReason,
+} from "../../scripts/perps-rebalance.ts";
+import { connectDatabase, type Database, type PoolRebalanceState } from "../../src/db/mongo.ts";
+import { toDecimal } from "../../src/db/money.ts";
+import { newPoolRebalance } from "../../src/predictions/pool-inputs.ts";
+import type { WithdrawalState } from "../../src/protocol.ts";
+
+let database: Database;
+beforeAll(async () => {
+    database = await connectDatabase(inject("mongoUri"), `test_${randomUUID().replaceAll("-", "")}`);
+});
+afterAll(() => database.close());
 
 test("planRebalance refuses to leave the treasury below the withdrawal need", () => {
     const base = { direction: "arc-to-hl" as const, amountE6: 100_000_000n };
@@ -82,4 +103,71 @@ test("maxFeeOf reads whole numbers as units and fractions as dollars through fee
     expect(maxFeeOf(10_000_000n, row(0.015626))).toBe(15_627n);
     expect(() => maxFeeOf(10_000_000n, {})).toThrow(/no forwarding fee/);
     expect(() => maxFeeOf(10_000_000n, row("abc"))).toThrow();
+});
+
+test("refusalReason refuses while a withdrawal is sending or a pool row is queued, sending or submitting, and allows neither", () => {
+    expect(refusalReason({ sendingWithdrawals: 0, busyPoolRows: 0 })).toBeNull();
+    expect(refusalReason({ sendingWithdrawals: 1, busyPoolRows: 0 })).toMatch(/withdrawal/i);
+    expect(refusalReason({ sendingWithdrawals: 0, busyPoolRows: 1 })).toMatch(/pool/i);
+    expect(refusalReason({ sendingWithdrawals: 3, busyPoolRows: 2 })).not.toBeNull();
+    // Whichever it names, it tells the operator how to go on
+    expect(refusalReason({ sendingWithdrawals: 0, busyPoolRows: 1 })).toMatch(/POOL_REBALANCE/);
+});
+
+test("owedOf adds a sending top-up to the withdrawals' wei", () => {
+    const withdrawals = [{ amount: toDecimal(2n * 10n ** 18n) }, { amount: toDecimal(10n ** 17n) }];
+    const poolRows = [{ amountE6: toDecimal(5_000_000n) }];
+    // 2.1 USDC of withdrawals in wei, and 5 USDC in E6 turned into wei
+    expect(owedOf({ withdrawals, poolRows: [] })).toBe(2_100_000_000_000_000_000n);
+    expect(owedOf({ withdrawals: [], poolRows })).toBe(5n * 10n ** 18n);
+    expect(owedOf({ withdrawals, poolRows })).toBe(7_100_000_000_000_000_000n);
+    expect(owedOf({ withdrawals: [], poolRows: [] })).toBe(0n);
+});
+
+test("countBusy counts withdrawals sending and pool rows queued, sending or submitting, and nothing else", async () => {
+    const { withdrawals, poolRebalances } = database.collections;
+    expect(await countBusy(database.collections)).toEqual({ sendingWithdrawals: 0, busyPoolRows: 0 });
+
+    const withdrawalStates: WithdrawalState[] = ["sending", "sending", "sent", "failed"];
+    const now = new Date();
+    await withdrawals.insertMany(
+        withdrawalStates.map((state) => ({
+            _id: new ObjectId(),
+            accountId: new ObjectId(),
+            requestId: randomUUID(),
+            amount: toDecimal(10n ** 18n),
+            to: "0x00000000000000000000000000000000000000aa",
+            state,
+            nonce: null,
+            rawTx: null,
+            txHash: null,
+            failure: null,
+            createdAt: now,
+            updatedAt: now,
+        })),
+    );
+    const poolStates: PoolRebalanceState[] = [
+        "queued",
+        "sending",
+        "submitting",
+        "forwarding",
+        "wrapping",
+        "done",
+        "failed",
+        "stuck",
+    ];
+    for (const state of poolStates) {
+        const row = newPoolRebalance({
+            kind: "move",
+            direction: "arc_to_polygon",
+            source: "operator",
+            reason: "operator",
+            amountE6: 5_000_000n,
+            now,
+        });
+        // Only the queued row holds the one-active slot
+        const { active, ...rest } = row;
+        await poolRebalances.insertOne({ ...rest, state, ...(state === "queued" && { active }) });
+    }
+    expect(await countBusy(database.collections)).toEqual({ sendingWithdrawals: 2, busyPoolRows: 3 });
 });

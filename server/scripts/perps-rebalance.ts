@@ -1,6 +1,9 @@
 /**
  * Moves USDC between the Arc treasury and the master Hyperliquid float. Run it from server/ while the server is up,
- * but never while the server is paying a withdrawal: both sign from the treasury key.
+ * but never while the server is paying a withdrawal or moving the pool: both sign from the treasury key, so it refuses
+ * while a withdrawal is sending or a pool move is queued, sending or submitting. With POOL_REBALANCE=on, stop the
+ * server or restart it with POOL_REBALANCE=off before running it, because the server can start a pool move between
+ * this script's check and its send.
  *
  *   node --env-file=.env scripts/perps-rebalance.ts arc-to-hl <usd> [--reserve <usd>] [--yes-send-real-money]
  *   node --env-file=.env scripts/perps-rebalance.ts hl-to-arc <usd> [--yes-send-real-money]
@@ -17,13 +20,13 @@ import { createKeyring } from "../src/accounts/keyring.ts";
 import { ARC_CHAIN_ID, MIN_BASE_FEE, createArcClient } from "../src/chain/arc.ts";
 import { loadConfig } from "../src/config.ts";
 import { feeUnits } from "../src/crosschain/iris.ts";
-import { connectDatabase, type PerpRebalanceDoc } from "../src/db/mongo.ts";
-import { fromDecimal, toDecimal, weiToE6 } from "../src/db/money.ts";
+import { connectDatabase, type Collections, type PerpRebalanceDoc } from "../src/db/mongo.ts";
+import { e6ToWei, fromDecimal, toDecimal, weiToE6 } from "../src/db/money.ts";
 import { FORWARD_HOOK_DATA, ARC_USDC_ERC20, TOKEN_MESSENGER_V2, encodeApprove } from "../src/withdrawals/cctp-burn.ts";
 import { TREASURY_GAS_RESERVE } from "../src/withdrawals/withdrawals.ts";
 import { createNktkasClient, sendToEvmWithData } from "../src/perps/nktkas-client.ts";
 import { nextNonce } from "../src/perps/client.ts";
-import { ObjectId, type Collection } from "mongodb";
+import { ObjectId, type Collection, type Decimal128 } from "mongodb";
 import { encodeFunctionData, parseAbi } from "viem";
 
 const HYPEREVM_DOMAIN = 19;
@@ -99,6 +102,32 @@ export async function markArrived(
     return result.modifiedCount === 1;
 }
 
+/** Why the script must not run now, or null: it signs from the treasury key, as a withdrawal and a pool top-up do. */
+export function refusalReason(o: { sendingWithdrawals: number; busyPoolRows: number }): string | null {
+    const reasons = [
+        o.sendingWithdrawals > 0 &&
+            `${o.sendingWithdrawals} withdrawal(s) are being paid from the treasury key; wait until they are paid`,
+        o.busyPoolRows > 0 &&
+            `${o.busyPoolRows} pool move(s) are queued, sending or submitting; with POOL_REBALANCE=on, stop the server or restart it with POOL_REBALANCE=off, then run this again`,
+    ].filter(Boolean);
+    return reasons.length > 0 ? `Not running: ${reasons.join("; ")}.` : null;
+}
+
+/** The withdrawals sending and the pool rows queued, sending or submitting, the work that signs from the treasury key. */
+export async function countBusy(collections: Pick<Collections, "withdrawals" | "poolRebalances">) {
+    const [sendingWithdrawals, busyPoolRows] = await Promise.all([
+        collections.withdrawals.countDocuments({ state: "sending" }),
+        collections.poolRebalances.countDocuments({ state: { $in: ["queued", "sending", "submitting"] } }),
+    ]);
+    return { sendingWithdrawals, busyPoolRows };
+}
+
+/** Wei the treasury still owes out: the withdrawals sending plus the pool top-ups sending (E6 turned into wei). */
+export function owedOf(o: { withdrawals: { amount: Decimal128 }[]; poolRows: { amountE6: Decimal128 }[] }): bigint {
+    const withdrawing = o.withdrawals.reduce((sum, doc) => sum + fromDecimal(doc.amount), 0n);
+    return o.poolRows.reduce((sum, doc) => sum + e6ToWei(fromDecimal(doc.amountE6)), withdrawing);
+}
+
 const dollars = (e6: bigint) => `$${formatUnits(e6, 6)}`;
 
 async function main() {
@@ -131,18 +160,25 @@ async function main() {
     const config = loadConfig();
     const database = await connectDatabase(config.MONGODB_URI, config.MONGODB_DB);
     try {
+        const refusal = refusalReason(await countBusy(database.collections));
+        if (refusal) {
+            console.error(refusal);
+            process.exitCode = 1;
+            return;
+        }
         const keyring = createKeyring(config.DEPOSIT_MNEMONIC);
         const arc = createArcClient(config.ARC_RPC_URLS);
         const hl = createNktkasClient({ url: config.HYPERLIQUID_API_URL });
         const operator = keyring.operator();
         const master = keyring.perpAddressAt(0);
 
-        const [balance, sending, masterState] = await Promise.all([
+        const [balance, sending, toPool, masterState] = await Promise.all([
             arc.getBalance({ address: operator.address }),
             database.collections.withdrawals.find({ state: "sending" }).toArray(),
+            database.collections.poolRebalances.find({ direction: "arc_to_polygon", state: "sending" }).toArray(),
             hl.state(master),
         ]);
-        const owed = sending.reduce((sum, doc) => sum + fromDecimal(doc.amount), 0n);
+        const owed = owedOf({ withdrawals: sending, poolRows: toPool });
         const treasuryE6 = weiToE6(balance);
         const needE6 = weiToE6(owed + TREASURY_GAS_RESERVE) + reserveE6;
         console.log(`Arc treasury ${operator.address}: ${dollars(treasuryE6)}, withdrawals need ${dollars(needE6)}`);
