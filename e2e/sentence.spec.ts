@@ -1,7 +1,11 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { toPredictionMarket } from "@/lib/trade/markets";
-import { installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
+import { seedDeposits } from "./backend";
+import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 import { sampleView, samples, trendingView } from "./polymarket";
+
+// Trades and the sign-in take a few seconds each, and the first run of a test waits on the server.
+test.describe.configure({ timeout: 90_000 });
 
 const trade = (page: Page) => page.getByRole("region", { name: "Trade" });
 const pill = (page: Page, name: string | RegExp) =>
@@ -14,6 +18,7 @@ const amountField = (page: Page) => picker(page).getByRole("textbox");
 const slider = (page: Page) => picker(page).getByRole("slider");
 const review = (page: Page) => page.getByRole("button", { name: "Review", exact: true });
 const sidebar = (page: Page) => page.locator("#wallet-sidebar");
+const reviewPanel = (page: Page) => page.getByRole("complementary", { name: "Review" });
 
 /** The sentence as a reader sees it: pill values, the typed amount, no hidden hints. */
 async function text(page: Page) {
@@ -48,8 +53,6 @@ async function pick(page: Page, from: string | RegExp, option: string | RegExp) 
     await pill(page, from).click();
     await expect(picker(page)).toBeVisible();
     await picker(page).getByRole("option", { name: option }).click();
-    // A coin on several networks moves on to its network step; closing it keeps the default.
-    if (await picker(page).getByRole("button", { name: "Back" }).isVisible()) await page.keyboard.press("Escape");
     await expect(picker(page)).toBeHidden();
 }
 
@@ -79,6 +82,33 @@ async function connect(page: Page) {
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
 }
 
+/** Puts $500 in the account, so there is a balance to buy with; call before connecting. */
+const fund = (page: Page) => seedDeposits(addressOf(page), [{ amount: "500", daysAgo: 0 }]);
+
+/** Picks a coin in the picker of one side of the swap sentence. */
+async function pickSide(page: Page, part: "swap:fromToken" | "term:token", coin: string) {
+    await trade(page).locator(`[data-part="${part}"]`).getByRole("button").click();
+    await picker(page).getByRole("option", { name: coin, exact: true }).click();
+    await expect(picker(page)).toBeHidden();
+}
+
+/** Buys $100 of ETH from the balance, then sets "Swap my ETH to SOL for 10 USD" with it. */
+async function holdEth(page: Page) {
+    await pick(page, "Swap", /^Buy/);
+    await pick(page, "SOL", /^ETH/);
+    await setAmount(page, "100");
+    await review(page).click();
+    await reviewPanel(page).getByRole("button", { name: "Confirm purchase" }).click();
+    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+    // Back on Swap the bought coin and the amount carry over to the receiving side.
+    await pick(page, "Buy", /^Swap/);
+    await pickSide(page, "term:token", "SOL");
+    await pickSide(page, "swap:fromToken", "ETH");
+    await setAmount(page, "10");
+    expect(await text(page)).toBe("I want to Swap my ETH to SOL for 10 USD.");
+}
+
 test.beforeEach(async ({ page }) => {
     await mockPrivy(page);
     await mockArcRpc(page);
@@ -102,6 +132,7 @@ const strayText = (page: Page) =>
     });
 
 test("starts as a swap sentence, with only the sentence on the page", async ({ page }) => {
+    await fund(page);
     expect(await text(page)).toBe("I want to Swap my ETH to SOL for 10 USD.");
     expect(await strayText(page)).toEqual([]);
     await expect(pill(page, "Swap")).toHaveAttribute("aria-haspopup", "dialog");
@@ -112,6 +143,10 @@ test("starts as a swap sentence, with only the sentence on the page", async ({ p
     await expect(review(page)).toBeHidden();
 
     await connect(page);
+    // The account holds no ETH to swap yet; buying some from the balance gives it one.
+    await expect(review(page)).toHaveAttribute("aria-disabled", "true");
+    await expect(review(page)).toHaveAccessibleDescription("Pick a coin to swap from.");
+    await holdEth(page);
     await expect(review(page)).not.toHaveAttribute("aria-disabled");
     await expect(review(page)).toHaveCSS("background-color", "rgb(104, 214, 112)");
     // The wallet button sits above the sentence; Review is in the dock below it.
@@ -196,7 +231,10 @@ test("persisting pills glide to their new places", async ({ page, isMobile }) =>
 });
 
 test("Review stays disabled until the sentence is complete and valid", async ({ page }) => {
+    await fund(page);
     await connect(page);
+    // A buy is paid from the $500 balance; a swap would first need a coin held.
+    await pick(page, "Swap", /^Buy/);
     await setAmount(page, "");
     await expect(review(page)).toHaveAttribute("aria-disabled", "true");
     await expect(review(page)).toHaveAccessibleDescription("Enter an amount.");
@@ -219,12 +257,70 @@ test("Review stays disabled until the sentence is complete and valid", async ({ 
     await expect(amountField(page)).toHaveValue("1250.00");
     // Closing and reopening the dropdown never rewrites what was typed.
     await amountField(page).press("Enter");
+    await expect(review(page)).toHaveAttribute("aria-disabled", "true");
+    await expect(review(page)).toHaveAccessibleDescription("You have $500.00 USDC to spend.");
     await amountPill(page).click();
     await expect(amountField(page)).toHaveValue("1250.00");
     await amountField(page).fill("25");
     await expect(amountField(page)).toHaveValue("25");
     await amountField(page).press("Enter");
     await expect(review(page)).not.toHaveAttribute("aria-disabled");
+});
+
+test("a swap's review shows what you pay and get, folds the rest away until pointed at, and confirms from the balance", async ({
+    page,
+    isMobile,
+}) => {
+    await fund(page);
+    await connect(page);
+    await holdEth(page);
+    await review(page).click();
+    const panel = reviewPanel(page);
+    await expect(panel.getByText("No fees, we cover network costs.", { exact: true })).toBeVisible();
+    const details = panel.getByRole("region", { name: "Details" });
+    // The amounts are in once the pay row shows its coins.
+    await expect(details.getByText("You pay", { exact: true })).toBeVisible();
+    await expect(details.getByText("You get ≈", { exact: true })).toBeVisible();
+    await expect(details).toContainText("0.003115 ETH");
+    await expect(details.getByText("$10.00", { exact: true })).toBeVisible();
+    await expect(details).toContainText("0.06793 SOL");
+    // No network step, approval or wallet-signed route.
+    await expect(panel.getByText(/approve|sign|route|network fee/i)).toHaveCount(0);
+
+    // The arrival time is folded away until the card is pointed at, or tapped on a phone.
+    const folded = details.locator("[data-preview-details]");
+    const height = () => folded.evaluate((el) => el.getBoundingClientRect().height);
+    await expect(details).toContainText("Arrives");
+    await expect.poll(height).toBe(0);
+    const card = details.locator("[data-preview-card]");
+    if (isMobile) await card.tap();
+    else await card.hover();
+    await expect.poll(height).toBeGreaterThan(20);
+    await expect(details.getByText("Arrives", { exact: true })).toBeVisible();
+    await expect(details.getByText("Instant", { exact: true })).toBeVisible();
+    await shoot(page, "6-review");
+
+    await panel.getByRole("button", { name: "Confirm swap" }).click();
+    await expect(panel).toContainText("Swapped 0.003115 ETH for ≈ 0.06793 SOL.");
+    await shoot(page, "7-sent");
+    await panel.getByRole("button", { name: "Done" }).click();
+    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+});
+
+test("with an account balance, the slider tops out at what it can spend", async ({ page }) => {
+    await fund(page);
+    await connect(page);
+    await pick(page, "Swap", /^Buy/);
+    await amountPill(page).click();
+    await expect(slider(page)).toHaveAttribute("aria-valuemax", "500");
+    await expect(picker(page)).toContainText("500 USD");
+    await slider(page).focus();
+    await page.keyboard.press("End");
+    await expect(amountField(page)).toHaveValue("500");
+    // Typing past it turns the amount red and says why, in the dropdown only.
+    await amountField(page).fill("5000");
+    await expect(picker(page)).toContainText("You have $500.00 USDC to spend.");
+    await expect(amountField(page)).toHaveCSS("color", "rgb(255, 107, 91)");
 });
 
 test("the amount field grows with every digit and never scrolls", async ({ page }) => {
@@ -273,14 +369,19 @@ test("the same pair is never swapped into itself: picking a side's coin flips th
 test("leverage follows the market's cap, and any allowed value can be typed", async ({ page }) => {
     await pick(page, "Swap", /^Long/);
     await pick(page, "SOL", /^BTC/);
-    await pick(page, "5x", /^50x/);
+    // The server's cap (20x) is below Hyperliquid's own for BTC, so no 25x or 50x is offered.
+    await pill(page, "5x").click();
+    await expect(picker(page).getByRole("option", { name: /^20x/ })).toBeVisible();
+    await expect(picker(page).getByRole("option", { name: /^(25|50)x/ })).toHaveCount(0);
+    await picker(page).getByRole("option", { name: /^20x/ }).click();
+    await expect(picker(page)).toBeHidden();
     expect(await strayText(page)).toEqual([]);
     // High leverage isn't flagged on the page: the pill keeps its normal color.
-    await expect(pill(page, "50x")).toHaveCSS("color", "rgb(245, 245, 243)");
+    await expect(pill(page, "20x")).toHaveCSS("color", "rgb(245, 245, 243)");
 
     // A leverage that isn't listed goes in the input on top of the picker.
-    await pill(page, "50x").click();
-    const custom = picker(page).getByRole("textbox", { name: "Custom, 1 to 50" });
+    await pill(page, "20x").click();
+    const custom = picker(page).getByRole("textbox", { name: "Custom, 1 to 20" });
     // The field's text and placeholder share one size and sit centered in their row.
     const field = await custom.evaluate((input) => {
         const row = input.closest("form")!.getBoundingClientRect();
@@ -293,7 +394,7 @@ test("leverage follows the market's cap, and any allowed value can be typed", as
     });
     expect(field.offset).toBeLessThanOrEqual(1);
     expect(field.placeholder).toBe(field.text);
-    await custom.fill("70");
+    await custom.fill("30");
     await expect(custom).toHaveAttribute("aria-invalid", "true");
     await expect(picker(page).getByRole("button", { name: "Set" })).toHaveAttribute("aria-disabled", "true");
     await custom.fill("7");
@@ -313,6 +414,9 @@ test("leverage follows the market's cap, and any allowed value can be typed", as
     await pick(page, "SOL", /^BTC/);
     await pick(page, "BTC", /^SOL/);
     expect(await text(page)).toBe("I want to Long SOL at 20x leverage with 10 USD.");
+    // A market with a lower cap pulls the leverage down to it.
+    await pick(page, "SOL", /^LINK/);
+    expect(await text(page)).toBe("I want to Long LINK at 10x leverage with 10 USD.");
 });
 
 test("the outcome pill reads green for YES and red for NO", async ({ page }) => {
@@ -485,8 +589,8 @@ test("the amount drops down under its pill, and dragging rolls the sentence live
     expect(panel!.x).toBeLessThan(anchor!.x + anchor!.width);
     expect(panel!.x + panel!.width).toBeGreaterThan(anchor!.x);
     // What the amount comes to, and the slider's ends (no wallet, so no cap).
-    await expect(picker(page)).toContainText("You get ≈ 0.06773 SOL");
-    await expect(picker(page)).toContainText("1 USD");
+    await expect(picker(page)).toContainText("You get ≈ 0.06793 SOL");
+    await expect(picker(page)).toContainText("0.1 USD");
     await expect(picker(page)).toContainText("10K USD");
     await expect(slider(page)).toHaveAttribute("aria-valuenow", "10");
 

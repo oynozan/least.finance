@@ -106,7 +106,8 @@ export const swap = operation({
                 {
                     id: "pay",
                     label: "You pay",
-                    value: amount && from ? `${formatUnits(amount / from, v.fromToken)} (${formatUsd(amount)})` : dash,
+                    value: amount && from ? formatUnits(amount / from, v.fromToken) : dash,
+                    ...(amount && from ? { note: formatUsd(amount) } : {}),
                     primary: true,
                 },
                 {
