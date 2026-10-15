@@ -359,6 +359,21 @@ describe("account trading", () => {
         expect(await coinWithdrawals.countDocuments({ accountId })).toBe(0);
     });
 
+    test("a coin withdrawal worth under $1 at the server's price is refused and changes nothing", async () => {
+        const { user, socket, accountId } = await person(open);
+        ok(await trade(socket, { verb: "buy", symbol: "BNB", amountUSD: "60" }));
+        // $0.60 of BNB at $600
+        const small = await withdraw(socket, { symbol: "BNB", units: "0.001", to: user.wallet });
+        expect(small).toMatchObject({ ok: false, code: "bad_request", message: "The smallest send is $1." });
+        const { holdings, coinWithdrawals } = open.server.services.database.collections;
+        expect(fromUnitsDecimal((await holdings.findOne({ accountId, symbol: "BNB" }))!.units)).toBe(toBig("0.1"));
+        expect(await coinWithdrawals.countDocuments({ accountId })).toBe(0);
+
+        // $1.20
+        ok(await withdraw(socket, { symbol: "BNB", units: "0.002", to: user.wallet }));
+        expect(await coinWithdrawals.countDocuments({ accountId })).toBe(1);
+    });
+
     test("an unbound socket is refused", async () => {
         const user = await stack.user();
         const socket = await stack.socket(user);

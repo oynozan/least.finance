@@ -35,6 +35,8 @@ export const isTradeError = (error: unknown): error is TradeError => error insta
 const CASH = "USDC";
 /** $0.10 in the 18-decimal scale dollars and units share. */
 const MIN_TRADE = 10n ** 17n;
+/** $1, the least a coin send may be worth. */
+const MIN_SEND = 10n ** 18n;
 /** The share of the quoted price the server's own may be worse by, in basis points. */
 const PRICE_TOLERANCE_BPS = 100n;
 /** The least a fill may come to: a $0.10 trade still fills once its coin amount is rounded down and the price moves within tolerance. */
@@ -134,6 +136,9 @@ export class TradeService {
         const parsed = parseUnits18(request.units);
         const units = parsed === null ? 0n : floorToDecimals(parsed, entry.decimals);
         if (units <= 0n) throw new TradeError("bad_request", "Enter an amount to send.");
+        // Each send costs us network fees, so a dust send isn't worth making
+        if ((units * this.#priced(coin.symbol).price) / SCALE < MIN_SEND)
+            throw new TradeError("bad_request", "The smallest send is $1.");
 
         const now = new Date(this.#now());
         const doc: CoinWithdrawalDoc = {
