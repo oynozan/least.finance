@@ -23,6 +23,8 @@ const FILLS_WEIGHT = 20;
 const ORDER_WEIGHT = 2;
 /** `orderStatus` reads the order and, in the adapter, the user's fills. */
 const ORDER_LOOKUP_WEIGHT = 22;
+/** Position reads leave this much unspent, so the dearest order to follow (a posted one, 44) is always affordable. */
+const ORDER_RESERVE = 50;
 /** An open order that never posted is judged by this long after its last change. */
 const STUCK_MS = 60_000;
 /** A close still placing this long after it was made was never sent. */
@@ -199,7 +201,7 @@ export class PerpTracker {
         );
         for (const target of due) {
             if (signal?.aborted) return;
-            if (!target.viewed && this.#budget < STATE_WEIGHT) break;
+            if (!target.viewed && this.#budget - STATE_WEIGHT < ORDER_RESERVE) break;
             this.#polled.set(target.address, at);
             this.#spend(STATE_WEIGHT);
             try {

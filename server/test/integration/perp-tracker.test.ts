@@ -178,29 +178,11 @@ test("the snapshot is written and only a non-mark change pushes", async () => {
     expect(address).toBeTruthy();
 });
 
-test("a viewer's address is polled at 5 s and others stay inside the weight budget", async () => {
-    const h = await fresh();
-    const account = await h.seedAccount("1000");
-    await held(h, account);
-    const viewer = await h.addressOf(account._id);
-    let polls = 0;
-    const watching = {
-        ...h.client,
-        state: async (address: string) => {
-            if (address === viewer) polls++;
-            return h.client.state(address);
-        },
-    } as HyperliquidClient;
-    const tracker = trackerOf(h, watching);
-    tracker.viewing(account._id, true);
-    const t = Date.now();
-    for (let s = 0; s <= 60; s++) await tracker.pass(t + s * 1000);
-    expect(polls).toBeGreaterThanOrEqual(12);
-    expect(polls).toBeLessThanOrEqual(13);
-
+/** Open positions on `size` made-up addresses, and a client that answers their reads from a canned state and counts them. */
+async function crowdOf(h: PerpHarness, size: number) {
     const { perpAccounts, perpPositions } = h.database.collections;
     const at = new Date();
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0; i < size; i++) {
         const index = 10_000 + i;
         const accountId = new ObjectId();
         await perpAccounts.insertOne({
@@ -250,7 +232,7 @@ test("a viewer's address is polled at 5 s and others stay inside the weight budg
             },
         ],
     };
-    const counting = {
+    const client = {
         ...h.client,
         state: async (address: string) => {
             if (!address.startsWith("0x000000000000000000000000000000000000")) return h.client.state(address);
@@ -258,10 +240,51 @@ test("a viewer's address is polled at 5 s and others stay inside the weight budg
             return canned;
         },
     } as HyperliquidClient;
-    const rotation = trackerOf(h, counting);
+    return { client, calls: () => calls };
+}
+
+test("a viewer's address is polled at 5 s and others stay inside the weight budget", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    await held(h, account);
+    const viewer = await h.addressOf(account._id);
+    let polls = 0;
+    const watching = {
+        ...h.client,
+        state: async (address: string) => {
+            if (address === viewer) polls++;
+            return h.client.state(address);
+        },
+    } as HyperliquidClient;
+    const tracker = trackerOf(h, watching);
+    tracker.viewing(account._id, true);
+    const t = Date.now();
+    for (let s = 0; s <= 60; s++) await tracker.pass(t + s * 1000);
+    expect(polls).toBeGreaterThanOrEqual(12);
+    expect(polls).toBeLessThanOrEqual(13);
+
+    const crowd = await crowdOf(h, 400);
+    const rotation = trackerOf(h, crowd.client);
     for (let s = 0; s <= 180; s++) await rotation.pass(t + 100_000 + s * 1000);
-    expect(calls * 2).toBeLessThanOrEqual(600 * 3 + 120);
-    expect(calls * 2).toBeGreaterThan(600 * 3 * 0.8);
+    expect(crowd.calls() * 2).toBeLessThanOrEqual(600 * 3 + 120);
+    expect(crowd.calls() * 2).toBeGreaterThan(600 * 3 * 0.8);
+}, 60_000);
+
+test("a crowd of open positions leaves budget to follow a posted order", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const crowd = await crowdOf(h, 100);
+    const tracker = trackerOf(h, crowd.client);
+    const t = Date.now();
+    // Every pass has more addresses due than the refill pays for
+    for (let s = 0; s <= 40; s++) await tracker.pass(t + s * 1000);
+
+    h.fake.nextOrder("drop");
+    const { order } = await h.place(account);
+    await h.until(async () => (await h.orderOf(order._id)).state === "posted" && !h.service.submitting(order._id));
+    for (let s = 41; s <= 45; s++) await tracker.pass(t + s * 1000);
+
+    expect((await h.orderOf(order._id)).state).toBe("filled");
 }, 60_000);
 
 test("stop() finishes within one timeout when a lookup hangs", async () => {
