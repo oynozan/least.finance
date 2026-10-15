@@ -11,6 +11,8 @@ const CURSOR_ID = `deposits:${ARC_CHAIN_ID}`;
 const MAX_BACKOFF_MS = 30_000;
 /** After this many good passes on a fallback RPC, the scan tries the first one again. */
 const RETURN_TO_PRIMARY_AFTER = 300;
+// The status is public and a failed pass's message can carry the RPC's address and key, so only this goes out
+const SCAN_FAILING = "The deposit scan is failing";
 
 type Deps = {
     /**
@@ -103,7 +105,7 @@ export class DepositWatcher {
                 // While behind, keep going; once level with the head, wait for new blocks.
                 wait = caughtUp ? this.#deps.pollMs : 0;
             } catch (error) {
-                this.#lastError = error instanceof Error ? error.message : String(error);
+                this.#lastError = SCAN_FAILING;
                 backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : this.#deps.pollMs);
                 wait = backoff;
                 this.#deps.logger.warn({ err: error, retryInMs: wait, rpc: this.#provider }, "Deposit scan failed");

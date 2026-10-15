@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { pino } from "pino";
@@ -11,6 +13,8 @@ import { startServer } from "../../src/server.ts";
 import { startStack, type AppSocket, type Stack, type User } from "../support/stack.ts";
 
 // Regressions for what the review of the deposit server found.
+
+const JSON_HEADERS = { "content-type": "application/json" };
 
 /** Nothing listens here, so every request to it fails at once. */
 const DEAD_RPC = "http://127.0.0.1:9";
@@ -85,6 +89,42 @@ describe("the chain scan", () => {
 
         await lagging.chain.client.mine({ blocks: 50 });
         expect((await credited).deposit.amount).toBe("4");
+    }, 30_000);
+
+    test("ready never shows the RPC's address or key when a scan fails", async () => {
+        // A keyed endpoint in front of the emulator that can be made to fail on demand
+        let down = false;
+        const keyed = createServer(async (req, res) => {
+            if (down) return res.writeHead(503).end();
+            const chunks: Buffer[] = [];
+            for await (const chunk of req) chunks.push(chunk as Buffer);
+            const answer = await fetch(s.emulator.url, {
+                method: "POST",
+                body: Buffer.concat(chunks),
+                headers: JSON_HEADERS,
+            });
+            res.writeHead(200, JSON_HEADERS).end(await answer.text());
+        });
+        await new Promise<void>((resolve) => keyed.listen(0, "127.0.0.1", resolve));
+        const url = `http://127.0.0.1:${(keyed.address() as AddressInfo).port}/v2/SECRETKEY123?dkey=QUERYSECRET`;
+        const config = { ...s.server.services.config, PORT: 0, ARC_RPC_URLS: [url] };
+        const scanning = await startServer(config, pino({ level: "silent" }));
+        try {
+            await vi.waitFor(() => expect(scanning.services.watcher.status().lastSuccessAt).not.toBeNull());
+            down = true;
+            await vi.waitFor(() => expect(scanning.services.watcher.status().lastError).not.toBeNull(), {
+                timeout: 15_000,
+                interval: 50,
+            });
+            const response = await fetch(`${scanning.url}/ready`);
+            const text = await response.text();
+            expect(text).not.toMatch(/SECRETKEY123|QUERYSECRET|127\.0\.0\.1/);
+            expect(JSON.parse(text).depositScan.lastError).toEqual(expect.any(String));
+        } finally {
+            await scanning.close();
+            keyed.closeAllConnections();
+            keyed.close();
+        }
     }, 30_000);
 });
 
