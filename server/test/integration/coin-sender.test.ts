@@ -1,4 +1,4 @@
-import { Decimal128, MongoClient, ObjectId, type Collection } from "mongodb";
+import { MongoClient, ObjectId, type Collection } from "mongodb";
 import { pino } from "pino";
 import { createPublicClient, decodeFunctionData, erc20Abi, http, parseEther, type Address } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
