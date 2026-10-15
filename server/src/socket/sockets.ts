@@ -13,10 +13,13 @@ import { formatUsdc } from "../db/money.ts";
 import { withdrawalView } from "../withdrawals/views.ts";
 import { AppError, isAppError, toApiError } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
+import { isTradeError } from "../trading/trades.ts";
+import type { HoldingView, TradeView, TradingAck, TradingErrorCode } from "../trading/types.ts";
 import type { Services } from "../services.ts";
 import {
     activityPage,
     coinWalletAmount,
+    coinWithdraw,
     depositPage,
     depositReport,
     parse,
@@ -32,6 +35,7 @@ import {
     swapOrder,
     swapRequest,
     swapSent,
+    tradeOrder,
     withdrawQuoteRequest,
     withdrawRequest,
 } from "../validation.ts";
@@ -86,6 +90,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     const withdrawLimits = new RateLimiterMemory({ keyPrefix: "withdraw-limits", points: 30, duration: 60 });
     const withdrawQuotes = new RateLimiterMemory({ keyPrefix: "withdraw-quote", points: 30, duration: 60 });
     const predictionOrders = new RateLimiterMemory({ keyPrefix: "prediction", points: 10, duration: 60 });
+    const tradeOrders = new RateLimiterMemory({ keyPrefix: "trade", points: 10, duration: 60 });
+    const coinWithdrawals = new RateLimiterMemory({ keyPrefix: "coin-withdraw", points: 10, duration: 60 });
     const perpQuotes = new RateLimiterMemory({ keyPrefix: "perp-quote", points: 60, duration: 60 });
     const perpOrders = new RateLimiterMemory({ keyPrefix: "perp", points: 10, duration: 60 });
     const pnlSeriesLimit = new RateLimiterMemory({ keyPrefix: "pnl-series", points: 30, duration: 60 });
@@ -428,6 +434,38 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             }),
         );
 
+        socket.on("trade:order", (payload, ack) =>
+            tradingReply(ack, async () => {
+                const input = parse(tradeOrder, payload);
+                await tradeOrders.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many trades. Try again shortly.");
+                });
+                const account = await boundAccount(socket);
+                const result = await services.trades.order(account, input);
+                pushTrading(account._id, account.privyUserId, {
+                    holdings: result.holdings,
+                    trade: result.trade,
+                    moves: result.trade.verb === "sell",
+                });
+                return { ok: true as const, ...result };
+            }),
+        );
+
+        socket.on("holding:withdraw", (payload, ack) =>
+            tradingReply(ack, async () => {
+                const input = parse(coinWithdraw, payload);
+                await coinWithdrawals.consume(socket.data.identity.userId).catch(() => {
+                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                });
+                const account = await boundAccount(socket);
+                services.trades.assertWithdrawalsOpen();
+                const to = await services.identity.authorizeWallet(socket.data.identity, input.to);
+                const result = await services.trades.withdraw(account, { ...input, to });
+                pushTrading(account._id, account.privyUserId, { holdings: result.holdings });
+                return { ok: true as const, ...result };
+            }),
+        );
+
         socket.on("pnl:series", (payload, ack) =>
             reply(ack, async () => {
                 const { tz } = parse(pnlSeries, payload);
@@ -601,6 +639,30 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         });
     });
 
+    // Holdings and fills go to every socket of the account's owner, one at a time per account
+    function pushTrading(
+        accountId: ObjectId,
+        privyUserId: string,
+        push: { holdings: HoldingView[]; trade?: TradeView; moves?: boolean },
+    ) {
+        enqueue(accountId.toHexString(), async () => {
+            try {
+                const room = roomOf(accountId);
+                for (const socket of await io.in(room).fetchSockets()) {
+                    if (socket.data.identity.userId !== privyUserId) {
+                        socket.leave(room);
+                        continue;
+                    }
+                    if (push.trade) socket.emit("trade:filled", push.trade);
+                    socket.emit("holdings:update", { holdings: push.holdings });
+                    if (push.moves) socket.emit("pnl:changed");
+                }
+            } catch (error) {
+                logger.warn({ err: error }, "Couldn't push a trade");
+            }
+        });
+    }
+
     /** The wallet as the account knows it: a linked EVM address checksummed, a linked Solana one as given. */
     async function authorizedWallet(socket: IoSocket, wallet: string) {
         if (BASE58_ADDRESS.test(wallet)) solanaOpen(config, "deposits");
@@ -632,8 +694,32 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         }
     }
 
+    /** Answers a trading event with the trading ack shape: the result's fields beside `ok`, or `ok: false` with a code. */
+    async function tradingReply<T extends { ok: true }>(ack: unknown, work: () => Promise<T>) {
+        if (typeof ack !== "function") return;
+        try {
+            ack(await work());
+        } catch (error) {
+            let code: TradingErrorCode = "unavailable";
+            let message = "Something went wrong on our side. Try again shortly.";
+            if (isTradeError(error)) ({ code, message } = error);
+            else if (isAppError(error)) {
+                code = TRADING_CODES[error.code] ?? "unavailable";
+                message = error.message;
+            } else logger.error({ err: error }, "Trading request failed");
+            ack({ ok: false, code, message } satisfies TradingAck<never>);
+        }
+    }
+
     return io;
 }
+
+const TRADING_CODES: Partial<Record<ApiError["code"], TradingErrorCode>> = {
+    bad_request: "bad_request",
+    forbidden: "bad_request",
+    wallet_not_connected: "unauthenticated",
+    unauthorized: "unauthenticated",
+};
 
 const failure = (error: ApiError): Ack<never> => ({ ok: false, error });
 

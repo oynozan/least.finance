@@ -53,6 +53,7 @@ import { createApp } from "./http/app.ts";
 import type { Services } from "./services.ts";
 import { Sessions } from "./sessions.ts";
 import { SwapCatalog } from "./swaps/catalog.ts";
+import { TradeService } from "./trading/trades.ts";
 import { createSwapClients } from "./swaps/clients.ts";
 import { SwapHoldings, multicallReader, solanaReader } from "./swaps/holdings.ts";
 import { createLifi } from "./swaps/lifi.ts";
@@ -438,6 +439,12 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 predictionLogger.warn({ err: error }, "Couldn't read the pool's float");
             });
         });
+        const trades = new TradeService({
+            collections,
+            ledger,
+            catalog: swapCatalog,
+            coinWithdrawals: config.COIN_WITHDRAWALS === "on",
+        });
         // Connects the trader when a redemption or position needs it, once, and not while a retry is waiting
         const ensureTrader = () => {
             if (!trader && !connecting && !closed) connectTrader();
@@ -467,6 +474,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             swapHoldings,
             swapOrders,
             sweeper,
+            trades,
             withdrawals,
         };
 

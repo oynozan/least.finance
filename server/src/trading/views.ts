@@ -1,5 +1,5 @@
-import type { HoldingDoc, TradeDoc } from "./docs.ts";
-import type { HoldingView, TradeView } from "./types.ts";
+import type { CoinWithdrawalDoc, HoldingDoc, TradeDoc } from "./docs.ts";
+import type { CoinWithdrawalView, HoldingView, TradeView } from "./types.ts";
 import { formatUnits18, fromUnitsDecimal } from "./units.ts";
 
 export const holdingView = (holding: HoldingDoc): HoldingView => ({
@@ -18,4 +18,17 @@ export const tradeView = (trade: TradeDoc): TradeView => ({
     gotUnits: formatUnits18(fromUnitsDecimal(trade.gotUnits)),
     usd: formatUnits18(fromUnitsDecimal(trade.usd)),
     at: trade.createdAt.toISOString(),
+});
+
+export const coinWithdrawalView = (doc: CoinWithdrawalDoc): CoinWithdrawalView => ({
+    id: doc._id.toHexString(),
+    requestId: doc.requestId,
+    symbol: doc.symbol,
+    units: formatUnits18(fromUnitsDecimal(doc.units)),
+    network: doc.network,
+    to: doc.to,
+    state: doc.state,
+    txHash: doc.txHash,
+    reason: doc.reason,
+    at: doc.createdAt.toISOString(),
 });

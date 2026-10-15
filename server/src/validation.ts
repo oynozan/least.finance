@@ -123,6 +123,27 @@ export const perpClose = z.object({
     positionId: z.string().regex(/^[0-9a-f]{24}$/i, "a position id"),
 });
 
+const coinSymbol = z.string().regex(/^[A-Z0-9]{2,12}$/, "a coin symbol such as ETH");
+const coinDecimal = z.string().regex(/^\d{1,15}(\.\d{1,18})?$/, "an amount such as 0.5");
+
+export const tradeOrder = z.object({
+    requestId: z.string().regex(UUID, "a UUID"),
+    verb: z.enum(["buy", "sell", "swap"]),
+    symbol: coinSymbol,
+    toSymbol: coinSymbol.optional(),
+    amountUSD: coinDecimal.optional(),
+    units: coinDecimal.optional(),
+    quotedPriceUSD: coinDecimal,
+    quotedToPriceUSD: coinDecimal.optional(),
+});
+
+export const coinWithdraw = z.object({
+    requestId: z.string().regex(UUID, "a UUID"),
+    symbol: coinSymbol,
+    units: coinDecimal,
+    to: z.string().trim().min(32).max(64),
+});
+
 const swapSide = z.object({
     token: z.string().trim().min(1).max(16),
     network: z.enum(NETWORKS.map((network) => network.id) as [NetworkId, ...NetworkId[]]),
