@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MotionConfig, motion, type Variants } from "motion/react";
+import { MotionConfig, motion, type Transition, type Variants } from "motion/react";
 import { submitIntent } from "@/lib/trade/execute";
 import { formatUnits, formatUsd } from "@/lib/trade/format";
 import type { TransactionIntent } from "@/lib/trade/intent";
@@ -13,6 +13,7 @@ import type { ApiError, PerpQuoteRequest, PerpQuoteView, QuoteView } from "@/ser
 import { OFFLINE_COPY, type Placed } from "@/components/account-client";
 import { useAccount } from "@/components/account-provider";
 import { CloseIcon } from "@/components/icons";
+import { ProgressGlyph, useProgressFill, type ProgressPhase } from "@/components/progress-fill";
 import { spring } from "@/components/sentence/motion";
 import { useSidebar } from "@/components/sidebar";
 import { useTrade } from "./trade-provider";
@@ -30,6 +31,22 @@ const CONNECT: Record<string, string> = {
 
 const QUOTE_DEBOUNCE_MS = 300;
 const QUOTE_REFRESH_MS = 10_000;
+
+/** About how long the server takes to answer an order; the button's fill eases toward 90% over it. */
+const ORDER_EXPECTED_MS = 1_200;
+/** How long the answer stays on the button before it settles back. */
+const DONE_FLASH_MS = 900;
+const ERROR_FLASH_MS = 1_200;
+
+// The palette's gain, pill, pill-hover, background, foreground and muted, as literals Motion can tween between.
+const READY = "rgb(104 214 112)";
+const BLOCKED = "rgb(43 43 41)";
+const BUSY = "rgb(53 53 50)";
+const DARK = "rgb(23 23 23)";
+const LIGHT = "rgb(245 245 243)";
+const MUTED = "rgb(143 143 138)";
+
+const glyphSlot: Transition = { type: "spring", visualDuration: 0.3, bounce: 0.2 };
 
 const sections: Variants = {
     hidden: {},
@@ -98,32 +115,63 @@ function tradeOutcome(req: TradeOrderRequest): string {
     return `Swapped ${formatUnits(units, req.symbol)} for ≈ ${formatUnits(got, req.toSymbol ?? "")}.`;
 }
 
-/** The confirm button's class, shared by every action the panel ends with. */
+/**
+ * The confirm button, shared by every action the panel ends with. While an order waits on the server it doubles
+ * as a progress bar, like the deposit button: a fill sweeps across, then a check or a red shake gives the answer.
+ */
 function ActionButton({
     label,
     blocked = false,
     disabled = false,
+    phase = "idle",
     onClick,
 }: {
     label: string;
     blocked?: boolean;
     disabled?: boolean;
+    phase?: ProgressPhase;
     onClick: () => void;
 }) {
+    const { fill, button } = useProgressFill(phase, ORDER_EXPECTED_MS);
+    const busy = phase === "running";
+    const still = blocked || busy;
     return (
         <motion.button
+            ref={button}
             type="button"
             aria-disabled={blocked || undefined}
+            aria-busy={busy || undefined}
             disabled={disabled}
-            className={`h-14 w-full rounded-full text-[17px] font-semibold tracking-[-0.01em] outline-2 outline-offset-2 outline-transparent transition-colors focus-visible:outline-solid ${
-                blocked ? "cursor-default bg-pill text-muted" : "cursor-pointer bg-gain text-background"
+            className={`relative flex h-14 w-full items-center justify-center overflow-hidden rounded-full text-[17px] font-semibold tracking-[-0.01em] outline-2 outline-offset-2 outline-transparent focus-visible:outline-solid ${
+                still ? "cursor-default" : "cursor-pointer"
             }`}
-            whileHover={blocked ? undefined : { scale: 1.02 }}
-            whileTap={blocked ? undefined : { scale: 0.97 }}
-            transition={spring}
+            initial={false}
+            // Gray while it waits, so the fill reads against it; green again once it settles.
+            animate={{
+                backgroundColor: blocked ? BLOCKED : phase === "idle" ? READY : BUSY,
+                color: blocked ? MUTED : phase === "idle" || phase === "done" ? DARK : LIGHT,
+            }}
+            whileHover={still ? undefined : { scale: 1.02 }}
+            whileTap={still ? undefined : { scale: 0.97 }}
+            transition={{ ...spring, backgroundColor: { duration: 0.25 }, color: { duration: 0.25 } }}
             onClick={onClick}
         >
-            {label}
+            <span
+                ref={fill}
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 origin-left rounded-[inherit] opacity-0"
+            />
+            {/* The glyph's room opens beside the label only while there is a glyph to show. */}
+            <motion.span
+                aria-hidden="true"
+                className="relative h-3.5 shrink-0"
+                initial={false}
+                animate={phase === "idle" ? { width: 0, marginRight: 0 } : { width: 14, marginRight: 10 }}
+                transition={glyphSlot}
+            >
+                <ProgressGlyph phase={phase} />
+            </motion.span>
+            <span className="relative">{label}</span>
         </motion.button>
     );
 }
@@ -149,6 +197,13 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const [accepted, setAccepted] = useState(false);
     // Waiting on the server's answer to the order just confirmed.
     const [placing, setPlacing] = useState(false);
+    // The answer, shown on the button for a moment.
+    const [flash, setFlash] = useState<"done" | "error" | null>(null);
+    useEffect(() => {
+        if (!flash) return;
+        const timer = setTimeout(() => setFlash(null), flash === "done" ? DONE_FLASH_MS : ERROR_FLASH_MS);
+        return () => clearTimeout(timer);
+    }, [flash]);
     // The server's refusal of the order just confirmed; the notice itself clears after a few seconds.
     const [refusal, setRefusal] = useState<string | null>(null);
     // An accepted order that fails later (a prediction that doesn't fill, a rejected perp) is told as the notice.
@@ -161,21 +216,27 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
         setRefusal(placed.sent ? null : OFFLINE_COPY);
         setAccepted(false);
         setPlacing(placed.sent);
+        setFlash(placed.sent ? null : "error");
         if (!placed.sent) return;
         void placed.answer.then((message) => {
             if (attempt.current !== mine) return;
             setPlacing(false);
+            setFlash(message ? "error" : "done");
             if (message) setRefusal(message);
             else setAccepted(true);
         });
     };
     const [quoteAnswer, setQuoteAnswer] = useState<QuoteAnswer | null>(null);
-    // A confirmed perp's own pending position blocks its sentence, so the review keeps the intent while the sentence is unchanged.
+    // A confirmed order can block its own sentence (a perp's pending position, a coin sold whole), so the review
+    // keeps the intent while the sentence is unchanged.
     const [kept, setKept] = useState<{ text: string; intent: TransactionIntent } | null>(null);
     const intent = view.intent ?? (kept && kept.text === view.text ? kept.intent : null);
     const intentKey = JSON.stringify(intent);
     // A change to the sentence after confirming starts the review over.
-    const done = sent !== null && sent === intentKey;
+    const confirmed = sent !== null && sent === intentKey;
+    // The details stay on screen while the server answers; the outcome replaces them.
+    const running = confirmed && placing;
+    const done = confirmed && !placing;
     const notice = view.blocking ?? view.issues.find((issue) => issue.severity === "warning");
 
     // Buy, Sell and Swap run from the account balance once signed in: no wallet signs, and the fill is instant.
@@ -293,9 +354,11 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
               : view.preview;
 
     const confirm = async () => {
+        if (running) return;
         if (done) return onDone();
         if (wallet.status === "disconnected") return wallet.connect();
         if (!view.intent || view.blocking) return;
+        setKept({ text: view.text, intent: view.intent });
         if (spotIntent) {
             if (!tradeRequest) return;
             follow(account.placeTrade({ ...tradeRequest, requestId: crypto.randomUUID() }));
@@ -323,7 +386,6 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
         }
         if (perpLive && perp && perpQuote) {
             follow(account.placePerp({ ...perp, requestId: crypto.randomUUID() }, perpQuote));
-            setKept({ text: view.text, intent: perp });
             setSent(intentKey);
             return;
         }
@@ -333,17 +395,20 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
         setSent(intentKey);
     };
 
+    const confirmLabel = view.cta.replace(/^Review/, "Confirm");
     const label = done
         ? "Done"
-        : wallet.status === "disconnected"
-          ? (CONNECT[view.verb.id] ?? "Connect")
-          : view.blocking
-            ? (view.blocking.cta ?? view.cta)
-            : view.cta.replace(/^Review/, "Confirm");
+        : running
+          ? confirmLabel
+          : wallet.status === "disconnected"
+            ? (CONNECT[view.verb.id] ?? "Connect")
+            : view.blocking
+              ? (view.blocking.cta ?? view.cta)
+              : confirmLabel;
     // A trade waits for the prices it is made at; a perp for its quote.
     const awaitingQuote = (!!spotIntent && !tradeRequest) || (perpLive && !perpQuote);
     const blocked =
-        !done &&
+        !confirmed &&
         wallet.status !== "disconnected" &&
         (!!view.blocking || wallet.status === "loading" || awaitingQuote || !!quoteRefused);
     const swapNotice = perpError ?? quoteRefused;
@@ -372,14 +437,6 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                 >
                     {refusal ? (
                         <p className="text-[17px] leading-snug text-loss">{refusal}</p>
-                    ) : placing ? (
-                        <p className="text-[17px] leading-snug text-muted">
-                            {spotIntent
-                                ? "Filling your trade…"
-                                : perp
-                                  ? "Opening your position…"
-                                  : "Placing your prediction…"}
-                        </p>
                     ) : accepted ? (
                         <p className="text-[17px] leading-snug">
                             {spotIntent ? summary : perp ? "Position opened." : "Prediction placed."}
@@ -401,7 +458,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                 </motion.div>
             )}
 
-            {!done && notice && (
+            {!confirmed && notice && (
                 <motion.p
                     variants={rise}
                     className={`text-[15px] leading-snug ${
@@ -416,20 +473,26 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                 </motion.p>
             )}
 
-            {!done && swapNotice && (
+            {!confirmed && swapNotice && (
                 <motion.p variants={rise} role="alert" className="text-[15px] leading-snug text-loss">
                     {swapNotice}
                 </motion.p>
             )}
 
-            {!done && wallet.status === "disconnected" && (
+            {!confirmed && wallet.status === "disconnected" && (
                 <motion.p variants={rise} className="text-[15px] text-muted">
                     Connect a wallet to check your balance.
                 </motion.p>
             )}
 
             <motion.div variants={rise} className="mt-auto pt-2">
-                <ActionButton label={label} blocked={blocked} disabled={sending} onClick={confirm} />
+                <ActionButton
+                    label={label}
+                    blocked={blocked}
+                    disabled={sending}
+                    phase={running ? "running" : (flash ?? "idle")}
+                    onClick={confirm}
+                />
             </motion.div>
         </motion.div>
     );
