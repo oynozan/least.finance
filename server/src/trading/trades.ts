@@ -31,6 +31,8 @@ export class TradeError extends Error {
 
 export const isTradeError = (error: unknown): error is TradeError => error instanceof TradeError;
 
+/** The cash every trade is paid in and credited in; it is the balance, not a coin to hold. */
+const CASH = "USDC";
 /** $0.10 in the 18-decimal scale dollars and units share. */
 const MIN_TRADE = 10n ** 17n;
 /** The share of the quoted price the server's own may be worse by, in basis points. */
@@ -123,7 +125,7 @@ export class TradeService {
         this.assertWithdrawalsOpen();
 
         const coin = COINS.find((candidate) => candidate.symbol === request.symbol);
-        if (!coin) throw new TradeError("unknown_coin", "That coin can't be sent.");
+        if (!coin || coin.symbol === CASH) throw new TradeError("unknown_coin", "That coin can't be sent.");
         const network = NETWORKS.find((candidate) => candidate.id === coin.home);
         const entry = coin.entries.find((candidate) => candidate.network === coin.home);
         if (!network || !entry) throw new TradeError("unknown_coin", "That coin can't be sent.");
@@ -186,7 +188,7 @@ export class TradeService {
     /** The coin as traded now, or the refusal; `quoted` is the price the app showed. */
     #priced(symbol: string): Priced {
         const coin = COINS.find((candidate) => candidate.symbol === symbol);
-        if (!coin) throw new TradeError("unknown_coin", "That coin isn't available to trade.");
+        if (!coin || coin.symbol === CASH) throw new TradeError("unknown_coin", "That coin isn't available to trade.");
         const entry = coin.entries.find((candidate) => candidate.network === coin.home);
         const price = this.#deps.catalog.priceOf(symbol);
         if (!entry || price === null || !(price > 0) || !Number.isFinite(price))
@@ -214,7 +216,7 @@ export class TradeService {
                 verb: "buy",
                 from,
                 to: null,
-                paidSymbol: "USDC",
+                paidSymbol: CASH,
                 paid: cost,
                 gotSymbol: from.coin.symbol,
                 got: units,
@@ -239,7 +241,7 @@ export class TradeService {
                 to: null,
                 paidSymbol: from.coin.symbol,
                 paid: units,
-                gotSymbol: "USDC",
+                gotSymbol: CASH,
                 got: usd,
                 usd,
                 price: from.price,

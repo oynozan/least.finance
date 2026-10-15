@@ -254,6 +254,27 @@ describe("account trading", () => {
         });
     });
 
+    test("USDC, the cash itself, is refused as a coin to buy, sell or swap into", async () => {
+        const { socket, accountId } = await person(stack);
+        ok(await trade(socket, { verb: "buy", symbol: "BNB", amountUSD: "60", quotedPriceUSD: "600" }));
+        const refusals = [
+            await trade(socket, { verb: "buy", symbol: "USDC", amountUSD: "10", quotedPriceUSD: "1" }),
+            await trade(socket, { verb: "sell", symbol: "USDC", units: "10", quotedPriceUSD: "1" }),
+            await trade(socket, {
+                verb: "swap",
+                symbol: "BNB",
+                toSymbol: "USDC",
+                units: "0.05",
+                quotedPriceUSD: "600",
+                quotedToPriceUSD: "1",
+            }),
+        ];
+        for (const refused of refusals) expect(refused).toMatchObject({ ok: false, code: "unknown_coin" });
+        const { holdings } = stack.server.services.database.collections;
+        expect(await holdings.countDocuments({ accountId, symbol: "USDC" })).toBe(0);
+        expect(await balanceOf(stack, accountId)).toBe(wei("40"));
+    });
+
     test("two concurrent buys that together exceed the balance fill exactly one", async () => {
         const { socket, accountId } = await person(stack, "100");
         const answers = await Promise.all([
@@ -328,6 +349,14 @@ describe("account trading", () => {
         });
         expect(stranger).toMatchObject({ ok: false, code: "bad_request" });
         expect(await coinWithdrawals.countDocuments({ accountId })).toBe(1);
+    });
+
+    test("a coin withdrawal of USDC is refused", async () => {
+        const { user, socket, accountId } = await person(open);
+        const refused = await withdraw(socket, { symbol: "USDC", units: "10", to: user.wallet });
+        expect(refused).toMatchObject({ ok: false, code: "unknown_coin" });
+        const { coinWithdrawals } = open.server.services.database.collections;
+        expect(await coinWithdrawals.countDocuments({ accountId })).toBe(0);
     });
 
     test("an unbound socket is refused", async () => {
