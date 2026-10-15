@@ -275,6 +275,57 @@ describe("account trading", () => {
         expect(await balanceOf(stack, accountId)).toBe(wei("40"));
     });
 
+    test("a holding worth under $0.10 sells or swaps only whole, and a partial sale of it is refused", async () => {
+        const { socket, accountId } = await person(stack);
+        ok(await trade(socket, { verb: "buy", symbol: "BNB", amountUSD: "6" }));
+        // 0.01 BNB bought, 0.0001 ($0.06) left
+        ok(await trade(socket, { verb: "sell", symbol: "BNB", units: "0.0099" }));
+        const before = await balanceOf(stack, accountId);
+
+        const partial = await trade(socket, { verb: "sell", symbol: "BNB", units: "0.00005" });
+        expect(partial).toMatchObject({ ok: false, code: "below_minimum" });
+        const partialSwap = await trade(socket, {
+            verb: "swap",
+            symbol: "BNB",
+            toSymbol: "USDT",
+            units: "0.00005",
+            quotedToPriceUSD: "1",
+        });
+        expect(partialSwap).toMatchObject({ ok: false, code: "below_minimum" });
+        expect(await balanceOf(stack, accountId)).toBe(before);
+
+        const sold = ok(await trade(socket, { verb: "sell", symbol: "BNB", units: "0.0001" }));
+        expect(sold.trade).toMatchObject({ paidUnits: "0.0001", gotUnits: "0.06" });
+        expect(sold.holdings).toEqual([]);
+        expect(await balanceOf(stack, accountId)).toBe(before + wei("0.06"));
+    });
+
+    test("a whole holding worth under $0.10 swaps into another coin", async () => {
+        const { socket } = await person(stack);
+        ok(await trade(socket, { verb: "buy", symbol: "BNB", amountUSD: "6" }));
+        ok(await trade(socket, { verb: "sell", symbol: "BNB", units: "0.0099" }));
+
+        const swapped = ok(
+            await trade(socket, {
+                verb: "swap",
+                symbol: "BNB",
+                toSymbol: "USDT",
+                units: "0.0001",
+                quotedToPriceUSD: "1",
+            }),
+        );
+        expect(swapped.trade).toMatchObject({ paidUnits: "0.0001", gotSymbol: "USDT", gotUnits: "0.06" });
+        expect(swapped.holdings).toEqual([{ symbol: "USDT", units: "0.06", network: expect.any(String) }]);
+    });
+
+    test("a holding with nothing in it can't be sold under $0.10", async () => {
+        const { socket } = await person(stack);
+        expect(await trade(socket, { verb: "sell", symbol: "BNB", units: "0.0001" })).toMatchObject({
+            ok: false,
+            code: "below_minimum",
+        });
+    });
+
     test("two concurrent buys that together exceed the balance fill exactly one", async () => {
         const { socket, accountId } = await person(stack, "100");
         const answers = await Promise.all([

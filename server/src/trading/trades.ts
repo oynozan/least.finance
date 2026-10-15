@@ -228,6 +228,7 @@ export class TradeService {
                 usd: cost,
                 price: from.price,
                 toPrice: null,
+                wholeOnly: false,
             };
         }
 
@@ -239,7 +240,7 @@ export class TradeService {
             // Cheaper than the app showed by more than the tolerance
             if (from.price * 10_000n < quoted * (10_000n - PRICE_TOLERANCE_BPS)) throw movedError();
             const usd = (units * from.price) / SCALE;
-            if (usd < MIN_FILL) throw belowMinimum();
+            if (usd <= 0n) throw belowMinimum();
             return {
                 verb: "sell",
                 from,
@@ -251,6 +252,7 @@ export class TradeService {
                 usd,
                 price: from.price,
                 toPrice: null,
+                wholeOnly: usd < MIN_FILL,
             };
         }
 
@@ -264,7 +266,7 @@ export class TradeService {
         if (from.price * quotedTo * 10_000n < quoted * to.price * (10_000n - PRICE_TOLERANCE_BPS)) throw movedError();
         const usd = (units * from.price) / SCALE;
         const got = floorToDecimals((usd * SCALE) / to.price, to.decimals);
-        if (usd < MIN_FILL || got <= 0n) throw belowMinimum();
+        if (got <= 0n) throw belowMinimum();
         return {
             verb: "swap",
             from,
@@ -276,6 +278,7 @@ export class TradeService {
             usd,
             price: from.price,
             toPrice: to.price,
+            wholeOnly: usd < MIN_FILL,
         };
     }
 
@@ -296,10 +299,10 @@ export class TradeService {
             }
             await this.#add(session, trade.accountId, plan.from, plan.got);
         } else if (plan.verb === "sell") {
-            await this.#subtract(session, trade.accountId, plan.from.coin.symbol, plan.paid);
+            await this.#subtract(session, trade.accountId, plan.from.coin.symbol, plan.paid, plan.wholeOnly);
             await ledger.creditInSession(session, trade.accountId, plan.got, "trade_sell", trade._id);
         } else {
-            await this.#subtract(session, trade.accountId, plan.from.coin.symbol, plan.paid);
+            await this.#subtract(session, trade.accountId, plan.from.coin.symbol, plan.paid, plan.wholeOnly);
             await this.#add(session, trade.accountId, plan.to!, plan.got);
             const account = await collections.accounts.findOne({ _id: trade.accountId }, { session });
             if (!account) throw new Error("The account vanished");
@@ -330,13 +333,14 @@ export class TradeService {
         );
     }
 
-    /** Takes units off a holding if it has them. */
-    async #subtract(session: ClientSession, accountId: ObjectId, symbol: string, units: bigint) {
+    /** Takes units off a holding if it has them; with `whole`, only if they are all it has. */
+    async #subtract(session: ClientSession, accountId: ObjectId, symbol: string, units: bigint, whole = false) {
         const { matchedCount } = await this.#deps.collections.holdings.updateOne(
-            { accountId, symbol, units: { $gte: toUnitsDecimal(units) } },
+            { accountId, symbol, units: whole ? toUnitsDecimal(units) : { $gte: toUnitsDecimal(units) } },
             { $inc: { units: toUnitsDecimal(-units) }, $set: { updatedAt: new Date(this.#now()) } },
             { session },
         );
+        if (matchedCount === 0 && whole) throw belowMinimum();
         if (matchedCount === 0)
             throw new TradeError(
                 "insufficient_holdings",
@@ -356,6 +360,8 @@ type Plan = {
     usd: bigint;
     price: bigint;
     toPrice: bigint | null;
+    /** The sale is under the smallest fill, so it only goes through when it sells the account's whole holding. */
+    wholeOnly: boolean;
 };
 
 const ceilDiv = (numerator: bigint, divisor: bigint) => (numerator + divisor - 1n) / divisor;
