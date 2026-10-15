@@ -1174,10 +1174,14 @@ export class PerpService {
     }
 
     async #emitClose(order: PerpOrderDoc): Promise<void> {
-        const position = await this.#deps.collections.perpPositions.findOne({
-            _id: new ObjectId(order.steps.positionId as string),
-        });
-        await this.#emit(order, position);
+        try {
+            const position = await this.#deps.collections.perpPositions.findOne({
+                _id: new ObjectId(order.steps.positionId as string),
+            });
+            await this.#emit(order, position);
+        } catch (error) {
+            this.#deps.logger.warn({ err: error }, "Couldn't announce a perp close");
+        }
     }
 
     /** The free balance minus the fees of ours kept on the address; the rest is the person's. */

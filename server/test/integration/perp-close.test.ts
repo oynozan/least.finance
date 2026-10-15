@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ObjectId } from "mongodb";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { AccountDoc, PerpPositionDoc } from "../../src/db/mongo.ts";
 import { fromDecimal } from "../../src/db/money.ts";
 import { ourFeeOf } from "../../src/perps/math.ts";
@@ -67,6 +67,36 @@ test("a close sweeps then credits the swept amount once (perp_close), proceeds a
     expect(fromDecimal(closed.realizedPnl!)).toBe((credit - fromDecimal(position.collateral)) / 10n ** 12n);
     expect(h.fake.account(await h.addressOf(account._id))!.freeE6).toBe(0n);
     expect(h.fake.account(await h.addressOf(account._id))!.positions).toHaveLength(0);
+});
+
+test("a failing read while announcing a close is logged and does not take the process down", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const position = await held(h, account);
+    const positions = h.database.collections.perpPositions;
+    const read = positions.findOne.bind(positions) as (...args: unknown[]) => Promise<unknown>;
+    let failed = false;
+    // The announcing read is the first one without the account in its filter
+    vi.spyOn(positions, "findOne").mockImplementation(((filter: { accountId?: unknown }, ...rest: unknown[]) => {
+        if (failed || filter.accountId) return read(filter, ...rest);
+        failed = true;
+        return Promise.reject(new Error("Mongo is failing over"));
+    }) as never);
+    const unhandled: unknown[] = [];
+    const note = (reason: unknown) => void unhandled.push(reason);
+    process.on("unhandledRejection", note);
+    try {
+        const { order } = await closeOf(h, account, position);
+        expect((await finished(h, order._id)).state).toBe("done");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    } finally {
+        process.off("unhandledRejection", note);
+        vi.restoreAllMocks();
+    }
+
+    expect(failed).toBe(true);
+    expect(unhandled).toEqual([]);
+    expect(h.lines.some((line) => line.level === 40 && line.msg === "Couldn't announce a perp close")).toBe(true);
 });
 
 test("the close limit is mark x 0.97 for a long and x 1.03 for a short and reduce-only", async () => {
