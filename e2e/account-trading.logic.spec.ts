@@ -11,7 +11,8 @@ import {
     type WalletSession,
 } from "@/lib/account/state";
 import { estimateTrade } from "@/lib/account/spot";
-import { holdingRows, recentSends, sendAddress, sendIssue, validAddress } from "@/lib/account/holdings";
+import { cleanAmount, normalizeAmount } from "@/components/deposit-form";
+import { holdingRows, recentSends, sendAddress, sendDecimals, sendIssue, validAddress } from "@/lib/account/holdings";
 import { toTradeRequest, type SpotInputs, type SpotIntent } from "@/lib/trade/spot-request";
 import type { CoinWithdrawalView, HoldingView, TradeOrderRequest } from "@/server/src/trading/types";
 
@@ -203,6 +204,24 @@ test.describe("sending a held coin", () => {
         expect(sendIssue("3", "2")).toBe("That's more than you hold.");
         expect(sendIssue("2", "2")).toBeNull();
         expect(sendIssue("0.000001", "2")).toBeNull();
+    });
+
+    test("the amount is typed in the coin's own decimals, and a decimal comma is a point", () => {
+        expect(sendDecimals("SOL")).toBe(9);
+        expect(sendDecimals("BTC")).toBe(8);
+        expect(sendDecimals("ETH")).toBe(18);
+        expect(sendDecimals("NOPE")).toBe(18);
+        const half = cleanAmount("0,5", sendDecimals("SOL"));
+        expect(half).toBe("0.5");
+        expect(sendIssue(half, "5")).toBeNull();
+        expect(cleanAmount("0.1234567891", sendDecimals("SOL"))).toBe("0.123456789");
+    });
+
+    test("a trailing point or a bare fraction is a number to send", () => {
+        expect(sendIssue(normalizeAmount("5.") ?? "", "5")).toBeNull();
+        expect(sendIssue(normalizeAmount(".5") ?? "", "5")).toBeNull();
+        expect(normalizeAmount(".5")).toBe("0.5");
+        expect(sendIssue(normalizeAmount(".") ?? "", "5")).toBe("Enter an amount.");
     });
 });
 

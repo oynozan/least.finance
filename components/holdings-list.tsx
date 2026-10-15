@@ -6,6 +6,7 @@ import {
     holdingRows,
     recentSends,
     sendAddress,
+    sendDecimals,
     sendIssue,
     validAddress,
     type HoldingRow,
@@ -14,6 +15,7 @@ import { formatUnits } from "@/lib/trade/format";
 import { networkName, type NetworkId } from "@/lib/trade/networks";
 import type { CoinWithdrawRequest, CoinWithdrawalView, HoldingView } from "@/server/src/trading/types";
 import { CoinIcon } from "./coin-icons";
+import { cleanAmount, normalizeAmount } from "./deposit-form";
 import { ChevronIcon } from "./icons";
 import { canHover } from "./pointer";
 import { formatUsd, shortenAddress } from "./wallet-data";
@@ -166,10 +168,11 @@ function SendForm({
 
     const submit = (event: FormEvent) => {
         event.preventDefault();
-        const issue = sendIssue(amount, row.units) ?? (validAddress(row.network, to) ? null : "Enter a valid address.");
+        const units = normalizeAmount(amount) ?? "";
+        const issue = sendIssue(units, row.units) ?? (validAddress(row.network, to) ? null : "Enter a valid address.");
         setProblem(issue);
         if (issue) return;
-        if (!onSend({ requestId: crypto.randomUUID(), symbol: row.symbol, units: amount, to })) {
+        if (!onSend({ requestId: crypto.randomUUID(), symbol: row.symbol, units, to })) {
             setProblem("You're offline. Nothing was sent.");
         }
     };
@@ -202,7 +205,7 @@ function SendForm({
                         placeholder="0.00"
                         value={amount}
                         onChange={(event) => {
-                            setAmount(event.target.value.replace(/[^\d.]/g, ""));
+                            setAmount(cleanAmount(event.target.value, sendDecimals(row.symbol)));
                             setProblem(null);
                         }}
                     />

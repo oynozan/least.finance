@@ -1,5 +1,5 @@
 import type { CoinWithdrawalView, HoldingView } from "@/server/src/trading/types";
-import { NETWORKS } from "@/server/src/swaps/coins";
+import { COINS, NETWORKS } from "@/server/src/swaps/coins";
 
 export type HoldingRow = HoldingView & { usd: number | null };
 
@@ -23,6 +23,12 @@ export function sendAddress(network: string, wallets: { evm?: string; solana?: s
 /** Whether `to` looks like an address on `network`; the server checks it again. */
 export function validAddress(network: string, to: string): boolean {
     return isSolana(network) ? /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(to) : /^0x[0-9a-fA-F]{40}$/.test(to);
+}
+
+/** The decimals a held coin can be sent in, which its home network keeps; the server rounds down to them. */
+export function sendDecimals(symbol: string): number {
+    const coin = COINS.find((c) => c.symbol === symbol);
+    return coin?.entries.find((e) => e.network === coin.home)?.decimals ?? 18;
 }
 
 /** Why the units can't be sent from a holding, or null when they can. */
