@@ -141,13 +141,13 @@ function Result({ activity: a }: { activity: Activity }) {
     return <span className={RESULT_TONE[tone]}>{formatPnl(change)}</span>;
 }
 
-/** One coin, or a swap's two overlapping. */
+/** One coin, or a swap's two overlapping in the same square, so every row's text starts at one edge. */
 function Coins({ symbols }: { symbols: string[] }) {
     if (symbols.length < 2) return <CoinIcon symbol={symbols[0]} className="size-10 shrink-0" />;
     return (
-        <span className="relative flex h-10 w-[52px] shrink-0">
-            <CoinIcon symbol={symbols[0]} className="absolute top-0 left-0 size-8" />
-            <CoinIcon symbol={symbols[1]} className="absolute right-0 bottom-0 size-8" />
+        <span className="relative flex size-10 shrink-0">
+            <CoinIcon symbol={symbols[0]} className="absolute top-0 left-0 size-7" />
+            <CoinIcon symbol={symbols[1]} className="absolute right-0 bottom-0 size-7" />
         </span>
     );
 }
