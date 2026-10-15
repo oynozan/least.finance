@@ -612,10 +612,8 @@ test("the amount drops down under its pill, and dragging rolls the sentence live
     }
     const values = seen.map((label) => Number(label.replace(" USD", "")));
     for (let i = 1; i < values.length; i++) expect(values[i]).toBeGreaterThan(values[i - 1]);
-    for (const value of values) {
-        const step = Math.max(1, 10 ** (Math.floor(Math.log10(value)) - 1));
-        expect(value % step).toBe(0);
-    }
+    // Two significant figures at any size
+    for (const value of values) expect(Number(value.toPrecision(2))).toBe(value);
     await expect(amountField(page)).toHaveValue(String(values.at(-1)));
     // The pill's digits roll to the new amount instead of being swapped.
     await expect(amountPill(page).locator("number-flow-react")).toHaveCount(1);
@@ -628,6 +626,10 @@ test("the amount drops down under its pill, and dragging rolls the sentence live
     // Steps keep two significant figures.
     await page.keyboard.press("ArrowLeft");
     await expect(amountPill(page)).toHaveAccessibleName("9900 USD");
+    // Small amounts step by the cent.
+    await page.keyboard.press("Home");
+    await page.keyboard.press("ArrowRight");
+    await expect(amountPill(page)).toHaveAccessibleName("0.11 USD");
     await page.keyboard.press("Escape");
     await expect(picker(page)).toBeHidden();
     await expect(amountPill(page)).toBeFocused();

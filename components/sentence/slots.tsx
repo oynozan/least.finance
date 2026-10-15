@@ -353,6 +353,7 @@ function AmountPanel({
                         value={amount}
                         label={view.hint}
                         valueText={unit(formatNumber(amount, view.decimals))}
+                        decimals={view.decimals}
                         invalid={invalid}
                         onChange={(value) => onChange(String(value))}
                     />

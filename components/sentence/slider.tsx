@@ -16,11 +16,15 @@ const INSET = 6;
 const isLog = ({ min, max }: Scale) => min > 0 && max / min > LOG_RATIO;
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-/** Two significant figures from 100 up (1,100, 23,000), whole numbers below. */
-const stepOf = (value: number) => Math.max(1, 10 ** (Math.floor(Math.log10(Math.max(value, 1))) - 1));
-const snap = (value: number) => {
-    const step = stepOf(value);
-    return Math.round(value / step) * step;
+/** Two significant figures at any size (0.14, 2.3, 47, 1,100), never finer than `decimals` places. */
+const stepOf = (value: number, decimals: number) => {
+    const finest = 10 ** -decimals;
+    return Math.max(finest, 10 ** (Math.floor(Math.log10(Math.max(value, finest))) - 1));
+};
+const snap = (value: number, decimals: number) => {
+    const step = stepOf(value, decimals);
+    // Fixed to the places allowed, so 0.14 stays 0.14 rather than 0.14000000000000001
+    return Number((Math.round(value / step) * step).toFixed(decimals));
 };
 
 /** Where `value` sits along the track, from 0 to 1. */
@@ -32,13 +36,13 @@ export function toFraction(scale: Scale, value: number) {
 }
 
 /** The value at `fraction` along the track, rounded to a step that suits its size. The ends are exact. */
-export function fromFraction(scale: Scale, fraction: number) {
+export function fromFraction(scale: Scale, fraction: number, decimals = 0) {
     const { min, max } = scale;
     const f = clamp(fraction, 0, 1);
     if (f === 0) return min;
     if (f === 1) return max;
     const raw = isLog(scale) ? min * (max / min) ** f : min + (max - min) * f;
-    return clamp(snap(raw), min, max);
+    return clamp(snap(raw, decimals), min, max);
 }
 
 type SliderProps = {
@@ -47,6 +51,8 @@ type SliderProps = {
     value: number;
     label: string;
     valueText: string;
+    /** The places a value may have; small values step by these, so $0.10 to $1 moves a cent at a time. */
+    decimals?: number;
     /** The value is out of bounds: the fill takes the loss tone. */
     invalid?: boolean;
     onChange: (value: number) => void;
@@ -58,7 +64,7 @@ type SliderProps = {
  * exactly and reports stepped values; a change from elsewhere (typing)
  * springs the thumb to its place.
  */
-export function Slider({ scale, value, label, valueText, invalid, onChange, ref }: SliderProps) {
+export function Slider({ scale, value, label, valueText, decimals = 0, invalid, onChange, ref }: SliderProps) {
     const reduce = useReducedMotion();
     const track = useRef<HTMLDivElement>(null);
     const fraction = useMotionValue(toFraction(scale, value));
@@ -93,19 +99,19 @@ export function Slider({ scale, value, label, valueText, invalid, onChange, ref 
     const drag = (event: PointerEvent<HTMLDivElement>) => {
         const f = fractionAt(event.clientX);
         fraction.set(f);
-        onChange(fromFraction(scale, f));
+        onChange(fromFraction(scale, f, decimals));
     };
 
     const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (disabled) return;
         const v = clamp(value, scale.min, scale.max);
         const moves: Record<string, () => number> = {
-            ArrowRight: () => snap(v + stepOf(v)),
-            ArrowUp: () => snap(v + stepOf(v)),
-            ArrowLeft: () => snap(v - stepOf(v * 0.999)),
-            ArrowDown: () => snap(v - stepOf(v * 0.999)),
-            PageUp: () => fromFraction(scale, toFraction(scale, v) + 0.1),
-            PageDown: () => fromFraction(scale, toFraction(scale, v) - 0.1),
+            ArrowRight: () => snap(v + stepOf(v, decimals), decimals),
+            ArrowUp: () => snap(v + stepOf(v, decimals), decimals),
+            ArrowLeft: () => snap(v - stepOf(v * 0.999, decimals), decimals),
+            ArrowDown: () => snap(v - stepOf(v * 0.999, decimals), decimals),
+            PageUp: () => fromFraction(scale, toFraction(scale, v) + 0.1, decimals),
+            PageDown: () => fromFraction(scale, toFraction(scale, v) - 0.1, decimals),
             Home: () => scale.min,
             End: () => scale.max,
         };
