@@ -1,4 +1,4 @@
-import { VERB, canonicalDecimal, type Choice, type Issue } from "@/lib/sentence";
+import { VERB, canonicalDecimal, type Bound, type Choice, type Issue } from "@/lib/sentence";
 import { LEVERAGE_STEPS } from "../catalog";
 import { operation, priceOf, token, type TradeCtx } from "../context";
 import { formatUsd, formatUsdShort } from "../format";
@@ -35,6 +35,23 @@ function parseLeverage(ctx: TradeCtx, asset: string, text: string) {
     const leverage = Number(match[1]);
     const max = market(ctx, asset)?.maxLeverage ?? 1;
     return leverage >= 1 && leverage <= max ? String(leverage) : null;
+}
+
+/** What the float can cover per order, once the server has answered */
+function floatCap(ctx: TradeCtx): Bound | undefined {
+    const max = ctx.perpTrading?.maxOrderUSD;
+    if (typeof max !== "number") return undefined;
+    return {
+        value: max,
+        message: `Long and short are limited to ${formatUsdShort(max)} right now.`,
+        cta: "Over the limit",
+    };
+}
+
+/** The tighter of the balance and the float's limit */
+function collateralCap(ctx: TradeCtx): Bound | undefined {
+    const caps = [spendCap(ctx), floatCap(ctx)].filter((cap) => cap !== undefined);
+    return caps.reduce<Bound | undefined>((a, b) => (a && a.value <= b.value ? a : b), undefined);
 }
 
 function leverageChoice(leverage: number): Choice {
@@ -98,7 +115,7 @@ export const perp = operation({
             ...usdAmount(
                 (_v: Values & Fixed, ctx) => ({
                     min: { ...minimum(MIN_COLLATERAL), message: "Positions start at $10." },
-                    max: spendCap(ctx),
+                    max: collateralCap(ctx),
                 }),
                 (v) => `A ${formatUsdShort(Number(v.collateralUSD) * (Number(v.leverage) || 1))} position`,
             ),

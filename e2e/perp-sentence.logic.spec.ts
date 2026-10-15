@@ -98,6 +98,30 @@ test.describe("perp checks", () => {
         expect(ok.blocking).toBeUndefined();
     });
 
+    test("collateral over the server's order limit shows 'Long and short are limited to $150 right now.'", () => {
+        const over = run("long", ctxOf(view()), [slot("collateralUSD", "151")]);
+        expect(over.blocking).toMatchObject({
+            message: "Long and short are limited to $150 right now.",
+            cta: "Over the limit",
+        });
+        expect(run("long", ctxOf(view()), [slot("collateralUSD", "150")]).blocking).toBeUndefined();
+        // A limit with cents reads like the server's
+        const cents = ctxOf(view({ maxOrderUSD: "99.5" }));
+        expect(run("long", cents, [slot("collateralUSD", "100")]).blocking).toMatchObject({
+            message: "Long and short are limited to $99.50 right now.",
+        });
+    });
+
+    test("the smaller of the order limit and the balance caps the collateral", () => {
+        const poor = ctxOf(view(), { holdings: { ...HOLDINGS, USDC: 120 } });
+        expect(run("long", poor, [slot("collateralUSD", "130")]).blocking).toMatchObject({ cta: "Not enough USDC" });
+        const rich = ctxOf(view({ maxOrderUSD: "100" }), { holdings: { ...HOLDINGS, USDC: 120 } });
+        expect(run("long", rich, [slot("collateralUSD", "110")]).blocking).toMatchObject({ cta: "Over the limit" });
+        // The slider tops out at the tighter one
+        expect(run("long", rich).slots.collateralUSD).toMatchObject({ range: { max: 100, capped: true } });
+        expect(run("long", poor).slots.collateralUSD).toMatchObject({ range: { max: 120, capped: true } });
+    });
+
     test("a held BTC position blocks a second BTC Long with 'You already hold a BTC position. Close it first.'", () => {
         const ctx = ctxOf(view(), { openPerps: [{ asset: "BTC" }] });
         expect(run("long", ctx).blocking).toMatchObject({
