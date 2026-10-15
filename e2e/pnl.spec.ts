@@ -198,8 +198,8 @@ test("a prediction and its sale are listed, with what the sale realized", async 
     await dock(page).getByRole("button", { name: "Review" }).click();
     const review = page.getByRole("complementary", { name: "Review" });
     await review.getByRole("button", { name: "Confirm prediction" }).click();
-    await review.getByRole("button", { name: "Done" }).click();
-    await walletButton(page).click();
+    // A placed prediction hands over to the wallet on its own.
+    await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
     const position = sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem");
     const mine = position.filter({ hasText: title });
     await expect(mine).toContainText(/\d[\d.]* shares/);

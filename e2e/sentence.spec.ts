@@ -99,7 +99,9 @@ async function holdEth(page: Page) {
     await setAmount(page, "100");
     await review(page).click();
     await reviewPanel(page).getByRole("button", { name: "Confirm purchase" }).click();
-    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
+    // A filled trade hands over to the wallet; Escape folds it.
+    await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
+    await page.keyboard.press("Escape");
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
     // Back on Swap the bought coin and the amount carry over to the receiving side.
     await pick(page, "Buy", /^Swap/);
@@ -301,10 +303,11 @@ test("a swap's review shows what you pay and get, folds the rest away until poin
     await shoot(page, "6-review");
 
     await panel.getByRole("button", { name: "Confirm swap" }).click();
-    await expect(panel).toContainText("Swapped 0.003115 ETH for ≈ 0.06793 SOL.");
+    // The review says what it came to, then hands over to the wallet, which stays open.
+    await expect(sidebar(page)).toContainText("Swapped 0.003115 ETH for ≈ 0.06793 SOL.");
+    await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
     await shoot(page, "7-sent");
-    await panel.getByRole("button", { name: "Done" }).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
 });
 
 test("with an account balance, the slider tops out at what it can spend", async ({ page }) => {

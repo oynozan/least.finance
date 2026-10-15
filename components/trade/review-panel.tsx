@@ -37,6 +37,8 @@ const ORDER_EXPECTED_MS = 1_200;
 /** How long the answer stays on the button before it settles back. */
 const DONE_FLASH_MS = 900;
 const ERROR_FLASH_MS = 1_200;
+/** How long a filled order's check shows before the wallet takes over. */
+const WALLET_AFTER_MS = 700;
 
 // The palette's gain, pill, pill-hover, background, foreground and muted, as literals Motion can tween between.
 const READY = "rgb(104 214 112)";
@@ -61,7 +63,7 @@ const rise: Variants = {
 
 /** The sidebar's review view: the sentence's details, and the confirm step. */
 export function ReviewPanel() {
-    const { open, view: sidebarView, setOpen } = useSidebar();
+    const { open, view: sidebarView, setOpen, show } = useSidebar();
     const showing = open && sidebarView === "review";
 
     // A prediction refused once the sidebar is closed would go unseen, so the wallet opens on its notice.
@@ -100,7 +102,8 @@ export function ReviewPanel() {
                     <CloseIcon className="size-4" />
                 </motion.button>
             </header>
-            <ReviewBody key={openings} showing={showing} onDone={() => setOpen(false)} />
+            {/* Done hands over to the wallet, where what the order did already shows. */}
+            <ReviewBody key={openings} showing={showing} onDone={() => show("wallet")} />
         </MotionConfig>
     );
 }
@@ -237,6 +240,16 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     // The details stay on screen while the server answers; the outcome replaces them.
     const running = confirmed && placing;
     const done = confirmed && !placing;
+    // A filled order hands over to the wallet a moment after its check, where the new coin or position stands.
+    const finish = useRef(onDone);
+    useEffect(() => {
+        finish.current = onDone;
+    });
+    useEffect(() => {
+        if (!showing || !done || !accepted) return;
+        const timer = setTimeout(() => finish.current(), WALLET_AFTER_MS);
+        return () => clearTimeout(timer);
+    }, [showing, done, accepted]);
     const notice = view.blocking ?? view.issues.find((issue) => issue.severity === "warning");
 
     // Buy, Sell and Swap run from the account balance once signed in: no wallet signs, and the fill is instant.

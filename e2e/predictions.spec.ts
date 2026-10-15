@@ -71,19 +71,26 @@ async function predict(page: Page, { market, outcome }: Picked) {
 
 const reviewPanel = (page: Page) => page.getByRole("complementary", { name: "Review" });
 
-/** Confirms the review that is open and waits for its done step. */
+/** Confirms the review that is open and waits for the answer: a refusal stays in the review, a placed one shows the wallet. */
 async function confirmReview(page: Page) {
     await review(page).click();
     await reviewPanel(page).getByRole("button", { name: "Confirm prediction" }).click();
-    await expect(reviewPanel(page).getByRole("button", { name: "Done" })).toBeVisible();
+    await expect(
+        sidebar(page)
+            .getByRole("button", { name: "Done" })
+            .or(page.getByRole("complementary", { name: "Wallet" })),
+    ).toBeVisible();
 }
 
-/** Confirms the review that is open, then folds it and opens the wallet. */
+/** Confirms the review that is open and waits for the wallet it hands over to. */
 async function confirm(page: Page) {
     await confirmReview(page);
-    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
-    await walletButton(page).click();
+    await expectWallet(page);
+}
+
+/** The sidebar open on the wallet, as a placed prediction or Done leaves it. */
+async function expectWallet(page: Page) {
+    await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
 }
 
@@ -107,12 +114,7 @@ test("a prediction lowers the balance and adds a position at once, while the fak
     await page.goto("/");
     await connect(page);
     await predict(page, picked);
-    await confirmReview(page);
-    await expect(reviewPanel(page)).toContainText("Prediction placed.");
-    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
-    await walletButton(page).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
+    await confirm(page);
 
     await expect(balanceButton(page)).toHaveAccessibleName(balanceName("490.00"));
     await expect(row(page, picked)).toHaveCount(1);
@@ -149,22 +151,20 @@ test("a rejected prediction replaces the done line in the review, then rolls bac
     await expect(reviewPanel(page)).toContainText(line);
     await expect(reviewPanel(page).getByText("Prediction placed.")).toHaveCount(0);
     await reviewPanel(page).getByRole("button", { name: "Done" }).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
-    await walletButton(page).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
+    await expectWallet(page);
     await expect(status(page)).toHaveText(line);
     await expect(row(page, picked)).toHaveCount(0);
     await expect(balanceButton(page)).toHaveAccessibleName(balanceName("500.00"));
 });
 
-test("a refusal that comes after the review is closed opens the sidebar on it", async ({ page }) => {
+test("a refusal that comes after the sidebar is closed opens the sidebar on it", async ({ page }) => {
     const picked = await pickMarket(5);
     await nextOrder(picked.outcome.tokenId, "hold");
     await page.goto("/");
     await connect(page);
     await predict(page, picked);
-    await confirmReview(page);
-    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
+    await confirm(page);
+    await page.keyboard.press("Escape");
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
 
     await releaseOrder(picked.outcome.tokenId, "reject:price_moved");
@@ -220,7 +220,7 @@ test("offline at confirm says so and spends nothing", async ({ page }) => {
         reviewPanel.getByRole("paragraph").filter({ hasText: "You're offline. Nothing was spent." }),
     ).toBeVisible();
     await reviewPanel.getByRole("button", { name: "Done" }).click();
-    await walletButton(page).click();
+    await expectWallet(page);
     await expect(status(page)).toHaveText("You're offline. Nothing was spent.");
     await expect(balanceButton(page)).toHaveAccessibleName(balanceName("500.00"));
     await expect(row(page, picked)).toHaveCount(0);

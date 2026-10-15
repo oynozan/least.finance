@@ -24,12 +24,10 @@ const balanceName = (usd: string) => `Balance $${usd}, show deposits`;
 const long = (page: Page) => positionRows(page).filter({ hasText: "Long BTC at 5x" });
 const dock = (page: Page) => page.getByRole("navigation", { name: "Pages" });
 
-/** Confirms the open review, folds it and opens the wallet. */
+/** Confirms the open review and waits for the wallet, which an accepted order hands over to. */
 async function confirmAndOpen(page: Page) {
     await confirmPerp(page);
-    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
-    await openSidebar(page);
+    await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
 }
 
 /** Opens a $100 5x Long on BTC that the fake fills, and leaves the sidebar open on its row. */
@@ -88,9 +86,7 @@ test("confirm lowers the balance and adds the position at once while the fake ho
     await connect(page);
     await openPerp(page, { side: "Long" });
     await confirmPerp(page);
-    await expect(reviewPanel(page)).toContainText("Position opened.");
-    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
-    await openSidebar(page);
+    await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
 
     await expect(balanceButton(page)).toHaveAccessibleName(balanceName("400.00"));
     await expect(long(page)).toHaveCount(1);
@@ -161,8 +157,10 @@ test("a rejection removes the position and shows the message", async ({ page }) 
     const line = "This position couldn't be opened right now. Nothing was spent.";
     await expect(reviewPanel(page)).toContainText(line);
     await expect(reviewPanel(page).getByText("Position opened.")).toHaveCount(0);
+    // Done shows the wallet rather than folding the sidebar
     await reviewPanel(page).getByRole("button", { name: "Done" }).click();
-    await openSidebar(page);
+    await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
+    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
     await expect(status(page)).toHaveText(line);
     await expect(long(page)).toHaveCount(0);
     await expect(balanceButton(page)).toHaveAccessibleName(balanceName("500.00"));

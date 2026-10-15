@@ -70,7 +70,12 @@ export async function confirmPerp(page: Page) {
     const confirm = reviewPanel(page).getByRole("button", { name: /^Confirm/ });
     await expect(confirm).not.toHaveAttribute("aria-disabled", "true");
     await confirm.click();
-    await expect(reviewPanel(page).getByRole("button", { name: "Done" })).toBeVisible();
+    // Answered: a refusal stays in the review, an accepted order hands over to the wallet.
+    await expect(
+        sidebar(page)
+            .getByRole("button", { name: "Done" })
+            .or(page.getByRole("complementary", { name: "Wallet" })),
+    ).toBeVisible();
 }
 
 /** Controls over the fake Hyperliquid's next order; they are global, so specs using them run one at a time. */

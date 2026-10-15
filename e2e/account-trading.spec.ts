@@ -44,15 +44,14 @@ async function setAmount(page: Page, value: string) {
     await expect(picker(page)).toBeHidden();
 }
 
-/** Confirms the review that is open and waits for its done step. */
+/** Confirms the review that is open and waits for the wallet, which a filled trade hands over to on its own. */
 async function confirm(page: Page) {
     await reviewButton(page).click();
     await expect(reviewPanel(page)).toContainText("Instant");
     await reviewPanel(page)
         .getByRole("button", { name: /^Confirm/ })
         .click();
-    await expect(reviewPanel(page).getByRole("button", { name: "Done" })).toBeVisible({ timeout: 15_000 });
-    await reviewPanel(page).getByRole("button", { name: "Done" }).click();
+    await expect(page.getByRole("complementary", { name: "Wallet" })).toBeVisible({ timeout: 15_000 });
 }
 
 /** The sidebar, opened from the wallet button when it is folded. */
