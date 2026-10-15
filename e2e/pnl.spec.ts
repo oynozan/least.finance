@@ -12,7 +12,6 @@ import {
 import { marketIdOf, pricesLosing, trendingView } from "./polymarket";
 import { buyPredictions, predictionsToBuy } from "./positions";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
-import { pickCoin } from "./swap-flow";
 
 const dock = (page: Page) => page.getByRole("navigation", { name: "Pages" });
 const tile = (page: Page, name: string) => dock(page).getByRole("link", { name, exact: true });
@@ -178,28 +177,6 @@ test("the balance is charted by day, and every operation is listed", async ({ pa
     await activity(page).getByRole("radio", { name: "Trades" }).click();
     await expect(rows(page)).toHaveCount(2);
     await expect(rows(page).filter({ hasText: "Deposit" })).toHaveCount(0);
-});
-
-test("a real swap is listed on PnL without changing the balance", async ({ page }) => {
-    await page.goto("/");
-    await connect(page);
-    await pickCoin(page, "term:token", "USDC", "Ethereum");
-    await dock(page).getByRole("button", { name: "Review" }).click();
-    await sidebar(page).getByRole("button", { name: "Confirm swap" }).click();
-    await expect(sidebar(page)).toContainText("Swap sent.", { timeout: 20_000 });
-    await sidebar(page).getByRole("button", { name: "Done" }).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
-
-    await tile(page, "PnL").click();
-    // A swap moves no deposited balance and realizes nothing; it only appears in the list.
-    await expect(balance(page)).toContainText("No balance yet");
-    await expect(rows(page)).toHaveCount(1);
-    await expect(rows(page).first()).toContainText("Swap ETH to USDC");
-    await expect(rows(page).first()).toContainText("Ethereum to Ethereum, on its way");
-    await expect(rows(page).first()).toContainText("Pending");
-    await shoot(page, "4-swap");
-    await activity(page).getByRole("radio", { name: "Deposits" }).click();
-    await expect(rows(page)).toHaveCount(0);
 });
 
 test("a prediction and its sale are listed, with what the sale realized", async ({ page, isMobile }) => {

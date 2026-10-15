@@ -1,9 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { fundSource } from "./backend";
 import { toPredictionMarket } from "@/lib/trade/markets";
-import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
+import { installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 import { sampleView, samples, trendingView } from "./polymarket";
-import { pickCoin } from "./swap-flow";
 
 const trade = (page: Page) => page.getByRole("region", { name: "Trade" });
 const pill = (page: Page, name: string | RegExp) =>
@@ -209,9 +207,9 @@ test("Review stays disabled until the sentence is complete and valid", async ({ 
     await page.waitForTimeout(300);
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
 
-    await setAmount(page, "0.5");
+    await setAmount(page, "0.05");
     await expect(review(page)).toHaveAttribute("aria-disabled", "true");
-    await expect(review(page)).toHaveAccessibleDescription("The minimum is $1.");
+    await expect(review(page)).toHaveAccessibleDescription("The minimum is $0.10.");
     // The page itself shows nothing but the sentence: the amount turns red.
     expect(await strayText(page)).toEqual([]);
     await expect(amountPill(page)).toHaveCSS("color", "rgb(255, 107, 91)");
@@ -257,31 +255,19 @@ test("the amount field grows with every digit and never scrolls", async ({ page 
     expect(await field()).toEqual({ spare: expect.closeTo(2, 1), scrolled: 0, hidden: 0 });
 });
 
-test("the same pair is never swapped into itself: it flips, and the same coin bridges", async ({ page }) => {
+test("the same pair is never swapped into itself: picking a side's coin flips the other", async ({ page }) => {
     const paying = trade(page).locator('[data-part="swap:fromToken"]').getByRole("button");
     const receiving = trade(page).locator('[data-part="term:token"]').getByRole("button");
     // Paying with the coin that is received flips the two sides.
     await paying.click();
     await picker(page).getByRole("option", { name: "SOL", exact: true }).click();
-    await page.keyboard.press("Escape");
     await expect(picker(page)).toBeHidden();
     expect(await text(page)).toBe("I want to Swap my SOL to ETH for 10 USD.");
-    await expect(paying).toHaveAccessibleDescription(/on Solana/);
-    await expect(receiving).toHaveAccessibleDescription(/on Ethereum/);
-    // The side that moved by itself is announced with its network.
-    await expect(trade(page).getByRole("status")).toHaveText("Coin you receive is now ETH on Ethereum.");
-
-    // Receiving the coin that is paid goes to another network of it instead, a bridge.
+    // Receiving the coin that is paid flips them back.
     await receiving.click();
     await picker(page).getByRole("option", { name: "SOL", exact: true }).click();
-    await expect(picker(page).getByRole("option", { name: "Solana" })).toHaveAccessibleDescription(
-        /Same as the other side/,
-    );
-    await page.keyboard.press("Escape");
     await expect(picker(page)).toBeHidden();
-    expect(await text(page)).toBe("I want to Swap my SOL to SOL for 10 USD.");
-    await expect(paying).toHaveAccessibleDescription(/on Solana/);
-    await expect(receiving).toHaveAccessibleDescription(/on Ethereum/);
+    expect(await text(page)).toBe("I want to Swap my ETH to SOL for 10 USD.");
 });
 
 test("leverage follows the market's cap, and any allowed value can be typed", async ({ page }) => {
@@ -398,75 +384,6 @@ test("pill text sits centered, with room for descenders", async ({ page }) => {
     }
 });
 
-test("Review opens the details in the sidebar, then confirms", async ({ page, isMobile }) => {
-    await connect(page);
-    await review(page).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "true");
-    await expect(page.getByRole("complementary", { name: "Review" })).toBeVisible();
-    const details = page.getByRole("region", { name: "Details" });
-    await expect(details).toContainText("0.003115 ETH ($10.00)");
-    await expect(details).toContainText("1 ETH = 21.81 SOL");
-
-    // On a desktop Review stays in view and toggles the sidebar closed;
-    // on a phone the sidebar covers it, so it closes with its own button.
-    if (isMobile) await sidebar(page).getByRole("button", { name: "Close review" }).click();
-    else await review(page).click();
-    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
-
-    await setAmount(page, "5000");
-    await expect(review(page)).toHaveAttribute("aria-disabled", "true");
-    await expect(review(page)).toHaveAccessibleDescription("That's more than your $3,203.98 of ETH on Ethereum.");
-    await setAmount(page, "100");
-
-    // SOL is received on Solana, which this wallet can't; USDC on Ethereum it can.
-    await pickCoin(page, "term:token", "USDC", "Ethereum");
-    await review(page).click();
-    await expect(page.getByRole("complementary", { name: "Review" })).toBeVisible();
-    await shoot(page, "6-review");
-    await sidebar(page).getByRole("button", { name: "Confirm swap" }).click();
-    await expect(sidebar(page)).toContainText("Swap sent.", { timeout: 20_000 });
-    await shoot(page, "7-sent");
-    // The review stays in place, unfaded, while the sidebar slides away.
-    const done = sidebar(page).getByRole("button", { name: "Done" });
-    const button = await done.elementHandle();
-    await done.click();
-    const frames = await button!.evaluate(
-        (button) =>
-            new Promise<{ rendered: boolean; opacity: number }[]>((resolve) => {
-                const frames: { rendered: boolean; opacity: number }[] = [];
-                const start = performance.now();
-                const sample = () => {
-                    let opacity = 1;
-                    for (let el: Element | null = button; el; el = el.parentElement)
-                        opacity *= Number(getComputedStyle(el).opacity);
-                    frames.push({ rendered: button.getClientRects().length > 0, opacity });
-                    if (performance.now() - start < 400) requestAnimationFrame(sample);
-                    else resolve(frames);
-                };
-                sample();
-            }),
-    );
-    expect(frames.every((frame) => frame.rendered && frame.opacity > 0.99)).toBe(true);
-    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
-
-    // The wallet button still opens the wallet, not the review.
-    await page.getByRole("button", { name: /^Wallet/ }).click();
-    await expect(page.getByRole("complementary", { name: "Wallet" })).toBeVisible();
-});
-
-// The stack reads only Ethereum and BNB Chain, so most USDC networks are unread and Buy has no cap.
-test("a buy has no cap while a USDC network was never read", async ({ page }) => {
-    await fundSource(addressOf(page), "ethereum:USDC", "2400");
-    await connect(page);
-    await pick(page, "Swap", /^Buy/);
-    await amountPill(page).click();
-    await expect(slider(page)).toHaveAttribute("aria-valuemax", "10000");
-    await page.keyboard.press("Escape");
-    await expect(picker(page)).toBeHidden();
-    await setAmount(page, "3000");
-    await expect(review(page)).not.toHaveAttribute("aria-disabled");
-});
-
 test("the sentence is keyboard operable", async ({ page, isMobile }) => {
     test.skip(isMobile, "keyboard flow");
     await pill(page, "Swap").focus();
@@ -485,9 +402,6 @@ test("the sentence is keyboard operable", async ({ page, isMobile }) => {
     await page.keyboard.press("Enter");
     await page.keyboard.type("li");
     await expect(picker(page).getByRole("option", { name: "LINK" })).toBeFocused();
-    await page.keyboard.press("Enter");
-    // LINK is on several networks: its default one is focused, and Enter keeps it.
-    await expect(picker(page).getByRole("option", { name: "Ethereum" })).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(picker(page)).toBeHidden();
     expect(await text(page)).toBe("I want to Buy 10 USD of LINK.");
@@ -613,22 +527,6 @@ test("the amount drops down under its pill, and dragging rolls the sentence live
     await page.keyboard.press("Escape");
     await expect(picker(page)).toBeHidden();
     await expect(amountPill(page)).toBeFocused();
-});
-
-test("with a wallet, the slider tops out at what it can spend", async ({ page }) => {
-    await connect(page);
-    await amountPill(page).click();
-    // The e2e wallet holds 1 ETH on Ethereum, less 0.002 ETH kept for gas: 0.998 x $3,210.40.
-    await expect(slider(page)).toHaveAttribute("aria-valuemax", /^3203\.97\d*$/);
-    await expect(picker(page)).toContainText("3,203.98 USD");
-    await slider(page).focus();
-    await page.keyboard.press("End");
-    await expect(amountField(page)).toHaveValue(/^3203\.97\d*$/);
-    await expect(review(page)).not.toHaveAttribute("aria-disabled");
-    // Typing past it turns the amount red and says why, in the dropdown only.
-    await amountField(page).fill("5000");
-    await expect(picker(page)).toContainText("That's more than your $3,203.98 of ETH on Ethereum.");
-    await expect(amountField(page)).toHaveCSS("color", "rgb(255, 107, 91)");
 });
 
 test("pickers drop down from their pill too", async ({ page }) => {

@@ -1,6 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { fundSource } from "./backend";
-import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
+import { installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 
 /**
  * Sliding highlights must paint below everything in their list: rows,
@@ -79,35 +78,6 @@ test("a picker's highlight stays under its rows and group headers", async ({ pag
         await page.keyboard.press("Escape");
         await expect(picker(page)).toBeHidden();
     }
-});
-
-test("the network step's highlight stays under its rows and their amounts", async ({ page }) => {
-    // The wallet holds ETH (and BNB) already; USDT gives the paying side a second coin on several networks.
-    await fundSource(addressOf(page), "ethereum:USDT", "50");
-    await page.goto("/");
-    await connect(page);
-    await page.keyboard.press("Escape");
-    await expect(sidebar(page)).toHaveAttribute("data-open", "false");
-    const trade = page.getByRole("region", { name: "Trade" });
-    // The coin paid with: its wallet amount shows in two lines, and empty networks say why.
-    await trade.getByRole("button", { name: "ETH", exact: true }).click();
-    await picker(page).getByRole("option", { name: "ETH", exact: true }).click();
-    const list = picker(page).getByRole("listbox", { name: "On which network?" });
-    await expect(list.getByRole("option", { name: "Ethereum", exact: true })).toBeVisible();
-    // The wallet's coins are in once the Ethereum row shows its amount.
-    await expect(list.getByRole("option", { name: "Ethereum", exact: true })).toContainText("1 ETH");
-    await expect(list.getByRole("option", { name: "BNB Chain", exact: true })).toContainText("Nothing here");
-    await expect(list.locator("[data-highlight]")).toHaveCount(1);
-    expect(await textUnderHighlight(list)).toEqual([]);
-    // Back and forth replays the list, still with one highlight.
-    await picker(page).getByRole("button", { name: "Back" }).click();
-    await expect(
-        picker(page).getByRole("listbox", { name: "Swap from which coin?" }).locator("[data-highlight]"),
-    ).toHaveCount(1);
-    await picker(page).getByRole("option", { name: "USDT", exact: true }).click();
-    await expect(list.getByRole("option", { name: "Ethereum", exact: true })).toContainText("50 USDT");
-    await expect(list.locator("[data-highlight]")).toHaveCount(1);
-    expect(await textUnderHighlight(list)).toEqual([]);
 });
 
 test("the coin list's highlight stays under its rows and group labels", async ({ page }) => {

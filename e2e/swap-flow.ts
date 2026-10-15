@@ -22,13 +22,10 @@ export async function connect(page: Page) {
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
 }
 
-/** Picks a coin in a pill's picker, then its network at the second step. */
-export async function pickCoin(page: Page, part: string, coin: string, network: string) {
+/** Picks a coin in a pill's picker; a coin has no network step. */
+export async function pickCoin(page: Page, part: string, coin: string) {
     await trade(page).locator(`[data-part="${part}"]`).getByRole("button").click();
     await picker(page).getByRole("option", { name: coin, exact: true }).click();
-    await expect(picker(page)).toHaveAccessibleName("On which network?");
-    // The wallet's amounts are in once the row carries them, so a pay row isn't disabled by an unread network.
-    await picker(page).getByRole("option").filter({ hasText: network }).first().click();
     await expect(picker(page)).toBeHidden();
 }
 
@@ -38,17 +35,4 @@ export async function setAmount(page: Page, value: string) {
     await picker(page).getByRole("textbox").fill(value);
     await picker(page).getByRole("textbox").press("Enter");
     await expect(picker(page)).toBeHidden();
-}
-
-/** Signs in and sets "Swap my ETH to USDC", both on Ethereum, ready to review. */
-export async function ethToUsdc(page: Page) {
-    await page.goto("/");
-    await connect(page);
-    await pickCoin(page, "term:token", "USDC", "Ethereum");
-}
-
-/** Opens the review and waits for LI.FI's quote to show in it. */
-export async function openReview(page: Page) {
-    await reviewButton(page).click();
-    await expect(reviewPanel(page)).toBeVisible();
 }
