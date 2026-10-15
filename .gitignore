@@ -49,3 +49,8 @@ next-env.d.ts
 
 # git worktrees for parallel builds
 /.worktrees/
+
+# local agent tooling, never pushed
+/.superpowers/
+/docs/superpowers/
+/.impeccable/
