@@ -3,7 +3,7 @@ import { QUOTE } from "../catalog";
 import { operation, priceOf } from "../context";
 import { formatUnits, formatUsd } from "../format";
 import type { TransactionIntent } from "../intent";
-import { coinChoice, holdingCap, largestHolding, minimum, spendCap, unheld, usdAmount } from "./shared";
+import { coinChoice, holdingCap, largestHolding, minimum, saleMinimum, spendCap, unheld, usdAmount } from "./shared";
 
 type Side = "buy" | "sell";
 type Values = { token: string; amountUSD: string };
@@ -55,7 +55,7 @@ export const spot = operation({
         },
         amountUSD: usdAmount(
             (v: Values & Fixed, ctx) => ({
-                min: minimum(MIN_TRADE_USD),
+                min: v.side === "buy" ? minimum(MIN_TRADE_USD) : saleMinimum(ctx, v.token, MIN_TRADE_USD),
                 // A coin the account can't sell is already blocked by its pill
                 max: v.side === "buy" ? spendCap(ctx) : unheld(ctx, v.token) ? undefined : holdingCap(ctx, v.token),
             }),

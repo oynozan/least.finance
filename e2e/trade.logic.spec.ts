@@ -156,7 +156,7 @@ test.describe("preventing invalid sentences", () => {
     test("leverage can be typed, within the market's cap", () => {
         expect(run("long", [slot("leverage", "7")]).view.text).toBe("I want to Long BTC at 7x leverage with 100 USD.");
         expect(run("long", [slot("leverage", "12x")]).view.slots.leverage).toMatchObject({ value: "12" });
-        // Over BTC's 50x, not a number, or not a whole number (the server takes integers): ignored.
+        // Over BTC's 50x, not a number, or not a whole number (the server takes integers) is ignored
         const start = run("long").state;
         expect(reduce(TRADE, start, slot("leverage", "70"), connected)).toBe(start);
         expect(reduce(TRADE, start, slot("leverage", "lots"), connected)).toBe(start);
@@ -213,6 +213,38 @@ test.describe("trading from the account", () => {
         const ctx = account({ USDC: 100 });
         expect(run("buy", [slot("amountUSD", "0.05")], ctx).view.blocking).toMatchObject({ code: "min" });
         expect(run("buy", [slot("amountUSD", "0.1")], ctx).view.blocking).toBeUndefined();
+    });
+
+    test("a coin held for under 10 cents can still be sold or swapped whole, down to its value in cents", () => {
+        // 0.0006 SOL at $147.20 is $0.08832
+        const ctx = account({ USDC: 50, SOL: 0.0006, ETH: 1 });
+        const sell = run("sell", [slot("token", "SOL"), slot("amountUSD", "0.08")], ctx).view;
+        expect(sell.blocking).toBeUndefined();
+        expect(sell.slots.amountUSD).toMatchObject({ range: { min: 0.08 } });
+        expect(run("sell", [slot("token", "SOL"), slot("amountUSD", "0.07")], ctx).view.blocking).toMatchObject({
+            code: "min",
+            message: "The minimum is $0.08.",
+        });
+        const swap = run("swap", [slot("fromToken", "SOL"), slot("amountUSD", "0.08")], ctx).view;
+        expect(swap.blocking).toBeUndefined();
+        expect(run("swap", [slot("fromToken", "SOL"), slot("amountUSD", "0.07")], ctx).view.blocking).toMatchObject({
+            code: "min",
+            message: "The minimum is $0.08.",
+        });
+        // Under a cent the minimum is still a cent
+        const dust = account({ USDC: 50, SOL: 0.00005, ETH: 1 });
+        expect(run("sell", [slot("token", "SOL")], dust).view.slots.amountUSD).toMatchObject({ range: { min: 0.01 } });
+        // A holding of 10 cents or more, and a purchase, keep the 10 cent minimum
+        const whole = account({ USDC: 50, SOL: 1, ETH: 1 });
+        expect(run("sell", [slot("token", "SOL"), slot("amountUSD", "0.05")], whole).view.blocking).toMatchObject({
+            message: "The minimum is $0.10.",
+        });
+        expect(run("swap", [slot("fromToken", "SOL"), slot("amountUSD", "0.05")], whole).view.blocking).toMatchObject({
+            message: "The minimum is $0.10.",
+        });
+        expect(run("buy", [slot("amountUSD", "0.05")], ctx).view.blocking).toMatchObject({
+            message: "The minimum is $0.10.",
+        });
     });
 
     test("Sell and Swap start on the coin held, and only a held coin is on offer to sell", () => {

@@ -271,6 +271,17 @@ test.describe("the request a review places", () => {
         expect(toTradeRequest(spot("sell", "299.9999999999"), inputs, "r")).toMatchObject({ units: "2" });
     });
 
+    test("an amount within a cent of the holding's value sells all of it, not a rounded figure", () => {
+        // 1.99724 SOL at $150 is $299.586, and the amount's two places cut it to $299.58
+        const odd: SpotInputs = { ...inputs, held: () => 1.99724, heldText: () => "1.99724" };
+        expect(toTradeRequest(spot("sell", "299.58"), odd, "r")).toMatchObject({ units: "1.99724" });
+        expect(toTradeRequest(spot("sell", "299.59"), odd, "r")).toMatchObject({ units: "1.99724" });
+        expect(toTradeRequest(spot("sell", "299.57"), odd, "r")).toMatchObject({ units: "1.99713333" });
+        const swap: SpotIntent = { type: "swap", fromToken: "SOL", toToken: "ETH", amountUSD: "299.58" };
+        expect(toTradeRequest(swap, odd, "r")).toMatchObject({ verb: "swap", units: "1.99724" });
+        expect(toTradeRequest({ ...swap, amountUSD: "299.57" }, odd, "r")).toMatchObject({ units: "1.99713333" });
+    });
+
     test("a swap carries both prices", () => {
         const swap: SpotIntent = { type: "swap", fromToken: "SOL", toToken: "ETH", amountUSD: "150" };
         expect(toTradeRequest(swap, inputs, "r")).toEqual({

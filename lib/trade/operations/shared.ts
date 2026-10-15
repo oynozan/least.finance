@@ -1,6 +1,6 @@
 import type { Bound, Choice, NumberSpec } from "@/lib/sentence";
 import { QUOTE, type Token } from "../catalog";
-import { held, priceOf, spendableUSD, type TradeCtx } from "../context";
+import { held, heldUSD, priceOf, spendableUSD, type TradeCtx } from "../context";
 import { formatUnits, formatUsd, formatUsdShort } from "../format";
 
 /** Where the amount slider tops out while no wallet caps it. */
@@ -32,6 +32,13 @@ export const minimum = (value: number): Bound => ({
     message: `The minimum is ${formatUsdShort(value)}.`,
     cta: `Minimum ${formatUsdShort(value)}`,
 });
+
+/** The least a sale or swap of a coin may be, being the whole holding in whole cents when that is under the minimum */
+export function saleMinimum(ctx: TradeCtx, symbol: string, floor: number): Bound {
+    const value = heldUSD(ctx, symbol);
+    if (value === null || value <= 0 || value >= floor) return minimum(floor);
+    return minimum(Math.max(0.01, Math.floor(value * 100 + 1e-9) / 100));
+}
 
 /** Caps a sale or swap at the account's holding of the coin, with no cap while the holding or the price is unknown */
 export function holdingCap(ctx: TradeCtx, symbol: string): Bound | undefined {

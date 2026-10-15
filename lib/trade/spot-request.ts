@@ -17,10 +17,13 @@ export type SpotInputs = {
     heldText: (symbol: string) => string;
 };
 
-/** Units of the sold coin for a dollar amount: all of the holding when the amount reaches its value, else rounded down. */
+/** How far under the holding's value an amount may fall and still be all of it, the cent the amount's two places cut off */
+const WHOLE_WITHIN_USD = 0.01;
+
+/** Units of the sold coin for a dollar amount, all of the holding when the amount is within a cent of its value, else rounded down */
 function unitsFor(symbol: string, amountUSD: number, inputs: SpotInputs, price: number): string {
     const holding = inputs.held(symbol);
-    if (amountUSD >= holding * price * (1 - 1e-9)) return inputs.heldText(symbol);
+    if (holding * price - amountUSD <= WHOLE_WITHIN_USD + 1e-9) return inputs.heldText(symbol);
     return coinText(amountUSD / price);
 }
 

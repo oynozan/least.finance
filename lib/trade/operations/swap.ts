@@ -3,7 +3,7 @@ import { QUOTE } from "../catalog";
 import { operation, priceOf, type TradeCtx } from "../context";
 import { formatUnits, formatUsd } from "../format";
 import type { TransactionIntent } from "../intent";
-import { coinChoice, holdingCap, largestHolding, minimum, unheld, usdAmount } from "./shared";
+import { coinChoice, holdingCap, largestHolding, saleMinimum, unheld, usdAmount } from "./shared";
 
 type Values = { fromToken: string; toToken: string; amountUSD: string };
 
@@ -52,7 +52,7 @@ export const swap = operation({
         },
         amountUSD: usdAmount(
             (v: Values, ctx) => ({
-                min: minimum(MIN_TRADE_USD),
+                min: saleMinimum(ctx, v.fromToken, MIN_TRADE_USD),
                 // A coin the account doesn't hold at all is already blocked by its pill
                 max: unheld(ctx, v.fromToken) ? undefined : holdingCap(ctx, v.fromToken),
             }),
