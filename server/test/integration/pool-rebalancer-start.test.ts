@@ -37,6 +37,18 @@ async function expectNothingSigned(h: PoolHarness) {
     expect(await h.messenger.calls()).toEqual([]);
 }
 
+/** Runs `work` with the drain's send step stood in by nothing, so only the start path is under test. */
+async function withoutSend(work: () => Promise<void>) {
+    const saved = { ...FLOWS };
+    Object.assign(FLOWS, { "polygon_to_arc:submitting": async () => undefined });
+    try {
+        await work();
+    } finally {
+        for (const key of Object.keys(FLOWS)) delete FLOWS[key];
+        Object.assign(FLOWS, saved);
+    }
+}
+
 const floatOf = async (h: PoolHarness) => (await h.database.collections.poolFloat.findOne({ _id: "polygon" }))!;
 
 describe("a top-up (arc_to_polygon)", () => {
@@ -410,7 +422,7 @@ describe("a drain (polygon_to_arc)", () => {
         const events: PoolRebalanceDoc[] = [];
         h.bus.on("pool-rebalance:updated", ({ rebalance }) => events.push(rebalance));
 
-        await h.rebalancer.tick();
+        await withoutSend(() => h.rebalancer.tick());
 
         const moved = await h.rowOf(row._id);
         expect(moved.state).toBe("submitting");
@@ -764,7 +776,7 @@ describe("a restart", () => {
     test("the ids waiting to be sent belong to the process that reserved them", async () => {
         const h = await open({ poolUsdc: "100" });
         const row = await h.queue({ direction: "polygon_to_arc", usdc: "40" });
-        await h.rebalancer.tick();
+        await withoutSend(() => h.rebalancer.tick());
         expect(h.rebalancer.pendingSend).toEqual(new Set([row._id.toString()]));
 
         h.restart();

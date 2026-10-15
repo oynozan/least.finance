@@ -151,6 +151,8 @@ export class PoolRebalancer {
         this.#followedAt = followed;
         const open = new Set(rows.map((row) => row._id.toString()));
         for (const id of this.#irisSeen.keys()) if (!open.has(id)) this.#irisSeen.delete(id);
+        const submitting = new Set(rows.filter((row) => row.state === "submitting").map((row) => row._id.toString()));
+        for (const id of this.#pendingSend) if (!submitting.has(id)) this.#pendingSend.delete(id);
         await this.#warnOnIdleUsdc(trader);
     }
 

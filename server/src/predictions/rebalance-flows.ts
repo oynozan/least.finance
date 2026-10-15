@@ -1,7 +1,7 @@
 import type { ClientSession, Decimal128 } from "mongodb";
 import type { Logger } from "pino";
-import type { Address } from "viem";
-import { ARC_DOMAIN, IrisError, type Iris, type IrisMessage } from "../crosschain/iris.ts";
+import type { Address, Hex } from "viem";
+import { ARC_DOMAIN, IrisError, POLYGON_DOMAIN, type Iris, type IrisMessage } from "../crosschain/iris.ts";
 import type { IrisLimiter } from "../crosschain/iris-limiter.ts";
 import type { Collections, PoolRebalanceDoc, PoolRebalanceState } from "../db/mongo.ts";
 import { formatE6, fromDecimal, toDecimal } from "../db/money.ts";
@@ -49,7 +49,7 @@ export const flowKey = (row: PoolRebalanceDoc): string => `${row.direction ?? ro
 /** States that leave `active` off the row, so it stops holding the one-active slot. */
 const ENDING: ReadonlySet<PoolRebalanceState> = new Set(["done", "failed", "stuck"]);
 
-/** Moves a row out of the state in `row`, setting `updatedAt` (and `doneAt` on done or failed) and dropping `active` when it ends or sticks; never sets `active`. */
+/** Moves a row out of the state in `row` (and the fields in `also`), setting `updatedAt` (and `doneAt` on done or failed) and dropping `active` when it ends or sticks; never sets `active`. */
 export function stateChange(
     collections: Collections,
     row: PoolRebalanceDoc,
@@ -57,10 +57,11 @@ export function stateChange(
     patch: Record<string, unknown>,
     at: Date,
     session?: ClientSession,
+    also: Record<string, unknown> = {},
 ): Promise<PoolRebalanceDoc | null> {
     const finished = to === "done" || to === "failed";
     return collections.poolRebalances.findOneAndUpdate(
-        { _id: row._id, state: row.state },
+        { _id: row._id, state: row.state, ...also },
         {
             $set: { ...patch, state: to, updatedAt: at, ...(finished && { doneAt: at }) },
             ...(ENDING.has(to) && { $unset: { active: "" as const } }),
@@ -418,6 +419,324 @@ async function finishWrap(ctx: FlowContext, row: PoolRebalanceDoc): Promise<void
     }
 }
 
+/** `lastError` of a drain whose reservation was found without a sent batch. */
+const NEVER_SENT = "The batch was never sent.";
+
+/** Whether the 11 minutes a signed batch can still execute in have passed since the attempt. */
+const windowOver = (ctx: Pick<FlowContext, "now">, attemptedAt: Date): boolean =>
+    ctx.now() - attemptedAt.getTime() >= GATE_SHUT_MS;
+
+/** Makes the CLOB re-read the pool's collateral and refreshes the float document; a failed read only warns, and the spent pUSD stays counted as unread meanwhile. */
+async function forcedRead(ctx: FlowContext, row: PoolRebalanceDoc): Promise<void> {
+    try {
+        await ctx.trader.syncBalance();
+        await ctx.service.refreshFloat();
+    } catch (error) {
+        ctx.log.once(
+            `float-read:${row._id}`,
+            "warn",
+            { ...rowFields(row), err: error },
+            "Couldn't re-read the pool's balance after a pool drain",
+        );
+    }
+}
+
+/** Moves a `submitting` drain to `to` and releases its reservation in one transaction, only when this call made the move; the CLOB is then re-read when pUSD was spent or the batch may have run in part. */
+async function settleDrain(
+    ctx: FlowContext,
+    row: PoolRebalanceDoc,
+    to: "forwarding" | "failed" | "stuck",
+    patch: Record<string, unknown>,
+    o: { spent: boolean; read?: boolean; also?: Record<string, unknown> },
+): Promise<PoolRebalanceDoc | null> {
+    const moved = await ctx.ledger.runInTransaction(async (session) => {
+        const changed = await stateChange(ctx.collections, row, to, patch, new Date(ctx.now()), session, o.also);
+        if (!changed) return null;
+        await ctx.service.releaseForMove(session, e6Of(changed.reservedE6), o.spent ? e6Of(changed.amountE6) : 0n);
+        return changed;
+    });
+    if (!moved) return null;
+    ctx.pendingSend.delete(row._id.toString());
+    announce(ctx, moved, row.state);
+    if (o.spent || o.read) await forcedRead(ctx, moved);
+    return moved;
+}
+
+/** The burn the batch made: the row goes to `forwarding` with the reservation spent. */
+const burnPatch = (hash: string, finalAt: Date) => ({
+    "polygon.burnTxHash": hash,
+    "polygon.burnLogSeen": true,
+    "polygon.relayerFinalAt": finalAt,
+});
+
+/** Sends the reserved drain's batch through the gate: the attempt is stored before the relayer is called and the id the moment it answers. */
+async function sendDrain(ctx: FlowContext, row: PoolRebalanceDoc): Promise<void> {
+    const rowId = row._id.toString();
+    const ran = await ctx.gate.run(
+        async (): Promise<{ sent: BatchSubmit; marked: PoolRebalanceDoc } | null> => {
+            const marked = await write(
+                ctx,
+                row,
+                { "polygon.attemptedAt": new Date(ctx.now()) },
+                { "polygon.attemptedAt": null, "polygon.relayerTransactionId": null },
+            );
+            ctx.pendingSend.delete(rowId);
+            if (!marked) return null;
+            let sent: BatchSubmit;
+            try {
+                sent = await ctx.trader.unwrapAndBurn({
+                    amountE6: e6Of(row.amountE6),
+                    maxFeeE6: e6Of(row.maxFeeE6),
+                    recipient: ctx.treasury,
+                });
+            } catch (error) {
+                ctx.logger.warn({ ...rowFields(row), err: error }, "A pool drain batch got no clear answer");
+                sent = { kind: "unknown" };
+            }
+            if (sent.kind === "submitted") {
+                await write(
+                    ctx,
+                    marked,
+                    { "polygon.relayerTransactionId": sent.transactionId },
+                    { "polygon.relayerTransactionId": null },
+                );
+            }
+            return { sent, marked };
+        },
+        { from: "rebalancer" },
+    );
+    if (!ran.ran) {
+        ctx.log.once(
+            `gate:${row._id}`,
+            "warn",
+            { ...rowFields(row), reason: ran.reason },
+            "A pool drain waits for the relayer",
+        );
+        return;
+    }
+    if (!ran.value) return;
+
+    const { sent, marked } = ran.value;
+    if (sent.kind === "submitted") {
+        ctx.logger.info({ ...rowFields(row), transactionId: sent.transactionId }, "Pool drain batch submitted");
+    } else if (sent.kind === "refused") {
+        // Nothing was sent, so the gate has nothing to wait for
+        await settleDrain(
+            ctx,
+            marked,
+            "failed",
+            { lastError: sent.message, "polygon.relayerFinalAt": new Date(ctx.now()) },
+            { spent: false },
+        );
+    } else {
+        ctx.gate.shut();
+        ctx.logger.warn(rowFields(row), "A pool drain batch may or may not have been sent, so it waits for its window");
+    }
+}
+
+/** The lower-case hashes among `hashes` that a drain other than `row` holds as its burn. */
+async function burnsHeldByOthers(ctx: FlowContext, row: PoolRebalanceDoc, hashes: string[]): Promise<Set<string>> {
+    const wanted = [...new Set(hashes.flatMap((hash) => [hash, hash.toLowerCase()]))];
+    const held = await ctx.collections.poolRebalances
+        .find({ _id: { $ne: row._id }, "polygon.burnTxHash": { $in: wanted } }, { projection: { polygon: 1 } })
+        .toArray();
+    return new Set(held.map((other) => other.polygon.burnTxHash!.toLowerCase()));
+}
+
+/** Looks on Polygon for the burn of a batch whose answer is missing: one with the move's amount that no other row holds is adopted, none ends the row as `onNone` says. */
+async function scanForBurn(ctx: FlowContext, row: PoolRebalanceDoc, onNone: "failed" | "stuck"): Promise<void> {
+    const attemptedAt = row.polygon.attemptedAt ?? row.updatedAt;
+    let events: Awaited<ReturnType<PoolTrader["burnEvents"]>>;
+    try {
+        events = await ctx.trader.burnEvents({ since: attemptedAt });
+    } catch (error) {
+        ctx.log.once(
+            `scan:${row._id}`,
+            "warn",
+            { ...rowFields(row), err: error },
+            "Couldn't scan Polygon for the drain's burn, so a pool move waits",
+        );
+        return;
+    }
+    const amountE6 = e6Of(row.amountE6);
+    const same = events.filter((event) => event.amountE6 === amountE6);
+    const held =
+        same.length > 0
+            ? await burnsHeldByOthers(
+                  ctx,
+                  row,
+                  same.map((event) => event.txHash),
+              )
+            : new Set();
+    const adopted = same.find((event) => !held.has(event.txHash.toLowerCase()));
+    const finalAt = row.polygon.relayerFinalAt ?? new Date(attemptedAt.getTime() + GATE_SHUT_MS);
+    if (adopted) {
+        const moved = await settleDrain(ctx, row, "forwarding", burnPatch(adopted.txHash, finalAt), { spent: true });
+        if (moved)
+            ctx.logger.info({ ...rowFields(moved), burnTxHash: adopted.txHash }, "A pool drain's burn was found");
+    } else if (onNone === "failed") {
+        await settleDrain(
+            ctx,
+            row,
+            "failed",
+            { lastError: "No burn was found on Polygon.", "polygon.relayerFinalAt": finalAt },
+            { spent: false, read: true },
+        );
+    } else {
+        await endWithoutBurn(ctx, row, { hash: null, finalAt });
+    }
+}
+
+/** Ends a confirmed batch that left no burn: the row is `stuck` and its pUSD counts as spent, since the unwrap may have run. */
+async function endWithoutBurn(
+    ctx: FlowContext,
+    row: PoolRebalanceDoc,
+    o: { hash: string | null; finalAt: Date },
+): Promise<void> {
+    const stuck = await settleDrain(ctx, row, "stuck", { "polygon.relayerFinalAt": o.finalAt }, { spent: true });
+    if (!stuck) return;
+    ctx.log.once(
+        `no-burn:${row._id}`,
+        "error",
+        { ...rowFields(stuck), hash: o.hash, relayerTransactionId: stuck.polygon.relayerTransactionId },
+        POOL_ERRORS.noBurn,
+    );
+}
+
+/** Follows a stored batch id: a final answer settles the row on what the Polygon receipt shows, a missing one after the window falls back to the burn scan. */
+async function trackDrain(ctx: FlowContext, row: PoolRebalanceDoc, id: string): Promise<void> {
+    const attemptedAt = row.polygon.attemptedAt ?? row.updatedAt;
+    let found: RelayerTransaction;
+    try {
+        found = await ctx.trader.transaction(id);
+    } catch (error) {
+        ctx.log.once(
+            `lookup:${row._id}`,
+            "warn",
+            { ...rowFields(row), err: error },
+            "Couldn't look up the drain batch, so a pool move waits",
+        );
+        if (windowOver(ctx, attemptedAt)) await scanForBurn(ctx, row, "failed");
+        return;
+    }
+    if (found.state === "pending") {
+        if (windowOver(ctx, attemptedAt)) await scanForBurn(ctx, row, "failed");
+        return;
+    }
+
+    // The batch is final, so the gate need not wait for it any longer
+    let current = row;
+    if (!row.polygon.relayerFinalAt) {
+        const marked = await write(
+            ctx,
+            row,
+            { "polygon.relayerFinalAt": new Date(ctx.now()) },
+            { "polygon.relayerFinalAt": null },
+        );
+        if (!marked) return;
+        current = marked;
+    }
+    const finalAt = current.polygon.relayerFinalAt!;
+    if (!found.hash) {
+        if (found.state === "confirmed") await scanForBurn(ctx, current, "stuck");
+        else
+            await settleDrain(
+                ctx,
+                current,
+                "failed",
+                { lastError: found.errorMsg ?? "The relayer failed." },
+                { spent: false, read: true },
+            );
+        return;
+    }
+
+    let log: Awaited<ReturnType<PoolTrader["burnLog"]>>;
+    try {
+        log = await ctx.trader.burnLog(found.hash as Hex);
+    } catch (error) {
+        ctx.log.once(
+            `receipt:${row._id}`,
+            "warn",
+            { ...rowFields(row), err: error, hash: found.hash },
+            "Couldn't read the drain batch's receipt, so a pool move waits",
+        );
+        return;
+    }
+    if (log && log.amountE6 === e6Of(current.amountE6)) {
+        await settleDrain(ctx, current, "forwarding", burnPatch(found.hash, finalAt), { spent: true });
+    } else if (found.state === "confirmed") {
+        await endWithoutBurn(ctx, current, { hash: found.hash, finalAt });
+    } else {
+        await settleDrain(
+            ctx,
+            current,
+            "failed",
+            { lastError: found.errorMsg ?? "The relayer failed." },
+            { spent: false, read: true },
+        );
+    }
+}
+
+/** A batch attempted but never answered with an id: after the window, the burn scan decides it. */
+async function decideUnknownDrain(ctx: FlowContext, row: PoolRebalanceDoc): Promise<void> {
+    if (!windowOver(ctx, row.polygon.attemptedAt!)) return;
+    await scanForBurn(ctx, row, "failed");
+}
+
+/** One step of a drain in `submitting`, by what the row stores: a batch id is tracked, an attempt without one waits out its window, a reserved row sends, and a reservation nothing in this process holds was never sent. */
+const drainSubmitting: Flow = async (ctx, row) => {
+    const id = row.polygon.relayerTransactionId;
+    if (id) await trackDrain(ctx, row, id);
+    else if (row.polygon.attemptedAt) await decideUnknownDrain(ctx, row);
+    else if (ctx.pendingSend.has(row._id.toString())) await sendDrain(ctx, row);
+    else {
+        // A row another process has since marked as attempted is not one that was never sent
+        await settleDrain(
+            ctx,
+            row,
+            "failed",
+            { lastError: NEVER_SENT },
+            { spent: false, also: { "polygon.attemptedAt": null } },
+        );
+    }
+};
+
+/** Follows a drain's burn in Iris (source domain 7); a complete forward stores what Circle reports, re-reads the pool's balance and ends the row `done`. */
+async function followDrain(ctx: FlowContext, row: PoolRebalanceDoc, burnTxHash: string): Promise<void> {
+    const message = await askIris(ctx, row, { domain: POLYGON_DOMAIN, burnTxHash });
+    if (message?.status !== "complete" || !message.forwardTxHash) return;
+    await forcedRead(ctx, row);
+    const moved = await ctx.move(row, "done", {
+        "iris.forwardTxHash": message.forwardTxHash,
+        "iris.feeExecutedE6": message.feeExecutedE6 === null ? null : toDecimal(message.feeExecutedE6),
+        "iris.delayReason": message.delayReason,
+    });
+    if (!moved) return;
+    ctx.irisSeen.delete(row._id.toString());
+    ctx.logger.info(
+        {
+            ...rowFields(moved),
+            forwardTxHash: message.forwardTxHash,
+            feeExecutedUSD: message.feeExecutedE6 === null ? null : formatE6(message.feeExecutedE6),
+        },
+        "Circle forwarded a pool drain",
+    );
+}
+
+const drainForwarding: Flow = async (ctx, row) => {
+    if (await markStuck(ctx, row)) return;
+    const burnTxHash = row.polygon.burnTxHash;
+    if (burnTxHash) await followDrain(ctx, row, burnTxHash);
+    else ctx.log.once(`no-hash:${row._id}`, "warn", rowFields(row), "A forwarding pool drain has no burn to follow");
+};
+
+/** A stuck drain with a burn is still followed; one that has none has nothing to follow and only logs. */
+const drainStuck: Flow = async (ctx, row) => {
+    logStuck(ctx, row);
+    const burnTxHash = row.polygon.burnTxHash;
+    if (burnTxHash) await followDrain(ctx, row, burnTxHash);
+};
+
 const topUpForwarding: Flow = async (ctx, row) => {
     if (await markStuck(ctx, row)) return;
     await followForward(ctx, row);
@@ -447,4 +766,7 @@ export const FLOWS: Record<string, Flow> = {
     "arc_to_polygon:stuck": topUpStuck,
     "wrap_idle:wrapping": wrapping,
     "wrap_idle:stuck": wrapStuck,
+    "polygon_to_arc:submitting": drainSubmitting,
+    "polygon_to_arc:forwarding": drainForwarding,
+    "polygon_to_arc:stuck": drainStuck,
 };
