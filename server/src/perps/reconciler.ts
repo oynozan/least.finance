@@ -34,6 +34,8 @@ type Deps = {
     withIndexLock: <T>(index: number, fn: () => Promise<T>) => Promise<T>;
     /** The wei held on Arc: the treasury and the deposit addresses not yet swept into it. */
     arcAssets: () => Promise<bigint>;
+    /** The pool's USDC in E6 (free float, idle wallet USDC, moves in flight); `stale` makes a shortfall a warning. */
+    poolAssets?: () => Promise<{ assetsE6: bigint; stale: boolean }>;
 };
 
 /** The Arc treasury plus every deposit address, in wei. */
@@ -199,7 +201,7 @@ export class PerpReconciler {
 
         let shortfallE6 = 0n;
         if (readable) {
-            const [arc, master, floatDoc, inFlight, owed] = await Promise.all([
+            const [arc, master, floatDoc, inFlight, owed, pool] = await Promise.all([
                 this.#deps.arcAssets(),
                 client.state(keyring.perpAddressAt(0)),
                 perpFloat.findOne({ _id: "hyperliquid" }),
@@ -209,6 +211,7 @@ export class PerpReconciler {
                         { $group: { _id: null, total: { $sum: "$balance" } } },
                     ])
                     .toArray(),
+                this.#deps.poolAssets?.() ?? { assetsE6: 0n, stale: false },
             ]);
             const fresh = inFlight.filter((row) => Date.now() - row.createdAt.getTime() < IN_FLIGHT_MAX_MS);
             for (const row of inFlight) {
@@ -228,17 +231,19 @@ export class PerpReconciler {
                 const open = (states.get(person.index)?.positions.length ?? 0) > 0;
                 peopleOursE6 += idle && !open ? value : value < retained ? value : retained;
             }
-            const assets = weiToE6(arc) + (master?.accountValueE6 ?? 0n) + peopleOursE6 + sentE6;
+            const assets = weiToE6(arc) + (master?.accountValueE6 ?? 0n) + peopleOursE6 + sentE6 + pool.assetsE6;
             const liabilities =
                 weiToE6(BigInt(owed[0]?.total.toString() ?? "0")) + (floatDoc ? fromDecimal(floatDoc.heldE6) : 0n);
             if (liabilities > assets) shortfallE6 = liabilities - assets;
             const tolerance = BigInt(Math.round(config.PERPS_RECONCILE_TOLERANCE_USD * 1e6));
             if (shortfallE6 > tolerance) {
-                logger.error(
+                logger[pool.stale ? "warn" : "error"](
                     {
                         shortfallE6: shortfallE6.toString(),
                         assetsE6: assets.toString(),
                         liabilitiesE6: liabilities.toString(),
+                        poolAssetsE6: pool.assetsE6.toString(),
+                        poolStale: pool.stale,
                     },
                     "Solvency shortfall: the assets don't cover what people are owed",
                 );

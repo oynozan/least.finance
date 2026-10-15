@@ -41,6 +41,7 @@ import { PredictionService } from "./predictions/predictions.ts";
 import { createPolymarketTrader } from "./predictions/polymarket-trader.ts";
 import { PredictionReconciler } from "./predictions/reconciler.ts";
 import { PredictionRedeemer } from "./predictions/redeemer.ts";
+import { poolAssets } from "./predictions/pool-assets.ts";
 import { PoolRebalancer, poolRowsOpen } from "./predictions/rebalancer.ts";
 import { RelayerGate } from "./predictions/relayer-gate.ts";
 import { PredictionResolver } from "./predictions/resolver.ts";
@@ -354,6 +355,11 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             logger: logger.child({ component: "perp-reconciler" }),
             withIndexLock: (index, fn) => perps.withIndexLock(index, fn),
             arcAssets: arcHoldings({ client, treasury: keyring.operator().address, collections }),
+            poolAssets: poolAssets({
+                collections,
+                trader: () => trader,
+                logger: logger.child({ component: "pool-assets" }),
+            }),
         });
         const sweeper = new Sweeper({
             client,
