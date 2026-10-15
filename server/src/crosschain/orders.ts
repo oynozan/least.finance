@@ -110,7 +110,10 @@ export class DepositOrders {
         return { order, txs: quote.txs, tables };
     }
 
-    /** Records the hashes the wallet sent; only a created order moves, and a repeat changes nothing. */
+    /**
+     * Records the hashes the wallet sent. A created order moves to sent, and so does an expired one whose wallet prompt was
+     * answered late; one the bridge already moved on keeps its state. Once hashes are recorded a repeat changes nothing.
+     */
     async reportSource(account: AccountDoc, orderId: string, txHashes: string[]): Promise<DepositOrderDoc> {
         const { depositOrders } = this.#deps.collections;
         const _id = new ObjectId(orderId);
@@ -133,8 +136,21 @@ export class DepositOrders {
         );
         try {
             const moved = await depositOrders.findOneAndUpdate(
-                { _id, accountId: account._id, state: "created" },
-                { $set: { state: "sent", sourceTxHashes: [...new Set(txHashes)], updatedAt: new Date() } },
+                {
+                    _id,
+                    accountId: account._id,
+                    state: { $in: ["created", "expired", "bridging"] },
+                    sourceTxHashes: { $size: 0 },
+                },
+                [
+                    {
+                        $set: {
+                            state: { $cond: [{ $eq: ["$state", "bridging"] }, "bridging", "sent"] },
+                            sourceTxHashes: { $literal: [...new Set(txHashes)] },
+                            updatedAt: new Date(),
+                        },
+                    },
+                ],
                 { returnDocument: "after" },
             );
             if (moved) {

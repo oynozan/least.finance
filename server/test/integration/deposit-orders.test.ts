@@ -347,6 +347,66 @@ test("reporting the source sends the order once", async () => {
     expect(sent[0]).toMatchObject({ id: created.data.order.id, state: "sent" });
 });
 
+test("a report that arrives after the order expired brings it back to sent", async () => {
+    const user = await stack.user();
+    const { socket } = await bind(user);
+    const created = await ask(socket, "ethereum:ETH", "0.1", user.wallet);
+    if (!created.ok) throw new Error(created.error.code);
+    const { depositOrders } = stack.server.services.database.collections;
+    await depositOrders.updateOne({ _id: new ObjectId(created.data.order.id) }, { $set: { state: "expired" } });
+    const progress: DepositOrderView[] = [];
+    socket.on("deposit:progress", ({ order }) => progress.push(order));
+
+    const report = await socket
+        .timeout(5000)
+        .emitWithAck("deposit:source", { orderId: created.data.order.id, txHashes: [HASH] });
+    expect(report).toMatchObject({ ok: true, data: { state: "sent", sourceTxHashes: [HASH] } });
+    expect(await depositOrders.findOne({ _id: new ObjectId(created.data.order.id) })).toMatchObject({
+        state: "sent",
+        sourceTxHashes: [HASH],
+    });
+    await expect.poll(() => progress.filter((order) => order.state === "sent").length).toBe(1);
+});
+
+test("a report that arrives after the bridge moved the order keeps its state and records the hashes once", async () => {
+    const user = await stack.user();
+    const { socket } = await bind(user);
+    const created = await ask(socket, "ethereum:ETH", "0.1", user.wallet);
+    if (!created.ok) throw new Error(created.error.code);
+    const { depositOrders } = stack.server.services.database.collections;
+    await depositOrders.updateOne({ _id: new ObjectId(created.data.order.id) }, { $set: { state: "bridging" } });
+    const progress: DepositOrderView[] = [];
+    socket.on("deposit:progress", ({ order }) => progress.push(order));
+
+    const first = await socket
+        .timeout(5000)
+        .emitWithAck("deposit:source", { orderId: created.data.order.id, txHashes: [HASH] });
+    expect(first).toMatchObject({ ok: true, data: { state: "bridging", sourceTxHashes: [HASH] } });
+    const second = await socket
+        .timeout(5000)
+        .emitWithAck("deposit:source", { orderId: created.data.order.id, txHashes: [`0x${"cd".repeat(32)}`] });
+    expect(second).toMatchObject({ ok: true, data: { state: "bridging", sourceTxHashes: [HASH] } });
+    expect(await depositOrders.findOne({ _id: new ObjectId(created.data.order.id) })).toMatchObject({
+        state: "bridging",
+        sourceTxHashes: [HASH],
+    });
+    await expect.poll(() => progress.filter((order) => order.sourceTxHashes.includes(HASH)).length).toBe(1);
+});
+
+test("a report doesn't touch an order that has already ended", async () => {
+    const user = await stack.user();
+    const { socket } = await bind(user);
+    const created = await ask(socket, "ethereum:ETH", "0.1", user.wallet);
+    if (!created.ok) throw new Error(created.error.code);
+    const { depositOrders } = stack.server.services.database.collections;
+    await depositOrders.updateOne({ _id: new ObjectId(created.data.order.id) }, { $set: { state: "failed" } });
+
+    const report = await socket
+        .timeout(5000)
+        .emitWithAck("deposit:source", { orderId: created.data.order.id, txHashes: [HASH] });
+    expect(report).toMatchObject({ ok: true, data: { state: "failed", sourceTxHashes: [] } });
+});
+
 test("another account's order is not found", async () => {
     const owner = await stack.user();
     const other = await stack.user();
