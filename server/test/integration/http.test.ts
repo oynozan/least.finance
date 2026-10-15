@@ -186,6 +186,7 @@ describe("opening accounts", () => {
             orders: [],
             withdrawals: [],
             solana: { deposits: false, withdrawals: false },
+            holdings: [],
         });
     });
 
