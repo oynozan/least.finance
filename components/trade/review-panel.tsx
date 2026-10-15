@@ -366,11 +366,19 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
               ? { ...view.preview, rows: perpQuoteRows(perpQuote, perp) }
               : view.preview;
 
+    // A trade waits for the prices it is made at; a perp for its quote.
+    const awaitingQuote = (!!spotIntent && !tradeRequest) || (perpLive && !perpQuote);
+    const blocked =
+        !confirmed &&
+        wallet.status !== "disconnected" &&
+        (!!view.blocking || wallet.status === "loading" || awaitingQuote || !!quoteRefused);
+
     const confirm = async () => {
         if (running) return;
         if (done) return onDone();
         if (wallet.status === "disconnected") return wallet.connect();
-        if (!view.intent || view.blocking) return;
+        // A grayed-out button does nothing
+        if (!view.intent || blocked) return;
         setKept({ text: view.text, intent: view.intent });
         if (spotIntent) {
             if (!tradeRequest) return;
@@ -418,12 +426,6 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             : view.blocking
               ? (view.blocking.cta ?? view.cta)
               : confirmLabel;
-    // A trade waits for the prices it is made at; a perp for its quote.
-    const awaitingQuote = (!!spotIntent && !tradeRequest) || (perpLive && !perpQuote);
-    const blocked =
-        !confirmed &&
-        wallet.status !== "disconnected" &&
-        (!!view.blocking || wallet.status === "loading" || awaitingQuote || !!quoteRefused);
     const swapNotice = perpError ?? quoteRefused;
 
     return (
