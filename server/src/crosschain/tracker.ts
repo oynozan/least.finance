@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ObjectId } from "mongodb";
 import type { Logger } from "pino";
-import { TransactionReceiptNotFoundError, type Hex } from "viem";
+import { TransactionNotFoundError, TransactionReceiptNotFoundError, type Hex, type PublicClient } from "viem";
 import type { Collections, DepositOrderDoc } from "../db/mongo.ts";
 import type { Bus } from "../events.ts";
 import type { OrderState } from "../protocol.ts";
@@ -120,12 +120,34 @@ export class OrderTracker {
         const chain = coinByKey(order.coin).chain;
         if (chain === "solana") return this.#checkSolanaSource(order, hash);
         if (chain !== "ethereum" && chain !== "bnb") return;
-        const receipt = await this.#deps.sources[chain].getTransactionReceipt({ hash }).catch((error: unknown) => {
+        const client = this.#deps.sources[chain];
+        const receipt = await this.#receipt(client, hash);
+        if (receipt) await this.#move(order, receipt.status === "success" ? "in_block" : "failed");
+        // A slow transaction can still be mined, so one with no receipt is followed until it is replaced or the order is given up on.
+        else if (this.#now() - order.updatedAt.getTime() > GIVE_UP_MS || (await this.#replaced(client, hash))) {
+            await this.#move(order, "failed");
+        }
+    }
+
+    /** The transaction's receipt, or null while the node has none. */
+    async #receipt(client: PublicClient, hash: Hex) {
+        return client.getTransactionReceipt({ hash }).catch((error: unknown) => {
             if (error instanceof TransactionReceiptNotFoundError) return null;
             throw error;
         });
-        if (receipt) await this.#move(order, receipt.status === "success" ? "in_block" : "failed");
-        else if (this.#now() - order.updatedAt.getTime() > this.#expiryMs) await this.#move(order, "failed");
+    }
+
+    /** True when the transaction is pending but its sender has since mined another one with the same nonce. */
+    async #replaced(client: PublicClient, hash: Hex) {
+        const tx = await client.getTransaction({ hash }).catch((error: unknown) => {
+            if (error instanceof TransactionNotFoundError) return null;
+            throw error;
+        });
+        // A node that doesn't know it may just not have heard of it yet, so that isn't proof.
+        if (!tx || tx.blockNumber !== null) return false;
+        if ((await client.getTransactionCount({ address: tx.from })) <= tx.nonce) return false;
+        // The nonce may have been spent by this very transaction landing since the receipt was read.
+        return (await this.#receipt(client, hash)) === null;
     }
 
     /** A confirmed or finalized signature is in a block; one that errored failed; an unknown one fails once it is old. */

@@ -2,8 +2,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ObjectId } from "mongodb";
 import { pino } from "pino";
 import { base58 } from "@scure/base";
+import { TransactionNotFoundError, TransactionReceiptNotFoundError } from "viem";
 import { afterAll, beforeAll, describe, expect, inject, test, vi } from "vitest";
-import { createSourceClients } from "../../src/crosschain/chains.ts";
+import { createSourceClients, type SourceClients } from "../../src/crosschain/chains.ts";
 import { OrderTracker } from "../../src/crosschain/tracker.ts";
 import { formatUsdc, fromDecimal } from "../../src/db/money.ts";
 import type { Ack, DepositOrderView, OrderState, SourceTxView, WalletSession } from "../../src/protocol.ts";
@@ -15,6 +16,7 @@ const ethereum = sourceChain(inject("ethereumUrl"), 1);
 const bnb = sourceChain(inject("bnbUrl"), 56);
 const HASH = `0x${"ab".repeat(32)}` as const;
 const DAY_MS = 86_400_000;
+const SENDER = "0x1111111111111111111111111111111111111111";
 
 let stack: Stack;
 beforeAll(async () => {
@@ -185,16 +187,110 @@ test("an unreported order expires", async () => {
     }
 });
 
-test("a source transaction that never lands fails the order", async () => {
+test("a source transaction that never lands fails the order once the give-up horizon has passed", async () => {
     const user = await stack.user();
     const placed = await place(user, stack, "ethereum:ETH", "0.1");
     await placed.report([HASH]);
     await expect.poll(async () => (await placed.state()).state).toBe("sent");
     await db().depositOrders.updateOne(
         { _id: new ObjectId(placed.order.id) },
-        { $set: { updatedAt: new Date(Date.now() - DAY_MS) } },
+        { $set: { updatedAt: new Date(Date.now() - DAY_MS - 60_000) } },
     );
     await expect.poll(inState(placed, "failed")).toBe(true);
+});
+
+describe("an EVM source transaction with no receipt yet", () => {
+    /** What a node says about the one transaction: its receipt, the pending transaction if it holds it, and the sender's mined count. */
+    const node = {
+        receipt: null as { status: "success" | "reverted" } | null,
+        tx: null as { from: string; nonce: number; blockNumber: null } | null,
+        count: 0,
+        /** Runs when the count is read. */
+        onCount: () => {},
+    };
+    const sources = (() => {
+        const client = {
+            getTransactionReceipt: async () => {
+                if (node.receipt) return node.receipt;
+                throw new TransactionReceiptNotFoundError({ hash: HASH });
+            },
+            getTransaction: async () => {
+                if (node.tx) return node.tx;
+                throw new TransactionNotFoundError({ hash: HASH });
+            },
+            getTransactionCount: async () => {
+                node.onCount();
+                return node.count;
+            },
+        };
+        return { ethereum: client, bnb: client } as unknown as SourceClients;
+    })();
+
+    /** A reported order, 11 minutes since the wallet reported it. */
+    async function reported() {
+        node.receipt = null;
+        node.tx = null;
+        node.count = 0;
+        node.onCount = () => {};
+        const stepped = await steppedTracker(sources);
+        const user = await stepped.slow.user();
+        const placed = await place(user, stepped.slow, "ethereum:ETH", "0.1");
+        await placed.report([HASH]);
+        await expect.poll(inState(placed, "sent")).toBe(true);
+        await stepped.slow.server.services.database.collections.depositOrders.updateOne(
+            { _id: new ObjectId(placed.order.id) },
+            { $set: { updatedAt: new Date(stepped.base - 11 * 60_000) } },
+        );
+        return { ...stepped, placed };
+    }
+
+    test("is still followed after ten minutes, and counted when it lands", async () => {
+        const { slow, tracker, placed } = await reported();
+        try {
+            await tracker.tick();
+            expect((await placed.state()).state).toBe("sent");
+
+            node.receipt = { status: "success" };
+            await tracker.tick();
+            expect((await placed.state()).state).toBe("in_block");
+        } finally {
+            await slow.stop();
+        }
+    });
+
+    test("whose sender has moved past its nonce was replaced, and fails the order", async () => {
+        const { slow, tracker, placed } = await reported();
+        try {
+            node.tx = { from: SENDER, nonce: 5, blockNumber: null };
+            node.count = 5;
+            await tracker.tick();
+            expect((await placed.state()).state).toBe("sent");
+
+            node.count = 6;
+            await tracker.tick();
+            expect((await placed.state()).state).toBe("failed");
+        } finally {
+            await slow.stop();
+        }
+    });
+
+    test("that lands while its nonce is being checked is not taken for a replaced one", async () => {
+        const { slow, tracker, placed } = await reported();
+        try {
+            node.tx = { from: SENDER, nonce: 5, blockNumber: null };
+            node.count = 6;
+            node.onCount = () => {
+                node.receipt = { status: "success" };
+            };
+            await tracker.tick();
+            expect((await placed.state()).state).toBe("sent");
+
+            await tracker.tick();
+            expect((await placed.state()).state).toBe("in_block");
+        } finally {
+            await slow.stop();
+        }
+    });
 });
 
 test("a failing status call leaves the order as it was", async () => {
@@ -235,7 +331,7 @@ test("a failing status call leaves the order as it was", async () => {
 });
 
 /** A server whose own tracker sleeps, and a tracker of ours that runs on a clock the test sets. */
-async function steppedTracker() {
+async function steppedTracker(sources?: SourceClients) {
     const slow = await startStack({
         mongoUri: inject("mongoUri"),
         anvilUrl: inject("anvilUrl"),
@@ -246,7 +342,7 @@ async function steppedTracker() {
     const tracker = new OrderTracker({
         collections: slow.server.services.database.collections,
         providers: [slow.bridge],
-        sources: createSourceClients({ ethereum: [inject("ethereumUrl")], bnb: [inject("bnbUrl")] }),
+        sources: sources ?? createSourceClients({ ethereum: [inject("ethereumUrl")], bnb: [inject("bnbUrl")] }),
         solana: slow.server.services.solana,
         bus: slow.server.services.bus,
         logger: pino({ level: "silent" }),
