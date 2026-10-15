@@ -13,7 +13,9 @@ import { formatUsdc } from "../db/money.ts";
 import { withdrawalView } from "../withdrawals/views.ts";
 import { AppError, isAppError, toApiError } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
+import { listHoldings } from "../trading/holdings.ts";
 import { isTradeError } from "../trading/trades.ts";
+import { coinWithdrawalView } from "../trading/views.ts";
 import type { HoldingView, TradeView, TradingAck, TradingErrorCode } from "../trading/types.ts";
 import type { Services } from "../services.ts";
 import {
@@ -445,7 +447,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 pushTrading(account._id, account.privyUserId, {
                     holdings: result.holdings,
                     trade: result.trade,
-                    moves: result.trade.verb === "sell",
+                    moves: true,
                 });
                 return { ok: true as const, ...result };
             }),
@@ -635,6 +637,27 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 }
             } catch (error) {
                 logger.warn({ err: error }, "Couldn't push a settled position");
+            }
+        });
+    });
+
+    bus.on("coin-withdrawal:updated", ({ withdrawal, refunded }) => {
+        enqueue(withdrawal.accountId.toHexString(), async () => {
+            try {
+                const room = roomOf(withdrawal.accountId);
+                const owner = await services.accounts.findById(withdrawal.accountId);
+                if (!owner) return;
+                const holdings = refunded ? await listHoldings(services.database.collections, owner._id) : null;
+                for (const socket of await io.in(room).fetchSockets()) {
+                    if (socket.data.identity.userId !== owner.privyUserId) {
+                        socket.leave(room);
+                        continue;
+                    }
+                    socket.emit("holding:withdrawal", coinWithdrawalView(withdrawal));
+                    if (holdings) socket.emit("holdings:update", { holdings });
+                }
+            } catch (error) {
+                logger.warn({ err: error }, "Couldn't push a coin withdrawal");
             }
         });
     });

@@ -13,6 +13,7 @@ import type {
     WithdrawalDoc,
 } from "./db/mongo.ts";
 import type { BalancesView, SwapHoldingsView } from "./protocol.ts";
+import type { CoinWithdrawalDoc } from "./trading/docs.ts";
 
 type Events = {
     /** Fired once per deposit, after its transaction commits. */
@@ -33,6 +34,8 @@ type Events = {
     "position:settled": [{ position: PositionDoc; account: AccountDoc }];
     /** Fired when a withdrawal is created or changes state. */
     "withdrawal:updated": [{ withdrawal: WithdrawalDoc; account: AccountDoc | null }];
+    /** Fired when a coin withdrawal is sent or fails; `refunded` is true when its units went back to the holding. */
+    "coin-withdrawal:updated": [{ withdrawal: CoinWithdrawalDoc; refunded: boolean }];
     /** Fired when a pool rebalance is queued or changes state. */
     "pool-rebalance:updated": [{ rebalance: PoolRebalanceDoc }];
 };

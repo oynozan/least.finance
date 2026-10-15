@@ -53,6 +53,7 @@ import { createApp } from "./http/app.ts";
 import type { Services } from "./services.ts";
 import { Sessions } from "./sessions.ts";
 import { SwapCatalog } from "./swaps/catalog.ts";
+import { createTradingExecution } from "./trading/execution.ts";
 import { TradeService } from "./trading/trades.ts";
 import { createSwapClients } from "./swaps/clients.ts";
 import { SwapHoldings, multicallReader, solanaReader } from "./swaps/holdings.ts";
@@ -445,6 +446,16 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             catalog: swapCatalog,
             coinWithdrawals: config.COIN_WITHDRAWALS === "on",
         });
+        const execution = createTradingExecution({
+            config,
+            keyring,
+            database,
+            lifi,
+            clients: swapClients,
+            solana,
+            logger: logger.child({ component: "trading" }),
+            onWithdrawal: (withdrawal, refunded) => bus.emit("coin-withdrawal:updated", { withdrawal, refunded }),
+        });
         // Connects the trader when a redemption or position needs it, once, and not while a retry is waiting
         const ensureTrader = () => {
             if (!trader && !connecting && !closed) connectTrader();
@@ -503,6 +514,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         predictionRedeemer.start();
         predictionReconciler.start();
         poolRebalancer?.start();
+        execution.start();
         // Posted orders, unconfirmed redemptions and open pool moves need the trader even once trading is switched off
         const [posted, redeeming, moving] = await Promise.all([
             collections.predictionOrders.countDocuments({ state: "posted" }),
@@ -524,6 +536,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 service.stopOrders();
                 perps.stopOrders();
                 if (connecting) clearTimeout(connecting);
+                await execution.stop();
                 await poolRebalancer?.stop();
                 await predictionReconciler.stop();
                 await predictionRedeemer.stop();
