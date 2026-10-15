@@ -29,6 +29,7 @@ import { useAccount } from "./account-provider";
 import {
     depositWalletAddress,
     linkedWallets,
+    solanaWalletAddress,
     useActiveWallet,
     useLinkOtherWallet,
     useUsdcBalance,
@@ -47,6 +48,7 @@ import {
     type DepositEntry,
     type WithdrawalEntry,
 } from "./history-entries";
+import { HoldingsList } from "./holdings-list";
 import { DepositProgress, isOutcome, isRunning, shownOrder } from "./deposit-progress";
 import { CloseIcon, PlusIcon, PowerIcon } from "./icons";
 import { NetworkLogo } from "./network-icons";
@@ -160,7 +162,12 @@ function SignedInWallet() {
 
     // Predictions and perps are the positions that stay open: swaps settle at once.
     const { predictions, perps, optimisticTrades } = account;
-    const { known } = useTrade();
+    const { known, catalog } = useTrade();
+    const priceOf = (symbol: string) => catalog.tokens.find((t) => t.symbol === symbol)?.priceUSD ?? null;
+    const sendWallets = {
+        evm: user ? depositWalletAddress(user, active) : undefined,
+        solana: user ? solanaWalletAddress(user, active) : undefined,
+    };
     // Moves on whenever the sidebar opens; a clock read while rendering can't be prerendered.
     const [clock, setClock] = useState(0);
     useEffect(() => {
@@ -249,6 +256,13 @@ function SignedInWallet() {
 
             <div className={styles.positionsFrame}>
                 <div ref={trackScrollEdges} className={styles.positionsScroller}>
+                    <HoldingsList
+                        holdings={account.holdings}
+                        priceOf={priceOf}
+                        wallets={sendWallets}
+                        withdrawals={account.coinWithdrawals}
+                        onSend={account.withdrawHolding}
+                    />
                     <motion.ul
                         key={`positions-${openings}`}
                         className={styles.positions}
