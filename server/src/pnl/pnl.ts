@@ -10,6 +10,7 @@ import type {
 } from "../db/mongo.ts";
 import { fromDecimal } from "../db/money.ts";
 import type { PnlSeries } from "../protocol.ts";
+import { BASIS_FIELDS, realizedByTrade, type BasisTrade } from "./basis.ts";
 import { buildRanges, type DayTotals } from "./series.ts";
 import { zoneOf } from "./zones.ts";
 
@@ -59,8 +60,8 @@ export class PnlService {
 
     async #run(accountId: ObjectId, tz: string, now: number): Promise<PnlSeries> {
         const started = performance.now();
-        const { deposits, withdrawals, positions, predictionOrders, perpPositions } = this.#collections;
-        const [depositRows, withdrawalRows, positionRows, saleRows, perpRows] = await Promise.all([
+        const { deposits, withdrawals, positions, predictionOrders, perpPositions, trades } = this.#collections;
+        const [depositRows, withdrawalRows, positionRows, saleRows, perpRows, tradeRows] = await Promise.all([
             read(() =>
                 deposits
                     .find({ accountId })
@@ -92,6 +93,7 @@ export class PnlService {
                     .find({ accountId, state: { $in: ["closed", "liquidated"] } })
                     .project<PerpRow>({ _id: 0, collateral: 1, proceeds: 1, settledAt: 1, updatedAt: 1 }),
             ),
+            read(() => trades.find({ accountId }).project<BasisTrade>(BASIS_FIELDS)),
         ]);
 
         const zone = zoneOf(tz);
@@ -110,6 +112,9 @@ export class PnlService {
         }
         for (const row of perpRows)
             add(row.settledAt ?? row.updatedAt, 0n, wei(row.proceeds) - fromDecimal(row.collateral));
+        // A buy moves cash into a holding at cost, so only a sell or swap adds to the balance, by its realized PnL
+        const realized = realizedByTrade(tradeRows);
+        for (const row of tradeRows) add(row.createdAt, 0n, realized.get(row._id.toHexString()) ?? 0n);
 
         const series: PnlSeries = { tz: zone.tz, ranges: buildRanges(days, zone.dateOf(now)) };
         this.#logger.info(

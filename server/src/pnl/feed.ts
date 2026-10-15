@@ -7,8 +7,10 @@ import { perpPositionView } from "../perps/views.ts";
 import { orderView, positionView } from "../predictions/views.ts";
 import type { ActivityFilter, ActivityItem, ActivityPage } from "../protocol.ts";
 import { swapOrderView } from "../swaps/views.ts";
+import { formatUnits18 } from "../trading/units.ts";
 import { tradeView } from "../trading/views.ts";
 import { withdrawalView } from "../withdrawals/views.ts";
+import { BASIS_FIELDS, realizedByTrade, type BasisTrade } from "./basis.ts";
 
 const DEFAULT_LIMIT = 50;
 const MAX_DATE_MS = 8.64e15;
@@ -199,15 +201,29 @@ const SOURCES: Source[] = [
     {
         name: "trades",
         group: "trades",
-        read: (ask, rank) =>
-            newest(
+        read: async (ask, rank) => {
+            const rows = await newest(
                 ask,
                 rank,
                 "createdAt",
                 (bound) => ask.collections.trades.find({ accountId: ask.accountId, ...bound }),
                 (doc) => doc.createdAt,
                 (doc, at) => ({ kind: "trade", at, trade: tradeView(doc) }),
-            ),
+            );
+            if (rows.length === 0) return rows;
+            // A sell's or swap's PnL needs the average cost built from every earlier trade of the account
+            const realized = realizedByTrade(
+                await ask.collections.trades
+                    .find({ accountId: ask.accountId })
+                    .project<BasisTrade>(BASIS_FIELDS)
+                    .toArray(),
+            );
+            return rows.map(({ key, item }) => {
+                const gain = realized.get(key.id);
+                if (item.kind !== "trade" || gain === undefined) return { key, item };
+                return { key, item: { ...item, trade: { ...item.trade, realized: formatUnits18(gain) } } };
+            });
+        },
     },
 ];
 

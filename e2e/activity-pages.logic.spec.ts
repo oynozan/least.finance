@@ -178,6 +178,22 @@ test.describe("mapping", () => {
         expect(itemKey({ kind: "trade", at: trade.at, trade })).toBe(`trade:${hex(9)}`);
     });
 
+    test("a sell or swap row carries its realized PnL as the change", () => {
+        const trade = {
+            id: hex(9),
+            requestId: "r9",
+            verb: "sell" as const,
+            paidSymbol: "BNB",
+            paidUnits: "0.5",
+            gotSymbol: "USDC",
+            gotUnits: "250",
+            usd: "250",
+            realized: "-12.5",
+            at: iso(NOW.getTime() - 1000),
+        };
+        expect(activityFromItem({ kind: "trade", at: trade.at, trade }, ctx)).toMatchObject({ change: -12.5 });
+    });
+
     test("each part maps to the same Activity id the live rows use", () => {
         const p = position(1);
         const perpPos = perp(2);

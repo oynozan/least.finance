@@ -186,7 +186,7 @@ export function saleActivity(order: PredictionOrderView): Activity | null {
     };
 }
 
-/** A Buy, Sell or Swap from the balance: what was paid and what arrived, with no change to the balance beyond the trade itself. */
+/** A Buy, Sell or Swap from the balance: what was paid and what arrived, with the PnL a sell or swap realized as its change. */
 export function tradeActivity(trade: TradeView): Activity {
     const paid = Number(trade.paidUnits);
     const got = Number(trade.gotUnits);
@@ -203,7 +203,7 @@ export function tradeActivity(trade: TradeView): Activity {
         detail: `${formatUnits(paid, trade.paidSymbol)} for ${formatUnits(got, trade.gotSymbol)}`,
         symbols: trade.verb === "swap" ? [trade.paidSymbol, trade.gotSymbol] : [coin],
         amountUSD: Number(trade.usd),
-        change: 0,
+        change: Number(trade.realized ?? 0),
     };
 }
 

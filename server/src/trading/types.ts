@@ -40,6 +40,8 @@ export type TradeView = {
     gotUnits: string;
     /** The dollar value of the trade at the fill price. */
     usd: string;
+    /** The PnL a sell or swap realized, in dollars; only on activity rows, and never on a buy. */
+    realized?: string;
     at: string;
 };
 
