@@ -168,18 +168,19 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
 
         async transfers(address, sinceMs): Promise<Transfer[]> {
             const raw = await info.userNonFundingLedgerUpdates({ user: address as `0x${string}`, startTime: sinceMs });
-            return raw.flatMap(({ time, delta }) =>
-                delta.type === "send" && delta.token === "USDC"
-                    ? [
-                          {
-                              from: delta.user.toLowerCase(),
-                              to: delta.destination.toLowerCase(),
-                              amountE6: toE6(delta.amount),
-                              time,
-                          },
-                      ]
-                    : [],
-            );
+            return raw.flatMap(({ time, delta }) => {
+                // A usdSend, which is what this code signs, is recorded as an internalTransfer; a sendAsset leaves a send
+                if (delta.type !== "internalTransfer" && !(delta.type === "send" && delta.token === "USDC")) return [];
+                const amount = delta.type === "send" ? delta.amount : delta.usdc;
+                return [
+                    {
+                        from: delta.user.toLowerCase(),
+                        to: delta.destination.toLowerCase(),
+                        amountE6: toE6(amount),
+                        time,
+                    },
+                ];
+            });
         },
 
         async usdSend(from, to, amountE6, nonce): Promise<UsdSendResult> {

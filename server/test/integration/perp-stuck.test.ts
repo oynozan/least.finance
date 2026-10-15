@@ -146,6 +146,35 @@ test("a duplicate answer after a refused send with the same nonce is not taken a
     expect(toMaster[0]!.amountE6).toBe(swept);
 });
 
+test("a plain refusal of a sweep that already landed is taken as landed from the ledger", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.fake.nextOrder({ partial: "0.003" });
+    h.fake.nextUsdSend(2, { late: 900 });
+    h.fake.nextUsdSend(3, "refuse");
+
+    const { order } = await h.place(account);
+    await h.until(async () => (await h.orderOf(order._id)).state === "sweeping" && !h.service.submitting(order._id));
+    const stuck = await h.orderOf(order._id);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const address = await h.addressOf(account._id);
+    const planned = BigInt(stuck.steps.sweepE6 as string);
+    expect(h.fake.usdSends.filter((send) => send.to === h.master)).toHaveLength(1);
+
+    // The repeat of the stored nonce is refused outright, though the original is on the ledger
+    await h.service.retrySweep(stuck);
+
+    const done = await h.orderOf(order._id);
+    expect(done.state).toBe("filled");
+    expect(done.steps.sweepNonce).toBe(stuck.steps.sweepNonce);
+    expect(fromDecimal(done.credited!)).toBe(planned * 10n ** 12n);
+    expect(h.fake.usdSends.filter((send) => send.to === h.master)).toHaveLength(1);
+    expect(h.fake.account(address)!.freeE6).toBe(0n);
+    const s = await h.state(account._id);
+    expect(s.kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
+    expect(s.sum).toBe(s.balance);
+});
+
 test("an order missing on the first lookup stays posted until its expiry, then settles from fills", async () => {
     const h = await fresh();
     const account = await h.seedAccount("1000");

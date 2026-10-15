@@ -724,9 +724,8 @@ export class PerpService {
                 landed = await this.#landed(signer.address, this.#master, sweepE6, since);
             else {
                 const sent = await this.#deps.client.usdSend(signer, this.#master, sweepE6, nonce);
-                landed =
-                    sent.kind === "ok" ||
-                    (sent.kind === "duplicate" && (await this.#landed(signer.address, this.#master, sweepE6, since)));
+                // A repeat of a send that landed is answered duplicate or plainly refused, so any other answer is checked on the ledger
+                landed = sent.kind === "ok" || (await this.#landed(signer.address, this.#master, sweepE6, since));
             }
             if (landed) return order;
             // A re-planned sweep is sent once now; if it is refused too, the tracker plans it again

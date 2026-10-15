@@ -188,6 +188,16 @@ describe("usdSend", () => {
     });
 });
 
+describe("transfers", () => {
+    it("a usdSend is listed for both accounts, as mainnet records it", async () => {
+        await client.usdSend(master, person.address, 5_000_000n, nextNonce(master.address));
+        const sent = { from: master.address.toLowerCase(), to: person.address.toLowerCase(), amountE6: 5_000_000n };
+        expect(await client.transfers(master.address, 0)).toMatchObject([sent]);
+        expect(await client.transfers(person.address, 0)).toMatchObject([sent]);
+        expect(await client.transfers(stranger.address, 0)).toEqual([]);
+    });
+});
+
 describe("nextNonce", () => {
     it("nextNonce is strictly increasing within one millisecond", () => {
         const seen = Array.from({ length: 50 }, () => nextNonce("0xAbC"));
@@ -236,6 +246,56 @@ describe("recorded responses", () => {
             cumFundingE6: 2_000n,
             marginUsedE6: 19_999_142n,
         });
+    });
+
+    it("a ledger lists an internalTransfer and a USDC send, and skips the rest", async () => {
+        const hash = `0x${"0".repeat(64)}`;
+        const a = master.address;
+        const b = person.address;
+        const { raw, stop } = await against(() => [
+            { time: 1, hash, delta: { type: "internalTransfer", usdc: "12.5", user: a, destination: b, fee: "1.0" } },
+            {
+                time: 2,
+                hash,
+                delta: {
+                    type: "send",
+                    user: b,
+                    destination: a,
+                    sourceDex: "",
+                    destinationDex: "",
+                    token: "USDC",
+                    amount: "3.25",
+                    usdcValue: "3.25",
+                    fee: "0.0",
+                    nativeTokenFee: "0.0",
+                    nonce: null,
+                },
+            },
+            {
+                time: 3,
+                hash,
+                delta: {
+                    type: "send",
+                    user: b,
+                    destination: a,
+                    sourceDex: "",
+                    destinationDex: "",
+                    token: "HYPE",
+                    amount: "9",
+                    usdcValue: "9",
+                    fee: "0.0",
+                    nativeTokenFee: "0.0",
+                    nonce: null,
+                },
+            },
+            { time: 4, hash, delta: { type: "deposit", usdc: "100.0" } },
+        ]);
+        const sent = await raw.transfers(a, 0);
+        stop();
+        expect(sent).toEqual([
+            { from: a.toLowerCase(), to: b.toLowerCase(), amountE6: 12_500_000n, time: 1 },
+            { from: b.toLowerCase(), to: a.toLowerCase(), amountE6: 3_250_000n, time: 2 },
+        ]);
     });
 
     it("recorded fills parse with the liquidation marker and the cloid", async () => {

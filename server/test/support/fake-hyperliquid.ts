@@ -468,18 +468,13 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
                     .map((t) => ({
                         time: t.time,
                         hash: `0x${"0".repeat(64)}`,
+                        // Mainnet records a usdSend as an internalTransfer; "send" is what sendAsset leaves
                         delta: {
-                            type: "send",
+                            type: "internalTransfer",
+                            usdc: usd(t.amountE6),
                             user: t.from,
                             destination: t.to,
-                            sourceDex: "",
-                            destinationDex: "",
-                            token: "USDC",
-                            amount: usd(t.amountE6),
-                            usdcValue: usd(t.amountE6),
                             fee: "0.0",
-                            nativeTokenFee: "0.0",
-                            nonce: null,
                         },
                     })),
             );
