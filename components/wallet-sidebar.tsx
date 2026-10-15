@@ -135,6 +135,35 @@ function marketOf(position: Position, known: ReadonlyMap<string, MarketView>) {
 }
 
 /** The sidebar's content. Renders nothing until a wallet is signed in. */
+const COPIED_MS = 1500;
+
+/** The connected address, short: clicking copies it whole, and it reads "Copied" for a moment. */
+function CopyAddress({ address, children }: { address: string; children: ReactNode }) {
+    const [copied, setCopied] = useState(false);
+    useEffect(() => {
+        if (!copied) return;
+        const timer = setTimeout(() => setCopied(false), COPIED_MS);
+        return () => clearTimeout(timer);
+    }, [copied]);
+    return (
+        <button
+            type="button"
+            className={styles.copyAddress}
+            title="Copy address"
+            aria-label="Copy address"
+            onClick={() =>
+                void navigator.clipboard?.writeText(address).then(
+                    () => setCopied(true),
+                    () => undefined,
+                )
+            }
+        >
+            {children}
+            <span aria-live="polite">{copied ? "Copied" : shortenAddress(address)}</span>
+        </button>
+    );
+}
+
 export function WalletSidebar() {
     if (!walletEnabled) return null;
     return <SignedInWallet />;
@@ -202,8 +231,9 @@ function SignedInWallet() {
             <header className={styles.header}>
                 {address && (
                     <span className={styles.account}>
-                        <NetworkLogo network={network} className={styles.networkLogo} />
-                        {shortenAddress(address)}
+                        <CopyAddress address={address}>
+                            <NetworkLogo network={network} className={styles.networkLogo} />
+                        </CopyAddress>
                     </span>
                 )}
                 <IconButton label="Connect another wallet" onClick={() => linkOther(otherKind)}>

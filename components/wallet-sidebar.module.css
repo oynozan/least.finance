@@ -17,6 +17,31 @@
     font-variant-numeric: tabular-nums;
 }
 
+.copyAddress {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    border-radius: 999px;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    outline: 2px solid transparent;
+    outline-offset: 4px;
+    transition: color 160ms ease;
+}
+
+.copyAddress:focus-visible {
+    color: var(--foreground);
+    outline-color: var(--muted);
+}
+
+@media (hover: hover) {
+    .copyAddress:hover {
+        color: var(--foreground);
+    }
+}
+
 /* The account lives on Arc: its mark stands where an avatar would. */
 .networkLogo {
     flex-shrink: 0;
