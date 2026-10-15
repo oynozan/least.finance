@@ -10,7 +10,13 @@
         "test:e2e": "playwright test",
         "test:logic": "LOGIC_ONLY=1 playwright test --project=logic",
         "format": "prettier --write .",
-        "format:check": "prettier --check ."
+        "format:check": "prettier --check .",
+        "pm2:start": "npm run build && npx pm2 start ecosystem.config.cjs",
+        "pm2:web": "npm run build && npx pm2 start ecosystem.config.cjs --only least-web",
+        "pm2:restart": "npm run build && npx pm2 reload ecosystem.config.cjs",
+        "pm2:stop": "npx pm2 stop ecosystem.config.cjs",
+        "pm2:logs": "npx pm2 logs",
+        "pm2:status": "npx pm2 status"
     },
     "dependencies": {
         "@number-flow/react": "0.6.2",

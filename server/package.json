@@ -16,7 +16,11 @@
         "mnemonic": "node scripts/mnemonic.ts",
         "db:up": "docker compose -p trade-everything up -d --wait",
         "db:down": "docker compose -p trade-everything down",
-        "test:e2e-backend": "node test/e2e/serve.ts"
+        "test:e2e-backend": "node test/e2e/serve.ts",
+        "pm2:start": "npx pm2 start ../ecosystem.config.cjs --only least-server",
+        "pm2:restart": "npx pm2 reload ../ecosystem.config.cjs --only least-server",
+        "pm2:stop": "npx pm2 stop least-server",
+        "pm2:logs": "npx pm2 logs least-server"
     },
     "dependencies": {
         "@nktkas/hyperliquid": "0.33.3",
