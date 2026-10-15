@@ -15,7 +15,15 @@ const eslintConfig = defineConfig([
         // Playwright output.
         "playwright-report/**",
         "test-results/**",
+        // Other branches' worktrees and local agent tooling, both gitignored.
+        ".worktrees/**",
+        ".superpowers/**",
     ]),
+    {
+        // pm2 reads its ecosystem file as CommonJS.
+        files: ["**/*.cjs"],
+        rules: { "@typescript-eslint/no-require-imports": "off" },
+    },
     {
         // Server tests read loosely typed JSON responses all over.
         files: ["server/test/**/*.ts"],
