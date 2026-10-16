@@ -14,10 +14,14 @@ export type LifiQuoteRequest = {
     fromAddress: string;
     toAddress: string;
     fromAmount: string;
-    slippage: number;
+    /** Left out, LI.FI picks the slippage for the tokens in the route. */
+    slippage?: number;
     integrator: string;
     fee?: number;
 };
+
+/** The most slippage in a quote that we accept, whoever chose it. */
+export const MAX_QUOTE_SLIPPAGE = 0.02;
 
 export type LifiQuote = {
     id: string;
@@ -32,6 +36,8 @@ export type LifiQuote = {
     fromAmount: string;
     toAmount: string;
     toAmountMin: string;
+    /** The slippage built into `toAmountMin`: the one asked for, or the one LI.FI chose. */
+    slippage: number;
     approvalAddress: string | null;
     skipApproval: boolean;
     etaSeconds: number;
@@ -97,6 +103,7 @@ const rawQuote = z.object({
         fromAddress: z.string().min(1),
         toAddress: z.string().min(1),
         fromAmount: amount,
+        slippage: z.number().optional(),
     }),
     estimate: z.object({
         toAmount: amount,
@@ -161,6 +168,13 @@ function decimalValue(value: string | undefined): string {
     } catch {
         throw new Error(`LI.FI sent an unreadable transaction value ${value}`);
     }
+}
+
+// A quote that doesn't name its slippage carries the one that toAmountMin sits under toAmount by
+function shortfall(toAmount: string, toAmountMin: string): number {
+    const expected = Number(toAmount);
+    const least = Number(toAmountMin);
+    return expected > 0 && Number.isFinite(least) ? Math.max(0, 1 - least / expected) : 0;
 }
 
 const rawToken = z.object({
@@ -259,7 +273,7 @@ export function createLifi(options: {
                 fromAddress: req.fromAddress,
                 toAddress: req.toAddress,
                 fromAmount: req.fromAmount,
-                slippage: String(req.slippage),
+                ...(req.slippage !== undefined && { slippage: String(req.slippage) }),
                 integrator: req.integrator,
             });
             if (req.fee !== undefined && req.fee > 0) params.set("fee", String(req.fee));
@@ -304,6 +318,7 @@ export function createLifi(options: {
                 fromAmount: action.fromAmount,
                 toAmount: estimate.toAmount,
                 toAmountMin: estimate.toAmountMin,
+                slippage: action.slippage ?? shortfall(estimate.toAmount, estimate.toAmountMin),
                 approvalAddress: estimate.approvalAddress ?? null,
                 skipApproval: estimate.skipApproval ?? false,
                 etaSeconds: estimate.executionDuration ?? 0,

@@ -16,7 +16,7 @@ export type FakeLifi = {
     keys: (string | null)[];
     /** Answers the next request to this path with a 500. */
     failNext(path: "/v1/tokens" | "/v1/chains" | "/v1/quote" | "/v1/status"): void;
-    /** Every quote request served, as the client sent it. */
+    /** Every quote request served, as the client sent it; a request that named no slippage has none here, and its quote carries 0.6%. */
     quotes: LifiQuoteRequest[];
     /** Merges this into the next raw quote, nested objects included; with `fromAddress`, into the next one that wallet asks for. */
     nextQuote(patch: Record<string, any>, fromAddress?: string): void;
@@ -59,6 +59,8 @@ function solanaTxFor(wallet: string): string {
 
 // The fee LI.FI keeps from a swap, in basis points
 const FEE_BPS = 25n;
+// What Smart Slippage picks for a request that names no slippage; LI.FI's own pick is 0.5% to 1% on the routes we use
+const SMART_SLIPPAGE = 0.006;
 const MICRO = 1_000_000;
 
 /** Stands in for LI.FI's API, serving the recorded token list. */
@@ -105,6 +107,8 @@ export async function startFakeLifi(options: { prices?: Record<string, number> }
         const toAmount =
             (units * fromMicro * (10_000n - FEE_BPS) * 10n ** BigInt(to.decimals)) /
             (toMicro * 10_000n * 10n ** BigInt(from.decimals));
+        const slippage = ask.slippage ?? SMART_SLIPPAGE;
+        const kept = 10_000n - BigInt(Math.round(slippage * 10_000));
         const feeUsd = (Number(units) / 10 ** from.decimals) * from.price * (Number(FEE_BPS) / 10_000);
         const network = NETWORKS.find((candidate) => candidate.chainId === ask.fromChain)!;
         const entry = COINS.flatMap((coin) => coin.entries).find(
@@ -127,10 +131,11 @@ export async function startFakeLifi(options: { prices?: Record<string, number> }
                 fromAddress: ask.fromAddress,
                 toAddress: ask.toAddress,
                 fromAmount: ask.fromAmount,
+                slippage,
             },
             estimate: {
                 toAmount: String(toAmount),
-                toAmountMin: String((toAmount * 995n) / 1000n),
+                toAmountMin: String((toAmount * kept) / 10_000n),
                 approvalAddress: diamond,
                 skipApproval: native,
                 executionDuration: 30,
@@ -200,7 +205,7 @@ export async function startFakeLifi(options: { prices?: Record<string, number> }
                 fromAddress: q.get("fromAddress") ?? "",
                 toAddress: q.get("toAddress") ?? "",
                 fromAmount: q.get("fromAmount") ?? "",
-                slippage: Number(q.get("slippage")),
+                ...(q.has("slippage") ? { slippage: Number(q.get("slippage")) } : {}),
                 integrator: q.get("integrator") ?? "",
                 ...(q.has("fee") ? { fee: Number(q.get("fee")) } : {}),
             };

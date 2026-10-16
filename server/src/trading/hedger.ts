@@ -6,7 +6,7 @@ import type { Collections } from "../db/mongo.ts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
 import { COINS, NETWORKS, type CoinEntry } from "../swaps/coins.ts";
 import { checkQuote } from "../swaps/check.ts";
-import { LifiError, type Lifi, type LifiQuote } from "../swaps/lifi.ts";
+import { LifiError, MAX_QUOTE_SLIPPAGE, type Lifi, type LifiQuote } from "../swaps/lifi.ts";
 import type { HedgeDoc, SendAttempt, TradeDoc } from "./docs.ts";
 import {
     MAX_ATTEMPTS,
@@ -271,6 +271,13 @@ export class TradeHedger {
         } catch (error) {
             if (error instanceof LifiError && error.kind === "no_route") return this.#fail(hedge, "LI.FI has no route");
             throw error;
+        }
+        // A route that forces more slippage than this is left planned, and asked for again on the next pass
+        if (quote.slippage > MAX_QUOTE_SLIPPAGE) {
+            return this.#deps.logger.warn(
+                { hedge: hedge._id.toString(), slippage: quote.slippage, tool: quote.tool },
+                "LI.FI's slippage for a hedge is over the limit, leaving it planned",
+            );
         }
         if (quote.tx.kind !== "evm") return this.#fail(hedge, "LI.FI sent a transaction for another kind of chain");
 

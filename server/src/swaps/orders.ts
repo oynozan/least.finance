@@ -10,7 +10,7 @@ import { checkQuote } from "./check.ts";
 import type { EvmNetworkId } from "./clients.ts";
 import { COINS, NATIVE_EVM, NETWORKS, type CoinEntry, type SwapNetwork } from "./coins.ts";
 import type { SwapHoldings } from "./holdings.ts";
-import { LifiError, type Lifi, type LifiQuote } from "./lifi.ts";
+import { LifiError, MAX_QUOTE_SLIPPAGE, type Lifi, type LifiQuote } from "./lifi.ts";
 
 type Deps = {
     collections: Collections;
@@ -27,7 +27,7 @@ type Deps = {
 };
 
 /** The price moves this far below the reviewed amount before the person must look again. */
-const SLIPPAGE = 0.005;
+const DRIFT = 0.005;
 const CACHE_MS = 10_000;
 /** Orders an account may have waiting on its wallet or the networks at once. */
 const UNSETTLED_LIMIT = 5;
@@ -110,7 +110,7 @@ export class SwapOrders {
         const approvals = await this.#approvals(prepared);
         this.#remember(this.#key(request, prepared), this.#build(request, prepared, approvals.length > 0));
 
-        const floor = (parseUnits(reviewedMin, to.decimals) * BigInt(Math.round((1 - SLIPPAGE) * 1000))) / 1000n;
+        const floor = (parseUnits(reviewedMin, to.decimals) * BigInt(Math.round((1 - DRIFT) * 1000))) / 1000n;
         if (BigInt(quote.toAmountMin) < floor) {
             throw new AppError("price_moved", "The price moved. Check the new amount and confirm again.");
         }
@@ -328,7 +328,6 @@ export class SwapOrders {
                 fromAddress: wallet,
                 toAddress: receiver,
                 fromAmount: fromUnits.toString(),
-                slippage: SLIPPAGE,
                 integrator,
                 ...(fee > 0 && { fee }),
             });
@@ -344,6 +343,10 @@ export class SwapOrders {
             fromUnits,
             diamond,
         });
+        // LI.FI picked the slippage for these tokens; past this the swap is too uncertain to offer
+        if (quote.slippage > MAX_QUOTE_SLIPPAGE) {
+            throw new AppError("unavailable", "This swap's price is too unstable right now. Try again shortly.");
+        }
         return { ...plan, quote, diamond };
     }
 

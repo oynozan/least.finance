@@ -134,6 +134,7 @@ test("a quote parses into LifiQuote", async () => {
         fromAmount: "50000000",
         toAmount: "49875000",
         toAmountMin: "49625625",
+        slippage: 0.005,
         approvalAddress: BASE_DIAMOND,
         skipApproval: false,
         etaSeconds: expect.any(Number),
@@ -150,6 +151,28 @@ test("a quote parses into LifiQuote", async () => {
     });
     expect(quote.gasUSD).toBeGreaterThan(0);
     expect(quote.etaSeconds).toBeGreaterThan(0);
+});
+
+test("a request without a slippage sends none, and the quote carries the one LI.FI chose", async () => {
+    fake = await startFakeLifi({ prices: { USDC: 1, USDT: 1 } });
+    const lifi = createLifi({ url: fake.url });
+    const request = baseRequest({ slippage: undefined });
+
+    const quote = await lifi.quote(request);
+
+    expect(fake.requests[0]).not.toContain("slippage");
+    expect(fake.quotes[0]).not.toHaveProperty("slippage");
+    expect(quote.slippage).toBe(0.006);
+    // The minimum is the fake's 0.6% under the amount
+    expect(quote.toAmountMin).toBe(String((BigInt(quote.toAmount) * 994n) / 1000n));
+});
+
+test("a quote that doesn't name its slippage carries how far its minimum is under its amount", async () => {
+    fake = await startFakeLifi({ prices: { USDC: 1, USDT: 1 } });
+    const lifi = createLifi({ url: fake.url });
+    fake.nextQuote({ action: { slippage: undefined }, estimate: { toAmount: "100000000", toAmountMin: "98500000" } });
+
+    expect((await lifi.quote(baseRequest())).slippage).toBeCloseTo(0.015, 10);
 });
 
 test("the quote carries the fee only when it is above 0", async () => {

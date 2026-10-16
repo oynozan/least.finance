@@ -95,7 +95,7 @@ describe("quotes", () => {
             request: request(user),
             fromAmount: "100",
             toAmount: formatUnits(toAmount, 18),
-            toAmountMin: formatUnits((toAmount * 995n) / 1000n, 18),
+            toAmountMin: formatUnits((toAmount * 994n) / 1000n, 18),
             gasUSD: 0.05,
             etaSeconds: 30,
             tool: "Fake Bridge",
@@ -114,9 +114,10 @@ describe("quotes", () => {
             fromAddress: getAddress(user.wallet),
             toAddress: getAddress(user.wallet),
             fromAmount: "100000000",
-            slippage: 0.005,
             integrator: "least-finance",
         });
+        // LI.FI picks the slippage, and the minimum follows what it picked
+        expect(asked).not.toHaveProperty("slippage");
         expect(asked).not.toHaveProperty("fee");
     });
 
@@ -309,7 +310,7 @@ describe("opening orders", () => {
         expect(again).toMatchObject({ ok: true, data: { toAmountMin: formatUnits((min * 99n) / 100n, 18) } });
     });
 
-    test("a small move inside the slippage still opens", async () => {
+    test("a small move inside the drift tolerance still opens", async () => {
         const user = await holder();
         const { socket } = await bind(user);
         const reviewed = await quote(socket, request(user, { amountUSD: "103" }));
@@ -317,6 +318,25 @@ describe("opening orders", () => {
         const min = parseUnits(reviewed.data.toAmountMin, 18);
         stack.lifi.nextQuote({ estimate: { toAmountMin: String((min * 998n) / 1000n) } });
         expect((await order(socket, request(user, { amountUSD: "103" }), reviewed.data.toAmountMin)).ok).toBe(true);
+    });
+
+    test("a swap LI.FI would give over 2% slippage is refused in the review and at confirm", async () => {
+        const user = await holder();
+        const { socket } = await bind(user);
+        const unstable = {
+            code: "unavailable",
+            message: "This swap's price is too unstable right now. Try again shortly.",
+        };
+
+        stack.lifi.nextQuote({ action: { slippage: 0.0201 } }, user.wallet);
+        expect(await quote(socket, request(user, { amountUSD: "104" }))).toEqual({ ok: false, error: unstable });
+        stack.lifi.nextQuote({ action: { slippage: 0.03 } }, user.wallet);
+        expect(await order(socket, request(user, { amountUSD: "105" }))).toEqual({ ok: false, error: unstable });
+        expect(await orders().countDocuments({ wallet: getAddress(user.wallet) })).toBe(0);
+
+        // Exactly 2% is allowed
+        stack.lifi.nextQuote({ action: { slippage: 0.02 } }, user.wallet);
+        expect((await quote(socket, request(user, { amountUSD: "106" }))).ok).toBe(true);
     });
 
     test("the IP is kept apart and expires", async () => {

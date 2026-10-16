@@ -262,6 +262,21 @@ describe("TradeHedger selling", () => {
         expect(chain.prepared).toHaveLength(1);
     });
 
+    test("a route that forces over 2% slippage leaves the sell planned, and the next pass sells it", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        fakeLifi.nextQuote({ action: { slippage: 0.03 } });
+        const worker = hedger();
+        await worker.tick();
+
+        expect((await hedgeList())[0]).toMatchObject({ state: "planned", txHash: null });
+        expect(chain.prepared).toHaveLength(0);
+        expect(fakeLifi.quotes.at(-1)).toMatchObject({ slippage: 0.01 });
+
+        await worker.tick();
+        expect((await hedgeList())[0]).toMatchObject({ state: "sent", tool: "fakebridge" });
+        expect(chain.prepared).toHaveLength(1);
+    });
+
     test("a token sale approves LI.FI first and a second pass doesn't approve again", async () => {
         await trade("sell", "LINK", 100, 1000);
         const worker = hedger();
