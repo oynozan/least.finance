@@ -23,14 +23,14 @@ export const FAKE_SOLANA_PROGRAM = "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2
 const DEPOSIT_NATIVE = "0d9e0ddf5fd51c06";
 const DEPOSIT_TOKEN = "0b9c60da27a3b413";
 
-/** The depository deposit's accounts in the program's order: the sender second and, for a token, the mint fifth. */
+/** The depository deposit's accounts in the program's order: the sender second and, for a token, the mint fifth. The stand-ins are valid base58 (no l, I, O or 0), so the app can build the transaction. */
 const depositKeys = (sender: string, mint: string | null) => {
     const other = (pubkey: string) => ({ pubkey, isSigner: false, isWritable: true });
     return [
-        other("RelayDepository111111111111111111111111111"),
+        other("ReLayDepository1111111111111111111111111111"),
         { pubkey: sender, isSigner: true, isWritable: true },
         other(sender),
-        other("DepositVault1111111111111111111111111111111"),
+        other("DepositVauLt1111111111111111111111111111111"),
         ...(mint ? [other(mint)] : []),
     ];
 };

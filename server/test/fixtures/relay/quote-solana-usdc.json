@@ -19,7 +19,7 @@
                             {
                                 "keys": [
                                     {
-                                        "pubkey": "RelayDepository111111111111111111111111111",
+                                        "pubkey": "ReLayDepository1111111111111111111111111111",
                                         "isSigner": false,
                                         "isWritable": false
                                     },
@@ -34,7 +34,7 @@
                                         "isWritable": false
                                     },
                                     {
-                                        "pubkey": "DepositVault1111111111111111111111111111111",
+                                        "pubkey": "DepositVauLt1111111111111111111111111111111",
                                         "isSigner": false,
                                         "isWritable": false
                                     },
