@@ -100,6 +100,7 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
                             markPx: Number(ctx.markPx),
                             oraclePx: Number(ctx.oraclePx),
                             funding: Number(ctx.funding),
+                            dayNtlVlm: Number(ctx.dayNtlVlm) || 0,
                         },
                     ];
                 }),

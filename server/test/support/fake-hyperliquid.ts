@@ -72,6 +72,16 @@ export type FakeHyperliquid = {
     usdSends: FakeUsdSend[];
     orders: FakeOrder[];
     setMark(asset: string, px: number): void;
+    /** Adds a market to the universe, as Hyperliquid lists a new perp; its marginTableId is its flat leverage, as most real ones are. */
+    listMarket(market: {
+        name: string;
+        szDecimals: number;
+        maxLeverage: number;
+        markPx: number;
+        dayNtlVlm?: number;
+    }): void;
+    /** Marks a market delisted: it stays in the universe, so asset indexes hold, but meta flags it. */
+    delist(asset: string): void;
     /** Both sides best first. */
     setBook(asset: string, book: FakeBook): void;
     fund(address: string, usdE6: bigint): void;
@@ -90,7 +100,7 @@ export type FakeHyperliquid = {
     /** Whether the 1 USDC activation of a new address is paid by the sender on top of the amount (the default) or comes out of the amount. */
     activationFrom(source: "sender" | "amount"): void;
     account(address: string): FakeAccountView | undefined;
-    /** Clears accounts, marks, books, orders and switches back to the defaults. */
+    /** Clears accounts, marks, books, orders, listed and delisted markets and switches back to the defaults. */
     reset(): void;
     stop(): Promise<void>;
 };
@@ -99,9 +109,8 @@ const TAKER_RATE = 0.00045;
 const ACTIVATION_E6 = 1_000_000n;
 const ZERO = "0x0000000000000000000000000000000000000000";
 type Ctx = { markPx: string } & Json;
-const [META, CTXS] = recorded as unknown as [{ universe: { name: string; maxLeverage: number }[] } & Json, Ctx[]];
-const UNIVERSE = META.universe;
-const NAMES = UNIVERSE.map((entry) => entry.name);
+type Entry = { name: string; maxLeverage: number } & Json;
+const [META, CTXS] = recorded as unknown as [{ universe: Entry[] } & Json, Ctx[]];
 
 const readBody = async (request: IncomingMessage): Promise<string> => {
     const chunks: Buffer[] = [];
@@ -198,7 +207,10 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
     let oid = 1000;
     let tid = 5000;
 
-    const markOf = (asset: string) => marks.get(asset) ?? Number(CTXS[NAMES.indexOf(asset)]?.markPx);
+    let universe: Entry[] = META.universe.map((entry) => ({ ...entry }));
+    let ctxs: Ctx[] = CTXS.map((ctx) => ({ ...ctx }));
+    const indexOf = (asset: string) => universe.findIndex((entry) => entry.name === asset);
+    const markOf = (asset: string) => marks.get(asset) ?? Number(ctxs[indexOf(asset)]?.markPx);
     const send = (response: ServerResponse, body: unknown) => {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify(body));
@@ -214,7 +226,7 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
     };
     const unrealizedE6 = (asset: string, p: Position) => toE6((markOf(asset) - p.entryPx) * p.szi);
     const liquidationOf = (asset: string, p: Position) => {
-        const maxLeverage = UNIVERSE[NAMES.indexOf(asset)]!.maxLeverage;
+        const maxLeverage = universe[indexOf(asset)]!.maxLeverage;
         const shift = 1 / p.leverage - 1 / (2 * maxLeverage);
         return p.szi > 0 ? p.entryPx * (1 - shift) : p.entryPx * (1 + shift);
     };
@@ -251,7 +263,7 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
                     returnOnEquity: "0.0",
                     liquidationPx: String(liquidationOf(asset, p)),
                     marginUsed: usd(p.marginE6),
-                    maxLeverage: UNIVERSE[NAMES.indexOf(asset)]!.maxLeverage,
+                    maxLeverage: universe[indexOf(asset)]!.maxLeverage,
                     cumFunding: { allTime: "0.0", sinceOpen: "0.0", sinceChange: "0.0" },
                 },
             })),
@@ -274,7 +286,7 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
 
     /** Applies an order at the mark; returns the per-order status the exchange answers with. */
     function placeOrder(signer: string, o: Json, forced: NextOrder | undefined) {
-        const asset = NAMES[o.a as number]!;
+        const asset = universe[o.a as number]!.name;
         const isBuy = o.b as boolean;
         const reduceOnly = o.r as boolean;
         const limit = Number(o.p);
@@ -313,7 +325,7 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
                 position.marginE6 -= released;
             }
         } else {
-            const leverage = account.leverage.get(asset) ?? UNIVERSE[NAMES.indexOf(asset)]!.maxLeverage;
+            const leverage = account.leverage.get(asset) ?? universe[indexOf(asset)]!.maxLeverage;
             const marginE6 = (toE6(notional) + BigInt(leverage) - 1n) / BigInt(leverage);
             if (account.freeE6 < marginE6 + feeE6)
                 return { error: `Insufficient margin to place order. asset=${o.a as number}` };
@@ -391,7 +403,7 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
         }
         const signer = await l1Signer(body);
         if (action.type === "updateLeverage") {
-            accountOf(signer).leverage.set(NAMES[action.asset as number]!, action.leverage as number);
+            accountOf(signer).leverage.set(universe[action.asset as number]!.name, action.leverage as number);
             return send(response, { status: "ok", response: { type: "default" } });
         }
         if (action.type === "order") {
@@ -404,7 +416,7 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
             const status = placeOrder(signer, order!, forced);
             orders.push({
                 signer,
-                asset: NAMES[order!.a as number]!,
+                asset: universe[order!.a as number]!.name,
                 isBuy: order!.b as boolean,
                 px: order!.p as string,
                 sz: order!.s as string,
@@ -422,10 +434,10 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
         const type = body.type as string;
         requests.push(`info ${type}`);
         const user = String(body.user ?? "").toLowerCase();
-        if (type === "meta") return send(response, META);
+        if (type === "meta") return send(response, { ...META, universe });
         if (type === "metaAndAssetCtxs") {
-            const ctxs = CTXS.map((ctx, i) => ({ ...ctx, markPx: fmt(markOf(NAMES[i]!)) }));
-            return send(response, [META, ctxs]);
+            const live = ctxs.map((ctx, i) => ({ ...ctx, markPx: fmt(markOf(universe[i]!.name)) }));
+            return send(response, [{ ...META, universe }, live]);
         }
         if (type === "l2Book") {
             const coin = body.coin as string;
@@ -573,7 +585,27 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
                 positions: [...account.positions].map(([asset, p]) => ({ asset, ...p })),
             };
         },
+        listMarket(market) {
+            universe.push({
+                name: market.name,
+                szDecimals: market.szDecimals,
+                maxLeverage: market.maxLeverage,
+                marginTableId: market.maxLeverage,
+            });
+            ctxs.push({
+                dayNtlVlm: String(market.dayNtlVlm ?? 1_000_000),
+                funding: "0.0000125",
+                markPx: fmt(market.markPx),
+                oraclePx: fmt(market.markPx),
+            });
+        },
+        delist(asset) {
+            const entry = universe[indexOf(asset)];
+            if (entry) entry.isDelisted = true;
+        },
         reset() {
+            universe = META.universe.map((entry) => ({ ...entry }));
+            ctxs = CTXS.map((ctx) => ({ ...ctx }));
             requests.length = 0;
             usdSends.length = 0;
             orders.length = 0;

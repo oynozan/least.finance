@@ -13,15 +13,16 @@ type Deps = {
 };
 
 const SYNC_MS = 5_000;
+/** How long the picker's order holds before it follows the 24-hour volumes again. */
+const RANK_MS = 10 * 60_000;
 
-/** The markets Long and Short offer, in the order the picker lists them. */
-export const PERP_ASSETS = ["BTC", "ETH", "SOL", "LINK", "DOGE"];
-
-/** Keeps the offered perp markets from Hyperliquid's meta and serves them with their marks and leverage caps. */
+/** Keeps every perp market Hyperliquid lists (the default dex, not its builder dexes) and serves them, busiest first, with their marks and leverage caps. */
 export class PerpMarkets {
     readonly #deps: Deps;
     readonly #now: () => number;
     #assets: PerpMeta["assets"] = [];
+    #rank = new Map<string, number>();
+    #rankedAt: number | null = null;
     #readAt: number | null = null;
     #maxOrderUSD: () => number | null = () => null;
     #stop: AbortController | null = null;
@@ -59,9 +60,19 @@ export class PerpMarkets {
         try {
             const meta = await this.#deps.client.meta();
             if (signal?.aborted) return;
-            const listed = new Map(meta.assets.map((entry) => [entry.asset, entry]));
-            this.#assets = PERP_ASSETS.flatMap((asset) => listed.get(asset) ?? []);
-            this.#readAt = this.#now();
+            const listed = meta.assets.filter((entry) => Number.isFinite(entry.markPx) && entry.markPx > 0);
+            const at = this.#now();
+            if (
+                this.#rankedAt === null ||
+                at - this.#rankedAt >= RANK_MS ||
+                listed.some((a) => !this.#rank.has(a.asset))
+            ) {
+                const ranked = [...listed].sort((a, b) => b.dayNtlVlm - a.dayNtlVlm || a.asset.localeCompare(b.asset));
+                this.#rank = new Map(ranked.map((entry, i) => [entry.asset, i]));
+                this.#rankedAt = at;
+            }
+            this.#assets = listed.sort((a, b) => this.#rank.get(a.asset)! - this.#rank.get(b.asset)!);
+            this.#readAt = at;
         } catch (error) {
             this.#deps.logger.warn({ err: error }, "Couldn't sync the Hyperliquid markets, keeping the last list");
         }

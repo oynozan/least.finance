@@ -47,6 +47,52 @@ describe("meta", () => {
         expect(btc.marginTables[0]).toEqual({ lowerBound: "0.0", maxLeverage: btc.maxLeverage });
     });
 
+    it("meta keeps a k-asset's name and the 24-hour volume, and leaves out a delisted market", async () => {
+        const ctx = (markPx: string, dayNtlVlm?: string) => ({
+            funding: "0.00001",
+            markPx,
+            oraclePx: markPx,
+            ...(dayNtlVlm === undefined ? {} : { dayNtlVlm }),
+        });
+        const entry = (name: string, extra: Record<string, unknown> = {}) => ({
+            name,
+            szDecimals: 0,
+            maxLeverage: 10,
+            marginTableId: 10,
+            ...extra,
+        });
+        const server = createServer((request, response) => {
+            request.resume();
+            request.on("end", () => {
+                response.writeHead(200, { "content-type": "application/json" });
+                response.end(
+                    JSON.stringify([
+                        {
+                            universe: [
+                                entry("BTC"),
+                                entry("kPEPE"),
+                                entry("OLD", { isDelisted: true }),
+                                entry("NOVOL"),
+                            ],
+                            marginTables: [],
+                        },
+                        [ctx("66000.0", "2480000000.5"), ctx("0.004123", "950000.0"), ctx("1.0", "5.0"), ctx("2.0")],
+                    ]),
+                );
+            });
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const raw = createNktkasClient({ url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` });
+        const meta = await raw.meta();
+        server.close();
+
+        expect(meta.assets.map((a) => [a.asset, a.index, a.markPx, a.dayNtlVlm])).toEqual([
+            ["BTC", 0, 66000, 2_480_000_000.5],
+            ["kPEPE", 1, 0.004123, 950_000],
+            ["NOVOL", 3, 2, 0],
+        ]);
+    });
+
     it("book serves bids and asks best first", async () => {
         fake.setBook("BTC", { bids: [{ price: 65_990, size: 2 }], asks: [{ price: 66_010, size: 3 }] });
         expect(await client.book("BTC")).toEqual({

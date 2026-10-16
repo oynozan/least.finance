@@ -107,7 +107,7 @@ export const predictionClose = sellQuote.extend({
 });
 
 export const perpQuote = z.object({
-    asset: z.string().regex(/^[A-Z0-9]{2,12}$/, "an asset such as BTC"),
+    asset: z.string().regex(/^[A-Za-z0-9]{2,12}$/, "an asset such as BTC or kPEPE"),
     side: z.enum(["long", "short"]),
     leverage: z.number().int().min(1).max(100),
     collateralUSD: z

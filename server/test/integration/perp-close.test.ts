@@ -244,6 +244,20 @@ test("trading off still closes", async () => {
     expect((await positionOf(h, position._id)).state).toBe("closed");
 });
 
+test("a position in a market Hyperliquid has delisted isn't closed by the app, and stays open for the tracker to settle", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const position = await held(h, account);
+    h.fake.delist("BTC");
+    await h.markets.tick();
+
+    const error = await closeOf(h, account, position).catch((e: unknown) => e);
+    expect(isAppError(error) && error.code).toBe("unavailable");
+    expect(await h.database.collections.perpOrders.countDocuments({ kind: "close" })).toBe(0);
+    expect(h.fake.orders.filter((o) => o.reduceOnly)).toHaveLength(0);
+    expect(await positionOf(h, position._id)).toMatchObject({ state: "open", active: true });
+});
+
 test("an account with an open position merges and the survivor can close it from the position's own index", async () => {
     const h = await fresh();
     const survivor = await h.seedAccount("1000");

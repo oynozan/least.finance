@@ -147,3 +147,68 @@ describe("perp events", () => {
         expect(second.lists[0]!.positions[0]).toMatchObject({ asset: "ETH", state: "open" });
     });
 });
+
+describe("every market Hyperliquid lists", () => {
+    const tick = () => stack.server.services.perpMarkets.tick();
+    // Listed once for this block; the stack is torn down after the file.
+    beforeAll(async () => {
+        stack.hyperliquid.listMarket({ name: "kPEPE", szDecimals: 0, maxLeverage: 5, markPx: 0.004123 });
+        stack.hyperliquid.setBook("kPEPE", {
+            bids: [{ price: 0.004122, size: 50_000_000 }],
+            asks: [{ price: 0.004124, size: 50_000_000 }],
+        });
+        await tick();
+    });
+
+    test("kPEPE, a thousand-coin market that was just listed, quotes and fills in its own units", async () => {
+        const { socket, updates } = await person();
+
+        const quote = (await socket.timeout(5000).emitWithAck("perp:quote", {
+            asset: "kPEPE",
+            side: "long",
+            leverage: 3,
+            collateralUSD: "100",
+        })) as Ack<PerpQuoteView>;
+        expect(quote.ok).toBe(true);
+        if (!quote.ok) return;
+        // $99 at 3x is about $297 of kPEPE, whole units only
+        expect(quote.data.sizeCoin).toMatch(/^\d+$/);
+        expect(Number(quote.data.sizeCoin)).toBeGreaterThan(70_000);
+        expect(Number(quote.data.sizeCoin)).toBeLessThan(72_100);
+        expect(Number(quote.data.entryPx)).toBeCloseTo(0.004124, 6);
+        expect(Number(quote.data.liquidationPx)).toBeLessThan(0.004123);
+
+        const acked = (await socket
+            .timeout(5000)
+            .emitWithAck("perp:order", payload({ asset: "kPEPE", leverage: 3 }))) as Ack<unknown>;
+        expect(acked.ok).toBe(true);
+        await expect.poll(() => updates.find((u) => u.order.state === "filled")).toBeTruthy();
+        const filled = updates.find((u) => u.order.state === "filled")!;
+        expect(filled.position).toMatchObject({ asset: "kPEPE", side: "long", leverage: 3, state: "open" });
+        expect(filled.position!.sizeCoin).toMatch(/^\d+$/);
+        expect(Number(filled.position!.entryPx)).toBeCloseTo(0.004123, 6);
+    });
+
+    test("a market Hyperliquid delists leaves the list and can't be quoted", async () => {
+        const listed = async () =>
+            (
+                (await (await fetch(`${stack.url}/perps/markets`)).json()) as { markets: { asset: string }[] }
+            ).markets.map((m) => m.asset);
+        await tick();
+        expect(await listed()).toContain("DOGE");
+        expect(await listed()).toContain("kPEPE");
+
+        stack.hyperliquid.delist("DOGE");
+        await tick();
+        expect(await listed()).not.toContain("DOGE");
+        expect(await listed()).toContain("kPEPE");
+        const { socket } = await person();
+        const quote = (await socket.timeout(5000).emitWithAck("perp:quote", {
+            asset: "DOGE",
+            side: "long",
+            leverage: 3,
+            collateralUSD: "100",
+        })) as Ack<PerpQuoteView>;
+        expect(quote).toMatchObject({ ok: false, error: { code: "unavailable" } });
+    });
+});

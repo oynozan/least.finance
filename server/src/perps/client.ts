@@ -12,6 +12,8 @@ export type PerpMeta = {
         markPx: number;
         oraclePx: number;
         funding: number;
+        /** What the market traded over the last 24 hours, in dollars; 0 when Hyperliquid doesn't say. */
+        dayNtlVlm: number;
     }>;
 };
 
