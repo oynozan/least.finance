@@ -3,6 +3,7 @@ import { QUOTE } from "../catalog";
 import { operation, priceOf, type TradeCtx } from "../context";
 import { formatUnits, formatUsd } from "../format";
 import type { TransactionIntent } from "../intent";
+import { SPREAD_TITLE, lessSpread } from "../spread";
 import { coinChoice, holdingCap, largestHolding, saleMinimum, unheld, usdAmount } from "./shared";
 
 type Values = { fromToken: string; toToken: string; amountUSD: string };
@@ -59,7 +60,7 @@ export const swap = operation({
             (v, ctx) => {
                 const to = priceOf(ctx, v.toToken);
                 const amount = Number(v.amountUSD);
-                return to && amount > 0 ? `You get ≈ ${formatUnits(amount / to, v.toToken)}` : undefined;
+                return to && amount > 0 ? `You get ≈ ${formatUnits(lessSpread(amount) / to, v.toToken)}` : undefined;
             },
         ),
     },
@@ -101,7 +102,7 @@ export const swap = operation({
         const to = priceOf(ctx, v.toToken);
         const dash = "—";
         return {
-            title: "No fees, we cover network costs.",
+            title: SPREAD_TITLE,
             rows: [
                 {
                     id: "pay",
@@ -113,7 +114,8 @@ export const swap = operation({
                 {
                     id: "get",
                     label: "You get ≈",
-                    value: amount && to ? formatUnits(amount / to, v.toToken) : dash,
+                    // The coin given up is valued at its bid, and the coin got is bought at its market price
+                    value: amount && to ? formatUnits(lessSpread(amount) / to, v.toToken) : dash,
                     primary: true,
                 },
                 { id: "when", label: "Arrives", value: "Instant" },

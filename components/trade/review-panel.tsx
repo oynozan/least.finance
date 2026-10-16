@@ -7,6 +7,7 @@ import { formatUnits, formatUsd } from "@/lib/trade/format";
 import type { TransactionIntent } from "@/lib/trade/intent";
 import { quoteRows as perpQuoteRows } from "@/lib/trade/perp-quote";
 import { quoteRows } from "@/lib/trade/prediction-quote";
+import { askOf, lessSpread } from "@/lib/trade/spread";
 import { isSpotIntent, toTradeRequest } from "@/lib/trade/spot-request";
 import type { TradeOrderRequest } from "@/server/src/trading/types";
 import type { ApiError, PerpQuoteRequest, PerpQuoteView, QuoteView } from "@/server/src/protocol";
@@ -108,13 +109,14 @@ export function ReviewPanel() {
     );
 }
 
-/** What a confirmed trade did, at the prices shown. */
+/** What a confirmed trade did, at the prices shown and the spread. */
 function tradeOutcome(req: TradeOrderRequest): string {
     const price = Number(req.quotedPriceUSD);
-    if (req.verb === "buy") return `Bought ≈ ${formatUnits(Number(req.amountUSD) / price, req.symbol)}.`;
+    if (req.verb === "buy") return `Bought ≈ ${formatUnits(Number(req.amountUSD) / askOf(price), req.symbol)}.`;
     const units = Number(req.units);
-    if (req.verb === "sell") return `Sold ${formatUnits(units, req.symbol)} for ≈ ${formatUsd(units * price)}.`;
-    const got = (units * price) / Number(req.quotedToPriceUSD);
+    if (req.verb === "sell")
+        return `Sold ${formatUnits(units, req.symbol)} for ≈ ${formatUsd(lessSpread(units * price))}.`;
+    const got = lessSpread(units * price) / Number(req.quotedToPriceUSD);
     return `Swapped ${formatUnits(units, req.symbol)} for ≈ ${formatUnits(got, req.toSymbol ?? "")}.`;
 }
 

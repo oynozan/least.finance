@@ -3,6 +3,7 @@ import { QUOTE } from "../catalog";
 import { operation, priceOf } from "../context";
 import { formatUnits, formatUsd } from "../format";
 import type { TransactionIntent } from "../intent";
+import { SPREAD_TITLE, askOf, lessSpread } from "../spread";
 import { coinChoice, holdingCap, largestHolding, minimum, saleMinimum, spendCap, unheld, usdAmount } from "./shared";
 
 type Side = "buy" | "sell";
@@ -62,8 +63,10 @@ export const spot = operation({
             (v, ctx) => {
                 const price = priceOf(ctx, v.token);
                 if (!price) return undefined;
-                const coins = formatUnits(Number(v.amountUSD) / price, v.token);
-                return v.side === "buy" ? `You get ≈ ${coins}` : `You sell ≈ ${coins}`;
+                // A buy pays the ask; a sale sells the coins the amount is worth at the market price
+                return v.side === "buy"
+                    ? `You get ≈ ${formatUnits(Number(v.amountUSD) / askOf(price), v.token)}`
+                    : `You sell ≈ ${formatUnits(Number(v.amountUSD) / price, v.token)}`;
             },
         ),
     },
@@ -88,10 +91,11 @@ export const spot = operation({
         const amount = Number(v.amountUSD) || 0;
         const price = priceOf(ctx, v.token);
         // Nothing to estimate before the coin has a price
-        const coins = amount && price ? formatUnits(amount / price, v.token) : "—";
-        const dollars = amount ? `${formatUsd(amount)} ${QUOTE}` : "—";
+        // A buy pays the ask for its coins; a sale sells the coins the amount is worth and is paid the amount less the spread
+        const coins = amount && price ? formatUnits(amount / (v.side === "buy" ? askOf(price) : price), v.token) : "—";
+        const dollars = amount ? `${formatUsd(v.side === "buy" ? amount : lessSpread(amount))} ${QUOTE}` : "—";
         return {
-            title: "No fees, we cover network costs.",
+            title: SPREAD_TITLE,
             rows: [
                 v.side === "buy"
                     ? { id: "pay", label: "You pay", value: dollars, primary: true }

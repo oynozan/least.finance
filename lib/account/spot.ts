@@ -1,5 +1,6 @@
 import type { TradeOrderRequest } from "@/server/src/trading/types";
 import { QUOTE, TOKENS } from "@/lib/trade/catalog";
+import { askOf, lessSpread } from "@/lib/trade/spread";
 import { toWei, type OptimisticSpot } from "./state";
 
 const DECIMALS = 8;
@@ -12,7 +13,7 @@ export function coinText(value: number): string {
 
 const homeOf = (symbol: string) => TOKENS.find((t) => t.symbol === symbol)?.home ?? "ethereum";
 
-/** What a trade changes at the price shown, to count it before the server answers; null when the request can't be estimated. */
+/** What a trade changes at the price shown and the spread, to count it before the server answers; null when the request can't be estimated. */
 export function estimateTrade(req: TradeOrderRequest): OptimisticSpot | null {
     const price = Number(req.quotedPriceUSD);
     if (!(price > 0)) return null;
@@ -23,18 +24,19 @@ export function estimateTrade(req: TradeOrderRequest): OptimisticSpot | null {
             requestId: req.requestId,
             balanceWei: -toWei(req.amountUSD ?? "0"),
             paid: { symbol: QUOTE, units: req.amountUSD ?? "0" },
-            got: { symbol: req.symbol, units: coinText(usd / price), network: homeOf(req.symbol) },
+            got: { symbol: req.symbol, units: coinText(usd / askOf(price)), network: homeOf(req.symbol) },
         };
     }
     const units = Number(req.units);
     if (!(units > 0)) return null;
     const paid = { symbol: req.symbol, units: req.units ?? "0" };
     if (req.verb === "sell") {
+        const proceeds = lessSpread(units * price).toFixed(6);
         return {
             requestId: req.requestId,
-            balanceWei: toWei((units * price).toFixed(6)),
+            balanceWei: toWei(proceeds),
             paid,
-            got: { symbol: QUOTE, units: (units * price).toFixed(6), network: homeOf(QUOTE) },
+            got: { symbol: QUOTE, units: proceeds, network: homeOf(QUOTE) },
         };
     }
     const toPrice = Number(req.quotedToPriceUSD);
@@ -43,6 +45,10 @@ export function estimateTrade(req: TradeOrderRequest): OptimisticSpot | null {
         requestId: req.requestId,
         balanceWei: BigInt(0),
         paid,
-        got: { symbol: req.toSymbol, units: coinText((units * price) / toPrice), network: homeOf(req.toSymbol) },
+        got: {
+            symbol: req.toSymbol,
+            units: coinText(lessSpread(units * price) / toPrice),
+            network: homeOf(req.toSymbol),
+        },
     };
 }

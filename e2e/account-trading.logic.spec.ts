@@ -5,12 +5,14 @@ import {
     optimisticBalance,
     optimisticHoldings,
     toUsdc,
+    toWei,
     type AccountAction,
     type AccountState,
     type Hex,
     type WalletSession,
 } from "@/lib/account/state";
 import { estimateTrade } from "@/lib/account/spot";
+import { askOf, lessSpread } from "@/lib/trade/spread";
 import { cleanAmount, normalizeAmount } from "@/components/deposit-form";
 import { holdingRows, recentSends, sendAddress, sendDecimals, sendIssue, validAddress } from "@/lib/account/holdings";
 import { toTradeRequest, type SpotInputs, type SpotIntent } from "@/lib/trade/spot-request";
@@ -36,6 +38,7 @@ function run(start: WalletSession, ...actions: AccountAction[]): AccountState {
     );
 }
 
+/** $147.20 at SOL's market price of $147.20, which a buy fills at 0.3% more: the ask of $147.6416 buys 0.99700897 SOL. */
 const buy = (id: string): TradeOrderRequest => ({
     requestId: id,
     verb: "buy",
@@ -64,13 +67,13 @@ test.describe("the snapshot's holdings", () => {
 });
 
 test.describe("an optimistic trade", () => {
-    test("a buy takes the dollars and adds the coin at once", () => {
+    test("a buy takes the dollars and adds the coin at once, at the ask", () => {
         const state = run(session("500"), { type: "spot", trade: estimateTrade(buy("a"))! });
         expect(usd(state)).toBe(352.8);
-        expect(optimisticHoldings(state)).toEqual([sol("1")]);
+        expect(optimisticHoldings(state)).toEqual([sol("0.99700897")]);
     });
 
-    test("a sell adds the dollars and takes the units, and selling it all removes the holding", () => {
+    test("a sell adds the dollars less the spread and takes the units, and selling it all removes the holding", () => {
         const req: TradeOrderRequest = {
             requestId: "s",
             verb: "sell",
@@ -79,11 +82,12 @@ test.describe("an optimistic trade", () => {
             quotedPriceUSD: "147.2",
         };
         const state = run(session("10", [sol("2")]), { type: "spot", trade: estimateTrade(req)! });
-        expect(usd(state)).toBeCloseTo(304.4, 6);
+        // 2 SOL at $147.20 is $294.40, and the sale is paid 0.3% less
+        expect(usd(state)).toBeCloseTo(303.5168, 6);
         expect(optimisticHoldings(state)).toEqual([]);
     });
 
-    test("a swap moves one holding into another and leaves the balance", () => {
+    test("a swap moves one holding into another, less one spread, and leaves the balance", () => {
         const req: TradeOrderRequest = {
             requestId: "w",
             verb: "swap",
@@ -95,12 +99,13 @@ test.describe("an optimistic trade", () => {
         };
         const state = run(session("10", [sol("2")]), { type: "spot", trade: estimateTrade(req)! });
         expect(usd(state)).toBe(10);
-        expect(optimisticHoldings(state)).toEqual([sol("1"), eth("0.05")]);
+        // 1 SOL is $150, $149.55 after the spread, which buys 0.04985 ETH at $3,000
+        expect(optimisticHoldings(state)).toEqual([sol("1"), eth("0.04985")]);
     });
 
     test("an error ack rolls the balance and the holdings back", () => {
         const sent = run(session("500", [sol("1")]), { type: "spot", trade: estimateTrade(buy("a"))! });
-        expect(optimisticHoldings(sent)).toEqual([sol("2")]);
+        expect(optimisticHoldings(sent)).toEqual([sol("1.99700897")]);
         const refused = accountReducer(sent, { type: "spot-failed", requestId: "a" });
         expect(usd(refused)).toBe(500);
         expect(optimisticHoldings(refused)).toEqual([sol("1")]);
@@ -138,6 +143,30 @@ test.describe("an optimistic trade", () => {
         expect(
             estimateTrade({ requestId: "w", verb: "swap", symbol: "SOL", units: "1", quotedPriceUSD: "1" }),
         ).toBeNull();
+    });
+});
+
+test.describe("the spread", () => {
+    test("is the server's: a buy pays 0.3% over the market price and a sale is paid 0.3% under", () => {
+        expect(askOf(600)).toBe(601.8);
+        expect(lessSpread(600)).toBe(598.2);
+    });
+
+    test("the estimates match the server's fills at BNB's $600, as server/test/integration/trading.test.ts has them", () => {
+        const bnb = { symbol: "BNB", quotedPriceUSD: "600" };
+        const bought = estimateTrade({ requestId: "b", verb: "buy", amountUSD: "60.18", ...bnb });
+        expect(bought).toMatchObject({ got: { symbol: "BNB", units: "0.1" } });
+        const sold = estimateTrade({ requestId: "s", verb: "sell", units: "0.04", ...bnb });
+        expect(sold).toMatchObject({ balanceWei: toWei("23.928"), got: { symbol: "USDC", units: "23.928000" } });
+        const swapped = estimateTrade({
+            requestId: "w",
+            verb: "swap",
+            units: "0.05",
+            toSymbol: "USDT",
+            quotedToPriceUSD: "1",
+            ...bnb,
+        });
+        expect(swapped).toMatchObject({ got: { symbol: "USDT", units: "29.91" } });
     });
 });
 

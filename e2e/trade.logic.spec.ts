@@ -273,24 +273,29 @@ test.describe("trading from the account", () => {
         expect(view.blocking).toBeTruthy();
     });
 
-    test("the review says what is paid and got, with no fee and no wait", () => {
+    test("the review says what is paid and got, with the spread and no wait", () => {
         const ctx = account({ USDC: 1_000, SOL: 2 });
+        // SOL is $147.20. A buy pays the ask, 0.3% more, so the $147.20 buys 0.997 SOL
         const buy = run("buy", [slot("amountUSD", "147.2")], ctx).view.preview;
-        expect(buy.title).toBe("No fees, we cover network costs.");
+        expect(buy.title).toBe("Includes a 0.3% spread. We cover network costs.");
         expect(buy.rows.map((r) => [r.label, r.value])).toEqual([
             ["You pay", "$147.20 USDC"],
-            ["You get ≈", "1 SOL"],
+            ["You get ≈", "0.997 SOL"],
             ["Arrives", "Instant"],
         ]);
+        // A sale sells the coin the amount is worth and is paid the bid, 0.3% less
         const sell = run("sell", [slot("token", "SOL"), slot("amountUSD", "147.2")], ctx).view.preview;
+        expect(sell.title).toBe("Includes a 0.3% spread. We cover network costs.");
         expect(sell.rows.map((r) => [r.label, r.value])).toEqual([
             ["You pay", "1 SOL"],
-            ["You get ≈", "$147.20 USDC"],
+            ["You get ≈", "$146.76 USDC"],
             ["Arrives", "Instant"],
         ]);
+        // A swap pays the one spread on the coin given up: $97.30 is $97.0081 against BTC's $97,300
         const swap = run("swap", [slot("fromToken", "SOL"), slot("toToken", "BTC"), slot("amountUSD", "97.3")], ctx);
+        expect(swap.view.preview.title).toBe("Includes a 0.3% spread. We cover network costs.");
         expect(swap.view.preview.rows.map((r) => r.label)).toEqual(["You pay", "You get ≈", "Arrives"]);
-        expect(swap.view.preview.rows[1]?.value).toBe("0.001 BTC");
+        expect(swap.view.preview.rows[1]?.value).toBe("0.000997 BTC");
     });
 
     test("without an account every coin can be picked and nothing is capped", () => {
@@ -520,8 +525,9 @@ test.describe("the amount's dropdown", () => {
     });
 
     test("each operation says what the amount comes to", () => {
-        expect(amount(run("swap").view).summary).toBe("You get ≈ 0.06793 SOL");
-        expect(amount(run("buy").view).summary).toBe("You get ≈ 0.06793 SOL");
+        // $10 of SOL at $147.20 is 0.06793 SOL at the market price; a buy and a swap get 0.3% fewer, a sale sells all of it
+        expect(amount(run("swap").view).summary).toBe("You get ≈ 0.06773 SOL");
+        expect(amount(run("buy").view).summary).toBe("You get ≈ 0.06773 SOL");
         expect(amount(run("sell").view).summary).toBe("You sell ≈ 0.06793 SOL");
         expect(amount(run("long").view, "collateralUSD").summary).toBe("A $500 position");
         expect(amount(run("predict").view).summary).toBe("Pays $26.32 if YES");
