@@ -56,8 +56,13 @@ export default defineConfig({
                   reuseExistingServer: !process.env.CI,
                   timeout: 180_000,
                   // Privy's backend is mocked in the tests (e2e/privy-mock.ts), so the
-                  // build uses a placeholder app ID rather than a real one.
-                  env: { NEXT_PUBLIC_PRIVY_APP_ID: MOCK_APP_ID, NEXT_PUBLIC_API_URL: `http://localhost:${API_PORT}` },
+                  // build uses a placeholder app ID rather than a real one. Coin logos are
+                  // not fetched from Hyperliquid, so a screenshot never depends on the network.
+                  env: {
+                      NEXT_PUBLIC_PRIVY_APP_ID: MOCK_APP_ID,
+                      NEXT_PUBLIC_API_URL: `http://localhost:${API_PORT}`,
+                      COIN_LOGOS_REMOTE: "off",
+                  },
               },
           ],
 });

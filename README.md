@@ -16,6 +16,8 @@ The wallet button needs `NEXT_PUBLIC_PRIVY_APP_ID` (from the [Privy dashboard](h
 
 Balances and deposits come from the deposit server. Set it up as [server/README.md](server/README.md) describes, then run it beside the app (`npm run dev` in `server/`). The app finds it at `NEXT_PUBLIC_API_URL`, `http://localhost:4500` by default.
 
+Coins other than the few with a logo in `public/logos/coins` get theirs from Hyperliquid's icon set, drawn as a small WebP by `/coin-logo/<TICKER>` and kept in the web server's memory. Nothing is stored on disk. Set `COIN_LOGOS_REMOTE=off` to turn the fetching off; every such coin then keeps its ticker placeholder.
+
 Open [http://localhost:3000](http://localhost:3000).
 
 To run it on a server (Docker Compose behind Caddy, with backups), follow the [deployment runbook](deploy/README.md).
