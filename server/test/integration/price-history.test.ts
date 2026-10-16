@@ -140,6 +140,21 @@ describe("price history of perp coins", () => {
         expect((await get("/prices/history?range=1d&coins=XRP")).json.coins).toEqual([]);
     });
 
+    test("an answer with fewer coins than were asked for is cached 5 s, so the browser's retry gets through", async () => {
+        const cached = async (query: string) =>
+            (await get(`/prices/history?range=7d&coins=${query}`)).headers.get("cache-control");
+
+        // A market the server doesn't list (yet), alone or among coins it does
+        expect(await cached("NOSUCHCOIN")).toBe("public, max-age=5");
+        expect(await cached("ETH,NOSUCHCOIN")).toBe("public, max-age=5");
+        expect(await cached("S,NOSUCHCOIN,kPEPE")).toBe("public, max-age=5");
+        // Every name answered, however its case was spelled or how often it was asked for
+        expect(await cached("S")).toBe("public, max-age=60");
+        expect(await cached("ETH,kPEPE")).toBe("public, max-age=60");
+        expect(await cached("kpepe,KPEPE")).toBe("public, max-age=60");
+        expect(await cached("eth,ETH")).toBe("public, max-age=60");
+    });
+
     test("swap coins and perp coins mix, the swap coins staying with DefiLlama", async () => {
         const before = candleReads().length;
 

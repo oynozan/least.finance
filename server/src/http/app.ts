@@ -152,11 +152,12 @@ export function createApp(services: Services): express.Express {
         const view = await services.priceHistory.view(range, coins);
         if (!view) throw new AppError("unavailable", "Prices are unavailable right now. Try again shortly.");
         // A range changes every few minutes at most, so a minute in the browser misses nothing;
-        // a coin left without points (its read failed) is asked for again soon.
-        res.set(
-            "Cache-Control",
-            view.coins.some((coin) => coin.points.length === 0) ? "public, max-age=5" : "public, max-age=60",
-        );
+        // a coin left without points (its read failed) or left out (not listed yet) is asked for again soon.
+        const answered = new Set(view.coins.map((coin) => coin.symbol.toLowerCase()));
+        const complete =
+            (coins ?? []).every((name) => answered.has(name.toLowerCase())) &&
+            view.coins.every((coin) => coin.points.length > 0);
+        res.set("Cache-Control", complete ? "public, max-age=60" : "public, max-age=5");
         res.json(view);
     });
 
