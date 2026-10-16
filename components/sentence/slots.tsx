@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import NumberFlow from "@number-flow/react";
 import { motion } from "motion/react";
-import type { ChoiceSlotView, NumberSlotView } from "@/lib/sentence";
+import { filterChoices, type ChoiceSlotView, type NumberSlotView } from "@/lib/sentence";
 import { ChevronIcon } from "@/components/icons";
 import { SentenceIcon } from "./icons";
 import { layoutSpring, spring, typingLayout } from "./motion";
@@ -82,6 +82,14 @@ export function ChoiceSlot({
     const pickerId = useId();
     const hintId = useId();
     const wasOpen = useRef(false);
+    // A local search filters the slot's own choices as it is typed; the picker clears it on close.
+    const [query, setQuery] = useState("");
+    const local = !!view.search?.local;
+    const choices = useMemo(
+        () => (local ? filterChoices(view.choices, query) : view.choices),
+        [local, view.choices, query],
+    );
+    const missed = local && query.trim() !== "" && choices.length === 0;
 
     // Focus returns to the pill after the commit, so its new name is already in place.
     // Its card waits for the pointer to move: one resting on the pill isn't a fresh hover.
@@ -143,13 +151,22 @@ export function ChoiceSlot({
                 open={open}
                 title={view.prompt}
                 label={view.prompt ?? view.hint}
-                choices={view.choices}
+                choices={choices}
                 loading={loading}
                 selected={selected?.value}
                 custom={view.custom}
                 wide={view.wide}
                 empty={view.empty}
-                search={view.search && onSearch && { ...view.search, onQuery: onSearch, empty: searchEmpty }}
+                search={
+                    view.search &&
+                    (local
+                        ? {
+                              ...view.search,
+                              onQuery: setQuery,
+                              empty: missed ? `No market matches “${query.trim()}”.` : undefined,
+                          }
+                        : onSearch && { ...view.search, onQuery: onSearch, empty: searchEmpty })
+                }
                 anchor={button}
                 then={
                     companion &&

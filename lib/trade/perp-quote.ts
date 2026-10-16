@@ -1,8 +1,8 @@
 import type { PreviewRow } from "@/lib/sentence";
 import type { PerpQuoteView } from "@/server/src/protocol";
-import { formatUsd, formatUsdShort } from "./format";
+import { formatPrice, formatUsd, formatUsdShort } from "./format";
 
-const price = (px: string) => formatUsdShort(Number(px));
+const price = (px: string) => formatPrice(Number(px));
 
 /** Hourly funding as a percent, "0.00125%"; positive means longs pay shorts. */
 const fundingText = (rate: string) => `${Number((Number(rate) * 100).toPrecision(3))}% per hour`;

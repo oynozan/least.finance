@@ -52,7 +52,7 @@ export async function openPerp(
         .getByRole("option", { name: new RegExp(`^${o.side}`) })
         .click();
     await expect(picker(page)).toBeHidden();
-    await choose(page, '[data-slot="asset"]', new RegExp(`^${o.asset ?? "BTC"}`));
+    await choose(page, '[data-slot="asset"]', new RegExp(`^${o.asset ?? "BTC"}$`));
     await choose(page, '[data-slot="leverage"]', new RegExp(`^${o.leverage ?? 5}x`));
     await trade(page).getByRole("button", { name: /USD$/ }).click();
     await picker(page)

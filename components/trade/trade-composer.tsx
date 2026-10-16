@@ -125,7 +125,7 @@ export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview,
                 {slot.kind === "choice" ? (
                     <ChoiceSlot
                         view={slot}
-                        loading={slot.search ? search?.loading : undefined}
+                        loading={slot.search && !slot.search.local ? search?.loading : undefined}
                         onChange={(value) => set(id, value)}
                         onThen={companion && ((value) => set(companion.id, value, id))}
                         onOpen={companion && onCoinOpen}

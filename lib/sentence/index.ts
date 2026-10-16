@@ -10,4 +10,5 @@ export {
     type CompanionView,
     type NumberSlotView,
 } from "./resolve";
+export { filterChoices } from "./choices";
 export { sanitizeDecimal, canonicalDecimal, isEntered } from "./decimal";

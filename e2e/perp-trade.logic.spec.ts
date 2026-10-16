@@ -146,6 +146,16 @@ test.describe("perp review rows", () => {
         expect(value("Most you can lose")).toBe("$100.00");
     });
 
+    test("a cheap coin's entry and liquidation keep their digits instead of reading $0.00", () => {
+        const rows = quoteRows(
+            { ...QUOTE, entryPx: "0.004123", liquidationPx: "0.003298", sizeCoin: "121000", notionalUSD: "499" },
+            { ...CTX, asset: "kPEPE" },
+        );
+        const value = (label: string) => rows.find((r) => r.label === label)?.value;
+        expect(value("Entry price (about)")).toBe("$0.004123");
+        expect(value("Liquidation price (about)")).toBe("$0.003298, before funding");
+    });
+
     test("our $1 fee is in the Fees row, and the position is what the collateral buys after it", () => {
         const rows = quoteRows({ ...QUOTE, notionalUSD: "495", ourFeeUSD: "1" }, CTX);
         const value = (label: string) => rows.find((r) => r.label === label)?.value;

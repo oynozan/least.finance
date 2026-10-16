@@ -50,7 +50,7 @@ export type ChoiceSlotView = SlotViewBase & {
     };
     wide?: boolean;
     empty?: string;
-    search?: { placeholder: string };
+    search?: { placeholder: string; local?: boolean };
 };
 
 export type NumberSlotView = SlotViewBase & {

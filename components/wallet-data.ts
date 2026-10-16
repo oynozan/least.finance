@@ -1,5 +1,5 @@
 import type { OptimisticTrade, PerpPositionView, PerpsView, PositionView, PositionsView } from "@/lib/account/state";
-import { formatUnits, formatUsdShort } from "@/lib/trade/format";
+import { formatPrice, formatUnits, formatUsdShort } from "@/lib/trade/format";
 import { isPendingPerp, perpPositionUSD, toUsdc } from "@/lib/account/state";
 import type { CoinSymbol } from "./coin-icons";
 
@@ -64,8 +64,8 @@ export const positionTitle = (p: Position) => (p.kind === "perp-live" ? perpName
 export function positionDetail(p: Position) {
     if (p.kind === "perp-live") {
         const parts = [`${formatUsdShort(perpPositionUSD(p.position))} position`];
-        if (p.entryPx) parts.push(`entry ${formatUsdShort(Number(p.entryPx))}`);
-        if (p.liquidationPx) parts.push(`liquidates near ${formatUsdShort(Number(p.liquidationPx))}`);
+        if (p.entryPx) parts.push(`entry ${formatPrice(Number(p.entryPx))}`);
+        if (p.liquidationPx) parts.push(`liquidates near ${formatPrice(Number(p.liquidationPx))}`);
         return parts.join(", ");
     }
     return p.shares ? `${p.outcome}, ${formatUnits(Number(p.shares), "shares")}` : p.outcome;

@@ -26,7 +26,7 @@ const isMarketsView = (value: unknown): value is PerpMarketsView => {
 /** The markets the sentence offers: the server's list once it has one, the built-in fallback until then. */
 export function perpMarketsOf(view: PerpMarketsView | null): PerpMarket[] {
     if (!view || view.markets.length === 0) return PERP_MARKETS;
-    return view.markets.map((m) => ({ asset: m.asset, maxLeverage: m.maxLeverage }));
+    return view.markets.map((m) => ({ asset: m.asset, maxLeverage: m.maxLeverage, markPx: Number(m.markPx) }));
 }
 
 /** The most one order may take, in dollars; null while trading is off or nothing has loaded. */

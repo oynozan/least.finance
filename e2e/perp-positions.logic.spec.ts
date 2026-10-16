@@ -136,6 +136,12 @@ test.describe("perp rows in the sidebar", () => {
         expect(positionDetail(only({ liquidationPx: null }))).toBe("$500 position, entry $65,000");
     });
 
+    test("a cheap coin's entry and liquidation keep their digits instead of reading $0.00", () => {
+        // 3.2 million HMSTR at $0.000155 is $496
+        const cheap = only({ asset: "HMSTR", sizeCoin: "3200000", entryPx: "0.000155", liquidationPx: "0.000124" });
+        expect(positionDetail(cheap)).toBe("$496 position, entry $0.000155, liquidates near $0.000124");
+    });
+
     test("a pending position's close button is disabled", () => {
         const pending = only({ id: "pending:req1" });
         expect(pending.status).toBe("pending");

@@ -37,6 +37,8 @@ type PickerProps = {
     /** Adds a search field above the list; the host answers `onQuery` by changing `choices`. */
     search?: {
         placeholder: string;
+        /** The host filters its own list, so each keystroke starts the highlight at the top. */
+        local?: boolean;
         onQuery: (query: string) => void;
         /** Said above the list when the search found nothing. */
         empty?: string;
@@ -66,10 +68,11 @@ type PickerProps = {
 
 const itemSpring: Transition = { type: "spring", visualDuration: 0.3, bounce: 0.4 };
 
-const listVariants: Variants = {
+/** Rows come in 30ms apart, but a long list takes 0.4s in all. */
+const listVariants = (rows: number): Variants => ({
     hidden: {},
-    shown: { transition: { staggerChildren: 0.03, delayChildren: 0.04 } },
-};
+    shown: { transition: { staggerChildren: Math.min(0.03, 0.4 / Math.max(rows, 1)), delayChildren: 0.04 } },
+});
 
 const itemVariants: Variants = {
     hidden: { opacity: 0, y: 14, scale: 0.94 },
@@ -128,6 +131,7 @@ function Options({
     const second = useMemo(() => (host !== null && followUps ? followUps(host) : null), [host, followUps]);
     const step = second ? 1 : 0;
     const shown = second ?? choices;
+    const list = useMemo(() => listVariants(shown.length), [shown.length]);
     const shownSelected = second ? then?.selected : selected;
     const listed = shown.findIndex((c) => c.value === shownSelected);
     const selectedAt = choices.findIndex((c) => c.value === selected);
@@ -168,7 +172,11 @@ function Options({
         },
         [],
     );
-    const rows = useRef<(HTMLButtonElement | null)[]>([]);
+    const rows = useRef<HTMLButtonElement[]>([]);
+    // Read from the page after every commit: a row that outlives a filter keeps its element but takes a new place in the list.
+    useLayoutEffect(() => {
+        rows.current = [...(root.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [])];
+    });
     const input = useRef<HTMLInputElement>(null);
     const typed = useRef({ text: "", at: 0 });
     // A current value that isn't listed was typed: start in the input with it.
@@ -336,6 +344,7 @@ function Options({
                     value={query}
                     onChange={(event) => {
                         setQuery(event.target.value);
+                        if (search.local) setActive(0);
                         search.onQuery(event.target.value);
                     }}
                     className="mb-1.5 h-11 w-full rounded-full border-0 bg-pill px-[18px] font-sans text-[20px] font-medium tracking-[-0.01em] text-foreground outline-none placeholder:font-normal placeholder:text-muted"
@@ -394,14 +403,14 @@ function Options({
                     role="listbox"
                     aria-labelledby={titleId}
                     className="relative isolate flex flex-col gap-0.5"
-                    variants={listVariants}
+                    variants={list}
                     initial="hidden"
                     animate="shown"
                 >
                     {/* The bottom layer of the list: a negative z-index inside the
             isolated listbox paints below everything else in it, group
             headers and labels included, wherever the highlight slides. */}
-                    {box?.step === step && (
+                    {box?.step === step && shown.length > 0 && (
                         <motion.span
                             aria-hidden="true"
                             data-highlight=""
@@ -437,9 +446,6 @@ function Options({
                                     return (
                                         <motion.button
                                             key={choice.value}
-                                            ref={(node) => {
-                                                rows.current[index] = node;
-                                            }}
                                             type="button"
                                             role="option"
                                             aria-selected={choice.value === shownSelected}

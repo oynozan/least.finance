@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
-import { initialState, reduce, resolve, type SentenceAction, type SentenceState } from "@/lib/sentence";
+import { filterChoices, initialState, reduce, resolve, type SentenceAction, type SentenceState } from "@/lib/sentence";
 import { PERP_MARKETS } from "@/lib/trade/catalog";
 import type { TradeCtx, TradeTerms } from "@/lib/trade/context";
+import { formatPrice } from "@/lib/trade/format";
 import { createPerpMarketsStore, perpMarketsOf, perpMaxOrderUSD } from "@/lib/trade/perp-markets-store";
 import { TRADE } from "@/lib/trade/registry";
 import type { PerpMarketsView } from "@/server/src/protocol";
@@ -143,4 +144,99 @@ test.describe("perp checks", () => {
         const ctx = ctxOf(view(), { openPerps: [{ asset: "BTC" }] });
         expect(run("long", ctx, [slot("asset", "ETH")]).blocking).toBeUndefined();
     });
+});
+
+test.describe("every Hyperliquid market in the picker", () => {
+    const wide = view({
+        markets: [
+            { asset: "BTC", markPx: "66000", maxLeverage: 20, fundingRate: "0.00001" },
+            { asset: "DOGE", markPx: "0.1823", maxLeverage: 10, fundingRate: "0.00001" },
+            { asset: "DOT", markPx: "1.456", maxLeverage: 5, fundingRate: "0.00001" },
+            { asset: "kPEPE", markPx: "0.004123", maxLeverage: 5, fundingRate: "0.00001" },
+            { asset: "HMSTR", markPx: "0.000155", maxLeverage: 3, fundingRate: "0.00001" },
+            { asset: "ENA", markPx: "0.5", maxLeverage: 3, fundingRate: "0.00001" },
+        ],
+    });
+    const choices = () => {
+        const asset = run("long", ctxOf(wide)).slots.asset;
+        if (asset.kind !== "choice") throw new Error("the asset is a choice");
+        return asset.choices;
+    };
+
+    test("the store keeps each market's mark for the picker", () => {
+        expect(perpMarketsOf(wide).map((m) => [m.asset, m.markPx])).toEqual([
+            ["BTC", 66000],
+            ["DOGE", 0.1823],
+            ["DOT", 1.456],
+            ["kPEPE", 0.004123],
+            ["HMSTR", 0.000155],
+            ["ENA", 0.5],
+        ]);
+    });
+
+    test("a row shows the market's own mark to four digits, and a swap coin's name", () => {
+        const rows = Object.fromEntries(choices().map((c) => [c.value, c]));
+        expect(rows.BTC).toMatchObject({ description: "Bitcoin", detail: "$66,000, up to 20x" });
+        // The perp mark, not the swap catalog's $0.182
+        expect(rows.DOGE).toMatchObject({ description: "Dogecoin", detail: "$0.1823, up to 10x" });
+        expect(rows.DOT).toMatchObject({ detail: "$1.46, up to 5x" });
+        expect(rows.HMSTR).toMatchObject({ detail: "$0.000155, up to 3x" });
+        expect(rows.ENA).toMatchObject({ detail: "$0.50, up to 3x" });
+        expect(rows.DOT?.description).toBeUndefined();
+    });
+
+    test("a k-asset is a thousand coins, and says so", () => {
+        const row = choices().find((c) => c.value === "kPEPE");
+        expect(row).toMatchObject({ label: "kPEPE", description: "1,000 PEPE", detail: "$0.004123, up to 5x" });
+    });
+
+    test("the asset slot searches the list itself", () => {
+        const asset = run("long", ctxOf(wide)).slots.asset;
+        expect(asset.kind === "choice" && asset.search).toEqual({ placeholder: "Search markets", local: true });
+        const leverage = run("long", ctxOf(wide)).slots.leverage;
+        expect(leverage.kind === "choice" && leverage.search).toBeUndefined();
+    });
+
+    test("typing 'do' finds DOGE and DOT, labels that start with it first", () => {
+        expect(filterChoices(choices(), "do").map((c) => c.value)).toEqual(["DOGE", "DOT"]);
+        expect(filterChoices(choices(), "  DO ").map((c) => c.value)).toEqual(["DOGE", "DOT"]);
+    });
+
+    test("a search also reads a name and finds a label's middle after its start", () => {
+        expect(filterChoices(choices(), "coin").map((c) => c.value)).toEqual(["BTC", "DOGE"]);
+        expect(filterChoices(choices(), "pepe").map((c) => c.value)).toEqual(["kPEPE"]);
+        // The start of a label beats a match later in a name or label
+        const rows = [
+            { value: "AAA", label: "AAA", description: "Dogecoin clone" },
+            { value: "XDOT", label: "XDOT" },
+            { value: "DOGE", label: "DOGE" },
+        ];
+        expect(filterChoices(rows, "do").map((c) => c.value)).toEqual(["DOGE", "AAA", "XDOT"]);
+    });
+
+    test("an empty search lists everything and a miss lists nothing", () => {
+        const all = choices();
+        expect(filterChoices(all, "")).toBe(all);
+        expect(filterChoices(all, "   ")).toBe(all);
+        expect(filterChoices(all, "zzz")).toEqual([]);
+    });
+});
+
+test.describe("formatPrice", () => {
+    const cases: Array<[number, string]> = [
+        [66000, "$66,000"],
+        [3200.5, "$3,200.50"],
+        [1, "$1"],
+        [0.1823, "$0.1823"],
+        [0.5, "$0.50"],
+        [0.0415, "$0.0415"],
+        [0.004123, "$0.004123"],
+        [0.000155, "$0.000155"],
+        [0.99996, "$1.00"],
+    ];
+    for (const [value, text] of cases) {
+        test(`${value} reads ${text}`, () => {
+            expect(formatPrice(value)).toBe(text);
+        });
+    }
 });

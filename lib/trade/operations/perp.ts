@@ -2,7 +2,7 @@ import { VERB, canonicalDecimal, type Bound, type Choice, type Issue } from "@/l
 import { PERP_FEE_USD } from "@/server/src/perps/fee";
 import { LEVERAGE_STEPS } from "../catalog";
 import { operation, priceOf, token, type TradeCtx } from "../context";
-import { formatUsd, formatUsdShort } from "../format";
+import { formatPrice, formatUsd, formatUsdShort } from "../format";
 import type { TransactionIntent } from "../intent";
 import { minimum, spendCap, usdAmount } from "./shared";
 
@@ -20,6 +20,9 @@ const UNAVAILABLE = {
 
 const MIN_COLLATERAL = 10;
 const MIN_POSITION = 11;
+
+/** A k-asset is priced and sized per thousand coins: kPEPE is "1,000 PEPE". */
+const thousand = (asset: string) => (/^k[A-Z]/.test(asset) ? `1,000 ${asset.slice(1)}` : undefined);
 
 const market = (ctx: TradeCtx, asset: string) => ctx.catalog.perps.find((m) => m.asset === asset);
 
@@ -83,14 +86,15 @@ export const perp = operation({
             hint: "Market you trade",
             term: "token",
             missing: { message: "Pick a market.", cta: "Pick a market" },
+            search: { placeholder: "Search markets", local: true },
             choices: (_v: Values & Fixed, ctx) =>
                 ctx.catalog.perps.map((m): Choice => {
-                    const price = priceOf(ctx, m.asset);
+                    const price = m.markPx ?? priceOf(ctx, m.asset);
                     return {
                         value: m.asset,
                         label: m.asset,
-                        description: token(ctx, m.asset)?.name,
-                        detail: `${price === null ? "—" : formatUsd(price)}, up to ${m.maxLeverage}x`,
+                        description: token(ctx, m.asset)?.name ?? thousand(m.asset),
+                        detail: `${price == null ? "—" : formatPrice(price)}, up to ${m.maxLeverage}x`,
                         icon: { set: "coin", id: m.asset },
                     };
                 }),

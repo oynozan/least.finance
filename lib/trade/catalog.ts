@@ -46,6 +46,8 @@ export const QUOTE = "USDC";
 export type PerpMarket = {
     asset: string;
     maxLeverage: number;
+    /** The market's last mark in dollars; the fallback list has none. */
+    markPx?: number;
 };
 
 /** The fallback list, used until the server's markets load and in demo mode. */

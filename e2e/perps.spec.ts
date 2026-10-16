@@ -12,6 +12,7 @@ import {
     reviewPanel,
     sidebar,
     status,
+    trade,
     walletButton,
 } from "./perps";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
@@ -249,4 +250,34 @@ test("Review is blocked with trading off, and with a position already open on th
     await expect(reviewButton(page)).toHaveAttribute("aria-disabled", "true");
     await expect(reviewButton(page)).toHaveAccessibleDescription("You already hold a BTC position. Close it first.");
     expect(await walletButton(page).isVisible()).toBe(true);
+});
+
+test("the market picker searches its own list, by name too, and says when nothing matches", async ({ page }) => {
+    await page.goto("/");
+    await connect(page);
+    await openPerp(page, { side: "Long" });
+    await trade(page).locator('[data-slot="asset"]').getByRole("button").click();
+    const picker = page.locator("[data-floating-dialog]:not([data-closing])");
+    const search = picker.getByRole("searchbox", { name: "Search markets" });
+    await expect(search).toBeFocused();
+    await expect(picker.getByRole("option")).toHaveCount(5);
+
+    await search.fill("do");
+    await expect(picker.getByRole("option")).toHaveText([/^DOGE/]);
+    await search.fill("chain");
+    await expect(picker.getByRole("option")).toHaveText([/^LINK/]);
+
+    await search.fill("zzz");
+    await expect(picker.getByRole("option")).toHaveCount(0);
+    await expect(picker.getByText("No market matches “zzz”.")).toBeVisible();
+
+    await search.fill("");
+    await expect(picker.getByRole("option")).toHaveCount(5);
+    // The arrow keys and Enter work on the filtered rows
+    await search.fill("do");
+    await search.press("ArrowDown");
+    await expect(picker.getByRole("option", { name: "DOGE" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(picker).toBeHidden();
+    await expect(trade(page).locator('[data-slot="asset"]').getByRole("button")).toHaveAccessibleName("DOGE");
 });
