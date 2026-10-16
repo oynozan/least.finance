@@ -43,7 +43,6 @@ describe("loadConfig", () => {
         expect(config.PREDICTIONS_TRADING).toBe("off");
         expect(config.POLYMARKET_FLOAT_USD).toBe(100);
         expect(config.PREDICTIONS_POLL_MS).toBe(2_000);
-        expect(config.SWAPS_POLL_MS).toBe(2_000);
         expect(config.POLYGON_RPC_URL).toBe("https://polygon.drpc.org");
         expect(config.POLYMARKET_POOL_KEY).toBeUndefined();
     });
@@ -297,7 +296,6 @@ describe("loadConfig", () => {
         expect(config.LIFI_URL).toBe("https://li.quest");
         expect(config.LIFI_API_KEY).toBeUndefined();
         expect(config.LIFI_INTEGRATOR).toBe("least-finance");
-        expect(config.LIFI_FEE).toBe(0);
         expect(config.SWAPS_CATALOG_SYNC_MS).toBe(60_000);
     });
 
@@ -306,13 +304,11 @@ describe("loadConfig", () => {
             LIFI_URL: "https://lifi.example",
             LIFI_API_KEY: "key",
             LIFI_INTEGRATOR: "my_app.1",
-            LIFI_FEE: "0.005",
             SWAPS_CATALOG_SYNC_MS: "10000",
         });
         expect(config.LIFI_URL).toBe("https://lifi.example");
         expect(config.LIFI_API_KEY).toBe("key");
         expect(config.LIFI_INTEGRATOR).toBe("my_app.1");
-        expect(config.LIFI_FEE).toBe(0.005);
         expect(config.SWAPS_CATALOG_SYNC_MS).toBe(10_000);
         expect(load({ LIFI_API_KEY: "  " }).LIFI_API_KEY).toBeUndefined();
     });
@@ -321,8 +317,10 @@ describe("loadConfig", () => {
         expect(() => load({ LIFI_INTEGRATOR: value })).toThrow(/LIFI_INTEGRATOR/);
     });
 
-    it.each(["0.2", "0.1", "-0.01", "abc"])("rejects a LI.FI fee of '%s'", (value) => {
-        expect(() => load({ LIFI_FEE: value })).toThrow(/LIFI_FEE/);
+    it("ignores the LI.FI fee and the swap status poll that an older env file still sets", () => {
+        const config = load({ LIFI_FEE: "0.5", SWAPS_POLL_MS: "1" });
+        expect(config).not.toHaveProperty("LIFI_FEE");
+        expect(config).not.toHaveProperty("SWAPS_POLL_MS");
     });
 
     it("rejects a LI.FI URL that isn't one, and a catalog sync under 10 seconds", () => {

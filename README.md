@@ -41,16 +41,13 @@ A location check on users is still a launch blocker. Polymarket asks apps that p
 
 ## Swaps
 
-Buy, Sell and Swap run as real swaps from the person's own wallet, quoted and routed by [LI.FI](https://li.quest) on nine networks. Set up the server (`server/`) in this order:
+Buy, Sell and Swap run from the account balance, with no wallet signature per trade. [LI.FI](https://li.quest) prices the coins on nine networks and routes the hedger's sells of the coins the server takes in. Set up the server (`server/`) in this order:
 
 1. Get an API key from the [LI.FI Partner Portal](https://portal.li.fi) and set it as `LIFI_API_KEY` in `server/.env`. Set `LIFI_INTEGRATOR` to the integrator id registered there (letters, digits, dots, dashes and underscores, up to 23 characters).
-2. To earn a fee, make a fee wallet (`LIFI_FEE_MNEMONIC`, kept apart from the deposit mnemonic), register its addresses with LI.FI in the portal, and set `LIFI_FEE` (a share below 0.1). Leave it at 0 for none.
-3. Accept LI.FI's terms of service in the portal for the integrator before launch.
-4. Set the RPC URLs for the networks swaps read holdings and allowances from (`ETHEREUM_RPC_URLS`, `ARBITRUM_RPC_URLS`, `BASE_RPC_URLS`, `OPTIMISM_RPC_URLS`, `POLYGON_RPC_URLS`, `BNB_RPC_URLS`, `AVALANCHE_RPC_URLS`, `ARC_RPC_URLS`, `SOLANA_RPC_URLS`). The defaults are public and rate limited; use paid endpoints in production.
-5. From `server/`, run the read-only live check: `node --env-file=.env scripts/swaps-live-check.ts`. It quotes about $10 of every coin on every network it is listed on, holds each quote to the server's checks, and prints a line per coin and a summary. It exits 1 if any fails; do not go on if it does.
-6. Optionally prove one real swap end to end: fund a throwaway wallet with a few dollars of USDC and a little ETH for gas on Base, put its key in `SWAP_CHECK_KEY` (never the key of a wallet that holds anything else), and run `node --env-file=.env scripts/swaps-live-check.ts --yes-spend-real-money`. It swaps $2 of USDC to USDT, sends the approval and the swap, waits for LI.FI to report DONE and prints the transaction hashes.
+2. Accept LI.FI's terms of service in the portal for the integrator before launch.
+3. Set the RPC URLs for the networks the inventory wallet trades on (`ETHEREUM_RPC_URLS`, `ARBITRUM_RPC_URLS`, `BASE_RPC_URLS`, `OPTIMISM_RPC_URLS`, `POLYGON_RPC_URLS`, `BNB_RPC_URLS`, `AVALANCHE_RPC_URLS`, `ARC_RPC_URLS`, `SOLANA_RPC_URLS`). The defaults are public and rate limited; use paid endpoints in production.
 
-Sanctions screening of users is a launch blocker. LI.FI asks integrators to screen wallets and the app has no screening yet, so keep swaps to a private demo until one exists (see the [design](docs/superpowers/specs/2026-10-12-multichain-swaps-design.md)).
+Sanctions screening of users is a launch blocker. LI.FI asks integrators to screen wallets and the app has no screening yet, so keep Buy, Sell and Swap to a private demo until one exists (see the [design](docs/superpowers/specs/2026-10-12-multichain-swaps-design.md)).
 
 ## Where things live
 

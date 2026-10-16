@@ -101,7 +101,7 @@ const fields = z.object({
     /** RPCs for the chains deposits are bridged from, tried in order. */
     ETHEREUM_RPC_URLS: list(DEFAULT_RPC_URLS.ETHEREUM_RPC_URLS),
     BNB_RPC_URLS: list(DEFAULT_RPC_URLS.BNB_RPC_URLS),
-    /** RPCs for the other EVM networks swaps read wallets' holdings from, tried in order. */
+    /** RPCs for the other EVM networks the inventory wallet trades on, tried in order. */
     ARBITRUM_RPC_URLS: list(DEFAULT_RPC_URLS.ARBITRUM_RPC_URLS),
     BASE_RPC_URLS: list(DEFAULT_RPC_URLS.BASE_RPC_URLS),
     OPTIMISM_RPC_URLS: list(DEFAULT_RPC_URLS.OPTIMISM_RPC_URLS),
@@ -141,12 +141,8 @@ const fields = z.object({
         .string()
         .regex(/^[A-Za-z0-9._-]{1,23}$/)
         .default("least-finance"),
-    /** The share of each swap kept as our fee, from 0 up to but not including 0.1 (10%). */
-    LIFI_FEE: z.coerce.number().min(0).lt(0.1).default(0),
     /** How often the swap coins' prices are re-read from LI.FI; trades refuse a price not read for three of these. */
     SWAPS_CATALOG_SYNC_MS: z.coerce.number().int().min(10_000).default(60_000),
-    /** How often sent swaps are checked for ones that are due a status call. */
-    SWAPS_POLL_MS: z.coerce.number().int().min(100).default(2_000),
 
     /** DefiLlama's coin prices API; with a Pro key, `https://pro-api.llama.fi/<key>/coins`. */
     DEFILLAMA_COINS_URL: z.url().default("https://coins.llama.fi"),

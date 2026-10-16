@@ -17,7 +17,6 @@ export type LifiQuoteRequest = {
     /** Left out, LI.FI picks the slippage for the tokens in the route. */
     slippage?: number;
     integrator: string;
-    fee?: number;
 };
 
 /** The most that a quote's minimum may sit under its amount for us to accept it, whoever chose the slippage. */
@@ -284,7 +283,6 @@ export function createLifi(options: {
                 ...(req.slippage !== undefined && { slippage: String(req.slippage) }),
                 integrator: req.integrator,
             });
-            if (req.fee !== undefined && req.fee > 0) params.set("fee", String(req.fee));
             const response = await get("/v1/quote", params);
             if (!response.ok) {
                 const body = (await response.json().catch(() => null)) as { code?: unknown } | null;

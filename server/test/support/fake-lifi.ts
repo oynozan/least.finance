@@ -207,7 +207,6 @@ export async function startFakeLifi(options: { prices?: Record<string, number> }
                 fromAmount: q.get("fromAmount") ?? "",
                 ...(q.has("slippage") ? { slippage: Number(q.get("slippage")) } : {}),
                 integrator: q.get("integrator") ?? "",
-                ...(q.has("fee") ? { fee: Number(q.get("fee")) } : {}),
             };
             fake.quotes.push(ask);
             if (takeFor(noRoutes, ask.fromAddress)) {

@@ -219,18 +219,6 @@ test("a minimum a whole unit more than 2% under the amount is too far under", ()
     expect(tooFarUnder({ toAmount: "100", toAmountMin: "100" })).toBe(false);
 });
 
-test("the quote carries the fee only when it is above 0", async () => {
-    fake = await startFakeLifi({ prices: { USDC: 1, USDT: 1 } });
-    const lifi = createLifi({ url: fake.url });
-
-    await lifi.quote(baseRequest({ fee: 0 }));
-    await lifi.quote(baseRequest({ fee: 0.01 }));
-
-    expect(fake.requests[0]).not.toContain("fee=");
-    expect(fake.requests[1]).toMatch(/&integrator=least-finance&fee=0\.01$/);
-    expect(fake.keys).toEqual([null, null]);
-});
-
 test("a native input skips the approval and sends its amount as the value", async () => {
     fake = await startFakeLifi({ prices: { ETH: 3210.4, USDC: 1 } });
     const lifi = createLifi({ url: fake.url });
