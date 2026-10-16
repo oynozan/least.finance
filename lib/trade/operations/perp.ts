@@ -1,4 +1,5 @@
 import { VERB, canonicalDecimal, type Bound, type Choice, type Issue } from "@/lib/sentence";
+import { PERP_FEE_USD } from "@/server/src/perps/fee";
 import { LEVERAGE_STEPS } from "../catalog";
 import { operation, priceOf, token, type TradeCtx } from "../context";
 import { formatUsd, formatUsdShort } from "../format";
@@ -117,7 +118,8 @@ export const perp = operation({
                     min: { ...minimum(MIN_COLLATERAL), message: "Positions start at $10." },
                     max: collateralCap(ctx),
                 }),
-                (v) => `A ${formatUsdShort(Number(v.collateralUSD) * (Number(v.leverage) || 1))} position`,
+                (v) =>
+                    `A ${formatUsdShort(Math.max(0, Number(v.collateralUSD) - PERP_FEE_USD) * (Number(v.leverage) || 1))} position`,
             ),
             prompt: "How much collateral, in dollars?",
             hint: "Collateral in USD",
@@ -142,7 +144,7 @@ export const perp = operation({
         if (!(ctx.perpTrading?.loaded && ctx.perpTrading.maxOrderUSD !== null)) return [UNAVAILABLE];
         const collateral = Number(v.collateralUSD) || 0;
         const issues: Issue<keyof Values>[] = [];
-        if (collateral >= MIN_COLLATERAL && collateral * (Number(v.leverage) || 1) < MIN_POSITION) {
+        if (collateral >= MIN_COLLATERAL && (collateral - PERP_FEE_USD) * (Number(v.leverage) || 1) < MIN_POSITION) {
             issues.push({
                 code: "below_minimum",
                 severity: "error",
@@ -171,13 +173,14 @@ export const perp = operation({
     preview: (v) => {
         const collateral = Number(v.collateralUSD) || 0;
         const leverage = Number(v.leverage) || 1;
+        const invested = Math.max(0, collateral - PERP_FEE_USD);
         return {
             rows: [
                 {
                     id: "size",
                     label: "Position",
-                    value: collateral ? formatUsdShort(collateral * leverage) : "—",
-                    ...(collateral > 0 && { note: `${leverage} × ${formatUsdShort(collateral)}` }),
+                    value: collateral ? formatUsdShort(invested * leverage) : "—",
+                    ...(collateral > 0 && { note: `${leverage} × ${formatUsdShort(invested)}` }),
                     primary: true,
                 },
                 { id: "risk", label: "Most you can lose", value: collateral ? formatUsd(collateral) : "—" },

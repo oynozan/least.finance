@@ -1,6 +1,6 @@
 import type { OptimisticTrade, PerpPositionView, PerpsView, PositionView, PositionsView } from "@/lib/account/state";
 import { formatUnits, formatUsdShort } from "@/lib/trade/format";
-import { isPendingPerp, toUsdc } from "@/lib/account/state";
+import { isPendingPerp, perpPositionUSD, toUsdc } from "@/lib/account/state";
 import type { CoinSymbol } from "./coin-icons";
 
 /** A prediction the server holds, or one on its way: any outcome label, with a live value once its market has a price. */
@@ -37,7 +37,7 @@ export type LivePerpPosition = {
     symbol: CoinSymbol;
     /** The collateral, in USD. */
     size: number;
-    /** Unrealized PnL after funding, or the realized PnL once settled. */
+    /** Unrealized PnL after funding and the opening fees, or the realized PnL once settled. */
     pnl: number;
     asset: string;
     side: "long" | "short";
@@ -63,7 +63,7 @@ export const positionTitle = (p: Position) => (p.kind === "perp-live" ? perpName
 /** "YES, 26.32 shares", or just the outcome while a buy waits; "$500 position, entry $65,000, liquidates near $52,400" for a perp. */
 export function positionDetail(p: Position) {
     if (p.kind === "perp-live") {
-        const parts = [`${formatUsdShort(p.size * p.leverage)} position`];
+        const parts = [`${formatUsdShort(perpPositionUSD(p.position))} position`];
         if (p.entryPx) parts.push(`entry ${formatUsdShort(Number(p.entryPx))}`);
         if (p.liquidationPx) parts.push(`liquidates near ${formatUsdShort(Number(p.liquidationPx))}`);
         return parts.join(", ");
@@ -77,10 +77,14 @@ export function sellableShares(shares: string): number {
     return Number(`${whole}.${fraction.slice(0, 2).padEnd(2, "0")}`);
 }
 
+/** What an open perp has made: its unrealized PnL less the funding paid and the fees already taken on opening, so a fresh position starts a little down. */
+const openPerpPnl = (p: PerpPositionView) =>
+    Number(p.unrealizedPnlUSD) - Number(p.cumFundingUSD) - Number(p.feesUSD ?? 0);
+
 /** What an open position is worth and what it has made: a prediction at the sell price (null without one), a perp at its last mark. */
 export function liveValue(p: Position, sellPrice: number | null) {
     if (p.kind === "perp-live") {
-        const pnl = Number(p.position.unrealizedPnlUSD) - Number(p.position.cumFundingUSD);
+        const pnl = openPerpPnl(p.position);
         return { value: p.size + pnl, pnl };
     }
     if (sellPrice === null || !p.shares) return null;
@@ -266,7 +270,7 @@ export function livePerpRows(
                 kind: "perp-live",
                 symbol: p.asset,
                 size: collateral,
-                pnl: payout === null ? Number(p.unrealizedPnlUSD) - Number(p.cumFundingUSD) : payout - collateral,
+                pnl: payout === null ? openPerpPnl(p) : payout - collateral,
                 asset: p.asset,
                 side: p.side,
                 leverage: p.leverage,

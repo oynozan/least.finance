@@ -11,6 +11,7 @@ import type {
 import type { TradeView } from "@/server/src/trading/types";
 import { networkName } from "./networks";
 import { shortenAddress } from "@/components/wallet-data";
+import { perpPositionUSD } from "@/lib/account/state";
 
 export type ActivityKind = "deposit" | "withdrawal" | "swap" | "buy" | "sell" | "long" | "short" | "close" | "predict";
 
@@ -147,7 +148,7 @@ export function perpActivity(position: PerpPositionView, optimistic = false): Ac
             at: new Date(position.openedAt),
             kind: position.side,
             title: name,
-            detail: `${formatUsdShort(collateral * position.leverage)} position`,
+            detail: `${formatUsdShort(perpPositionUSD(position))} position`,
             change: 0,
             pending: optimistic || undefined,
         },

@@ -549,7 +549,7 @@ test.describe("the amount's dropdown", () => {
         expect(amount(run("swap").view).summary).toBe("You get ≈ 0.06773 SOL");
         expect(amount(run("buy").view).summary).toBe("You get ≈ 0.06773 SOL");
         expect(amount(run("sell").view).summary).toBe("You sell ≈ 0.06793 SOL");
-        expect(amount(run("long").view, "collateralUSD").summary).toBe("A $500 position");
+        expect(amount(run("long").view, "collateralUSD").summary).toBe("A $495 position");
         expect(amount(run("predict").view).summary).toBe("Pays $26.32 if YES");
         // Nothing to say about an empty amount.
         expect(amount(run("swap", [slot("amountUSD", "")]).view).summary).toBeUndefined();

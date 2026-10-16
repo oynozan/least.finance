@@ -91,7 +91,7 @@ test("confirm lowers the balance and adds the position at once while the fake ho
     await expect(balanceButton(page)).toHaveAccessibleName(balanceName("400.00"));
     await expect(long(page)).toHaveCount(1);
     await expect(long(page)).toContainText("Pending");
-    await expect(long(page)).toContainText("$500 position");
+    await expect(long(page)).toContainText(/\$49[34] position/);
     await expect(status(page)).toHaveText("");
     // Nothing to close until it fills.
     const close = long(page).getByRole("button", { name: "Close Long BTC at 5x" });

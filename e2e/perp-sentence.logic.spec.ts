@@ -94,8 +94,15 @@ test.describe("perp checks", () => {
         expect(view1.blocking).toMatchObject({
             message: "A position starts at $11. Raise the collateral or the leverage.",
         });
-        const ok = run("long", ctxOf(view()), [slot("collateralUSD", "11"), slot("leverage", "1")]);
+        // Our $1 fee comes off the collateral first, so $11 at 1x leaves a $10 position
+        const fee = run("long", ctxOf(view()), [slot("collateralUSD", "11"), slot("leverage", "1")]);
+        expect(fee.blocking).toMatchObject({
+            message: "A position starts at $11. Raise the collateral or the leverage.",
+        });
+        const ok = run("long", ctxOf(view()), [slot("collateralUSD", "12"), slot("leverage", "1")]);
         expect(ok.blocking).toBeUndefined();
+        const leveraged = run("long", ctxOf(view()), [slot("collateralUSD", "10"), slot("leverage", "2")]);
+        expect(leveraged.blocking).toBeUndefined();
     });
 
     test("collateral over the server's order limit shows 'Long and short are limited to $150 right now.'", () => {

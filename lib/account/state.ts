@@ -185,6 +185,12 @@ const IN_FLIGHT_PERP = new Set(["placing", "funding", "posted", "sweeping"]);
 
 export const isPendingPerp = (position: { id: string }) => position.id.startsWith("pending:");
 
+/** How big a position is in whole dollars: its coins at the entry price, or the collateral times the leverage while there is no entry yet. */
+export function perpPositionUSD(p: PerpPositionView): number {
+    const worth = Number(p.sizeCoin) * Number(p.entryPx);
+    return p.entryPx && worth > 0 ? Math.round(worth) : Number(p.collateralUSD) * p.leverage;
+}
+
 export type AccountState =
     | { status: "idle" }
     | { status: "connecting" }

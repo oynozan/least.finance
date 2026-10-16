@@ -145,6 +145,15 @@ test.describe("perp review rows", () => {
         expect(value("Funding")).toContain("per hour");
         expect(value("Most you can lose")).toBe("$100.00");
     });
+
+    test("our $1 fee is in the Fees row, and the position is what the collateral buys after it", () => {
+        const rows = quoteRows({ ...QUOTE, notionalUSD: "495", ourFeeUSD: "1" }, CTX);
+        const value = (label: string) => rows.find((r) => r.label === label)?.value;
+        expect(value("Position")).toBe("$495");
+        expect(rows.find((r) => r.label === "Position")?.note).toBe("0.00757 BTC, 5 × $99");
+        expect(value("Fees")).toBe("$0.23 Hyperliquid, $1.00 ours");
+        expect(value("Most you can lose")).toBe("$100.00");
+    });
 });
 
 test.describe("placing a perp", () => {
@@ -156,7 +165,13 @@ test.describe("placing a perp", () => {
             expect(placed.sent).toBe(true);
             expect(optimisticBalance(stack.state())).toBe(toWei("200"));
             expect(stack.state().perps.positions).toMatchObject([
-                { id: `pending:${placed.requestId}`, asset: "BTC", sizeCoin: "0.00757", entryPx: "66000" },
+                {
+                    id: `pending:${placed.requestId}`,
+                    asset: "BTC",
+                    sizeCoin: "0.00757",
+                    entryPx: "66000",
+                    feesUSD: "0.225",
+                },
             ]);
             await expect.poll(() => stack.events.some((e) => e.name === "perp:order")).toBe(true);
             expect(stack.events.find((e) => e.name === "perp:order")?.payload).toMatchObject({

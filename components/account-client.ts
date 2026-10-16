@@ -681,6 +681,7 @@ export class AccountClient {
             markPx: null,
             unrealizedPnlUSD: "0",
             cumFundingUSD: "0",
+            feesUSD: String(Number(quote.takerFeeUSD) + Number(quote.ourFeeUSD)),
             state: "open",
             proceedsUSD: null,
             notice: null,

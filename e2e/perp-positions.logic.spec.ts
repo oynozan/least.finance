@@ -97,6 +97,27 @@ test.describe("perp rows in the sidebar", () => {
         expect(trendOf(Math.round(flat!.pnl * 100) / 100)).toBe("flat");
     });
 
+    test("a fresh position starts down by the fees it already paid, and worth follows", () => {
+        const fresh = only({ unrealizedPnlUSD: "0", cumFundingUSD: "0", feesUSD: "1.22" });
+        expect(fresh.pnl).toBeCloseTo(-1.22, 6);
+        expect(liveValue(fresh, null)?.pnl).toBeCloseTo(-1.22, 6);
+        expect(liveValue(fresh, null)?.value).toBeCloseTo(98.78, 6);
+        // A view from before fees were sent counts none
+        expect(only({ unrealizedPnlUSD: "0", cumFundingUSD: "0" }).pnl).toBe(0);
+        // A settled row's PnL is its proceeds less the collateral, which already holds the fees
+        const closed = only({ state: "closed", proceedsUSD: "98", settledAt: iso(NOW - DAY), feesUSD: "1.22" });
+        expect(closed.pnl).toBe(-2);
+    });
+
+    test("the position size is the coins at the entry price, not the collateral times the leverage", () => {
+        // 0.00759 BTC at 65,000 is $493.35; $100 of collateral holds $1 of fees
+        expect(positionDetail(only({ sizeCoin: "0.00759" }))).toBe(
+            "$493 position, entry $65,000, liquidates near $52,400",
+        );
+        // Still waiting for its entry: the old product
+        expect(positionDetail(only({ entryPx: null, liquidationPx: null }))).toBe("$500 position");
+    });
+
     test("a perp row's PnL follows the live mark between snapshots", () => {
         const [long] = livePerpRows({ positions: [position()], orders: [] }, NOW, { BTC: 67000 });
         // 0.00769 * (67000 - 65000) = 15.38, less 0.5 funding paid
@@ -156,6 +177,11 @@ test.describe("perps in the PnL feed", () => {
         const feed = perpActivity(position({ state: "closed", proceedsUSD: "112", settledAt: iso(NOW - 60_000) }));
         expect(feed.map((a) => a.kind)).toEqual(["long", "close"]);
         expect(feed[1]).toMatchObject({ title: "Closed Long BTC at 5x", change: 12 });
+    });
+
+    test("an opening row names the position by its coins at the entry price", () => {
+        expect(perpActivity(position({ sizeCoin: "0.00759" }))[0]?.detail).toBe("$493 position");
+        expect(perpActivity(position({ entryPx: null }))[0]?.detail).toBe("$500 position");
     });
 
     test("a liquidation appears in the feed", () => {
