@@ -214,14 +214,8 @@ describe("price history input", () => {
     });
 
     it("keeps the case of a perp market and upper-cases a swap coin", () => {
-        expect(parse(priceHistory, { range: "7d", coins: "btc, Eth,kPEPE,S,0G,hype" }).coins).toEqual([
-            "BTC",
-            "ETH",
-            "kPEPE",
-            "S",
-            "0G",
-            "hype",
-        ]);
+        expect(parse(priceHistory, { range: "7d", coins: "btc, kPEPE,hype" }).coins).toEqual(["BTC", "kPEPE", "hype"]);
+        expect(parse(priceHistory, { range: "7d", coins: " Eth,S,0G" }).coins).toEqual(["ETH", "S", "0G"]);
     });
 
     it("takes a market it knows nothing about, for the service to leave out", () => {
@@ -229,7 +223,7 @@ describe("price history input", () => {
     });
 
     it("asks for each coin once", () => {
-        expect(parse(priceHistory, { range: "7d", coins: "eth,ETH,kPEPE,kPEPE" }).coins).toEqual(["ETH", "kPEPE"]);
+        expect(parse(priceHistory, { range: "7d", coins: "eth,ETH,kPEPE" }).coins).toEqual(["ETH", "kPEPE"]);
     });
 
     it.each([
@@ -241,14 +235,14 @@ describe("price history input", () => {
         "DOGE-PERP",
         "xyz:AAPL",
         "ABCDEFGHIJKLM",
+        "A,B,C,D",
         "A,B,C,D,E,F,G,H,I,J,K,L,M",
     ])("rejects the coins '%s'", (coins) => {
         expect(() => parse(priceHistory, { range: "7d", coins })).toThrow(AppError);
     });
 
-    it("takes up to twelve coins", () => {
-        const twelve = "A,B,C,D,E,F,G,H,I,J,K,L";
-        expect(parse(priceHistory, { range: "7d", coins: twelve }).coins).toHaveLength(12);
+    it("takes up to three coins", () => {
+        expect(parse(priceHistory, { range: "7d", coins: "A,B,C" }).coins).toHaveLength(3);
     });
 
     it.each(["", "2y", "7"])("rejects the range '%s'", (range) => {

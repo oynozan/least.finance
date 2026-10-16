@@ -68,8 +68,8 @@ export const marketHistoryQuery = z.object({
 
 const SWAP_SYMBOLS = new Set(COINS.map((coin) => coin.symbol));
 
-/** The most coins one price history request names. */
-const MAX_HISTORY_COINS = 12;
+/** The most coins one price history request names; the web asks for one at a time, and each uncached perp market is a Hyperliquid read. */
+const MAX_HISTORY_COINS = 3;
 
 export const priceHistory = z.object({
     range: z.enum(PRICE_RANGES),
@@ -87,7 +87,10 @@ export const priceHistory = z.object({
                     ...new Set(names.map((name) => (SWAP_SYMBOLS.has(name.toUpperCase()) ? name.toUpperCase() : name))),
                 ];
             }
-            ctx.addIssue({ code: "custom", message: "up to 12 comma-separated coin symbols such as ETH,kPEPE" });
+            ctx.addIssue({
+                code: "custom",
+                message: `up to ${MAX_HISTORY_COINS} comma-separated coin symbols such as ETH,kPEPE`,
+            });
             return z.NEVER;
         }),
 });
