@@ -105,6 +105,8 @@ export type PendingWithdrawal = {
     amount: bigint;
     to: string;
     at: number;
+    /** The socket connection it was sent on, so a later session without it means it never arrived */
+    connection: number;
 };
 
 export type OptimisticTrade = OptimisticBuy | OptimisticSell;
@@ -229,7 +231,8 @@ export type AccountAction =
     | { type: "reset" }
     | { type: "connecting" }
     | { type: "failed"; error: ApiError }
-    | { type: "session"; session: WalletSession }
+    /** Read on `connection`, so a pending withdrawal from an earlier one that it doesn't list never arrived */
+    | { type: "session"; session: WalletSession; connection?: number }
     /** A bridge order opened or moved on; an expired one leaves the list. */
     | { type: "order"; order: DepositOrderView }
     | { type: "credited"; deposit: DepositView; account: AccountView }
@@ -307,7 +310,9 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
                 optimisticPerps: state.status === "ready" ? state.optimisticPerps : [],
                 withdrawals: action.session.withdrawals,
                 pendingWithdrawals: (state.status === "ready" ? state.pendingWithdrawals : []).filter(
-                    (p) => !action.session.withdrawals.some((w) => w.requestId === p.requestId),
+                    (p) =>
+                        p.connection >= (action.connection ?? 0) &&
+                        !action.session.withdrawals.some((w) => w.requestId === p.requestId),
                 ),
                 holdings: action.session.holdings ?? [],
                 // A fresh session already has what trades and sends sent on the old connection did.

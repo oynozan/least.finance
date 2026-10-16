@@ -337,7 +337,7 @@ export class AccountClient {
                 .catch(() => null);
             if (this.#socket !== socket || !socket.connected) return;
             if (result?.ok) {
-                this.#dispatch({ type: "session", session: result.data });
+                this.#dispatch({ type: "session", session: result.data, connection: this.#connection });
                 this.#bound = socket;
                 this.#releaseBindWaiters();
                 const { pnl } = this.#snapshot;
@@ -514,7 +514,10 @@ export class AccountClient {
         const socket = this.#socket;
         if (this.#snapshot.state.status !== "ready" || !socket?.connected) return "failed";
         const requestId = crypto.randomUUID();
-        this.#dispatch({ type: "withdraw", withdrawal: { requestId, amount: toWei(amount), to, at: Date.now() } });
+        this.#dispatch({
+            type: "withdraw",
+            withdrawal: { requestId, amount: toWei(amount), to, at: Date.now(), connection: this.#connection },
+        });
         const result = await socket
             .timeout(REPORT_TIMEOUT_MS)
             .emitWithAck("withdraw:create", { requestId, amount, to, ...(reviewedFee ? { reviewedFee } : {}) })

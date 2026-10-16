@@ -7,6 +7,7 @@ import { optimisticBalance, toWei, type ApiError } from "@/lib/account/state";
 
 const DEPOSIT_ADDRESS = "0x00000000000000000000000000000000000000b2";
 const HASH = `0x${"ab".repeat(32)}`;
+const EVM = "0x00000000000000000000000000000000000000d4";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -97,6 +98,11 @@ const pendingDeposits = (stack: Stack) => {
     return state.status === "ready" ? state.pending : [];
 };
 
+const pendingWithdrawals = (stack: Stack) => {
+    const { state } = stack.client.getSnapshot();
+    return state.status === "ready" ? state.pendingWithdrawals : [];
+};
+
 const shown = (stack: Stack) => optimisticBalance(stack.client.getSnapshot().state);
 
 test.describe("a sent deposit", () => {
@@ -173,6 +179,26 @@ test.describe("a sent deposit", () => {
                 { name: "deposit:submit", bound: true },
             ]);
             expect(pendingDeposits(stack)).toEqual([]);
+        } finally {
+            await stack.stop();
+        }
+    });
+});
+
+test.describe("a withdrawal that never reached the server", () => {
+    test("is dropped by the session of the next connection, with its debit", async () => {
+        const stack = await fakeServer((socket) => {
+            // The request is swallowed, as by a dead link
+            socket.on("withdraw:create", () => undefined);
+        });
+        try {
+            void stack.client.withdraw("10", EVM);
+            await expect.poll(() => pendingWithdrawals(stack).length).toBe(1);
+            expect(shown(stack)).toBe(toWei("40"));
+            stack.dropAll();
+            await expect.poll(() => stack.client.getSnapshot().pnl.bound).toBe(2);
+            expect(pendingWithdrawals(stack)).toEqual([]);
+            expect(shown(stack)).toBe(toWei("50"));
         } finally {
             await stack.stop();
         }

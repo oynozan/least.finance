@@ -553,13 +553,14 @@ const withdrawal = (n: number, over: Partial<WithdrawalView> = {}): WithdrawalVi
     ...over,
 });
 
-const pendingWithdrawal = (n: number, usdc = "10"): AccountAction => ({
+const pendingWithdrawal = (n: number, usdc = "10", connection = 1): AccountAction => ({
     type: "withdraw",
     withdrawal: {
         requestId: `req-${n}`,
         amount: toWei(usdc),
         to: "0x00000000000000000000000000000000000000d4",
         at: 1000 + n,
+        connection,
     },
 });
 
@@ -649,10 +650,22 @@ test.describe("withdrawals", () => {
         expect(optimisticBalance(state)).toBe(toWei("20"));
     });
 
-    test("a session keeps a pending withdrawal the server doesn't have yet", () => {
+    test("a session keeps a pending withdrawal sent on its own connection that the server doesn't list yet", () => {
         let state = run([pendingWithdrawal(1), pendingWithdrawal(2)], open("25", 1));
-        state = run([{ type: "session", session: { ...session("15", 2), withdrawals: [withdrawal(1)] } }], state);
+        const listed = { ...session("15", 2), withdrawals: [withdrawal(1)] };
+        state = run([{ type: "session", session: listed, connection: 1 }], state);
         expect(ready(state).pendingWithdrawals.map((p) => p.requestId)).toEqual(["req-2"]);
+    });
+
+    test("a session drops a pending withdrawal sent on an earlier connection that it doesn't list", () => {
+        let state = run([pendingWithdrawal(1, "10", 1), pendingWithdrawal(2, "5", 2)], open("25", 1));
+        expect(optimisticBalance(state)).toBe(toWei("10"));
+        state = run([{ type: "session", session: session("25", 1), connection: 2 }], state);
+        expect(ready(state).pendingWithdrawals.map((p) => p.requestId)).toEqual(["req-2"]);
+        expect(optimisticBalance(state)).toBe(toWei("20"));
+        state = run([{ type: "session", session: session("25", 1), connection: 3 }], state);
+        expect(ready(state).pendingWithdrawals).toEqual([]);
+        expect(optimisticBalance(state)).toBe(toWei("25"));
     });
 });
 
