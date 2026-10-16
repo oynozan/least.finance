@@ -76,8 +76,8 @@ export async function perpHarness(o: { trading?: "on" | "off" } = {}) {
     const config = {
         PERPS_TRADING: o.trading ?? "on",
         PERPS_FLOAT_USD: 200,
-        PERPS_SLIPPAGE_BPS: 100,
-        PERPS_CLOSE_SLIPPAGE_BPS: 300,
+        PERPS_OPEN_MAX_SLIPPAGE_BPS: 300,
+        PERPS_CLOSE_MAX_SLIPPAGE_BPS: 500,
         PERPS_MAX_LEVERAGE: 20,
     } as Config;
     const markets = new PerpMarkets({ client: timed, config, logger: pino({ level: "silent" }) });

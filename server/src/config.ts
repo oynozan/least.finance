@@ -195,10 +195,10 @@ const fields = z.object({
     HYPERLIQUID_API_URL: z.url().default("https://api.hyperliquid.xyz"),
     /** The master Hyperliquid float; warnings fire well under and over it. */
     PERPS_FLOAT_USD: z.coerce.number().positive().default(200),
-    /** How far past the mark an opening order may fill, in basis points. */
-    PERPS_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(9_999).default(100),
-    /** How far past the mark a closing order may fill, in basis points. */
-    PERPS_CLOSE_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(9_999).default(300),
+    /** The most an opening order may be allowed to fill past the book's price, in basis points; each order is given only what its size and the book need, up to this. */
+    PERPS_OPEN_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(9_999).default(300),
+    /** The same for a closing order. */
+    PERPS_CLOSE_MAX_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(9_999).default(500),
     PERPS_MAX_LEVERAGE: z.coerce.number().int().min(1).max(50).default(20),
     /** How far the master's Hyperliquid balance may differ from the books before it's flagged. */
     PERPS_RECONCILE_TOLERANCE_USD: z.coerce.number().min(0).default(5),

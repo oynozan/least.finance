@@ -159,7 +159,7 @@ test("a short balance after activation is topped up once, at most 1 USDC", async
     expect(await h.heldE6()).toBe(0n);
 });
 
-test("limit price is the server's mark x 1.01, never the client's quote", async () => {
+test("limit price is 50 bps from the book's mid on a deep book, rounded away, never the client's quote", async () => {
     const h = await fresh();
     const [a, b] = await Promise.all([h.seedAccount("1000"), h.seedAccount("1000")]);
     await h.service.quote({ asset: "BTC", side: "long", leverage: 5, collateralUSD: "100" });
@@ -168,10 +168,98 @@ test("limit price is the server's mark x 1.01, never the client's quote", async 
     await h.settled((await h.place(a)).order._id);
     await h.settled((await h.place(b, { side: "short" })).order._id);
 
+    // 65100 x 1.005 = 65425.5 up and x 0.995 = 64774.5 down
     expect(h.fake.orders.map((o) => ({ isBuy: o.isBuy, px: o.px, reduceOnly: o.reduceOnly }))).toEqual([
-        { isBuy: true, px: "65751", reduceOnly: false },
-        { isBuy: false, px: "64449", reduceOnly: false },
+        { isBuy: true, px: "65426", reduceOnly: false },
+        { isBuy: false, px: "64774", reduceOnly: false },
     ]);
+});
+
+test("the limit follows the book, not a mark that has drifted from it", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.fake.setBook("BTC", { bids: [{ price: 64690, size: 50 }], asks: [{ price: 64710, size: 50 }] });
+    const { order } = await h.place(account, { side: "short" });
+    await h.settled(order._id);
+
+    // The mid is 64700, 0.46% under the mark: 50 bps under it is 64376.5
+    expect(h.fake.orders[0]).toMatchObject({ isBuy: false, px: "64376" });
+    expect((await h.orderOf(order._id)).limitPx).toBe("64376");
+});
+
+test("the quote's entry is what the book pays for the size", async () => {
+    const h = await fresh();
+    h.fake.setBook("BTC", {
+        bids: [{ price: 64993.5, size: 5 }],
+        asks: [
+            { price: 65006.5, size: 0.004 },
+            { price: 65260, size: 5 },
+        ],
+    });
+    const view = await h.service.quote({ asset: "BTC", side: "long", leverage: 5, collateralUSD: "100" });
+
+    expect(view.sizeCoin).toBe("0.00759");
+    expect(Number(view.entryPx)).toBeCloseTo((0.004 * 65006.5 + 0.00359 * 65260) / 0.00759, 1);
+});
+
+test("a book too thin for the size refuses the quote and the order before anything is recorded or funded", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const thin = "This market is too thin for a position this size right now. Try a smaller amount.";
+    // 0.00759 BTC wanted, 0.004 visible
+    h.fake.setBook("BTC", { bids: [{ price: 64993.5, size: 5 }], asks: [{ price: 65006.5, size: 0.004 }] });
+    const request = { asset: "BTC", side: "long", leverage: 5, collateralUSD: "100" } as const;
+
+    expect(await refusal(h.service.quote(request))).toEqual({ code: "unavailable", message: thin });
+    expect(await refusal(h.place(account))).toEqual({ code: "unavailable", message: thin });
+    // The other side of the same book is deep
+    expect((await h.service.quote({ ...request, side: "short" })).sizeCoin).toBe("0.00759");
+    expect(await h.database.collections.perpOrders.countDocuments()).toBe(0);
+    expect((await h.state(account._id)).kinds).toEqual(["deposit"]);
+    expect(h.fake.requests.filter((r) => r.startsWith("exchange"))).toEqual([]);
+    expect(await h.heldE6()).toBe(0n);
+});
+
+test("a book that has the size only past the cap refuses too", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    // The last level is 3.8% above the mid, over the 300 bps cap
+    h.fake.setBook("BTC", {
+        bids: [{ price: 64993.5, size: 5 }],
+        asks: [
+            { price: 65006.5, size: 0.004 },
+            { price: 67500, size: 50 },
+        ],
+    });
+    expect((await refusal(h.place(account))).code).toBe("unavailable");
+    expect(await h.database.collections.perpOrders.countDocuments()).toBe(0);
+});
+
+test("a book that can't be read refuses the order before anything is recorded or funded", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.failing.add("book");
+
+    expect(await refusal(h.place(account))).toEqual({
+        code: "unavailable",
+        message: "Hyperliquid isn't answering. Nothing was spent.",
+    });
+    expect(await h.database.collections.perpOrders.countDocuments()).toBe(0);
+    expect(h.fake.requests.filter((r) => r.startsWith("exchange"))).toEqual([]);
+});
+
+test("a book that thins after the order is accepted is posted at the widest limit and fills as it can", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const { order } = await h.place(account);
+    // Funding is still on its way, so this is the book the post will read
+    h.fake.setBook("BTC", { bids: [{ price: 64993.5, size: 0.001 }], asks: [{ price: 65006.5, size: 0.001 }] });
+    const done = await h.settled(order._id);
+
+    expect(done.state).toBe("filled");
+    // 300 bps over the mid of 65000
+    expect(done.limitPx).toBe("66950");
+    expect(h.fake.orders).toMatchObject([{ isBuy: true, px: "66950", sz: "0.00759" }]);
 });
 
 test("leverage is set isolated before the order", async () => {

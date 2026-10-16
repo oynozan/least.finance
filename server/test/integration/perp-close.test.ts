@@ -99,7 +99,7 @@ test("a failing read while announcing a close is logged and does not take the pr
     expect(h.lines.some((line) => line.level === 40 && line.msg === "Couldn't announce a perp close")).toBe(true);
 });
 
-test("the close limit is mark x 0.97 for a long and x 1.03 for a short and reduce-only", async () => {
+test("a close is limited 100 bps past the book's mid on a deep book, down for a long and up for a short, and reduce-only", async () => {
     const h = await fresh();
     const account = await h.seedAccount("1000");
     const long = await held(h, account);
@@ -109,9 +109,51 @@ test("the close limit is mark x 0.97 for a long and x 1.03 for a short and reduc
 
     const closes = h.fake.orders.filter((o) => o.reduceOnly);
     expect(closes).toMatchObject([
-        { asset: "BTC", isBuy: false, px: "63050", sz: "0.00759" },
-        { asset: "ETH", isBuy: true, px: "3090" },
+        { asset: "BTC", isBuy: false, px: "64350", sz: "0.00759" },
+        { asset: "ETH", isBuy: true, px: "3030" },
     ]);
+});
+
+test("a close is limited from the book as it is when pressed, not from the mark", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const position = await held(h, account);
+    h.fake.setBook("BTC", { bids: [{ price: 64290, size: 5 }], asks: [{ price: 64310, size: 5 }] });
+    const { order } = await closeOf(h, account, position);
+    await finished(h, order._id);
+
+    // 100 bps under the mid of 64300
+    expect(order.limitPx).toBe("63657");
+    expect(h.fake.orders.filter((o) => o.reduceOnly)).toMatchObject([{ isBuy: false, px: "63657" }]);
+});
+
+test("a close on a book too thin for it still posts, at the widest limit, and closes", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const position = await held(h, account);
+    h.fake.setBook("BTC", { bids: [{ price: 64993.5, size: 0.001 }], asks: [{ price: 65006.5, size: 0.001 }] });
+    const { order } = await closeOf(h, account, position);
+    const done = await finished(h, order._id);
+
+    expect(done.state).toBe("done");
+    expect(order.limitPx).toBe("61750");
+    expect(h.fake.orders.filter((o) => o.reduceOnly)).toMatchObject([{ isBuy: false, px: "61750", sz: "0.00759" }]);
+    expect((await positionOf(h, position._id)).state).toBe("closed");
+});
+
+test("a close whose book can't be read still posts, at the widest limit", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const position = await held(h, account);
+    h.failing.add("book");
+    const { order } = await closeOf(h, account, position);
+    const done = await finished(h, order._id);
+
+    expect(done.state).toBe("done");
+    expect(order.limitPx).toBe("61750");
+    expect(h.lines.some((line) => line.level === 40 && line.msg === "Couldn't read a Hyperliquid book to close")).toBe(
+        true,
+    );
 });
 
 test("a partial close leaves the position open and credits nothing", async () => {

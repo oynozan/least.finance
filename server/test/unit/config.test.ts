@@ -147,8 +147,8 @@ describe("loadConfig", () => {
         const config = load();
         expect(config.PERPS_TRADING).toBe("off");
         expect(config.PERPS_FLOAT_USD).toBe(200);
-        expect(config.PERPS_SLIPPAGE_BPS).toBe(100);
-        expect(config.PERPS_CLOSE_SLIPPAGE_BPS).toBe(300);
+        expect(config.PERPS_OPEN_MAX_SLIPPAGE_BPS).toBe(300);
+        expect(config.PERPS_CLOSE_MAX_SLIPPAGE_BPS).toBe(500);
         expect(config.PERPS_MAX_LEVERAGE).toBe(20);
         expect(config.PERPS_RECONCILE_TOLERANCE_USD).toBe(5);
         expect(config.HYPERLIQUID_API_URL).toBe("https://api.hyperliquid.xyz");

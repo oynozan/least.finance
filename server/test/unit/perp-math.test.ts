@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { PERP_FEE_E6, PERP_FEE_USD } from "../../src/perps/fee.ts";
 import {
+    CLOSE_MIN_SLIPPAGE_BPS,
+    OPEN_MIN_SLIPPAGE_BPS,
+    dynamicLimit,
     leverageBound,
     limitPrice,
     liquidationPrice,
     meetsMinimum,
     minOrderE6,
     roundPrice,
+    roundPriceTo,
     roundSize,
     sizeFor,
+    walkBook,
 } from "../../src/perps/math.ts";
 
 describe("roundPrice", () => {
@@ -25,6 +30,195 @@ describe("roundPrice", () => {
         expect(roundPrice(65000, 5)).toBe("65000");
         expect(roundPrice(1.5, 2)).toBe("1.5");
         expect(roundPrice(1.50004, 0)).toBe("1.5");
+    });
+});
+
+describe("roundPriceTo", () => {
+    it("rounds up or down to the tick instead of to the nearest one", () => {
+        // 5 significant figures, one decimal at most: a tick of 0.1 on BTC-sized prices
+        expect(roundPriceTo(65325.04, 5, "up")).toBe("65326");
+        expect(roundPriceTo(65325.96, 5, "down")).toBe("65325");
+        expect(roundPriceTo(1.23451, 2, "up")).toBe("1.2346");
+        expect(roundPriceTo(1.23459, 2, "down")).toBe("1.2345");
+    });
+
+    it("keeps a price already on a tick", () => {
+        expect(roundPriceTo(65325, 5, "up")).toBe("65325");
+        expect(roundPriceTo(65325.00000000001, 5, "up")).toBe("65325");
+        expect(roundPriceTo(0.000159, 0, "down")).toBe("0.000159");
+        expect(roundPriceTo(3030.0000000000005, 4, "up")).toBe("3030");
+    });
+
+    it("on a coin whose tick is a large part of its price, goes the way it is told while the nearest tick goes the other", () => {
+        // szDecimals 0 leaves 6 decimals: a tick of 0.000001 on a price of 0.000161 is 62 bps
+        expect(roundPrice(0.0001611, 0)).toBe("0.000161");
+        expect(roundPriceTo(0.0001611, 0, "up")).toBe("0.000162");
+        expect(roundPrice(0.0001619, 0)).toBe("0.000162");
+        expect(roundPriceTo(0.0001619, 0, "down")).toBe("0.000161");
+    });
+
+    it("rounds up over a power of ten", () => {
+        expect(roundPriceTo(9.99996, 5, "up")).toBe("10");
+        expect(roundPriceTo(99999.4, 5, "up")).toBe("100000");
+        expect(roundPriceTo(10.00001, 5, "down")).toBe("10");
+    });
+});
+
+describe("walkBook", () => {
+    const levels = [
+        { price: 100, size: 1 },
+        { price: 101, size: 2 },
+        { price: 103, size: 5 },
+    ];
+
+    it("is the average price and the worst level a market order touches", () => {
+        expect(walkBook(levels, 0.5)).toEqual({ avg: 100, worst: 100 });
+        expect(walkBook(levels, 2)).toEqual({ avg: 100.5, worst: 101 });
+        expect(walkBook(levels, 8)!.worst).toBe(103);
+    });
+
+    it("is null when the levels are too thin", () => {
+        expect(walkBook(levels, 8.1)).toBeNull();
+        expect(walkBook([], 1)).toBeNull();
+    });
+});
+
+describe("dynamicLimit", () => {
+    const btc = { mark: 65000, szDecimals: 5, minBps: OPEN_MIN_SLIPPAGE_BPS, maxBps: 300 };
+    const deep = {
+        bids: [{ price: 64990, size: 100 }],
+        asks: [{ price: 65010, size: 100 }],
+    };
+
+    it("on a deep book an open sits the 50 bps minimum from the mid, rounded away", () => {
+        const buy = dynamicLimit({ ...btc, ...deep, side: "long", action: "open", sizeCoin: 0.01 });
+        expect(buy).toEqual({ limitPx: "65325", distanceBps: 50, avgPx: 65010, fillable: true });
+        const sell = dynamicLimit({ ...btc, ...deep, side: "short", action: "open", sizeCoin: 0.01 });
+        expect(sell).toEqual({ limitPx: "64675", distanceBps: 50, avgPx: 64990, fillable: true });
+    });
+
+    it("never rounds a buy limit down or a sell limit up", () => {
+        const odd = { bids: [{ price: 65000.4, size: 100 }], asks: [{ price: 65000.6, size: 100 }] };
+        // 65000.5 x 1.005 = 65325.5025 and x 0.995 = 64675.4975, on ticks of 1
+        expect(dynamicLimit({ ...btc, ...odd, side: "long", action: "open", sizeCoin: 0.01 }).limitPx).toBe("65326");
+        expect(dynamicLimit({ ...btc, ...odd, side: "short", action: "open", sizeCoin: 0.01 }).limitPx).toBe("64675");
+    });
+
+    it("on a coarse-tick coin the limit goes the way of the order, however far the nearest tick is", () => {
+        const hmstr = {
+            mark: 0.000158,
+            szDecimals: 0,
+            minBps: OPEN_MIN_SLIPPAGE_BPS,
+            maxBps: 300,
+            bids: [{ price: 0.000157, size: 1_000_000 }],
+            asks: [{ price: 0.000159, size: 1_000_000 }],
+        };
+        const buy = dynamicLimit({ ...hmstr, side: "long", action: "open", sizeCoin: 1000 });
+        const sell = dynamicLimit({ ...hmstr, side: "short", action: "open", sizeCoin: 1000 });
+        // The spread is 126 bps, so the cushion is the spread: 63 bps of impact and 126 of cushion
+        expect(buy.distanceBps).toBeCloseTo(189.9, 0);
+        expect(Number(buy.limitPx)).toBeGreaterThanOrEqual(0.000158 * (1 + buy.distanceBps / 10_000));
+        expect(Number(buy.limitPx)).toBeLessThan(0.000158 * (1 + buy.distanceBps / 10_000) + 0.000001);
+        expect(Number(sell.limitPx)).toBeLessThanOrEqual(0.000158 * (1 - sell.distanceBps / 10_000));
+        expect(Number(sell.limitPx)).toBeGreaterThan(0.000158 * (1 - sell.distanceBps / 10_000) - 0.000001);
+    });
+
+    it("the cushion grows with a wide spread", () => {
+        const wide = { bids: [{ price: 64870, size: 100 }], asks: [{ price: 65130, size: 100 }] };
+        const result = dynamicLimit({ ...btc, ...wide, side: "long", action: "open", sizeCoin: 0.01 });
+        // The spread is 40 bps and the best ask is 20 from the mid: 20 + 40
+        expect(result.distanceBps).toBeCloseTo(60, 6);
+    });
+
+    it("impact is the worst level the size reaches, from the mid", () => {
+        const stepped = {
+            bids: [{ price: 64990, size: 0.5 }],
+            asks: [
+                { price: 65010, size: 0.5 },
+                { price: 65260, size: 0.5 },
+            ],
+        };
+        const result = dynamicLimit({ ...btc, ...stepped, side: "long", action: "open", sizeCoin: 0.8 });
+        // Reaching 65260 is 40 bps above 65000, and the cushion is 25
+        expect(result.distanceBps).toBeCloseTo(((65260 - 65000) / 65000) * 10_000 + 25, 6);
+        expect(result.avgPx).toBeCloseTo((0.5 * 65010 + 0.3 * 65260) / 0.8, 6);
+        expect(result.fillable).toBe(true);
+        expect(Number(result.limitPx)).toBeGreaterThanOrEqual(65260);
+    });
+
+    it("a book skewed from the mark anchors at the mark's band, not at the book", () => {
+        // The mid is 3% over the mark; the anchor stops at 1.5% over it
+        const skewed = { bids: [{ price: 66940, size: 100 }], asks: [{ price: 66960, size: 100 }] };
+        const anchor = 65000 * 1.015;
+        const impact = ((66960 - anchor) / anchor) * 10_000;
+        const result = dynamicLimit({ ...btc, ...skewed, side: "long", action: "open", sizeCoin: 0.01 });
+        expect(result.distanceBps).toBeCloseTo(impact + 25, 6);
+        expect(result.fillable).toBe(true);
+        expect(Number(result.limitPx)).toBeGreaterThanOrEqual(anchor * (1 + (impact + 25) / 10_000));
+        // Under a tighter cap the same order can't fill, and the limit stops at the cap from the anchor
+        const tight = dynamicLimit({ ...btc, ...skewed, maxBps: 100, side: "long", action: "open", sizeCoin: 0.01 });
+        expect(tight.fillable).toBe(false);
+        expect(tight.distanceBps).toBe(100);
+        expect(tight.limitPx).toBe("66635");
+    });
+
+    it("a thin book that can't fill the size is unfillable and the limit goes to the cap", () => {
+        const thin = { bids: [{ price: 64990, size: 0.1 }], asks: [{ price: 65010, size: 0.1 }] };
+        const result = dynamicLimit({ ...btc, ...thin, side: "long", action: "open", sizeCoin: 0.5 });
+        expect(result).toEqual({ limitPx: "66950", distanceBps: 300, avgPx: null, fillable: false });
+    });
+
+    it("a size that needs more than the cap is unfillable, though the book shows enough", () => {
+        const far = {
+            bids: [{ price: 64990, size: 100 }],
+            asks: [
+                { price: 65010, size: 0.1 },
+                { price: 67500, size: 100 },
+            ],
+        };
+        const result = dynamicLimit({ ...btc, ...far, side: "long", action: "open", sizeCoin: 0.5 });
+        expect(result.fillable).toBe(false);
+        expect(result.distanceBps).toBe(300);
+        expect(result.avgPx).toBeGreaterThan(65010);
+    });
+
+    it("an empty book is unfillable and anchors at the mark", () => {
+        const result = dynamicLimit({ ...btc, bids: [], asks: [], side: "short", action: "open", sizeCoin: 0.01 });
+        expect(result).toEqual({ limitPx: "63050", distanceBps: 300, avgPx: null, fillable: false });
+    });
+
+    it("a close keeps 100 bps on a deep book and sells down or buys up", () => {
+        const close = { ...btc, minBps: CLOSE_MIN_SLIPPAGE_BPS, maxBps: 500 };
+        expect(dynamicLimit({ ...close, ...deep, side: "long", action: "close", sizeCoin: 0.01 })).toEqual({
+            limitPx: "64350",
+            distanceBps: 100,
+            avgPx: 64990,
+            fillable: true,
+        });
+        expect(dynamicLimit({ ...close, ...deep, side: "short", action: "close", sizeCoin: 0.01 }).limitPx).toBe(
+            "65650",
+        );
+    });
+
+    it("a close cushions twice the spread and never goes past its cap", () => {
+        const close = { ...btc, minBps: CLOSE_MIN_SLIPPAGE_BPS, maxBps: 500 };
+        const wide = { bids: [{ price: 64870, size: 100 }], asks: [{ price: 65130, size: 100 }] };
+        // 20 bps to the best bid, and twice the 40 bps spread
+        expect(
+            dynamicLimit({ ...close, ...wide, side: "long", action: "close", sizeCoin: 0.01 }).distanceBps,
+        ).toBeCloseTo(100, 6);
+        const thin = { bids: [{ price: 64990, size: 0.001 }], asks: [{ price: 65010, size: 100 }] };
+        expect(dynamicLimit({ ...close, ...thin, side: "long", action: "close", sizeCoin: 0.5 })).toEqual({
+            limitPx: "61750",
+            distanceBps: 500,
+            avgPx: null,
+            fillable: false,
+        });
+    });
+
+    it("an optional cushion replaces the minimum one", () => {
+        const base = { ...btc, minBps: 0, ...deep, side: "long" as const, action: "open" as const, sizeCoin: 0.01 };
+        expect(dynamicLimit({ ...base, cushionBps: 60 }).distanceBps).toBeCloseTo(61.54, 1);
     });
 });
 

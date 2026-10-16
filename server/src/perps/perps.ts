@@ -18,12 +18,20 @@ import type { Ledger } from "../deposits/ledger.ts";
 import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { PerpCloseRequest, PerpOrderRequest, PerpQuoteRequest, PerpQuoteView, PerpsView } from "../protocol.ts";
-import type { Level } from "../predictions/trader.ts";
 import { formatUsdShort } from "../predictions/views.ts";
 import { nextNonce, type AccountState, type Fill, type HyperliquidClient } from "./client.ts";
 import { PERP_FEE_E6, PERP_FEE_USD } from "./fee.ts";
 import { ACTIVATION_E6, NOTHING_SPENT, PerpFloat } from "./float.ts";
-import { leverageBound, limitPrice, liquidationPrice, meetsMinimum, minOrderE6, sizeFor } from "./math.ts";
+import {
+    CLOSE_MIN_SLIPPAGE_BPS,
+    OPEN_MIN_SLIPPAGE_BPS,
+    dynamicLimit,
+    leverageBound,
+    liquidationPrice,
+    meetsMinimum,
+    minOrderE6,
+    sizeFor,
+} from "./math.ts";
 import type { PerpMarkets } from "./markets.ts";
 import { perpOrderView, perpPositionView } from "./views.ts";
 
@@ -53,6 +61,7 @@ export const PERP_MESSAGES = {
     rejected: `This position couldn't be opened right now. ${NOTHING_SPENT}`,
     minCollateral: "Positions start at $10.",
     minPosition: "A position starts at $11. Raise the collateral or the leverage.",
+    thin: "This market is too thin for a position this size right now. Try a smaller amount.",
     closeFailed: "Couldn't close right now. Your position is still open.",
     tooSmall: "Too small to close right now.",
 };
@@ -73,7 +82,11 @@ type Deps = {
     logger: Logger;
     config: Pick<
         Config,
-        "PERPS_TRADING" | "PERPS_FLOAT_USD" | "PERPS_SLIPPAGE_BPS" | "PERPS_CLOSE_SLIPPAGE_BPS" | "PERPS_MAX_LEVERAGE"
+        | "PERPS_TRADING"
+        | "PERPS_FLOAT_USD"
+        | "PERPS_OPEN_MAX_SLIPPAGE_BPS"
+        | "PERPS_CLOSE_MAX_SLIPPAGE_BPS"
+        | "PERPS_MAX_LEVERAGE"
     >;
     /** The clock, for tests. */
     now?: () => number;
@@ -97,19 +110,6 @@ const expiryOf = (order: PerpOrderDoc) =>
 const retainedOf = (account: PerpAccountDoc | null) => (account?.retainedE6 ? fromDecimal(account.retainedE6) : 0n);
 
 const busy = (asset: string) => new AppError("position_busy", `You already hold a ${asset} position. Close it first.`);
-
-/** The average price a market order of `size` pays walking `levels`, or null when the book is too thin. */
-function walk(levels: Level[], size: number): number | null {
-    let left = size;
-    let cost = 0;
-    for (const level of levels) {
-        const take = Math.min(left, level.size);
-        cost += take * level.price;
-        left -= take;
-        if (left <= 1e-12) return cost / size;
-    }
-    return null;
-}
 
 /** Opens positions on Hyperliquid from each person's own account, funded from the master float, and settles each order exactly once; the person's balance holds the money meanwhile. */
 export class PerpService {
@@ -220,21 +220,39 @@ export class PerpService {
             szDecimals: market.szDecimals,
         });
         // The position check passed, so only the coin's size step can leave it short of Hyperliquid's order minimum
-        if (!sizing || sizing.notionalE6 < minOrderE6(this.#deps.config.PERPS_SLIPPAGE_BPS))
+        if (!sizing || sizing.notionalE6 < minOrderE6(this.#deps.config.PERPS_OPEN_MAX_SLIPPAGE_BPS))
             throw new AppError("below_minimum", stepMessage(req.asset, market));
         return { market, collateralE6, sizing };
     }
 
+    /** What an open of this size would pay on the book as it is now; refused when the visible book can't fill it within the cap, before anything is recorded or funded. */
+    async #checkBook(
+        req: PerpQuoteRequest,
+        sizing: { sizeCoin: string },
+        market: { markPx: number; szDecimals: number },
+    ) {
+        const book = await this.#deps.client.book(req.asset).catch((error: unknown) => {
+            this.#deps.logger.warn({ err: error, asset: req.asset }, "Couldn't read a Hyperliquid book");
+            throw new AppError("unavailable", PERP_MESSAGES.silent);
+        });
+        const limit = dynamicLimit({
+            ...book,
+            mark: market.markPx,
+            side: req.side,
+            action: "open",
+            sizeCoin: sizing.sizeCoin,
+            szDecimals: market.szDecimals,
+            minBps: OPEN_MIN_SLIPPAGE_BPS,
+            maxBps: this.#deps.config.PERPS_OPEN_MAX_SLIPPAGE_BPS,
+        });
+        if (!limit.fillable || limit.avgPx === null) throw new AppError("unavailable", PERP_MESSAGES.thin);
+        return limit.avgPx;
+    }
+
     async quote(req: PerpQuoteRequest): Promise<PerpQuoteView> {
         const { market, sizing } = await this.#prepare(req);
-        const book = await this.#deps.client.book(req.asset);
+        const entry = await this.#checkBook(req, sizing, market);
         const size = Number(sizing.sizeCoin);
-        const long = req.side === "long";
-        const cap = Number(
-            limitPrice(market.markPx, req.side, "open", this.#deps.config.PERPS_SLIPPAGE_BPS, market.szDecimals),
-        );
-        const walked = walk(long ? book.asks : book.bids, size) ?? cap;
-        const entry = long ? Math.min(walked, cap) : Math.max(walked, cap);
         const notionalUSD = Number(sizing.notionalE6) / 1e6;
         const liquidation = liquidationPrice({
             side: req.side,
@@ -268,7 +286,8 @@ export class PerpService {
         if (known) return { order: known, account: (await accounts.findOne({ _id: account._id })) ?? account };
         if (this.#deps.config.PERPS_TRADING !== "on" || this.#stopped)
             throw new AppError("trading_off", PERP_MESSAGES.off);
-        const { sizing, collateralE6 } = await this.#prepare(req);
+        const { market, sizing, collateralE6 } = await this.#prepare(req);
+        await this.#checkBook(req, sizing, market);
         if (
             await this.#deps.collections.perpPositions.countDocuments(
                 { accountId: account._id, asset: req.asset, active: true },
@@ -460,14 +479,19 @@ export class PerpService {
         const market = this.#deps.markets.byAsset(order.asset);
         if (!market) throw new Error(`${order.asset} is no longer offered`);
         const signer = this.#deps.keyring.perpSignerAt(order.index);
-        const limitPx = limitPrice(
-            market.markPx,
-            order.side,
-            "open",
-            this.#deps.config.PERPS_SLIPPAGE_BPS,
-            market.szDecimals,
-        );
         await this.#deps.client.updateLeverage(signer, order.asset, order.leverage);
+        // A book that has thinned since the person's review is posted at the widest limit, and fills as much as it can
+        const book = await this.#deps.client.book(order.asset);
+        const { limitPx } = dynamicLimit({
+            ...book,
+            mark: market.markPx,
+            side: order.side,
+            action: "open",
+            sizeCoin: order.sizeCoin,
+            szDecimals: market.szDecimals,
+            minBps: OPEN_MIN_SLIPPAGE_BPS,
+            maxBps: this.#deps.config.PERPS_OPEN_MAX_SLIPPAGE_BPS,
+        });
         const postedAt = new Date(this.#now());
         const expiresAt = new Date(postedAt.getTime() + ORDER_LIFE_MS);
         const posted = await perpOrders.findOneAndUpdate(
@@ -955,6 +979,22 @@ export class PerpService {
         const market = this.#deps.markets.byAsset(position.asset);
         if (!market) throw new AppError("unavailable", PERP_MESSAGES.closeFailed);
 
+        // A close is never refused for a thin book: it goes out at the widest limit and fills what it can
+        const book = await this.#deps.client.book(position.asset).catch((error: unknown) => {
+            this.#deps.logger.warn({ err: error, asset: position.asset }, "Couldn't read a Hyperliquid book to close");
+            return { bids: [], asks: [] };
+        });
+        const { limitPx } = dynamicLimit({
+            ...book,
+            mark: market.markPx,
+            side: position.side,
+            action: "close",
+            sizeCoin: position.sizeCoin,
+            szDecimals: market.szDecimals,
+            minBps: CLOSE_MIN_SLIPPAGE_BPS,
+            maxBps: this.#deps.config.PERPS_CLOSE_MAX_SLIPPAGE_BPS,
+        });
+
         const now = new Date(this.#now());
         const _id = new ObjectId();
         const order: PerpOrderDoc = {
@@ -970,13 +1010,7 @@ export class PerpService {
             notionalE6: toDecimal(BigInt(Math.round(Number(position.sizeCoin) * market.markPx * 1e6))),
             sizeCoin: position.sizeCoin,
             cloid: cloidOf(_id),
-            limitPx: limitPrice(
-                market.markPx,
-                position.side,
-                "close",
-                this.#deps.config.PERPS_CLOSE_SLIPPAGE_BPS,
-                market.szDecimals,
-            ),
+            limitPx,
             state: "placing",
             steps: { positionId: position._id.toHexString() },
             fill: null,
