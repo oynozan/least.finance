@@ -623,8 +623,9 @@ export class PerpService {
                 this.#deps.logger.warn({ order: fresh._id.toHexString() }, "A funded order isn't on its address yet");
                 return;
             }
+            // The funding landed, so the address is activated; the platform absorbs that fee and credits the whole collateral
             const sweep = minE6(have, collateral);
-            const moved = await this.#startSweep(fresh, from, outcome, sweep, sweep);
+            const moved = await this.#startSweep(fresh, from, outcome, sweep, collateral, 0n, true);
             if (moved) await this.#finishSweep(moved);
         });
     }
@@ -661,7 +662,7 @@ export class PerpService {
         );
     }
 
-    /** Stores what the sweep will move and credit, with its nonce, before anything is sent, so a restart repeats it exactly. */
+    /** Stores what the sweep will move and credit, with its nonce, before anything is sent, so a restart repeats it exactly; `activates` also marks the address activated. */
     async #startSweep(
         order: PerpOrderDoc,
         from: PerpOrderState[],
@@ -669,8 +670,9 @@ export class PerpService {
         sweepE6: bigint,
         creditE6: bigint,
         ourFeeE6 = 0n,
+        activates = false,
     ): Promise<PerpOrderDoc | null> {
-        const { perpOrders } = this.#deps.collections;
+        const { perpOrders, perpAccounts } = this.#deps.collections;
         const nonce = sweepE6 > 0n ? nextNonce(this.#deps.keyring.perpAddressAt(order.index)) : null;
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const moved = await perpOrders.findOneAndUpdate(
@@ -690,6 +692,12 @@ export class PerpService {
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
+            if (activates)
+                await perpAccounts.updateOne(
+                    { index: order.index, activatedAt: null },
+                    { $set: { activatedAt: new Date(this.#now()) } },
+                    { session },
+                );
             return this.#releaseHold(session, moved, 0n);
         });
         if (!done) return null;

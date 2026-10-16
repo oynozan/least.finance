@@ -128,3 +128,35 @@ test("a refused funding re-send with nothing in the ledger refunds in full once 
     expect(s.balance).toBe(wei("1000"));
     expect(h.fake.account(h.master)!.freeE6).toBe(e6("500"));
 });
+
+for (const source of ["sender", "amount"] as const) {
+    test(`an unwind after a first funding that landed refunds the whole collateral and activates the address (activation from the ${source})`, async () => {
+        const h = await fresh();
+        h.fake.activationFrom(source);
+        const account = await h.seedAccount("1000");
+        h.failing.add("state");
+
+        const { order } = await h.place(account);
+        await h.until(async () => !h.service.submitting(order._id));
+        const stuck = await h.orderOf(order._id);
+        expect(stuck).toMatchObject({ state: "funding", steps: { funded: true } });
+        h.failing.clear();
+        await h.service.settleStuck(stuck);
+
+        const done = await h.orderOf(order._id);
+        expect(done.state).toBe("rejected");
+        const s = await h.state(account._id);
+        expect(s.kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
+        expect(s.balance).toBe(wei("1000"));
+        expect(s.sum).toBe(s.balance);
+        expect(h.fake.account(await h.addressOf(account._id))!.freeE6).toBe(0n);
+        // The master is out only the activation Hyperliquid took
+        expect(h.fake.account(h.master)!.freeE6).toBe(e6("499"));
+        expect(await h.heldE6()).toBe(0n);
+
+        const row = await h.database.collections.perpAccounts.findOne({ accountId: account._id });
+        expect(row!.activatedAt).not.toBeNull();
+        const next = await h.place(account, { collateralUSD: "50" });
+        expect(next.order.steps.reservedE6).toBe(e6("50").toString());
+    });
+}
