@@ -157,6 +157,8 @@ const MIN_FEE_LAMPORTS = BigInt(10_000);
 const UNREACHABLE: ApiError = { code: "unavailable", message: "Couldn't reach the server. Retrying…" };
 /** Failures worth asking again about; the rest (a wallet that isn't the user's, say) won't change by retrying. */
 const RETRYABLE = new Set<ApiError["code"]>(["unavailable", "internal", "rate_limited"]);
+/** Refusals of a deposit report that say nothing about the deposit, so it stays pending and is reported again */
+const REPORT_RETRYABLE = new Set<ApiError["code"]>([...RETRYABLE, "wallet_not_connected"]);
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -191,6 +193,8 @@ export class AccountClient {
     readonly #reporting = new Set<string>();
     /** The socket whose `account:open` has succeeded; swap hashes are reported only on it. */
     #bound: AppSocket | null = null;
+    /** Reports waiting for a socket to be bound to the account */
+    readonly #bindWaiters = new Set<() => void>();
     /** The rows lowered for swaps still open, so a settled order puts back only its own. */
     #tracking: Tracking = {};
 
@@ -335,6 +339,7 @@ export class AccountClient {
             if (result?.ok) {
                 this.#dispatch({ type: "session", session: result.data });
                 this.#bound = socket;
+                this.#releaseBindWaiters();
                 const { pnl } = this.#snapshot;
                 this.#snapshot = { ...this.#snapshot, pnl: { ...pnl, bound: pnl.bound + 1 } };
                 this.#emit();
@@ -367,6 +372,7 @@ export class AccountClient {
         this.#confirming.clear();
         this.#reporting.clear();
         this.#bound = null;
+        this.#releaseBindWaiters();
         this.#tracking = {};
         resetPnlStores();
         const { state, notice, balances, swapHoldings, swaps, tradeNotice, pnl } = this.#snapshot;
@@ -928,34 +934,59 @@ export class AccountClient {
         return false;
     }
 
-    /**
-     * Has the server credit a sent deposit, or takes it back out if the server
-     * says it can't be. Losing the connection decides nothing: the deposit
-     * stays pending and is reported again once the socket is back.
-     */
+    /** Has the server credit a sent deposit, taking it back out only if the server says it can't be, and reporting it again after any other answer */
     async #confirm(socket: AppSocket, txHash: Hex, value: bigint) {
         const key = txHash.toLowerCase();
         if (this.#confirming.has(key)) return;
         this.#confirming.add(key);
-        const result = await socket
-            .timeout(REPORT_TIMEOUT_MS)
-            .emitWithAck("deposit:submit", { txHash })
-            .catch(() => null)
-            .finally(() => this.#confirming.delete(key));
-        if (this.#socket !== socket || result === null) return;
-        if (result.ok) {
-            this.#dispatch({ type: "settled", receipt: result.data });
-            this.#notify({ kind: "credited", amount: value }, CREDITED_NOTICE_MS);
-            return;
+        try {
+            for (let attempt = 0; ; attempt++) {
+                // An unbound socket would be told to open the account first, and a deposit isn't taken back for that
+                if (!(await this.#untilBound(socket))) return;
+                const result = await socket
+                    .timeout(REPORT_TIMEOUT_MS)
+                    .emitWithAck("deposit:submit", { txHash })
+                    .catch(() => null);
+                if (this.#socket !== socket || result === null) return;
+                if (result.ok) {
+                    this.#dispatch({ type: "settled", receipt: result.data });
+                    this.#notify({ kind: "credited", amount: value }, CREDITED_NOTICE_MS);
+                    return;
+                }
+                // The chain scan may have credited it while the report failed.
+                const { state } = this.#snapshot;
+                if (
+                    state.status === "ready" &&
+                    state.deposits.some((d) => d.txHash.toLowerCase() === txHash.toLowerCase())
+                ) {
+                    this.#notify({ kind: "credited", amount: value }, CREDITED_NOTICE_MS);
+                    return;
+                }
+                if (!REPORT_RETRYABLE.has(result.error.code)) {
+                    this.#dispatch({ type: "reverted", txHash });
+                    this.#notify({ kind: "reverted", message: result.error.message });
+                    return;
+                }
+                await pause(Math.min(MAX_RETRY_MS, 1_000 * 2 ** attempt));
+                if (this.#socket !== socket) return;
+            }
+        } finally {
+            this.#confirming.delete(key);
         }
-        // The chain scan may have credited it while the report failed.
-        const { state } = this.#snapshot;
-        if (state.status === "ready" && state.deposits.some((d) => d.txHash.toLowerCase() === txHash.toLowerCase())) {
-            this.#notify({ kind: "credited", amount: value }, CREDITED_NOTICE_MS);
-            return;
+    }
+
+    /** Resolves true once `socket` is bound to the account, or false once the client has moved on from it */
+    async #untilBound(socket: AppSocket) {
+        while (this.#socket === socket && this.#bound !== socket) {
+            await new Promise<void>((resolve) => this.#bindWaiters.add(resolve));
         }
-        this.#dispatch({ type: "reverted", txHash });
-        this.#notify({ kind: "reverted", message: result.error.message });
+        return this.#socket === socket;
+    }
+
+    #releaseBindWaiters() {
+        const waiting = [...this.#bindWaiters];
+        this.#bindWaiters.clear();
+        for (const resolve of waiting) resolve();
     }
 
     /**
