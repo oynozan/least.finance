@@ -6,7 +6,8 @@ export type CoinsSnapshot = {
     view: SwapCatalogView | null;
 };
 
-const REFRESH_MS = 300_000;
+/** As often as the server re-reads its prices, so a quoted price is never much older than the one a trade fills at. */
+const REFRESH_MS = 60_000;
 /** Until the server has read its prices, ask again soon. */
 const WARMING_MS = 10_000;
 
