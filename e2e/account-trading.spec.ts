@@ -77,7 +77,8 @@ test("Buy, Sell and Swap run from the balance with no wallet popup, and Send is 
     await openSidebar(page);
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $19.00, show deposits", { timeout: 15_000 });
     await expect(holdings(page).getByText(/BNB$/).first()).toBeVisible();
-    await expect(holdings(page)).toContainText("0.001667 BNB");
+    // $1 at BNB's ask of $601.80 buys 0.0016616 BNB (the balance still reads $19.00: the buy spends the dollar)
+    await expect(holdings(page)).toContainText("0.001662 BNB");
     await page.keyboard.press("Escape");
 
     // Sell half a dollar of it back
@@ -86,7 +87,8 @@ test("Buy, Sell and Swap run from the balance with no wallet popup, and Send is 
     await confirm(page);
     await openSidebar(page);
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $19.50, show deposits", { timeout: 15_000 });
-    await expect(holdings(page)).toContainText("0.0008333 BNB");
+    // 0.00083333 BNB sold at the bid of $598.20 pays $0.4985, so $19.4985 still rounds to $19.50, and 0.00082835 BNB is left
+    await expect(holdings(page)).toContainText("0.0008284 BNB");
     await page.keyboard.press("Escape");
 
     // Swap what is left to ETH

@@ -278,14 +278,15 @@ test("a swap's review shows what you pay and get, folds the rest away until poin
     await holdEth(page);
     await review(page).click();
     const panel = reviewPanel(page);
-    await expect(panel.getByText("No fees, we cover network costs.", { exact: true })).toBeVisible();
+    await expect(panel.getByText("Includes a 0.3% spread. We cover network costs.", { exact: true })).toBeVisible();
     const details = panel.getByRole("region", { name: "Details" });
     // The amounts are in once the pay row shows its coins.
     await expect(details.getByText("You pay", { exact: true })).toBeVisible();
     await expect(details.getByText("You get ≈", { exact: true })).toBeVisible();
     await expect(details).toContainText("0.003115 ETH");
     await expect(details.getByText("$10.00", { exact: true })).toBeVisible();
-    await expect(details).toContainText("0.06793 SOL");
+    // $10 less the 0.3% spread is $9.97, which buys 0.06773 SOL at $147.20
+    await expect(details).toContainText("0.06773 SOL");
     // No network step, approval or wallet-signed route.
     await expect(panel.getByText(/approve|sign|route|network fee/i)).toHaveCount(0);
 
@@ -304,7 +305,7 @@ test("a swap's review shows what you pay and get, folds the rest away until poin
 
     await panel.getByRole("button", { name: "Confirm swap" }).click();
     // The review says what it came to, then hands over to the wallet, which stays open.
-    await expect(sidebar(page)).toContainText("Swapped 0.003115 ETH for ≈ 0.06793 SOL.");
+    await expect(sidebar(page)).toContainText("Swapped 0.003115 ETH for ≈ 0.06773 SOL.");
     await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
     await shoot(page, "7-sent");
@@ -592,7 +593,7 @@ test("the amount drops down under its pill, and dragging rolls the sentence live
     expect(panel!.x).toBeLessThan(anchor!.x + anchor!.width);
     expect(panel!.x + panel!.width).toBeGreaterThan(anchor!.x);
     // What the amount comes to, and the slider's ends (no wallet, so no cap).
-    await expect(picker(page)).toContainText("You get ≈ 0.06793 SOL");
+    await expect(picker(page)).toContainText("You get ≈ 0.06773 SOL");
     await expect(picker(page)).toContainText("0.1 USD");
     await expect(picker(page)).toContainText("10K USD");
     await expect(slider(page)).toHaveAttribute("aria-valuenow", "10");
