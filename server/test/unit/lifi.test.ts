@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, expect, test } from "vitest";
-import { createLifi, LifiError, type LifiQuoteRequest } from "../../src/swaps/lifi.ts";
+import { createLifi, LifiError, tooFarUnder, type LifiQuoteRequest } from "../../src/swaps/lifi.ts";
 import { solanaFeePayer } from "../../src/swaps/solana-tx.ts";
 import { COINS, NATIVE_EVM, type NetworkId } from "../../src/swaps/coins.ts";
 import { startFakeLifi, type FakeLifi } from "../support/fake-lifi.ts";
@@ -203,6 +203,20 @@ test("a minimum exactly 2% under the amount has a shortfall of exactly 0.02", as
     fake.nextQuote({ estimate: { toAmount: "100000000", toAmountMin: "98000000" } });
 
     expect((await lifi.quote(baseRequest())).shortfall).toBe(0.02);
+});
+
+test("a 2% minimum LI.FI floored to a whole unit isn't read as over 2%", async () => {
+    fake = await startFakeLifi({ prices: { USDC: 1, USDT: 1 } });
+    const lifi = createLifi({ url: fake.url });
+    // 98% of 10000001 is 9800000.98, floored to 9800000
+    fake.nextQuote({ estimate: { toAmount: "10000001", toAmountMin: "9800000" } });
+
+    expect(tooFarUnder(await lifi.quote(baseRequest()))).toBe(false);
+});
+
+test("a minimum a whole unit more than 2% under the amount is too far under", () => {
+    expect(tooFarUnder({ toAmount: "10000001", toAmountMin: "9799999" })).toBe(true);
+    expect(tooFarUnder({ toAmount: "100", toAmountMin: "100" })).toBe(false);
 });
 
 test("the quote carries the fee only when it is above 0", async () => {

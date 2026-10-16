@@ -10,7 +10,7 @@ import { checkQuote } from "./check.ts";
 import type { EvmNetworkId } from "./clients.ts";
 import { COINS, NATIVE_EVM, NETWORKS, type CoinEntry, type SwapNetwork } from "./coins.ts";
 import type { SwapHoldings } from "./holdings.ts";
-import { LifiError, MAX_QUOTE_SLIPPAGE, type Lifi, type LifiQuote } from "./lifi.ts";
+import { LifiError, MAX_QUOTE_SLIPPAGE, tooFarUnder, type Lifi, type LifiQuote } from "./lifi.ts";
 
 type Deps = {
     collections: Collections;
@@ -351,7 +351,7 @@ export class SwapOrders {
             diamond,
         });
         // What the person is exposed to is how far the minimum sits under the amount, not the slippage LI.FI reports
-        if (quote.shortfall > MAX_QUOTE_SLIPPAGE) {
+        if (tooFarUnder(quote)) {
             throw new AppError("unavailable", "This swap's price is too unstable right now. Try again shortly.");
         }
         return { ...plan, quote, diamond };

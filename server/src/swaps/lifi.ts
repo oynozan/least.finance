@@ -49,6 +49,12 @@ export type LifiQuote = {
     tx: EvmTxRequest | SolanaTxRequest;
 };
 
+/** Whether a quote's minimum sits more than MAX_QUOTE_SLIPPAGE under its amount. LI.FI floors the minimum to a whole unit, so one unit of it is rounding, not slippage. */
+export function tooFarUnder(quote: Pick<LifiQuote, "toAmount" | "toAmountMin">): boolean {
+    const kept = BigInt(Math.round((1 - MAX_QUOTE_SLIPPAGE) * 1_000_000));
+    return (BigInt(quote.toAmountMin) + 1n) * 1_000_000n < BigInt(quote.toAmount) * kept;
+}
+
 export type LifiStatus = {
     status: "NOT_FOUND" | "INVALID" | "PENDING" | "DONE" | "FAILED";
     substatus: string | null;
