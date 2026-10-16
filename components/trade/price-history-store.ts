@@ -15,6 +15,8 @@ export type PriceHistorySnapshot = {
 const REFRESH_MS = 600_000;
 /** Until a first answer, ask again soon; a coin whose read failed waits this long too. */
 const RETRY_MS = 15_000;
+/** How many times in a row the coin wanted is read again by itself after its read failed. */
+const MAX_RETRIES = 3;
 
 const isPoint = (value: unknown): value is [number, number] =>
     Array.isArray(value) &&
@@ -65,6 +67,8 @@ export function createPriceHistoryStore(options: {
     let current: string | null = null;
     let users = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retries = 0;
     let askedAt = 0;
     let readingSwapCoins: Promise<void> | null = null;
 
@@ -106,18 +110,30 @@ export function createPriceHistoryStore(options: {
             );
             const points = response.ok ? toCoins(await response.json())?.get(symbol) : undefined;
             if (!points) {
-                failedAt.set(symbol, time);
+                failed(symbol, time);
                 return;
             }
             wantedCoins.set(symbol, points);
             readAt.set(symbol, time);
+            if (symbol === current) retries = 0;
             publish();
         } catch {
-            // Offline or the server is down; a want after the pause tries again.
-            failedAt.set(symbol, time);
+            // Offline or the server is down; the pause below tries again.
+            failed(symbol, time);
         } finally {
             reading.delete(symbol);
         }
+    }
+
+    /** A failed read is tried again after the pause while the coin is still the one wanted, so its card doesn't wait for the refresh. */
+    function failed(symbol: string, time: number) {
+        failedAt.set(symbol, time);
+        if (symbol !== current || users === 0 || retries >= MAX_RETRIES) return;
+        retries += 1;
+        clearTimeout(retryTimer);
+        retryTimer = setTimeout(() => {
+            if (users > 0 && symbol === current && visible()) void readCoin(symbol);
+        }, RETRY_MS);
     }
 
     function schedule() {
@@ -161,6 +177,7 @@ export function createPriceHistoryStore(options: {
             if (swapCoins.has(symbol)) return;
             if (time - (readAt.get(symbol) ?? -Infinity) < REFRESH_MS) return;
             if (time - (failedAt.get(symbol) ?? -Infinity) < RETRY_MS) return;
+            retries = 0;
             await readCoin(symbol);
         },
         /** Starts reading on the first user and stops after the last; returns the stop. */
@@ -178,6 +195,7 @@ export function createPriceHistoryStore(options: {
                 users -= 1;
                 if (users > 0) return;
                 clearTimeout(timer);
+                clearTimeout(retryTimer);
                 document.removeEventListener("visibilitychange", onVisible);
             };
         },

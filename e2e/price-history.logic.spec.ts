@@ -57,6 +57,35 @@ function inPage() {
     };
 }
 
+/** Keeps the store's 15-second and 10-minute timers instead of starting them, to run by hand; every other timer runs as usual. */
+function heldTimers() {
+    const real = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
+    const held = new Map<object, { run: () => void; ms: number }>();
+    globalThis.setTimeout = ((run: () => void, ms?: number, ...args: unknown[]) => {
+        if (ms !== 15_000 && ms !== 10 * MINUTE) return real.setTimeout(run, ms, ...args);
+        const handle = {};
+        held.set(handle, { run, ms });
+        return handle;
+    }) as unknown as typeof setTimeout;
+    globalThis.clearTimeout = ((handle?: unknown) => {
+        if (typeof handle === "object" && handle !== null && held.delete(handle)) return;
+        real.clearTimeout(handle as Parameters<typeof clearTimeout>[0]);
+    }) as typeof clearTimeout;
+    return {
+        /** The delays of the timers waiting to run. */
+        waiting: () => [...held.values()].map((timer) => timer.ms).sort((a, b) => a - b),
+        /** Runs and drops the timers set for this delay. */
+        fire(ms: number) {
+            for (const [handle, timer] of [...held]) {
+                if (timer.ms !== ms) continue;
+                held.delete(handle);
+                timer.run();
+            }
+        },
+        restore: () => void Object.assign(globalThis, real),
+    };
+}
+
 test.describe("want", () => {
     test("reads that coin's week once and puts it in the snapshot", async () => {
         const { store, asked } = storeOf();
@@ -203,6 +232,122 @@ test.describe("with the swap coins' own read", () => {
             expect(asked.slice(3).sort()).toEqual(["/prices/history?range=7d", "/prices/history?range=7d&coins=HYPE"]);
             stop();
         } finally {
+            restore();
+        }
+    });
+});
+
+test.describe("a wanted coin whose read failed", () => {
+    /** Runs `check` on a store in use with the swap coins read, its 15 s and 10 min timers held. */
+    async function inUse(
+        check: (page: {
+            store: ReturnType<typeof storeOf>["store"];
+            asked: string[];
+            advance: (ms: number) => void;
+            status: (next: number) => void;
+            timers: ReturnType<typeof heldTimers>;
+            visible: () => void;
+        }) => Promise<void>,
+    ) {
+        const { store, asked, advance, status } = storeOf();
+        const { restore, page } = inPage();
+        const timers = heldTimers();
+        try {
+            const stop = store.use();
+            await expect.poll(() => store.getSnapshot().coins.size).toBe(2);
+            await check({ store, asked, advance, status, timers, visible: page.visible });
+            stop();
+        } finally {
+            timers.restore();
+            restore();
+        }
+    }
+
+    test("is read again 15 s later while it is still the coin wanted", async () => {
+        await inUse(async ({ store, advance, status, timers }) => {
+            status(500);
+            await store.want("HYPE");
+            expect(store.getSnapshot().coins.has("HYPE")).toBe(false);
+            expect(timers.waiting()).toContain(15_000);
+
+            status(200);
+            advance(15_000);
+            timers.fire(15_000);
+            await expect.poll(() => store.getSnapshot().coins.has("HYPE")).toBe(true);
+        });
+    });
+
+    test("is not read again once another coin is wanted", async () => {
+        await inUse(async ({ store, asked, advance, status, timers }) => {
+            status(500);
+            await store.want("HYPE");
+            status(200);
+            await store.want("kPEPE");
+            const before = asked.length;
+
+            advance(15_000);
+            timers.fire(15_000);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+
+            expect(asked).toHaveLength(before);
+            expect(store.getSnapshot().coins.has("HYPE")).toBe(false);
+        });
+    });
+
+    test("is tried again a few times, not for ever", async () => {
+        await inUse(async ({ store, asked, advance, status, timers }) => {
+            status(500);
+            await store.want("HYPE");
+            for (let retry = 0; retry < 3; retry++) {
+                expect(timers.waiting()).toContain(15_000);
+                advance(15_000);
+                timers.fire(15_000);
+                await expect.poll(() => asked.length).toBe(3 + retry);
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+
+            expect(timers.waiting()).not.toContain(15_000);
+        });
+    });
+
+    test("is tried again a few more times when it is wanted again", async () => {
+        await inUse(async ({ store, asked, advance, status, timers }) => {
+            status(500);
+            await store.want("HYPE");
+            for (let retry = 0; retry < 3; retry++) {
+                advance(15_000);
+                timers.fire(15_000);
+                await expect.poll(() => asked.length).toBe(3 + retry);
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+            expect(timers.waiting()).not.toContain(15_000);
+
+            advance(15_000);
+            await store.want("HYPE");
+
+            expect(timers.waiting()).toContain(15_000);
+        });
+    });
+
+    test("is not read again by a store nobody uses any more", async () => {
+        const { store, asked, advance, status } = storeOf();
+        const { restore } = inPage();
+        const timers = heldTimers();
+        try {
+            const stop = store.use();
+            await expect.poll(() => store.getSnapshot().coins.size).toBe(2);
+            status(500);
+            await store.want("HYPE");
+            stop();
+            const before = asked.length;
+
+            advance(15_000);
+            timers.fire(15_000);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+
+            expect(asked).toHaveLength(before);
+        } finally {
+            timers.restore();
             restore();
         }
     });
