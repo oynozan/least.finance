@@ -268,8 +268,8 @@ export type AccountAction =
     | { type: "spot-failed"; requestId: string }
     /** The trade filled: the answer's balance (USDC) and holdings replace the estimate. */
     | { type: "spot-filled"; requestId: string; balance: string; holdings: HoldingView[] }
-    /** The trade filled, as pushed: the estimate gives way to what the pushes say. */
-    | { type: "spot-settled"; requestId: string }
+    /** The trade filled, as pushed, so the estimate gives way to what the pushes say and the account it left */
+    | { type: "spot-settled"; requestId: string; account?: AccountView }
     | { type: "coin-send"; send: PendingCoinSend }
     | { type: "coin-send-failed"; requestId: string }
     /** A coin withdrawal moved on; `holdings` come with an answer and are absent on a push. */
@@ -506,9 +506,14 @@ export function accountReducer(state: AccountState, action: AccountAction): Acco
             if (state.optimisticSpot.some((t) => t.requestId === action.trade.requestId)) return state;
             return { ...state, optimisticSpot: [action.trade, ...state.optimisticSpot] };
         case "spot-failed":
-        case "spot-settled":
+        case "spot-settled": {
             if (state.status !== "ready") return state;
-            return { ...state, optimisticSpot: state.optimisticSpot.filter((t) => t.requestId !== action.requestId) };
+            const next = {
+                ...state,
+                optimisticSpot: state.optimisticSpot.filter((t) => t.requestId !== action.requestId),
+            };
+            return action.type === "spot-settled" && action.account ? withAccount(next, action.account) : next;
+        }
         case "spot-filled":
             if (state.status !== "ready") return state;
             return {

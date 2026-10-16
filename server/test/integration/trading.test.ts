@@ -11,6 +11,7 @@ import type {
     TradeOrderRequest,
     TradeResult,
     TradingAck,
+    TradingServerEvents,
 } from "../../src/trading/types.ts";
 import { fromUnitsDecimal, parseUnits18 } from "../../src/trading/units.ts";
 import { startStack, type AppSocket, type Stack } from "../support/stack.ts";
@@ -28,6 +29,8 @@ afterAll(async () => {
 });
 
 const wei = (usdc: string) => parseUnits(usdc, 18);
+
+type TradeFill = Parameters<TradingServerEvents["trade:filled"]>[0];
 
 /** A signed-in user whose account holds `usdc`. */
 async function person(s: Stack, usdc = "100") {
@@ -347,11 +350,15 @@ describe("account trading", () => {
         const pushed = new Promise<HoldingView[]>((resolve) =>
             other.once("holdings:update", ({ holdings }) => resolve(holdings)),
         );
-        const filled = new Promise<string>((resolve) => other.once("trade:filled", (view) => resolve(view.gotSymbol)));
+        const filled = new Promise<TradeFill>((resolve) => other.once("trade:filled", resolve));
         await other.timeout(5000).emitWithAck("account:open", {});
-        ok(await trade(socket, { verb: "buy", symbol: "BNB", amountUSD: "60" }));
+        const placed = ok(await trade(socket, { verb: "buy", symbol: "BNB", amountUSD: "60" }));
         expect(await pushed).toEqual([{ symbol: "BNB", units: "0.1", network: "bnb" }]);
-        expect(await filled).toBe("BNB");
+        const fill = await filled;
+        expect(fill.gotSymbol).toBe("BNB");
+        // The fill moved the USDC balance, so the push carries the account as it stands
+        expect(fill.account).toMatchObject({ balance: placed.balance, version: expect.any(Number) });
+        expect(fill.account.balance).toBe("40");
 
         const reopened = (await other.timeout(5000).emitWithAck("account:open", {})) as Ack<WalletSession>;
         expect(reopened.ok && reopened.data.holdings).toEqual([{ symbol: "BNB", units: "0.1", network: "bnb" }]);

@@ -669,6 +669,34 @@ test.describe("withdrawals", () => {
     });
 });
 
+test.describe("a trade filled in another tab", () => {
+    const estimate = {
+        requestId: "r1",
+        balanceWei: -toWei("60"),
+        paid: { symbol: "USDC", units: "60" },
+        got: { symbol: "BNB", units: "0.1", network: "bnb" },
+    };
+
+    test("the push brings the account, so the USDC balance follows the holdings", () => {
+        const state = run([{ type: "spot-settled", requestId: "r1", account: account("40", 2) }], open("100", 1));
+        expect(ready(state).account.version).toBe(2);
+        expect(optimisticBalance(state)).toBe(toWei("40"));
+    });
+
+    test("the placing tab's estimate gives way to the pushed account without counting twice", () => {
+        let state = run([{ type: "spot", trade: estimate }], open("100", 1));
+        expect(optimisticBalance(state)).toBe(toWei("40"));
+        state = run([{ type: "spot-settled", requestId: "r1", account: account("40", 2) }], state);
+        expect(ready(state).optimisticSpot).toEqual([]);
+        expect(optimisticBalance(state)).toBe(toWei("40"));
+    });
+
+    test("a pushed account older than the one showing is ignored", () => {
+        const state = run([{ type: "spot-settled", requestId: "r1", account: account("40", 2) }], open("100", 3));
+        expect(optimisticBalance(state)).toBe(toWei("100"));
+    });
+});
+
 test.describe("optimistic perps", () => {
     const pendingPosition = {
         id: "pending:req-p",

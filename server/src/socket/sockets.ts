@@ -671,12 +671,15 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         enqueue(accountId.toHexString(), async () => {
             try {
                 const room = roomOf(accountId);
+                // A fill moves the USDC balance, so it goes out with the account as it stands
+                const account = push.trade ? await services.accounts.findById(accountId) : null;
                 for (const socket of await io.in(room).fetchSockets()) {
                     if (socket.data.identity.userId !== privyUserId) {
                         socket.leave(room);
                         continue;
                     }
-                    if (push.trade) socket.emit("trade:filled", push.trade);
+                    if (push.trade && account)
+                        socket.emit("trade:filled", { ...push.trade, account: accountView(account) });
                     socket.emit("holdings:update", { holdings: push.holdings });
                     if (push.moves) socket.emit("pnl:changed");
                 }

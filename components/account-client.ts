@@ -277,8 +277,8 @@ export class AccountClient {
         socket.on("holdings:update", ({ holdings }) => {
             this.#dispatch({ type: "holdings", holdings });
         });
-        socket.on("trade:filled", (trade) => {
-            this.#dispatch({ type: "spot-settled", requestId: trade.requestId });
+        socket.on("trade:filled", ({ requestId, account }) => {
+            this.#dispatch({ type: "spot-settled", requestId, account });
         });
         socket.on("holding:withdrawal", (withdrawal) => {
             this.#dispatch({ type: "coin-withdrawal", withdrawal });

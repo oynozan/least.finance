@@ -204,3 +204,29 @@ test.describe("a withdrawal that never reached the server", () => {
         }
     });
 });
+
+test.describe("a trade filled in another tab", () => {
+    test("moves this tab's USDC balance with the push", async () => {
+        const stack = await fakeServer();
+        try {
+            expect(shown(stack)).toBe(toWei("50"));
+            for (const socket of stack.io.sockets.sockets.values()) {
+                socket.emit("trade:filled", {
+                    id: "t1",
+                    requestId: "r1",
+                    verb: "buy",
+                    paidSymbol: "USDC",
+                    paidUnits: "10",
+                    gotSymbol: "BNB",
+                    gotUnits: "0.0166",
+                    usd: "10",
+                    at: "2026-10-16T00:00:00.000Z",
+                    account: account("40", 2),
+                });
+            }
+            await expect.poll(() => shown(stack)).toBe(toWei("40"));
+        } finally {
+            await stack.stop();
+        }
+    });
+});

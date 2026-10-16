@@ -1,5 +1,7 @@
 /** The account-trading contract shared by the server and the app: Buy, Sell and Swap from the account balance, and sending held coins out. This file has no runtime imports. */
 
+import type { AccountView } from "../protocol.ts";
+
 /** A coin is held on its catalog `home` network; `symbol` is the catalog's symbol, such as "BNB". */
 export type HoldingView = {
     symbol: string;
@@ -76,7 +78,8 @@ export type TradingClientEvents = {
 
 export type TradingServerEvents = {
     "holdings:update": (payload: { holdings: HoldingView[] }) => void;
-    "trade:filled": (payload: TradeView) => void;
+    /** The fill with the account it left, so a socket that didn't place it shows the new USDC balance too */
+    "trade:filled": (payload: TradeView & { account: AccountView }) => void;
     "holding:withdrawal": (payload: CoinWithdrawalView) => void;
 };
 
