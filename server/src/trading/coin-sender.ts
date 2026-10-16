@@ -5,7 +5,15 @@ import type { Collections } from "../db/mongo.ts";
 import { COINS, NETWORKS, type CoinEntry } from "../swaps/coins.ts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
 import type { CoinWithdrawalDoc } from "./docs.ts";
-import type { InventoryChain, PreparedTx } from "./inventory-chain.ts";
+import {
+    MAX_ATTEMPTS,
+    attemptOf,
+    attemptsOf,
+    highestFees,
+    minedAmong,
+    type InventoryChain,
+    type PreparedTx,
+} from "./inventory-chain.ts";
 import { alreadySent, refused } from "./send-errors.ts";
 import { UNIT_DECIMALS, fromUnitsDecimal } from "./units.ts";
 
@@ -135,11 +143,15 @@ export class CoinSender {
                   value: 0n,
               };
 
-        if (doc.txHash) {
-            const receipt = await chain.receipt(network, doc.txHash as Hex);
-            if (receipt === "success") return this.#sent(doc, doc.txHash);
-            if (receipt === "reverted") return this.#fail(doc, "The transfer reverted on the network");
+        // A recorded nonce is held back from new withdrawals even while its resend window runs
+        if (doc.nonce !== null) chain.reserve(network, doc.nonce);
+        const attempts = attemptsOf(doc);
+        if (attempts.length > 0) {
+            const mined = await minedAmong(chain, network, attempts);
+            if (mined?.status === "success") return this.#sent(doc, mined.hash);
+            if (mined?.status === "reverted") return this.#fail(doc, "The transfer reverted on the network");
             if (this.#now() - doc.updatedAt.getTime() < (this.#deps.resendAfterMs ?? DEFAULT_RESEND_MS)) return;
+            if (attempts.length >= MAX_ATTEMPTS) return;
         }
 
         // The nonce is stored before anything is signed, and a retry reuses it
@@ -151,43 +163,50 @@ export class CoinSender {
                 { $set: { nonce, updatedAt: new Date(this.#now()) } },
             );
             if (stored.modifiedCount === 0) return chain.release(network, nonce);
-        } else {
-            chain.reserve(network, nonce);
         }
-        // Nothing has gone out on a nonce with no hash, so a refusal gives it back
-        const unused = doc.txHash === null;
 
         let prepared: PreparedTx;
         try {
-            prepared = await chain.prepare(network, intent, nonce);
+            prepared = await chain.prepare(network, intent, nonce, highestFees(attempts));
         } catch (error) {
-            if (refused(error)) return this.#refuse(doc, error, unused ? nonce : null, network);
-            throw error;
+            return this.#answered(doc, error, network, nonce, attempts.length > 0);
         }
         await this.#deps.collections.coinWithdrawals.updateOne(
             { _id: doc._id, state: "sending" },
-            { $set: { txHash: prepared.hash, updatedAt: new Date(this.#now()) } },
+            {
+                $set: {
+                    txHash: prepared.hash,
+                    attempts: [...attempts, attemptOf(prepared)],
+                    updatedAt: new Date(this.#now()),
+                },
+            },
         );
+        if (attempts.length + 1 === MAX_ATTEMPTS) {
+            this.#deps.logger.error(
+                { withdrawal: doc._id.toString() },
+                "A coin withdrawal is still unmined after its last resend",
+            );
+        }
 
         try {
             await chain.broadcast(network, prepared);
         } catch (error) {
-            if (alreadySent(error)) {
-                this.#deps.logger.warn(
-                    { withdrawal: doc._id.toString() },
-                    "The nonce was already used; the receipt decides",
-                );
-                return;
-            }
-            if (refused(error)) return this.#refuse(doc, error, unused ? nonce : null, network);
-            throw error;
+            return this.#answered(doc, error, network, nonce, attempts.length > 0);
         }
     }
 
-    /** Fails a withdrawal the network refused, then frees its nonce when no transaction went out on it. */
-    async #refuse(doc: CoinWithdrawalDoc, error: unknown, unusedNonce: number | null, network: EvmNetworkId) {
+    /** A refused first attempt fails and frees its nonce, but a refused replacement leaves the earlier attempts to the receipts */
+    async #answered(doc: CoinWithdrawalDoc, error: unknown, network: EvmNetworkId, nonce: number, replacing: boolean) {
+        if (alreadySent(error) || (replacing && refused(error))) {
+            this.#deps.logger.warn(
+                { withdrawal: doc._id.toString(), reason: firstLine(error) },
+                "The nonce is already in use; the receipts decide",
+            );
+            return;
+        }
+        if (!refused(error)) throw error;
         await this.#fail(doc, `The network refused it: ${firstLine(error)}`);
-        if (unusedNonce !== null) this.#deps.chain.release(network, unusedNonce);
+        this.#deps.chain.release(network, nonce);
     }
 
     async #processSolana(doc: CoinWithdrawalDoc, entry: CoinEntry) {

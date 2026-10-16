@@ -2,12 +2,16 @@ import { encodeFunctionData, erc20Abi, keccak256, TransactionReceiptNotFoundErro
 import type { HDAccount } from "viem/accounts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
 import type { PublicClient } from "viem";
+import type { SendAttempt } from "./docs.ts";
 import { refused } from "./send-errors.ts";
 
 export type TxIntent = { to: Address; data: Hex; value: bigint };
 
+/** What a transaction pays per unit of gas, where a network with one gas price pays it as both */
+export type GasFees = { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint };
+
 /** A signed transaction that has not been sent: its hash is known, so it can be recorded first. */
-export type PreparedTx = { hash: Hex; raw: Hex; nonce: number };
+export type PreparedTx = { hash: Hex; raw: Hex; nonce: number; fees: GasFees };
 
 export type Receipt = "success" | "reverted" | null;
 
@@ -19,7 +23,8 @@ export type InventoryChain = {
     reserve(network: EvmNetworkId, nonce: number): void;
     /** Gives back a nonce no transaction was sent on, so the next send fills the gap instead of queueing behind it. */
     release(network: EvmNetworkId, nonce: number): void;
-    prepare(network: EvmNetworkId, tx: TxIntent, nonce?: number): Promise<PreparedTx>;
+    /** Signs `tx`, and with `previous` (an attempt on the same nonce) pays enough more to replace it */
+    prepare(network: EvmNetworkId, tx: TxIntent, nonce?: number, previous?: GasFees): Promise<PreparedTx>;
     broadcast(network: EvmNetworkId, prepared: PreparedTx): Promise<void>;
     /** Null while the transaction is unknown or unmined. */
     receipt(network: EvmNetworkId, hash: Hex): Promise<Receipt>;
@@ -31,6 +36,59 @@ export type InventoryChain = {
 const GAS_MARGIN_NUM = 12n;
 const GAS_MARGIN_DEN = 10n;
 const APPROVAL_WAIT_MS = 90_000;
+// Nodes take a replacement only if both fees rise by 10%, so 12.5% leaves room
+const REPLACEMENT_BUMP_PER_MILLE = 125n;
+/** Attempts per nonce at most, as each replacement pays 12.5% more than the one before */
+export const MAX_ATTEMPTS = 10;
+
+const raised = (fee: bigint) => fee + (fee * REPLACEMENT_BUMP_PER_MILLE + 999n) / 1000n;
+const larger = (a: bigint, b: bigint) => (a > b ? a : b);
+
+/** The network's fees, or 12.5% over those of the attempt being replaced where that is more */
+export function outbid(estimated: GasFees, previous?: GasFees): GasFees {
+    if (!previous) return estimated;
+    return {
+        maxFeePerGas: larger(estimated.maxFeePerGas, raised(previous.maxFeePerGas)),
+        maxPriorityFeePerGas: larger(estimated.maxPriorityFeePerGas, raised(previous.maxPriorityFeePerGas)),
+    };
+}
+
+/** Every transaction signed on a doc's nonce, where one signed before attempts were kept has only its hash */
+export function attemptsOf(doc: { txHash: string | null; attempts?: SendAttempt[] }): SendAttempt[] {
+    if (doc.attempts) return doc.attempts;
+    return doc.txHash ? [{ hash: doc.txHash, maxFeePerGas: "0", maxPriorityFeePerGas: "0" }] : [];
+}
+
+export const attemptOf = (prepared: PreparedTx): SendAttempt => ({
+    hash: prepared.hash,
+    maxFeePerGas: prepared.fees.maxFeePerGas.toString(),
+    maxPriorityFeePerGas: prepared.fees.maxPriorityFeePerGas.toString(),
+});
+
+/** The highest of each fee across the attempts, which a replacement has to beat */
+export function highestFees(attempts: SendAttempt[]): GasFees | undefined {
+    if (attempts.length === 0) return undefined;
+    return attempts.reduce<GasFees>(
+        (top, attempt) => ({
+            maxFeePerGas: larger(top.maxFeePerGas, BigInt(attempt.maxFeePerGas)),
+            maxPriorityFeePerGas: larger(top.maxPriorityFeePerGas, BigInt(attempt.maxPriorityFeePerGas)),
+        }),
+        { maxFeePerGas: 0n, maxPriorityFeePerGas: 0n },
+    );
+}
+
+/** The attempt that mined, if any, since only one transaction can take a nonce */
+export async function minedAmong(
+    chain: Pick<InventoryChain, "receipt">,
+    network: EvmNetworkId,
+    attempts: SendAttempt[],
+): Promise<{ hash: Hex; status: "success" | "reverted" } | null> {
+    const answers = await Promise.all(
+        attempts.map(async ({ hash }) => ({ hash: hash as Hex, status: await chain.receipt(network, hash as Hex) })),
+    );
+    for (const { hash, status } of answers) if (status !== null) return { hash, status };
+    return null;
+}
 
 /** Signs the inventory wallet's transactions on each network through the swap clients. */
 export function createInventoryChain(options: {
@@ -81,11 +139,18 @@ export function createInventoryChain(options: {
             released.set(network, (released.get(network) ?? new Set<number>()).add(nonce));
         },
 
-        async prepare(network, tx, nonce) {
+        async prepare(network, tx, nonce, previous) {
             const client = clients[network];
             // Gas is estimated before a nonce is taken, so a refused transaction leaves no gap
             const gas = await client.estimateGas({ account: account.address, ...tx });
-            const fees = await client.estimateFeesPerGas();
+            // A network without EIP-1559 answers with a gas price alone
+            const estimated: { gasPrice?: bigint; maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint } =
+                await client.estimateFeesPerGas();
+            const legacy = estimated.maxFeePerGas === undefined;
+            const current: GasFees = legacy
+                ? { maxFeePerGas: estimated.gasPrice!, maxPriorityFeePerGas: estimated.gasPrice! }
+                : { maxFeePerGas: estimated.maxFeePerGas!, maxPriorityFeePerGas: estimated.maxPriorityFeePerGas! };
+            const fees = outbid(current, previous);
             const useNonce = nonce ?? (await chain.nextNonce(network));
             const raw = await account.signTransaction({
                 chainId: client.chain!.id,
@@ -94,15 +159,15 @@ export function createInventoryChain(options: {
                 value: tx.value,
                 nonce: useNonce,
                 gas: (gas * GAS_MARGIN_NUM) / GAS_MARGIN_DEN,
-                ...(fees.maxFeePerGas !== undefined
-                    ? {
+                ...(legacy
+                    ? { type: "legacy" as const, gasPrice: fees.maxFeePerGas }
+                    : {
                           type: "eip1559" as const,
                           maxFeePerGas: fees.maxFeePerGas,
                           maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-                      }
-                    : { type: "legacy" as const, gasPrice: fees.gasPrice }),
+                      }),
             });
-            return { hash: keccak256(raw), raw, nonce: useNonce };
+            return { hash: keccak256(raw), raw, nonce: useNonce, fees };
         },
 
         async broadcast(network, prepared) {

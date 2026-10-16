@@ -1,10 +1,17 @@
 import { keccak256, toHex, type Address, type Hex } from "viem";
 import type { EvmNetworkId } from "../../src/swaps/clients.ts";
-import type { InventoryChain, PreparedTx, Receipt, TxIntent } from "../../src/trading/inventory-chain.ts";
+import {
+    outbid,
+    type GasFees,
+    type InventoryChain,
+    type PreparedTx,
+    type Receipt,
+    type TxIntent,
+} from "../../src/trading/inventory-chain.ts";
 
 export type FakeInventoryChain = InventoryChain & {
-    /** Every transaction signed, in order. */
-    prepared: { network: EvmNetworkId; intent: TxIntent; tx: PreparedTx }[];
+    /** Every transaction signed, in order, with the fees of the attempt it was asked to outbid. */
+    prepared: { network: EvmNetworkId; intent: TxIntent; tx: PreparedTx; previous?: GasFees }[];
     /** The hashes sent to the network. */
     broadcasts: Hex[];
     approvals: { network: EvmNetworkId; token: Address; spender: Address; amount: bigint }[];
@@ -55,12 +62,13 @@ export function fakeInventoryChain(): FakeInventoryChain {
         release(network, nonce) {
             released.set(network, (released.get(network) ?? new Set()).add(nonce));
         },
-        async prepare(network, intent, nonce) {
+        async prepare(network, intent, nonce, previous) {
             take("prepare");
             const used = nonce ?? (await fake.nextNonce(network));
             const raw = toHex(`${network}|${used}|${intent.to}|${intent.data}|${intent.value}|${fake.prepared.length}`);
-            const tx = { hash: keccak256(raw), raw, nonce: used };
-            fake.prepared.push({ network, intent, tx });
+            const fees = outbid({ maxFeePerGas: 100n, maxPriorityFeePerGas: 10n }, previous);
+            const tx = { hash: keccak256(raw), raw, nonce: used, fees };
+            fake.prepared.push({ network, intent, tx, previous });
             return tx;
         },
         async broadcast(_network, prepared) {

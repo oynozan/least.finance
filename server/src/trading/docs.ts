@@ -33,6 +33,9 @@ export type TradeDoc = {
     createdAt: Date;
 };
 
+/** One signed transaction for a nonce with the fees it pays, so a replacement can outbid it */
+export type SendAttempt = { hash: string; maxFeePerGas: string; maxPriorityFeePerGas: string };
+
 export type HedgeState = "planned" | "sending" | "sent" | "done" | "failed";
 
 /** The market order that nets a batch of trades in one coin. */
@@ -61,8 +64,11 @@ export type CoinWithdrawalDoc = {
     network: string;
     to: string;
     state: CoinWithdrawalState;
+    /** The latest attempt's hash, or the mined one once it is known */
     txHash: string | null;
     nonce: number | null;
+    /** Every transaction signed on the nonce, since any of them may be the one that mines */
+    attempts?: SendAttempt[];
     reason: string | null;
     createdAt: Date;
     updatedAt: Date;

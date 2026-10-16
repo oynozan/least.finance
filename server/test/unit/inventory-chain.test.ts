@@ -1,8 +1,8 @@
-import type { PublicClient } from "viem";
+import { parseTransaction, type PublicClient } from "viem";
 import { describe, expect, test, vi } from "vitest";
 import { createKeyring } from "../../src/accounts/keyring.ts";
 import type { EvmNetworkId } from "../../src/swaps/clients.ts";
-import { createInventoryChain } from "../../src/trading/inventory-chain.ts";
+import { createInventoryChain, outbid } from "../../src/trading/inventory-chain.ts";
 
 const account = createKeyring("test test test test test test test test test test test junk").inventoryEvm();
 const TRANSFER = { to: account.address, data: "0x" as const, value: 1n };
@@ -62,5 +62,45 @@ describe("inventory chain nonces", () => {
         client.sendRawTransaction.mockRejectedValueOnce(new Error("insufficient funds for gas * price + value"));
         await expect(chain.approve("ethereum", account.address, account.address, 5n)).rejects.toThrow(/insufficient/);
         expect(await chain.nextNonce("ethereum")).toBe(0);
+    });
+});
+
+describe("inventory chain replacements", () => {
+    test("a replacement pays at least 12.5% more of each fee than the attempt it outbids", async () => {
+        const { chain } = node();
+        const prepared = await chain.prepare("ethereum", TRANSFER, 0, {
+            maxFeePerGas: 100n,
+            maxPriorityFeePerGas: 10n,
+        });
+        expect(prepared.fees).toEqual({ maxFeePerGas: 113n, maxPriorityFeePerGas: 12n });
+        expect(parseTransaction(prepared.raw)).toMatchObject({ maxFeePerGas: 113n, maxPriorityFeePerGas: 12n });
+    });
+
+    test("a replacement keeps the network's fee when that is already higher", async () => {
+        const { chain, client } = node();
+        client.estimateFeesPerGas.mockResolvedValueOnce({ maxFeePerGas: 500n, maxPriorityFeePerGas: 10n });
+        const prepared = await chain.prepare("ethereum", TRANSFER, 0, {
+            maxFeePerGas: 100n,
+            maxPriorityFeePerGas: 10n,
+        });
+        expect(prepared.fees).toEqual({ maxFeePerGas: 500n, maxPriorityFeePerGas: 12n });
+    });
+
+    test("a legacy network's gas price is outbid by the same margin", async () => {
+        const { chain, client } = node();
+        client.estimateFeesPerGas.mockResolvedValue({ gasPrice: 100n } as never);
+        const first = await chain.prepare("ethereum", TRANSFER, 0);
+        expect(parseTransaction(first.raw)).toMatchObject({ type: "legacy", gasPrice: 100n });
+        const second = await chain.prepare("ethereum", TRANSFER, 0, first.fees);
+        expect(parseTransaction(second.raw)).toMatchObject({ type: "legacy", gasPrice: 113n });
+    });
+
+    test("outbidding rounds up so a tiny fee still rises", () => {
+        expect(
+            outbid({ maxFeePerGas: 1n, maxPriorityFeePerGas: 0n }, { maxFeePerGas: 1n, maxPriorityFeePerGas: 0n }),
+        ).toEqual({
+            maxFeePerGas: 2n,
+            maxPriorityFeePerGas: 0n,
+        });
     });
 });

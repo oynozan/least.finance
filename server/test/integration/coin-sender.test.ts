@@ -9,7 +9,7 @@ import type { Collections } from "../../src/db/mongo.ts";
 import { createSwapClients } from "../../src/swaps/clients.ts";
 import { CoinSender, type SolanaSender } from "../../src/trading/coin-sender.ts";
 import type { CoinWithdrawalDoc, HoldingDoc } from "../../src/trading/docs.ts";
-import { createInventoryChain } from "../../src/trading/inventory-chain.ts";
+import { MAX_ATTEMPTS, createInventoryChain } from "../../src/trading/inventory-chain.ts";
 import { fromUnitsDecimal, toUnitsDecimal } from "../../src/trading/units.ts";
 import { fakeInventoryChain, type FakeInventoryChain } from "../support/fake-inventory-chain.ts";
 
@@ -202,6 +202,132 @@ describe("CoinSender on EVM", () => {
         expect(await held("ETH")).toBe(0n);
 
         // Another withdrawal does not take the reserved nonce
+        const next = await queue("ETH", "0.1", "ethereum");
+        await sender().tick();
+        expect((await reload(next))?.nonce).toBe(1);
+    });
+
+    test("a slow withdrawal is signed again on its nonce paying more, and every attempt is kept", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const worker = sender();
+        await worker.tick();
+        clock += 200_000;
+        await worker.tick();
+
+        const [first, second] = chain.prepared;
+        expect(second!.tx.nonce).toBe(first!.tx.nonce);
+        expect(second!.previous).toEqual(first!.tx.fees);
+        expect(second!.tx.fees.maxFeePerGas).toBeGreaterThan(first!.tx.fees.maxFeePerGas);
+        const after = await reload(doc);
+        expect(after?.txHash).toBe(second!.tx.hash);
+        expect(after?.attempts?.map((attempt) => attempt.hash)).toEqual([first!.tx.hash, second!.tx.hash]);
+    });
+
+    test("a replacement the node calls underpriced is not given back, and the first transaction mining sends it", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const worker = sender();
+        await worker.tick();
+        const original = chain.prepared[0]!.tx.hash;
+
+        clock += 200_000;
+        chain.failNext("broadcast", new Error("replacement transaction underpriced"));
+        await worker.tick();
+        expect(await reload(doc)).toMatchObject({ state: "sending" });
+        expect(await held("ETH")).toBe(0n);
+
+        chain.receipts.set(original, "success");
+        await worker.tick();
+        expect(await reload(doc)).toMatchObject({ state: "sent", txHash: original });
+        expect(await held("ETH")).toBe(0n);
+    });
+
+    test("a replacement answered nonce too low because the first mined ends up sent with the first hash", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const worker = sender();
+        await worker.tick();
+        const original = chain.prepared[0]!.tx.hash;
+
+        clock += 200_000;
+        chain.failNext("broadcast", new Error("nonce too low"));
+        await worker.tick();
+        chain.receipts.set(original, "success");
+        clock += 200_000;
+        await worker.tick();
+        expect(await reload(doc)).toMatchObject({ state: "sent", txHash: original });
+        expect(chain.prepared).toHaveLength(2);
+    });
+
+    test("the replacement mining sends it with the replacement's hash", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const worker = sender();
+        await worker.tick();
+        clock += 200_000;
+        await worker.tick();
+        const replacement = chain.prepared[1]!.tx.hash;
+
+        chain.receipts.set(replacement, "success");
+        await worker.tick();
+        expect(await reload(doc)).toMatchObject({ state: "sent", txHash: replacement });
+    });
+
+    test("a replacement the network refuses outright is not given back while the first can still mine", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const worker = sender();
+        await worker.tick();
+
+        clock += 200_000;
+        chain.failNext("prepare", new Error("insufficient funds for gas * price + value"));
+        await worker.tick();
+        expect(await reload(doc)).toMatchObject({ state: "sending" });
+        expect(await held("ETH")).toBe(0n);
+
+        clock += 200_000;
+        chain.failNext("broadcast", new Error("insufficient funds for gas * price + value"));
+        await worker.tick();
+        expect(await reload(doc)).toMatchObject({ state: "sending" });
+        expect(await held("ETH")).toBe(0n);
+    });
+
+    test("a reverted attempt is given back even when a later one is pending", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const worker = sender();
+        await worker.tick();
+        clock += 200_000;
+        await worker.tick();
+        chain.receipts.set(chain.prepared[0]!.tx.hash, "reverted");
+        await worker.tick();
+        expect((await reload(doc))?.state).toBe("failed");
+        expect(await held("ETH")).toBe(5n * 10n ** 17n);
+    });
+
+    test("a withdrawal signed before attempts were kept still counts its hash as one", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const old = ("0x" + "ab".repeat(32)) as `0x${string}`;
+        await withdrawals.updateOne({ _id: doc._id }, { $set: { nonce: 0, txHash: old } });
+        chain.receipts.set(old, "success");
+        await sender().tick();
+        expect(await reload(doc)).toMatchObject({ state: "sent", txHash: old });
+        expect(chain.prepared).toHaveLength(0);
+    });
+
+    test("a stuck withdrawal stops being replaced after a few attempts", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const worker = sender();
+        for (let pass = 0; pass < 30; pass++) {
+            await worker.tick();
+            clock += 200_000;
+        }
+        expect(chain.prepared.length).toBe(MAX_ATTEMPTS);
+        expect((await reload(doc))?.attempts).toHaveLength(MAX_ATTEMPTS);
+    });
+
+    test("a nonce stored before a restart is held back from new withdrawals while its window runs", async () => {
+        const stored = await queue("ETH", "0.5", "ethereum");
+        await sender().tick();
+        expect((await reload(stored))?.nonce).toBe(0);
+
+        chain = fakeInventoryChain();
+        clock += 1;
         const next = await queue("ETH", "0.1", "ethereum");
         await sender().tick();
         expect((await reload(next))?.nonce).toBe(1);
