@@ -156,7 +156,7 @@ export function Slider({ scale, value, label, valueText, decimals = 0, invalid, 
                 dragged.current = false;
                 setDragging(false);
                 // Into the notch of the stepped value it reported.
-                settle(toFraction(scale, fromFraction(scale, fractionAt(event.clientX))));
+                settle(toFraction(scale, fromFraction(scale, fractionAt(event.clientX), decimals)));
             }}
             onPointerCancel={() => {
                 dragged.current = false;

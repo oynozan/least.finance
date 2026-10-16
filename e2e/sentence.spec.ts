@@ -327,6 +327,30 @@ test("with an account balance, the slider tops out at what it can spend", async 
     await expect(amountField(page)).toHaveCSS("color", "rgb(255, 107, 91)");
 });
 
+test("on a range of cents, the thumb stays where it lets go", async ({ page, isMobile }) => {
+    await seedDeposits(addressOf(page), [{ amount: "0.29", daysAgo: 0 }]);
+    await connect(page);
+    await pick(page, "Swap", /^Buy/);
+    await amountPill(page).click();
+    await expect(slider(page)).toHaveAttribute("aria-valuemax", "0.29");
+    await settledBoxes(page, amountPill(page));
+    const track = (await slider(page).boundingBox())!;
+    const at = { x: track.width / 2, y: track.height / 2 };
+    if (isMobile) await slider(page).tap({ position: at });
+    else await slider(page).click({ position: at });
+    await expect(slider(page)).toHaveAttribute("aria-valuenow", /^0\.(19|2)$/);
+    const value = Number(await slider(page).getAttribute("aria-valuenow"));
+    // Settled into that value's notch (6px inset, 44px thumb), not thrown to an end. The
+    // dropdown follows the pill as its digits change, so the track is measured where it is now.
+    const thumb = slider(page).locator("span").last();
+    const off = async () => {
+        const [now, box] = [(await slider(page).boundingBox())!, (await thumb.boundingBox())!];
+        const notch = now.x + 6 + 22 + ((value - 0.1) / 0.19) * (now.width - 56);
+        return Math.abs(Math.round(box.x + box.width / 2 - notch));
+    };
+    await expect.poll(off, { timeout: 3_000 }).toBeLessThanOrEqual(2);
+});
+
 test("the amount field grows with every digit and never scrolls", async ({ page }) => {
     const field = () =>
         amountField(page).evaluate((input: HTMLInputElement) => {
