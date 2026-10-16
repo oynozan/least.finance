@@ -320,23 +320,45 @@ describe("opening orders", () => {
         expect((await order(socket, request(user, { amountUSD: "103" }), reviewed.data.toAmountMin)).ok).toBe(true);
     });
 
-    test("a swap LI.FI would give over 2% slippage is refused in the review and at confirm", async () => {
+    test("a swap whose minimum is over 2% under its amount is refused in the review and at confirm", async () => {
         const user = await holder();
         const { socket } = await bind(user);
         const unstable = {
             code: "unavailable",
             message: "This swap's price is too unstable right now. Try again shortly.",
         };
+        // What LI.FI reports as the slippage doesn't matter, only how far the minimum sits under the amount
+        const amounts = (min: string) => ({
+            action: { slippage: 0.005 },
+            estimate: { toAmount: "1000000000000000000", toAmountMin: min },
+        });
 
-        stack.lifi.nextQuote({ action: { slippage: 0.0201 } }, user.wallet);
+        stack.lifi.nextQuote(amounts("979900000000000000"), user.wallet);
         expect(await quote(socket, request(user, { amountUSD: "104" }))).toEqual({ ok: false, error: unstable });
-        stack.lifi.nextQuote({ action: { slippage: 0.03 } }, user.wallet);
+        stack.lifi.nextQuote(amounts("970000000000000000"), user.wallet);
         expect(await order(socket, request(user, { amountUSD: "105" }))).toEqual({ ok: false, error: unstable });
         expect(await orders().countDocuments({ wallet: getAddress(user.wallet) })).toBe(0);
 
         // Exactly 2% is allowed
-        stack.lifi.nextQuote({ action: { slippage: 0.02 } }, user.wallet);
+        stack.lifi.nextQuote(amounts("980000000000000000"), user.wallet);
         expect((await quote(socket, request(user, { amountUSD: "106" }))).ok).toBe(true);
+    });
+
+    test("an intent route that reports over 2% slippage but guarantees the full amount is offered and opens", async () => {
+        const user = await holder();
+        const { socket } = await bind(user);
+        const guaranteed = {
+            action: { slippage: 0.0471 },
+            estimate: { toAmount: "1000000000000000000", toAmountMin: "1000000000000000000" },
+        };
+
+        stack.lifi.nextQuote(guaranteed, user.wallet);
+        expect(await quote(socket, request(user, { amountUSD: "107" }))).toMatchObject({
+            ok: true,
+            data: { toAmount: "1", toAmountMin: "1" },
+        });
+        stack.lifi.nextQuote(guaranteed, user.wallet);
+        expect((await order(socket, request(user, { amountUSD: "108" }), "1")).ok).toBe(true);
     });
 
     test("the IP is kept apart and expires", async () => {

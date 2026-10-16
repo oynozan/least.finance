@@ -272,11 +272,11 @@ export class TradeHedger {
             if (error instanceof LifiError && error.kind === "no_route") return this.#fail(hedge, "LI.FI has no route");
             throw error;
         }
-        // A route that forces more slippage than this is left planned, and asked for again on the next pass
-        if (quote.slippage > MAX_QUOTE_SLIPPAGE) {
+        // A route whose minimum sits further under the amount than this is left planned, and asked for again on the next pass
+        if (quote.shortfall > MAX_QUOTE_SLIPPAGE) {
             return this.#deps.logger.warn(
-                { hedge: hedge._id.toString(), slippage: quote.slippage, tool: quote.tool },
-                "LI.FI's slippage for a hedge is over the limit, leaving it planned",
+                { hedge: hedge._id.toString(), shortfall: quote.shortfall, slippage: quote.slippage, tool: quote.tool },
+                "A hedge's minimum is too far under its amount, leaving it planned",
             );
         }
         if (quote.tx.kind !== "evm") return this.#fail(hedge, "LI.FI sent a transaction for another kind of chain");

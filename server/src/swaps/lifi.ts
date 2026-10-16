@@ -20,7 +20,7 @@ export type LifiQuoteRequest = {
     fee?: number;
 };
 
-/** The most slippage in a quote that we accept, whoever chose it. */
+/** The most that a quote's minimum may sit under its amount for us to accept it, whoever chose the slippage. */
 export const MAX_QUOTE_SLIPPAGE = 0.02;
 
 export type LifiQuote = {
@@ -36,8 +36,10 @@ export type LifiQuote = {
     fromAmount: string;
     toAmount: string;
     toAmountMin: string;
-    /** The slippage built into `toAmountMin`: the one asked for, or the one LI.FI chose. */
+    /** The slippage LI.FI built the quote with: the one asked for, or the one it chose. An intent route reports more than `toAmountMin` shows. */
     slippage: number;
+    /** How far `toAmountMin` sits under `toAmount`: the most the person can lose to a move in the price. */
+    shortfall: number;
     approvalAddress: string | null;
     skipApproval: boolean;
     etaSeconds: number;
@@ -170,11 +172,11 @@ function decimalValue(value: string | undefined): string {
     }
 }
 
-// A quote that doesn't name its slippage carries the one that toAmountMin sits under toAmount by
+// How far toAmountMin sits under toAmount, to a billionth so that exactly 2% reads as 0.02 and not 0.020000000000000018
 function shortfall(toAmount: string, toAmountMin: string): number {
     const expected = Number(toAmount);
     const least = Number(toAmountMin);
-    return expected > 0 && Number.isFinite(least) ? Math.max(0, 1 - least / expected) : 0;
+    return expected > 0 && Number.isFinite(least) ? Math.max(0, Math.round((1 - least / expected) * 1e9) / 1e9) : 0;
 }
 
 const rawToken = z.object({
@@ -319,6 +321,7 @@ export function createLifi(options: {
                 toAmount: estimate.toAmount,
                 toAmountMin: estimate.toAmountMin,
                 slippage: action.slippage ?? shortfall(estimate.toAmount, estimate.toAmountMin),
+                shortfall: shortfall(estimate.toAmount, estimate.toAmountMin),
                 approvalAddress: estimate.approvalAddress ?? null,
                 skipApproval: estimate.skipApproval ?? false,
                 etaSeconds: estimate.executionDuration ?? 0,

@@ -262,9 +262,9 @@ describe("TradeHedger selling", () => {
         expect(chain.prepared).toHaveLength(1);
     });
 
-    test("a route that forces over 2% slippage leaves the sell planned, and the next pass sells it", async () => {
+    test("a route whose minimum is over 2% under its amount leaves the sell planned, and the next pass sells it", async () => {
         await trade("sell", "ETH", 1, 2000);
-        fakeLifi.nextQuote({ action: { slippage: 0.03 } });
+        fakeLifi.nextQuote({ estimate: { toAmount: "2000000000", toAmountMin: "1940000000" } });
         const worker = hedger();
         await worker.tick();
 
@@ -273,6 +273,18 @@ describe("TradeHedger selling", () => {
         expect(fakeLifi.quotes.at(-1)).toMatchObject({ slippage: 0.01 });
 
         await worker.tick();
+        expect((await hedgeList())[0]).toMatchObject({ state: "sent", tool: "fakebridge" });
+        expect(chain.prepared).toHaveLength(1);
+    });
+
+    test("a route that reports over 2% slippage but guarantees the full amount is sold at once", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        fakeLifi.nextQuote({
+            action: { slippage: 0.047 },
+            estimate: { toAmount: "2000000000", toAmountMin: "2000000000" },
+        });
+        await hedger().tick();
+
         expect((await hedgeList())[0]).toMatchObject({ state: "sent", tool: "fakebridge" });
         expect(chain.prepared).toHaveLength(1);
     });

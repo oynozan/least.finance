@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, expect, test } from "vitest";
 import { createLifi, LifiError, type LifiQuoteRequest } from "../../src/swaps/lifi.ts";
 import { solanaFeePayer } from "../../src/swaps/solana-tx.ts";
@@ -135,6 +136,7 @@ test("a quote parses into LifiQuote", async () => {
         toAmount: "49875000",
         toAmountMin: "49625625",
         slippage: 0.005,
+        shortfall: 0.005,
         approvalAddress: BASE_DIAMOND,
         skipApproval: false,
         etaSeconds: expect.any(Number),
@@ -173,6 +175,34 @@ test("a quote that doesn't name its slippage carries how far its minimum is unde
     fake.nextQuote({ action: { slippage: undefined }, estimate: { toAmount: "100000000", toAmountMin: "98500000" } });
 
     expect((await lifi.quote(baseRequest())).slippage).toBeCloseTo(0.015, 10);
+});
+
+// Real answers from LI.FI's /v1/quote, recorded with no slippage asked for
+const recorded = (file: string) =>
+    JSON.parse(readFileSync(new URL(`../fixtures/lifi/${file}`, import.meta.url), "utf8"));
+
+test("an intent route that reports 4.7% slippage but guarantees the full amount has no shortfall", async () => {
+    const quote = await quoteFrom("http://lifi.test", 200, recorded("quote-arc-bnb-intents.json"));
+
+    expect(quote.tool).toBe("lifiIntents");
+    expect(quote.slippage).toBeCloseTo(0.04707, 5);
+    expect(quote.toAmountMin).toBe(quote.toAmount);
+    expect(quote.shortfall).toBe(0);
+});
+
+test("a route whose minimum is 3.53% under its amount carries that as its shortfall", async () => {
+    const quote = await quoteFrom("http://lifi.test", 200, recorded("quote-eth-bnb-mayan-unstable.json"));
+
+    expect(quote.slippage).toBeCloseTo(0.03533, 5);
+    expect(quote.shortfall).toBeCloseTo(0.0353, 4);
+});
+
+test("a minimum exactly 2% under the amount has a shortfall of exactly 0.02", async () => {
+    fake = await startFakeLifi({ prices: { USDC: 1, USDT: 1 } });
+    const lifi = createLifi({ url: fake.url });
+    fake.nextQuote({ estimate: { toAmount: "100000000", toAmountMin: "98000000" } });
+
+    expect((await lifi.quote(baseRequest())).shortfall).toBe(0.02);
 });
 
 test("the quote carries the fee only when it is above 0", async () => {

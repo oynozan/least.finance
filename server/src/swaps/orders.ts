@@ -343,8 +343,8 @@ export class SwapOrders {
             fromUnits,
             diamond,
         });
-        // LI.FI picked the slippage for these tokens; past this the swap is too uncertain to offer
-        if (quote.slippage > MAX_QUOTE_SLIPPAGE) {
+        // What the person is exposed to is how far the minimum sits under the amount, not the slippage LI.FI reports
+        if (quote.shortfall > MAX_QUOTE_SLIPPAGE) {
             throw new AppError("unavailable", "This swap's price is too unstable right now. Try again shortly.");
         }
         return { ...plan, quote, diamond };
