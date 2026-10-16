@@ -123,21 +123,6 @@ export const resolveNow = () => call<object>("/predictions/resolve-now", {}).the
 export const shrinkPosition = (address: string, tokenId: string, shares: string) =>
     call<object>("/positions/shrink", { address, tokenId, shares }).then(() => undefined);
 
-/** Serves LI.FI's status for a sent swap's last hash; `receiving` is the coin and amount that arrived, the order's own by default. */
-export const setSwapStatus = (
-    txHash: string,
-    status: "DONE" | "FAILED" | "PENDING" | "NOT_FOUND",
-    options: { substatus?: string; receiving?: { symbol?: string; amount?: string } } = {},
-) => call<object>("/lifi/status", { txHash, status, ...options }).then(() => undefined);
-
-/** Merges `patch` into the next raw LI.FI quote, nested objects included; `wallet` limits it to quotes that wallet pays. */
-export const nextSwapQuote = (patch: Record<string, unknown>, wallet?: string) =>
-    call<object>("/lifi/quote", { patch, fromAddress: wallet }).then(() => undefined);
-
-/** Answers the next LI.FI quote request (that `wallet` makes, when given) with no route. */
-export const noSwapRoute = (wallet?: string) =>
-    call<object>("/lifi/no-route", { fromAddress: wallet }).then(() => undefined);
-
 /** Sets the treasury's Arc balance so that `usdc` can be withdrawn, with its gas reserve on top. */
 export const fundTreasury = (usdc: string) => call<object>("/treasury/fund", { usdc }).then(() => undefined);
 

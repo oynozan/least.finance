@@ -18,7 +18,7 @@ import {
     type FeedState,
     type PagesState,
 } from "@/lib/pnl/activity-pages";
-import { activityFromItem, saleActivity, type Activity } from "@/lib/trade/activity";
+import { activityFromItem, saleActivity, swapActivity, type Activity } from "@/lib/trade/activity";
 import type {
     ActivityFilter,
     ActivityItem,
@@ -286,6 +286,27 @@ test.describe("mapping", () => {
     test("a recent swap of a coin with no price has no USD size", () => {
         const s = swap(5, iso(NOW.getTime() - DAY), { from: { network: "ethereum", token: "PEPE", amount: "9" } });
         expect(activityFromItem({ kind: "swap", at: s.createdAt, order: s }, ctx)!.amountUSD).toBeNull();
+    });
+
+    test("a swap is an activity with the networks and the state, and no change to the balance", () => {
+        const order = (id: number, state: SwapOrderView["state"]) =>
+            swap(id, iso(NOW.getTime() - DAY), {
+                state,
+                from: { network: "base", token: "USDC", amount: "10" },
+                to: { network: "solana", token: "SOL", amount: "0.067", received: null, receivedSymbol: null },
+            });
+        const row = swapActivity(order(5, "sent"), 10);
+        expect(row).toMatchObject({
+            kind: "swap",
+            title: "Swap USDC to SOL",
+            detail: "Base to Solana, on its way",
+            symbols: ["USDC", "SOL"],
+            amountUSD: 10,
+            change: 0,
+            pending: true,
+        });
+        expect(swapActivity(order(6, "done")).pending).toBeUndefined();
+        expect(swapActivity(order(6, "done")).amountUSD).toBeNull();
     });
 
     test("a settle part of an open position maps to null", () => {

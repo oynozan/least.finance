@@ -10,7 +10,7 @@ import {
     type Instruction,
 } from "@solana/kit";
 import { Server } from "socket.io";
-import { AccountClient, NEEDS_SOL, type SwapSigner } from "@/components/account-client";
+import { AccountClient, NEEDS_SOL, type SolanaSigner } from "@/components/account-client";
 import { isDepositOpen } from "@/lib/account/balances";
 import { buildDepositTransaction, signWithFreshKeys, withFreshSigners } from "@/lib/account/solana-tx";
 import type { BalancesView, CoinBalance, SolanaInstruction } from "@/server/src/protocol";
@@ -223,7 +223,7 @@ async function fakeServer(rows: CoinBalance[], sol?: { needed: string; held: str
     };
 }
 
-const signer = (send: SwapSigner["solana"] extends infer S ? S : never) => send;
+const signer = (send: SolanaSigner | undefined) => send;
 const wallet = (
     signAndSend: (bytes: Uint8Array) => Promise<string>,
     solBalance: bigint | null = BigInt(1_000_000_000),

@@ -10,7 +10,6 @@ import {
     perpActivity,
     predictionActivity,
     saleActivity,
-    swapActivity,
     withdrawalActivity,
     type Activity,
 } from "@/lib/trade/activity";
@@ -81,12 +80,12 @@ function realPredictions({ positions, orders }: PositionsView, optimistic: reado
 const realPerps = ({ positions }: PerpsView): Activity[] => positions.flatMap((p) => perpActivity(p, isPendingPerp(p)));
 
 /**
- * Everything the account did, newest first: its deposits, withdrawals, swaps, predictions and perps,
+ * Everything the account did, newest first: its deposits, withdrawals, predictions and perps,
  * as the server holds them, plus buys still on their way.
  */
 export function useActivity(): ActivityState {
-    const { wallet, catalog } = useTrade();
-    const { history, predictions, perps, optimisticTrades, swaps, withdrawals, pendingWithdrawals } = useAccount();
+    const { wallet } = useTrade();
+    const { history, predictions, perps, optimisticTrades, withdrawals, pendingWithdrawals } = useAccount();
     const nowMs = useNow();
 
     const now = useMemo(() => (nowMs === null ? null : new Date(nowMs)), [nowMs]);
@@ -111,20 +110,10 @@ export function useActivity(): ActivityState {
                     to: w.to,
                 }),
             );
-        // A swap's size is what it paid at the coin's price, or nothing known without one.
-        const priceOf = priceIn(catalog);
-        const trades = swaps.map((order) => {
-            const price = priceOf(order.from.token);
-            return swapActivity(order, price === null ? null : Number(order.from.amount) * price);
-        });
-        return [
-            ...deposits,
-            ...payouts,
-            ...trades,
-            ...realPredictions(predictions, optimisticTrades),
-            ...realPerps(perps),
-        ].sort(byNewest);
-    }, [now, history, predictions, perps, optimisticTrades, swaps, withdrawals, pendingWithdrawals, catalog]);
+        return [...deposits, ...payouts, ...realPredictions(predictions, optimisticTrades), ...realPerps(perps)].sort(
+            byNewest,
+        );
+    }, [now, history, predictions, perps, optimisticTrades, withdrawals, pendingWithdrawals]);
 
     if (wallet.status === "disconnected") return { status: "signed-out", connect: wallet.connect };
     if (wallet.status === "loading" || now === null || activity === null) return { status: "loading" };

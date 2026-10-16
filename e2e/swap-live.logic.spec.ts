@@ -2,9 +2,7 @@ import { expect, test } from "@playwright/test";
 import { createCoinsStore } from "@/components/trade/coins-store";
 import { TOKENS } from "@/lib/trade/catalog";
 import { loadCachedCatalog, toTokens } from "@/lib/trade/live-coins";
-import { loadCachedSwapHoldings, saveCachedSwapHoldings, walletHoldings } from "@/lib/trade/wallet-holdings";
-import { NETWORKS } from "@/server/src/swaps/coins";
-import type { SwapCatalogView, SwapHoldingRow, SwapHoldingsView } from "@/server/src/protocol";
+import type { SwapCatalogView } from "@/server/src/protocol";
 import { PRICED_TOKENS, PRICES } from "./trade-fixtures";
 
 const view = (patch: (coin: SwapCatalogView["coins"][number]) => unknown = (coin) => coin): SwapCatalogView =>
@@ -114,71 +112,6 @@ test.describe("live coins", () => {
     });
 });
 
-const A = "0xAbCdEf0000000000000000000000000000000001";
-const B = "0xBbCdEf0000000000000000000000000000000002";
-const S = "So11111111111111111111111111111111111111112";
-const T = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-
-const row = (wallet: string, network: SwapHoldingRow["network"], symbol: string, amount: string): SwapHoldingRow => ({
-    wallet,
-    network,
-    symbol,
-    amount,
-    usd: null,
-});
-
-const rows: SwapHoldingRow[] = [
-    row(A, "ethereum", "ETH", "1.5"),
-    row(A, "base", "ETH", "0.25"),
-    row(A, "arc", "USDC", "12"),
-    row(B, "base", "ETH", "2"),
-    row(B, "optimism", "ETH", "7"),
-    row(S, "solana", "SOL", "3"),
-    row(S, "solana", "USDC", "4"),
-    row(T, "solana", "SOL", "100"),
-];
-
-// Every wallet answered on every network
-const read = [A, B, S, T].flatMap((wallet) => NETWORKS.map((network) => ({ wallet, network: network.id })));
-
-test.describe("wallet holdings", () => {
-    test("walletHoldings keeps only the signing wallets", () => {
-        // An EVM address matches whatever its casing.
-        expect(walletHoldings(rows, read, { evm: A.toLowerCase(), solana: S }).units).toEqual({
-            ETH: { ethereum: 1.5, base: 0.25 },
-            USDC: { arc: 12, solana: 4 },
-            SOL: { solana: 3 },
-        });
-        // A Solana address is exact.
-        expect(walletHoldings(rows, read, { evm: A, solana: S.toLowerCase() }).units).toEqual({
-            ETH: { ethereum: 1.5, base: 0.25 },
-            USDC: { arc: 12 },
-        });
-        expect(walletHoldings(rows, read, { solana: T }).units).toEqual({ SOL: { solana: 100 } });
-        expect(walletHoldings(rows, read, {})).toEqual({ units: {}, unread: [] });
-        expect(walletHoldings([], read, { evm: A })).toEqual({ units: {}, unread: [] });
-        // Rows a client can't read (a bad amount, an unknown network) are skipped, not summed in.
-        expect(
-            walletHoldings(
-                [
-                    row(A, "ethereum", "ETH", "abc"),
-                    row(A, "ethereum", "LINK", "0"),
-                    row(A, "zora" as never, "ETH", "5"),
-                    row(A, "arbitrum", "ETH", "0.5"),
-                ],
-                read,
-                { evm: A },
-            ).units,
-        ).toEqual({ ETH: { arbitrum: 0.5 } });
-    });
-});
-
-const holdingsView = (...held: SwapHoldingRow[]): SwapHoldingsView => ({
-    readAt: "2026-10-13T09:00:00.000Z",
-    rows: held,
-    read: held.map(({ wallet, network }) => ({ wallet, network })),
-});
-
 function withStorage(store: Map<string, string>) {
     (globalThis as { localStorage?: unknown }).localStorage = {
         getItem: (key: string) => store.get(key) ?? null,
@@ -191,25 +124,7 @@ test.describe("cached views", () => {
         delete (globalThis as { localStorage?: unknown }).localStorage;
     });
 
-    test("holdings are cached under the user and a corrupt cache is ignored", () => {
-        const store = new Map<string, string>();
-        withStorage(store);
-        expect(loadCachedSwapHoldings("u1")).toBeNull();
-        const saved = holdingsView(row(A, "ethereum", "ETH", "1"));
-        saveCachedSwapHoldings("u1", saved);
-        expect([...store.keys()]).toEqual(["swap-holdings:u1"]);
-        expect(loadCachedSwapHoldings("u1")).toEqual(saved);
-        expect(loadCachedSwapHoldings("u2")).toBeNull();
-        for (const raw of ["{", "[]", '{"rows":{}}', '{"readAt":1,"rows":[]}', "null"]) {
-            store.set("swap-holdings:u1", raw);
-            expect(loadCachedSwapHoldings("u1"), raw).toBeNull();
-        }
-        // A row of the wrong shape is dropped and the rest stay.
-        store.set("swap-holdings:u1", JSON.stringify({ ...saved, rows: [{ wallet: A }, null, ...saved.rows] }));
-        expect(loadCachedSwapHoldings("u1")?.rows).toEqual(saved.rows);
-    });
-
-    test("a throwing localStorage gives no cache and does not throw", () => {
+    test("a throwing localStorage gives no catalog cache", () => {
         (globalThis as { localStorage?: unknown }).localStorage = {
             getItem: () => {
                 throw new Error("denied");
@@ -218,9 +133,7 @@ test.describe("cached views", () => {
                 throw new Error("denied");
             },
         };
-        expect(loadCachedSwapHoldings("u1")).toBeNull();
         expect(loadCachedCatalog()).toBeNull();
-        expect(() => saveCachedSwapHoldings("u1", holdingsView())).not.toThrow();
     });
 });
 

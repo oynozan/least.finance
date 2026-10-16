@@ -6,7 +6,6 @@ import {
     use,
     useCallback,
     useEffect,
-    useMemo,
     useRef,
     useState,
     useSyncExternalStore,
@@ -29,7 +28,6 @@ import {
 import type { CoinWithdrawRequest, TradeOrderRequest } from "@/server/src/trading/types";
 import { sameWallet } from "@/lib/account/balances";
 import { API_URL } from "@/lib/api";
-import { swapOrderOf } from "@/lib/trade/swap-quote";
 import { ensureNetwork } from "@/lib/wallet/network";
 import type {
     ActivityFilter,
@@ -44,10 +42,6 @@ import type {
     PositionView,
     PositionsView,
     QuoteView,
-    SwapHoldingsView,
-    SwapOrderView,
-    SwapQuoteView,
-    SwapRequest,
     WithdrawLimits,
     WithdrawQuote,
     WithdrawalView,
@@ -58,10 +52,9 @@ import {
     type DepositNotice,
     type DepositResult,
     type Placed,
-    type SwapResult,
 } from "./account-client";
 import { arc } from "./arc";
-import { depositWalletAddress, linkedWallets, solanaWalletAddress, useActiveWallet } from "./arc-wallet";
+import { linkedWallets, solanaWalletAddress, useActiveWallet } from "./arc-wallet";
 import { useSolanaSigner } from "./solana-signer";
 import { walletEnabled } from "./wallet-provider";
 
@@ -75,20 +68,6 @@ export type Account = {
     balances: CoinBalance[] | null;
     /** Reads fresh balances silently; does nothing within 30 s of the last read unless a linked wallet is new. */
     refreshBalances: () => void;
-    /** The coins the account's wallets hold on the swap networks and which of them were read; null until a snapshot (cached or pushed) is in. */
-    swapHoldings: SwapHoldingsView | null;
-    /** Asks the server to read those coins again; it skips a read within 15 s of the last. */
-    refreshSwapHoldings: () => void;
-    /** The account's open swap orders and those settled in the last 7 days, newest first. */
-    swaps: SwapOrderView[];
-    /** The wallets that sign swaps: the active EVM one, and the Solana one; none while signed out. */
-    signers: Signers;
-    /** The signers among them whose wallet is connected in this browser, which is what a swap needs to pay. */
-    connected: Signers;
-    /** What a swap would pay right now, with no order opened. */
-    quoteSwap: (req: SwapRequest) => Promise<SwapQuoteView | { error: ApiError }>;
-    /** Opens an order for the quote the person reviewed and has the wallet that pays sign it. */
-    placeSwap: (quote: SwapQuoteView) => Promise<SwapResult>;
     /** Bridge orders still open, newest first. */
     orders: DepositOrderView[];
     /** Whether a deposit can be sent from this wallet now: it's connected in this browser and can sign. */
@@ -150,8 +129,6 @@ const IDLE: AccountSnapshot = {
     state: { status: "idle" },
     notice: null,
     balances: null,
-    swapHoldings: null,
-    swaps: [],
     tradeNotice: null,
     pnl: { bound: 0, changed: 0 },
 };
@@ -169,13 +146,6 @@ const UNAVAILABLE_PERP: ApiError = { code: "unavailable", message: "Long and sho
 const UNAVAILABLE_WITHDRAW: ApiError = { code: "unavailable", message: "Withdrawals aren't available right now." };
 
 const UNAVAILABLE_PNL: ApiError = { code: "unavailable", message: "Your history isn't available right now." };
-
-/** The wallets that sign: the EVM one for the eight EVM networks, the Solana one for Solana. */
-export type Signers = { evm?: string; solana?: string };
-
-const NO_SIGNERS: Signers = {};
-
-const NO_SWAPS: ApiError = { code: "unavailable", message: "Swaps aren't available right now." };
 
 const AccountContext = createContext<Account | null>(null);
 
@@ -200,14 +170,6 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     const active = useActiveWallet();
     const solanaAddress = user ? solanaWalletAddress(user, active) : undefined;
     const solanaSigner = useSolanaSigner(solanaAddress);
-    const evmAddress = user ? depositWalletAddress(user, active) : undefined;
-    const signers = useMemo(() => ({ evm: evmAddress, solana: solanaAddress }), [evmAddress, solanaAddress]);
-    const evmHere = !!evmAddress && wallets.some((w) => sameWallet(w.address, evmAddress));
-    const solanaHere = !!solanaSigner;
-    const connected = useMemo(
-        () => ({ evm: evmHere ? evmAddress : undefined, solana: solanaHere ? solanaAddress : undefined }),
-        [evmHere, evmAddress, solanaHere, solanaAddress],
-    );
 
     // The latest token getter, without reconnecting whenever its identity changes.
     const accessToken = useRef(getAccessToken);
@@ -236,7 +198,6 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (accountReady) refreshBalances();
     }, [accountReady, refreshBalances]);
-    const refreshSwapHoldings = useCallback(() => client.refreshSwapHoldings(), [client]);
 
     const deposit = async (amount: string, from: string): Promise<DepositResult> => {
         const wallet = wallets.find((w) => w.address.toLowerCase() === from.toLowerCase());
@@ -281,40 +242,15 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         }
     };
 
-    const placeSwap = async (quote: SwapQuoteView): Promise<SwapResult> => {
-        const order = swapOrderOf(quote);
-        // The wallet that pays signs: the linked EVM one, or the Solana one.
-        const paying = wallets.find((w) => w.address.toLowerCase() === order.wallet.toLowerCase());
-        try {
-            const evm = paying
-                ? {
-                      from: paying.address,
-                      provider: await paying.getEthereumProvider(),
-                      ensure: (id: number) => ensureNetwork(paying, id),
-                  }
-                : undefined;
-            return await client.placeSwap(order, { evm, solana: solanaSigner });
-        } catch (error) {
-            return (error as { code?: unknown }).code === 4001
-                ? { status: "cancelled" }
-                : { status: "failed", message: NO_SWAPS.message };
-        }
-    };
-
     return (
         <Provide
             snapshot={snapshot}
-            signers={signers}
-            connected={connected}
-            quoteSwap={(req) => client.quoteSwap(req)}
-            placeSwap={placeSwap}
             deposit={deposit}
             depositCoin={depositCoin}
             canDepositFrom={(wallet) =>
                 wallets.some((w) => sameWallet(w.address, wallet)) || solanaSigner?.address === wallet
             }
             refreshBalances={refreshBalances}
-            refreshSwapHoldings={refreshSwapHoldings}
             dismissNotice={() => client.dismissNotice()}
             quotePrediction={(input) => client.quotePrediction(input)}
             placePrediction={(input) => client.placePrediction(input)}
@@ -338,16 +274,11 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
 
 function Provide({
     snapshot,
-    signers = NO_SIGNERS,
-    connected = NO_SIGNERS,
     deposit = async () => "failed",
     depositCoin = async () => "failed",
     canDepositFrom = () => false,
-    quoteSwap = async () => ({ error: NO_SWAPS }),
-    placeSwap = async () => ({ status: "failed", message: NO_SWAPS.message }),
     dismissNotice = () => undefined,
     refreshBalances = () => undefined,
-    refreshSwapHoldings = () => undefined,
     quotePrediction = async () => UNAVAILABLE,
     placePrediction = () => ({ requestId: "", sent: false, answer: Promise.resolve(null) }),
     closePosition = () => undefined,
@@ -365,16 +296,11 @@ function Provide({
     children,
 }: {
     snapshot: AccountSnapshot;
-    signers?: Signers;
-    connected?: Signers;
     deposit?: Account["deposit"];
     depositCoin?: Account["depositCoin"];
     canDepositFrom?: Account["canDepositFrom"];
-    quoteSwap?: Account["quoteSwap"];
-    placeSwap?: Account["placeSwap"];
     dismissNotice?: () => void;
     refreshBalances?: () => void;
-    refreshSwapHoldings?: () => void;
     quotePrediction?: Account["quotePrediction"];
     placePrediction?: Account["placePrediction"];
     closePosition?: Account["closePosition"];
@@ -401,13 +327,6 @@ function Provide({
         notice,
         balances: snapshot.balances?.rows ?? null,
         refreshBalances,
-        swapHoldings: snapshot.swapHoldings,
-        refreshSwapHoldings,
-        swaps: snapshot.swaps,
-        signers,
-        connected,
-        quoteSwap,
-        placeSwap,
         orders: state.status === "ready" ? state.orders : [],
         depositCoin,
         canDepositFrom,

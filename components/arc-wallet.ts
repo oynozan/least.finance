@@ -109,7 +109,7 @@ export function depositWalletAddress(
     return linkedWallets(user).find((wallet) => wallet.kind === "evm")?.address;
 }
 
-/** The Solana wallet a swap is signed with: the active one if it's Solana, else the first linked. */
+/** The Solana wallet a Solana deposit is signed with: the active one if it's Solana, else the first linked. */
 export function solanaWalletAddress(
     user: NonNullable<ReturnType<typeof usePrivy>["user"]>,
     active: Partial<Wallet>,
