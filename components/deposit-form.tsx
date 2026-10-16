@@ -28,18 +28,26 @@ const COIN_PLACES = 8;
 /** The most the wallet can send and still pay for gas, to the cent. */
 export const maxDeposit = (walletBalance: number) => Math.max(0, Math.floor((walletBalance - GAS_RESERVE) * 100) / 100);
 
-const GROUPED_BY_THOUSANDS = /^\d{1,3}(,\d{3})+(\.\d*)?$/;
+/** "1,234.56": commas grouping thousands before a decimal point */
+const COMMA_GROUPED = /^\d{1,3}(,\d{3})+\.\d*$/;
+/** "1.234,56": points grouping thousands before a decimal comma */
+const POINT_GROUPED = /^\d{1,3}(\.\d{3})+,\d*$/;
 
-/** Keeps digits and one decimal point, with at most `decimals` decimals. */
+/**
+ * Keeps digits and one decimal point, with at most `decimals` decimals. A pasted number grouped by thousands keeps
+ * its value when its decimal separator says which is which; otherwise the first comma or point is the decimal point
+ * and any later one, typed by mistake, is dropped, so an unclear amount only ever reads smaller.
+ */
 export function cleanAmount(text: string, decimals: number) {
     const kept = text.replace(/[^\d.,]/g, "");
-    // "1,234.5" and "1,234,567" are grouped by thousands, but a lone "1,234" reads as 1.234
-    const grouped = GROUPED_BY_THOUSANDS.test(kept) && (kept.includes(".") || kept.split(",").length > 2);
-    // A separator typed after a decimal part is dropped
-    const tidy = grouped ? kept.replace(/,/g, "") : kept.replace(/([.,]\d*)[.,]+$/, "$1");
-    const parts = tidy.split(/[.,]/);
-    const fraction = parts.pop() ?? "";
-    return parts.length === 0 ? fraction : `${parts.join("")}.${fraction.slice(0, decimals)}`;
+    const plain = COMMA_GROUPED.test(kept)
+        ? kept.replace(/,/g, "")
+        : POINT_GROUPED.test(kept)
+          ? kept.replace(/\./g, "").replace(",", ".")
+          : kept.replace(/,/g, ".");
+    const [whole = "", ...rest] = plain.split(".");
+    if (rest.length === 0) return whole;
+    return `${whole}.${rest.join("").slice(0, decimals)}`;
 }
 
 /** `value` rounded down to `places` decimals, without trailing zeros: never more than was typed. A hair over 1 absorbs float noise, so 0.3 / 0.1 is 3. */

@@ -20,19 +20,26 @@ test.describe("cleanAmount", () => {
         expect(cleanAmount("1,234.56", 6)).toBe("1234.56");
         expect(cleanAmount("$1,234.56", 6)).toBe("1234.56");
         expect(cleanAmount("1,000.50", 6)).toBe("1000.50");
-        expect(cleanAmount("1,234,567", 6)).toBe("1234567");
         expect(cleanAmount("1,234,567.89", 2)).toBe("1234567.89");
         expect(cleanAmount("1,234.", 6)).toBe("1234.");
     });
 
-    test("a comma before exactly three digits is a decimal point when nothing says otherwise", () => {
-        expect(cleanAmount("1,000", 6)).toBe("1.000");
-        expect(cleanAmount("0,125", 6)).toBe("0.125");
+    test("a pasted number grouped by points before a decimal comma keeps its value", () => {
+        expect(cleanAmount("1.234,56", 6)).toBe("1234.56");
+        expect(cleanAmount("1.234.567,8", 6)).toBe("1234567.8");
     });
 
-    test("several groups are never merged into one fraction", () => {
-        expect(cleanAmount("1.234,56", 6)).toBe("1234.56");
-        expect(cleanAmount("1,23,456", 6)).toBe("123.456");
-        expect(cleanAmount("1.2.3", 6)).toBe("12.3");
+    test("without a decimal separator to tell them apart, the first comma or point is the decimal point", () => {
+        expect(cleanAmount("1,000", 6)).toBe("1.000");
+        expect(cleanAmount("0,125", 6)).toBe("0.125");
+        // Unclear groups only ever read smaller, never ten or a thousand times more
+        expect(cleanAmount("1,234,567", 6)).toBe("1.234567");
+        expect(cleanAmount("1.234.567", 6)).toBe("1.234567");
+    });
+
+    test("a point typed by mistake in the middle is dropped and doesn't move the decimal point", () => {
+        expect(cleanAmount("12.3.4", 6)).toBe("12.34");
+        expect(cleanAmount("1a2b.3.4c", 6)).toBe("12.34");
+        expect(cleanAmount("1.2.3", 6)).toBe("1.23");
     });
 });
