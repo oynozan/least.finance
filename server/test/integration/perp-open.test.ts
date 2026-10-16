@@ -280,6 +280,52 @@ test("a book that can't be read once the order is funded still posts, at the wid
     expect(await h.database.collections.perpPositions.countDocuments({ accountId: account._id })).toBe(1);
 });
 
+// The mark is 65000, so a book whose mid sits 1.5% under it is at 64025, and bids down to 62200 are 285 bps below that
+const SUNKEN_BOOK = {
+    bids: [
+        { price: 64020, size: 0.00001 },
+        { price: 62200, size: 5 },
+    ],
+    asks: [{ price: 64030, size: 5 }],
+};
+
+test("a short whose book sits 1.5% under the mark is refused when its limit is worth under $10, before anything is recorded or funded", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    // $12 at 1x is 0.00016 BTC, $10.40 at the mark; at the 3% cap under the book's mid its limit of 62104 is $9.94
+    h.fake.setBook("BTC", SUNKEN_BOOK);
+    const request = { asset: "BTC", side: "short", leverage: 1, collateralUSD: "12" } as const;
+    const refused = {
+        code: "below_minimum",
+        message: "A position starts at $11. Raise the collateral or the leverage.",
+    };
+
+    expect(await refusal(h.service.quote(request))).toEqual(refused);
+    expect(await refusal(h.place(account, request))).toEqual(refused);
+    // The same size is worth more going long, and a deeper collateral lifts the short's limit over $10
+    expect((await h.service.quote({ ...request, side: "long" })).sizeCoin).toBe("0.00016");
+    expect((await h.service.quote({ ...request, collateralUSD: "13" })).sizeCoin).toBe("0.00018");
+    expect(await h.database.collections.perpOrders.countDocuments()).toBe(0);
+    expect((await h.state(account._id)).kinds).toEqual(["deposit"]);
+    expect(h.fake.requests.filter((r) => r.startsWith("exchange"))).toEqual([]);
+    expect(await h.heldE6()).toBe(0n);
+});
+
+test("a short that becomes borderline once it is funded posts a limit worth $10 and fills", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const { order } = await h.place(account, { side: "short", leverage: 1, collateralUSD: "12" });
+    // Funding is still on its way, so this is the book the post will read: its limit would be 62104, worth $9.94
+    h.fake.setBook("BTC", SUNKEN_BOOK);
+    const done = await h.settled(order._id);
+
+    expect(done.state).toBe("filled");
+    // $10.01 / 0.00016 is 62562.5, and BTC prices move in whole dollars
+    expect(done.limitPx).toBe("62563");
+    expect(h.fake.orders).toMatchObject([{ isBuy: false, px: "62563", sz: "0.00016" }]);
+    expect(Number(h.fake.orders[0]!.px) * Number(h.fake.orders[0]!.sz)).toBeGreaterThanOrEqual(10.01);
+});
+
 test("leverage is set isolated before the order", async () => {
     const h = await fresh();
     const account = await h.seedAccount("1000");

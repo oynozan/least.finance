@@ -30,7 +30,9 @@ import {
     liquidationPrice,
     meetsMinimum,
     minOrderE6,
+    raiseLimitToMinimum,
     sizeFor,
+    worthMinimum,
 } from "./math.ts";
 import type { PerpMarkets } from "./markets.ts";
 import { perpOrderView, perpPositionView } from "./views.ts";
@@ -225,7 +227,7 @@ export class PerpService {
         return { market, collateralE6, sizing };
     }
 
-    /** What an open of this size would pay on the book as it is now; refused when the visible book can't fill it within the cap, before anything is recorded or funded. */
+    /** What an open of this size would pay on the book as it is now; refused when the visible book can't fill it within the cap, or when the size is worth under Hyperliquid's $10 at its limit price or at the mark, before anything is recorded or funded. */
     async #checkBook(
         req: PerpQuoteRequest,
         sizing: { sizeCoin: string },
@@ -246,6 +248,9 @@ export class PerpService {
             maxBps: this.#deps.config.PERPS_OPEN_MAX_SLIPPAGE_BPS,
         });
         if (!limit.fillable || limit.avgPx === null) throw new AppError("unavailable", PERP_MESSAGES.thin);
+        // Which price Hyperliquid measures its minimum at isn't known, so the size has to clear it at both
+        if (!worthMinimum(sizing.sizeCoin, limit.limitPx) || !worthMinimum(sizing.sizeCoin, market.markPx))
+            throw new AppError("below_minimum", PERP_MESSAGES.minPosition);
         return limit.avgPx;
     }
 
@@ -485,7 +490,7 @@ export class PerpService {
             this.#deps.logger.warn({ err: error, asset: order.asset }, "Couldn't read a Hyperliquid book to open");
             return { bids: [], asks: [] };
         });
-        const { limitPx } = dynamicLimit({
+        const dynamic = dynamicLimit({
             ...book,
             mark: market.markPx,
             side: order.side,
@@ -495,6 +500,11 @@ export class PerpService {
             minBps: OPEN_MIN_SLIPPAGE_BPS,
             maxBps: this.#deps.config.PERPS_OPEN_MAX_SLIPPAGE_BPS,
         });
+        // A short's limit can fall under what the review checked; raising it keeps the order worth Hyperliquid's $10 and lets the IOC fill or not. A long's is never loosened.
+        const limitPx =
+            order.side === "short"
+                ? raiseLimitToMinimum(dynamic.limitPx, order.sizeCoin, market.szDecimals)
+                : dynamic.limitPx;
         const postedAt = new Date(this.#now());
         const expiresAt = new Date(postedAt.getTime() + ORDER_LIFE_MS);
         const posted = await perpOrders.findOneAndUpdate(

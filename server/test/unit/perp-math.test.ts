@@ -9,11 +9,14 @@ import {
     liquidationPrice,
     meetsMinimum,
     minOrderE6,
+    orderValueE6,
+    raiseLimitToMinimum,
     roundPrice,
     roundPriceTo,
     roundSize,
     sizeFor,
     walkBook,
+    worthMinimum,
 } from "../../src/perps/math.ts";
 
 describe("roundPrice", () => {
@@ -312,6 +315,85 @@ describe("minOrderE6", () => {
     it("a short filled down by that slippage still clears Hyperliquid's $10", () => {
         for (const bps of [1, 100, 300, 500]) {
             expect(Number(minOrderE6(bps)) * (1 - bps / 10_000)).toBeGreaterThanOrEqual(10_000_000);
+        }
+    });
+});
+
+describe("orderValueE6", () => {
+    it("is the size times the price in millionths of a dollar, rounded down", () => {
+        expect(orderValueE6("0.00016", "65000")).toBe(10_400_000n);
+        expect(orderValueE6("0.00016", "62562.5")).toBe(10_010_000n);
+        expect(orderValueE6("2700", "0.003708")).toBe(10_011_600n);
+        expect(orderValueE6("0.000001", "0.5")).toBe(0n);
+    });
+
+    it("takes a mark as a number", () => {
+        expect(orderValueE6("0.00016", 65000.5)).toBe(10_400_080n);
+        expect(orderValueE6("2700", 0.0037)).toBe(9_990_000n);
+    });
+});
+
+describe("worthMinimum", () => {
+    it("holds an order worth $10.01 and not one cent under it", () => {
+        expect(worthMinimum("0.00016", "62562.5")).toBe(true);
+        expect(worthMinimum("0.00016", "62562")).toBe(false);
+    });
+
+    it("counts the decimals themselves, not floats that land a hair under", () => {
+        // 1.25 x 8.008 is exactly 10.01, though the floats multiply to 10.009999999999998
+        expect(1.25 * 8.008).toBeLessThan(10.01);
+        expect(worthMinimum("1.25", "8.008")).toBe(true);
+        expect(worthMinimum("1.25", "8.007")).toBe(false);
+    });
+});
+
+describe("raiseLimitToMinimum", () => {
+    it("leaves a limit that already clears the minimum as it is", () => {
+        expect(raiseLimitToMinimum("64376", "0.00016", 5)).toBe("64376");
+        expect(raiseLimitToMinimum("0.0038", "2700", 0)).toBe("0.0038");
+    });
+
+    it("raises a coarse-tick coin to the first tick worth $10.01", () => {
+        // 2700 coins at 0.0036 are $9.72; $10.01 / 2700 is 0.0037074..., and a tick here is 0.000001
+        expect(raiseLimitToMinimum("0.0036", "2700", 0)).toBe("0.003708");
+        expect(worthMinimum("2700", "0.003708")).toBe(true);
+        expect(worthMinimum("2700", "0.003707")).toBe(false);
+    });
+
+    it("raises a fine-tick coin to the first tick worth $10.01", () => {
+        // 0.06 SOL at 160 is $9.60; $10.01 / 0.06 is 166.8333..., and a tick here is 0.01
+        expect(raiseLimitToMinimum("160", "0.06", 2)).toBe("166.84");
+        expect(worthMinimum("0.06", "166.84")).toBe(true);
+        expect(worthMinimum("0.06", "166.83")).toBe(false);
+    });
+
+    it("lands on a tick that is worth exactly $10.01", () => {
+        expect(raiseLimitToMinimum("190.5", "0.05", 2)).toBe("200.2");
+        expect(raiseLimitToMinimum("8", "1.25", 2)).toBe("8.008");
+    });
+
+    it("always ends worth the minimum, and one tick lower would not be", () => {
+        const coins = [
+            [0, 0.00041],
+            [0, 0.0173],
+            [0, 0.92],
+            [1, 3.4],
+            [2, 27.8],
+            [2, 162.5],
+            [3, 162.5],
+            [4, 3050],
+            [5, 64800],
+        ] as const;
+        for (const [szDecimals, price] of coins) {
+            for (const notional of [10.02, 10.4, 10.9]) {
+                const size = roundSize(notional / price, szDecimals);
+                const limit = roundPrice(price * 0.955, szDecimals);
+                const raised = raiseLimitToMinimum(limit, size, szDecimals);
+                expect(worthMinimum(size, raised), `${size} at ${raised}`).toBe(true);
+                if (raised === limit) continue;
+                const below = roundPriceTo(Number(raised) * (1 - 1e-9), szDecimals, "down");
+                expect(worthMinimum(size, below), `${size} at ${below}`).toBe(false);
+            }
         }
     });
 });

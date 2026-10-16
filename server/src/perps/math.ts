@@ -192,6 +192,32 @@ export function minOrderE6(slippageBps: number): bigint {
     return ceilDiv(10_000_000n * 10_000n * 1_001n, BigInt(10_000 - slippageBps) * 1_000n);
 }
 
+/** The least an opening order may be worth: Hyperliquid's $10 with a cent to spare for price rounding. */
+const MIN_ORDER_VALUE_E6 = 10_010_000n;
+const VALUE_DECIMALS = 10;
+
+/** A plain decimal as an integer of its first ten decimals; a number goes through toFixed, a string is read as written. */
+function scaled(value: string | number): bigint {
+    const [whole = "0", fraction = ""] = (typeof value === "number" ? value.toFixed(VALUE_DECIMALS) : value).split(".");
+    return BigInt(whole + fraction.padEnd(VALUE_DECIMALS, "0").slice(0, VALUE_DECIMALS));
+}
+
+/** What an order of `sizeCoin` is worth at `px`, in millionths of a dollar rounded down, from the decimals themselves. */
+export function orderValueE6(sizeCoin: string | number, px: string | number): bigint {
+    return (scaled(sizeCoin) * scaled(px)) / 10n ** BigInt(2 * VALUE_DECIMALS - 6);
+}
+
+/** Whether an order of `sizeCoin` at `px` is worth Hyperliquid's $10 minimum, with a cent to spare. */
+export function worthMinimum(sizeCoin: string | number, px: string | number): boolean {
+    return orderValueE6(sizeCoin, px) >= MIN_ORDER_VALUE_E6;
+}
+
+/** A limit raised to the first tick at which `sizeCoin` is worth the minimum; as given when it already is. */
+export function raiseLimitToMinimum(limitPx: string, sizeCoin: string, szDecimals: number): string {
+    if (worthMinimum(sizeCoin, limitPx)) return limitPx;
+    return roundPriceTo(Number(MIN_ORDER_VALUE_E6) / 1e6 / Number(sizeCoin), szDecimals, "up");
+}
+
 /** Which minimum a position misses: collateral under $10, or what is left of it after our fee, times the leverage, under $11. */
 export function meetsMinimum(
     collateralUSD: number,
