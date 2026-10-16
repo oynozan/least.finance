@@ -57,12 +57,13 @@ function inPage() {
     };
 }
 
-/** Keeps the store's 15-second and 10-minute timers instead of starting them, to run by hand; every other timer runs as usual. */
+/** Keeps the store's timers of 1 to 15 seconds and its 10-minute one instead of starting them, to run by hand; every other timer runs as usual. */
 function heldTimers() {
     const real = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
     const held = new Map<object, { run: () => void; ms: number }>();
     globalThis.setTimeout = ((run: () => void, ms?: number, ...args: unknown[]) => {
-        if (ms !== 15_000 && ms !== 10 * MINUTE) return real.setTimeout(run, ms, ...args);
+        if (ms === undefined || ((ms < 1_000 || ms > 15_000) && ms !== 10 * MINUTE))
+            return real.setTimeout(run, ms, ...args);
         const handle = {};
         held.set(handle, { run, ms });
         return handle;
@@ -350,6 +351,66 @@ test.describe("a wanted coin whose read failed", () => {
             timers.restore();
             restore();
         }
+    });
+
+    test("is read again when its pause is over if it is wanted again after another coin that failed too", async () => {
+        await inUse(async ({ store, asked, advance, status, timers }) => {
+            status(500);
+            await store.want("HYPE");
+            advance(2_000);
+            await store.want("kPEPE");
+            advance(2_000);
+            // The pause for HYPE has 11 s left; kPEPE's retry is no longer wanted
+            await store.want("HYPE");
+            const before = asked.length;
+            expect(timers.waiting()).toContain(11_000);
+            expect(timers.waiting()).not.toContain(15_000);
+
+            status(200);
+            advance(11_000);
+            timers.fire(11_000);
+            await expect.poll(() => store.getSnapshot().coins.has("HYPE")).toBe(true);
+            expect(asked.slice(before)).toEqual(["/prices/history?range=7d&coins=HYPE"]);
+        });
+    });
+
+    test("is not read twice when it is wanted again inside its own pause", async () => {
+        await inUse(async ({ store, asked, advance, status, timers }) => {
+            status(500);
+            await store.want("HYPE");
+            advance(2_000);
+            await store.want("HYPE");
+
+            expect(timers.waiting().filter((ms) => ms !== 10 * MINUTE)).toEqual([15_000]);
+            status(200);
+            advance(13_000);
+            timers.fire(15_000);
+            await expect.poll(() => store.getSnapshot().coins.has("HYPE")).toBe(true);
+            expect(asked.filter((url) => url.endsWith("coins=HYPE"))).toHaveLength(2);
+        });
+    });
+
+    test("has the same few tries when it is read again after another coin failed in between", async () => {
+        await inUse(async ({ store, asked, advance, status, timers }) => {
+            const hype = () => asked.filter((url) => url.endsWith("coins=HYPE")).length;
+            status(500);
+            await store.want("HYPE");
+            advance(2_000);
+            await store.want("kPEPE");
+            await store.want("HYPE");
+
+            // The read held back for the rest of its pause, then two more tries; four reads in all, as if no other coin was wanted
+            advance(13_000);
+            for (let read = 2; read <= 4; read++) {
+                expect(timers.waiting().filter((ms) => ms !== 10 * MINUTE)).toHaveLength(1);
+                timers.fire(timers.waiting().find((ms) => ms !== 10 * MINUTE) ?? 0);
+                await expect.poll(hype).toBe(read);
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                advance(15_000);
+            }
+
+            expect(timers.waiting()).toEqual([10 * MINUTE]);
+        });
     });
 
     test("is not read again on a switch back to the tab until 15 s have passed", async () => {
