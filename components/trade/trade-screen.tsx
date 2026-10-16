@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect } from "react";
-import { CoinPriceCard } from "./coin-price-card";
+import { CoinPriceCard, coinName } from "./coin-price-card";
 import { drawable, OutcomeChartCard, QuestionChartCard } from "./market-chart-card";
 import { marketHistoryStore, useMarketHistory } from "./market-history-store";
-import { usePriceHistory } from "./price-history-store";
+import { priceHistoryStore, usePriceHistory } from "./price-history-store";
 import { TradeComposer } from "./trade-composer";
 import { useTrade } from "./trade-provider";
 import { withLiveEnd, type ChancePoints } from "@/lib/trade/chance-chart";
@@ -31,7 +31,7 @@ export function TradeScreen() {
         (symbol: string) => {
             const points = history.coins.get(symbol);
             if (!points) return null;
-            const name = catalog.tokens.find((token) => token.symbol === symbol)?.name ?? symbol;
+            const name = coinName(symbol, catalog.tokens.find((token) => token.symbol === symbol)?.name);
             return <CoinPriceCard symbol={symbol} name={name} points={points} />;
         },
         [history, catalog.tokens],
@@ -54,6 +54,18 @@ export function TradeScreen() {
         // The market is looked up again each render; only a different pick should read ahead.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [marketId, outcomeId, !!picked]);
+
+    // A Long or Short market isn't a swap coin: read its history once the page is idle,
+    // so its card is there before the pill is hovered.
+    const assetSlot = view.slots.asset;
+    const perpAsset =
+        (verb === "long" || verb === "short") && assetSlot?.kind === "choice" && assetSlot.value
+            ? assetSlot.value
+            : null;
+    useEffect(() => {
+        if (!perpAsset) return;
+        return whenIdle(() => void priceHistoryStore().want(perpAsset));
+    }, [perpAsset]);
 
     const marketPreview = useCallback(
         (id: string, outcome: string | null) => {

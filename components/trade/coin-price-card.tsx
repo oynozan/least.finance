@@ -29,11 +29,20 @@ const pop: Transition = { type: "spring", visualDuration: 0.3, bounce: 0.5 };
 const swap: Transition = { type: "spring", visualDuration: 0.25, bounce: 0.3 };
 const follow: Transition = { type: "spring", visualDuration: 0.15, bounce: 0 };
 
-/** Cents from $1, four significant digits under it: "$96,120.45", "$0.1823". */
-const priceFormat = (usd: number): Format =>
-    usd >= 1
-        ? { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }
-        : { style: "currency", currency: "USD", maximumSignificantDigits: 4 };
+/** Cents from $1, four significant digits under it, as the picker's formatPrice shows it: "$96,120.45", "$0.1823", "$0.50". */
+export const priceFormat = (usd: number): Format =>
+    usd > 0 && usd < 1
+        ? {
+              style: "currency",
+              currency: "USD",
+              minimumFractionDigits: 2,
+              maximumFractionDigits: Math.min(20, 3 - Math.floor(Math.log10(usd))),
+          }
+        : { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 };
+
+/** A coin's name: the spot token's, "1,000 PEPE" for a k-asset (priced and sized per thousand coins), else the ticker. */
+export const coinName = (symbol: string, spotName?: string) =>
+    spotName ?? (/^k[A-Z]/.test(symbol) ? `1,000 ${symbol.slice(1)}` : symbol);
 
 /** "+3.21%", "−1.05%". */
 const formatChange = (pct: number) => `${pct > 0 ? "+" : pct < 0 ? "−" : ""}${Math.abs(pct).toFixed(2)}%`;

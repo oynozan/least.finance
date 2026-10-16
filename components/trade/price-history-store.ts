@@ -13,7 +13,7 @@ export type PriceHistorySnapshot = {
 
 /** The server reads its week again every 12 minutes, so this never asks for nothing new. */
 const REFRESH_MS = 600_000;
-/** Until a first answer, ask again soon. */
+/** Until a first answer, ask again soon; a coin whose read failed waits this long too. */
 const RETRY_MS = 15_000;
 
 const isPoint = (value: unknown): value is [number, number] =>
@@ -42,27 +42,47 @@ function toCoins(view: unknown): Map<string, PricePoints> | null {
  * Every swap coin's price history over one range, read from our server (never
  * from DefiLlama) in the background once the page is idle, and kept fresh
  * while it's visible, so a chart is in hand before anyone hovers a coin.
+ * Another coin, such as a Long or Short market, is read when it's wanted.
  */
-export function createPriceHistoryStore(options: { apiUrl: string; range?: PriceRange; fetch?: typeof fetch }) {
+export function createPriceHistoryStore(options: {
+    apiUrl: string;
+    range?: PriceRange;
+    fetch?: typeof fetch;
+    now?: () => number;
+}) {
     const range = options.range ?? "7d";
     const request = options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+    const now = options.now ?? Date.now;
     const listeners = new Set<() => void>();
     let snapshot: PriceHistorySnapshot = { range, coins: new Map() };
+    // The swap coins' read, and the coins read when wanted
+    let swapCoins: ReadonlyMap<string, PricePoints> = new Map();
+    const wantedCoins = new Map<string, PricePoints>();
+    const readAt = new Map<string, number>();
+    const failedAt = new Map<string, number>();
+    const reading = new Set<string>();
+    // The coin whose card can be hovered now: the last one wanted
+    let current: string | null = null;
     let users = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let askedAt = 0;
-    let reading: Promise<void> | null = null;
+    let readingSwapCoins: Promise<void> | null = null;
 
     const visible = () => typeof document === "undefined" || document.visibilityState !== "hidden";
 
+    function publish() {
+        snapshot = { range, coins: new Map([...wantedCoins, ...swapCoins]) };
+        listeners.forEach((listener) => listener());
+    }
+
     // One read at a time, however many timers and visibility changes ask
     function refresh(): Promise<void> {
-        reading ??= read().finally(() => (reading = null));
-        return reading;
+        readingSwapCoins ??= read().finally(() => (readingSwapCoins = null));
+        return readingSwapCoins;
     }
 
     async function read() {
-        askedAt = Date.now();
+        askedAt = now();
         let coins: Map<string, PricePoints> | null = null;
         try {
             const response = await request(`${options.apiUrl}/prices/history?range=${range}`);
@@ -71,8 +91,33 @@ export function createPriceHistoryStore(options: { apiUrl: string; range?: Price
             // Offline or the server is down; the next refresh tries again.
         }
         if (users === 0 || !coins || coins.size === 0) return;
-        snapshot = { range, coins };
-        listeners.forEach((listener) => listener());
+        swapCoins = coins;
+        publish();
+    }
+
+    /** Reads one coin's series; a coin the server doesn't know or can't read keeps what it had. */
+    async function readCoin(symbol: string) {
+        if (reading.has(symbol)) return;
+        reading.add(symbol);
+        const time = now();
+        try {
+            const response = await request(
+                `${options.apiUrl}/prices/history?range=${range}&coins=${encodeURIComponent(symbol)}`,
+            );
+            const points = response.ok ? toCoins(await response.json())?.get(symbol) : undefined;
+            if (!points) {
+                failedAt.set(symbol, time);
+                return;
+            }
+            wantedCoins.set(symbol, points);
+            readAt.set(symbol, time);
+            publish();
+        } catch {
+            // Offline or the server is down; a want after the pause tries again.
+            failedAt.set(symbol, time);
+        } finally {
+            reading.delete(symbol);
+        }
     }
 
     function schedule() {
@@ -80,15 +125,21 @@ export function createPriceHistoryStore(options: { apiUrl: string; range?: Price
         if (users === 0) return;
         timer = setTimeout(
             async () => {
-                if (visible()) await refresh();
+                if (visible()) {
+                    await refresh();
+                    if (current && !swapCoins.has(current)) await readCoin(current);
+                }
                 schedule();
             },
-            snapshot.coins.size > 0 ? REFRESH_MS : RETRY_MS,
+            swapCoins.size > 0 ? REFRESH_MS : RETRY_MS,
         );
     }
 
     const onVisible = () => {
-        if (users > 0 && visible() && Date.now() - askedAt >= REFRESH_MS) void refresh();
+        if (users === 0 || !visible()) return;
+        if (now() - askedAt >= REFRESH_MS) void refresh();
+        if (current && !swapCoins.has(current) && now() - (readAt.get(current) ?? -Infinity) >= REFRESH_MS)
+            void readCoin(current);
     };
 
     return {
@@ -97,6 +148,21 @@ export function createPriceHistoryStore(options: { apiUrl: string; range?: Price
             return () => void listeners.delete(listener);
         },
         getSnapshot: () => snapshot,
+        /**
+         * Reads a coin's series, such as a perp market's that isn't a swap coin, unless it's in hand: from
+         * the swap coins' read (waiting for it if it's out), read in the last 10 minutes, being read, or unread in the last 15 seconds.
+         * The last coin wanted is read again with the swap coins while the page is used.
+         */
+        async want(symbol: string): Promise<void> {
+            current = symbol;
+            // A swap coin may be in the read that's out
+            await readingSwapCoins;
+            const time = now();
+            if (swapCoins.has(symbol)) return;
+            if (time - (readAt.get(symbol) ?? -Infinity) < REFRESH_MS) return;
+            if (time - (failedAt.get(symbol) ?? -Infinity) < RETRY_MS) return;
+            await readCoin(symbol);
+        },
         /** Starts reading on the first user and stops after the last; returns the stop. */
         use() {
             users += 1;
@@ -121,16 +187,18 @@ export function createPriceHistoryStore(options: { apiUrl: string; range?: Price
 export type PriceHistoryStore = ReturnType<typeof createPriceHistoryStore>;
 
 let shared: PriceHistoryStore | null = null;
-const store = () => (shared ??= createPriceHistoryStore({ apiUrl: API_URL }));
+
+/** The shared store; components call `priceHistoryStore().want(...)` to read a coin ahead. */
+export const priceHistoryStore = () => (shared ??= createPriceHistoryStore({ apiUrl: API_URL }));
 
 const EMPTY: PriceHistorySnapshot = { range: "7d", coins: new Map() };
 
-/** The swap coins' week of prices, loading in the background from the first component that asks. */
+/** The swap coins' week of prices, and any coin wanted, loading in the background from the first component that asks. */
 export function usePriceHistory(): PriceHistorySnapshot {
-    useEffect(() => store().use(), []);
+    useEffect(() => priceHistoryStore().use(), []);
     return useSyncExternalStore(
-        (listener) => store().subscribe(listener),
-        () => store().getSnapshot(),
+        (listener) => priceHistoryStore().subscribe(listener),
+        () => priceHistoryStore().getSnapshot(),
         () => EMPTY,
     );
 }
