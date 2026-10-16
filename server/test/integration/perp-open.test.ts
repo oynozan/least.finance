@@ -262,6 +262,24 @@ test("a book that thins after the order is accepted is posted at the widest limi
     expect(h.fake.orders).toMatchObject([{ isBuy: true, px: "66950", sz: "0.00759" }]);
 });
 
+test("a book that can't be read once the order is funded still posts, at the widest limit, and fills", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const { order } = await h.place(account);
+    // Funding is still on its way, so this is the book the post will read
+    h.failing.add("book");
+    const done = await h.settled(order._id);
+
+    expect(done.state).toBe("filled");
+    // 300 bps over the mid of 65000
+    expect(done.limitPx).toBe("66950");
+    expect(h.fake.orders).toMatchObject([{ isBuy: true, px: "66950", sz: "0.00759" }]);
+    expect(h.lines.some((line) => line.level === 40 && line.msg === "Couldn't read a Hyperliquid book to open")).toBe(
+        true,
+    );
+    expect(await h.database.collections.perpPositions.countDocuments({ accountId: account._id })).toBe(1);
+});
+
 test("leverage is set isolated before the order", async () => {
     const h = await fresh();
     const account = await h.seedAccount("1000");

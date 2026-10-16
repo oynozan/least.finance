@@ -481,7 +481,10 @@ export class PerpService {
         const signer = this.#deps.keyring.perpSignerAt(order.index);
         await this.#deps.client.updateLeverage(signer, order.asset, order.leverage);
         // A book that has thinned since the person's review is posted at the widest limit, and fills as much as it can
-        const book = await this.#deps.client.book(order.asset);
+        const book = await this.#deps.client.book(order.asset).catch((error: unknown) => {
+            this.#deps.logger.warn({ err: error, asset: order.asset }, "Couldn't read a Hyperliquid book to open");
+            return { bids: [], asks: [] };
+        });
         const { limitPx } = dynamicLimit({
             ...book,
             mark: market.markPx,
