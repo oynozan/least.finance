@@ -170,12 +170,12 @@ describe("perp input", () => {
     const requestId = "3f0c2b1e-8d4a-4b6e-9c1d-2a5e7f9b0c3d";
     const quote = { side: "long", leverage: 3, collateralUSD: "25" };
 
-    it.each(["BTC", "kPEPE", "kSHIB", "0G", "2Z"])("accepts the market %s", (asset) => {
+    it.each(["BTC", "kPEPE", "kSHIB", "0G", "2Z", "S", "W"])("accepts the market %s", (asset) => {
         expect(parse(perpQuote, { ...quote, asset }).asset).toBe(asset);
         expect(parse(perpOrder, { ...quote, asset, requestId }).asset).toBe(asset);
     });
 
-    it.each(["B", "bt c", "kPEPE!", "DOGE-PERP", "xyz:AAPL", "ABCDEFGHIJKLM", ""])(
+    it.each(["$", "bt c", "kPEPE!", "DOGE-PERP", "xyz:AAPL", "ABCDEFGHIJKLM", ""])(
         "rejects the market '%s'",
         (asset) => {
             expect(() => parse(perpQuote, { ...quote, asset })).toThrow(AppError);
