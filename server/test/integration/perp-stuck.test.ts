@@ -110,12 +110,12 @@ test("a sweep Hyperliquid refuses is re-planned with a fresh nonce and the credi
     expect(done.steps.sweepNonce).not.toBe(stuck.steps.sweepNonce);
     const swept = BigInt(done.steps.sweepE6 as string);
     expect(swept).toBe(planned - e6("20"));
-    // The master gets the whole sweep, the person everything but our fee
-    expect(fromDecimal(done.credited!)).toBe((swept - PERP_FEE_E6) * 10n ** 12n);
+    // The master gets the whole sweep; the shortfall is past our fee, so it all goes to the person
+    expect(fromDecimal(done.credited!)).toBe(swept * 10n ** 12n);
     expect(h.fake.account(h.master)!.freeE6 - masterBefore).toBe(swept);
     const s = await h.state(account._id);
     expect(s.kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
-    expect(fromDecimal(s.rows[2]!.amount)).toBe((swept - PERP_FEE_E6) * 10n ** 12n);
+    expect(fromDecimal(s.rows[2]!.amount)).toBe(swept * 10n ** 12n);
     expect(h.lines.some((line) => line.level === 50 && JSON.stringify(line).includes(order._id.toHexString()))).toBe(
         true,
     );

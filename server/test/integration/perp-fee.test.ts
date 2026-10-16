@@ -141,6 +141,32 @@ test("when the address is short, the person is credited first and our fee takes 
     expect(h.fake.account(address)!.freeE6).toBe(0n);
 });
 
+test("when the address is short and the first sweep is refused, the re-planned sweep still credits the person first", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const posted = await postedFill(h, account);
+    const address = await h.addressOf(account._id);
+    const margin = h.fake.account(address)!.positions[0]!.marginE6;
+    const free = h.fake.account(address)!.freeE6;
+
+    // Half a dollar goes missing before the sweep, and Hyperliquid refuses the first send of it
+    h.fake.fund(address, -e6("0.5"));
+    h.fake.nextUsdSend(1, "refuse");
+    await h.service.settlePosted(posted);
+
+    const filled = await h.orderOf(posted._id);
+    expect(filled.state).toBe("filled");
+    expect(BigInt(filled.steps.sweepE6 as string)).toBe(free - e6("0.5"));
+    const credited = fromDecimal(filled.credited!) / 10n ** 12n;
+    expect(credited).toBe(e6("100") - margin - fromDecimal(filled.fill!.feeE6) - PERP_FEE_E6);
+    expect(BigInt(filled.steps.sweepE6 as string) - credited).toBe(e6("0.5"));
+    expect(h.fake.account(address)!.freeE6).toBe(0n);
+    // The refused send was re-planned, and the second went through
+    expect(h.lines.some((line) => line.level === 50 && JSON.stringify(line).includes(posted._id.toHexString()))).toBe(
+        true,
+    );
+});
+
 test("a close after a fill finds nothing of ours to withhold from the credit", async () => {
     const h = await fresh();
     const account = await h.seedAccount("1000");

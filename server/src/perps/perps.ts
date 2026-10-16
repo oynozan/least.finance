@@ -795,9 +795,6 @@ export class PerpService {
         const free = (state?.withdrawableE6 ?? 0n) - retainedOf(account) - owed;
         const stored = BigInt(order.steps.sweepE6 as string);
         const amount = free > 0n ? minE6(stored, free) : 0n;
-        // Our fee rides in the sweep of a filled open and is never the person's credit
-        const outcome = order.steps.outcome as Outcome | CloseOutcome;
-        const fee = outcome.kind === "filled" ? BigInt((order.steps.ourFeeE6 as string | undefined) ?? "0") : 0n;
         const next = await perpOrders.findOneAndUpdate(
             { _id: order._id, state: "sweeping", "steps.sweepNonce": order.steps.sweepNonce },
             {
@@ -805,8 +802,9 @@ export class PerpService {
                     "steps.sweepE6": amount.toString(),
                     "steps.sweepNonce": amount > 0n ? nextNonce(address) : null,
                     "steps.sweepAt": new Date(this.#now()),
+                    // The person is credited first, as in the first plan: our fee rides in the sweep and takes what is left
                     ...(order.kind === "open"
-                        ? { "steps.creditE6": (amount > fee ? amount - fee : 0n).toString() }
+                        ? { "steps.creditE6": minE6(BigInt(order.steps.creditE6 as string), amount).toString() }
                         : {}),
                     updatedAt: new Date(this.#now()),
                 },
