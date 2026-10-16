@@ -6,8 +6,15 @@ import type { Collections } from "../db/mongo.ts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
 import { COINS, NETWORKS, type CoinEntry } from "../swaps/coins.ts";
 import { LifiError, type Lifi } from "../swaps/lifi.ts";
-import type { HedgeDoc, TradeDoc } from "./docs.ts";
-import type { InventoryChain } from "./inventory-chain.ts";
+import type { HedgeDoc, SendAttempt, TradeDoc } from "./docs.ts";
+import {
+    MAX_ATTEMPTS,
+    attemptOf,
+    attemptsOf,
+    highestFees,
+    minedAmong,
+    type InventoryChain,
+} from "./inventory-chain.ts";
 import { alreadySent, refused } from "./send-errors.ts";
 import { UNIT_DECIMALS, fromUnitsDecimal, toUnitsDecimal } from "./units.ts";
 
@@ -26,12 +33,15 @@ type Deps = {
     /** A coin's net must be worth more than this many dollars to be hedged. */
     minNetUsd?: number;
     slippage?: number;
+    /** Time without a receipt after which a stored sell is signed and sent again on its nonce */
+    resendAfterMs?: number;
     /** Called when a hedge is created or changes state. */
     onChange?: (hedge: HedgeDoc) => void;
     now?: () => number;
 };
 
 const TRADES_PER_PASS = 500;
+const DEFAULT_RESEND_MS = 120_000;
 /** How often a sent hedge that is still unmined is logged. */
 const STUCK_LOG_MS = 60 * 60_000;
 
@@ -164,6 +174,9 @@ export class TradeHedger {
                 tradeIds: bucket.tradeIds,
                 state: bucket.units === 0n ? "done" : "planned",
                 txHash: null,
+                nonce: null,
+                tx: null,
+                attempts: [],
                 tool: null,
                 reason: bucket.units === 0n ? "Trades netted to nothing" : this.#operatorNote(symbol, side, home),
                 createdAt: at,
@@ -256,24 +269,28 @@ export class TradeHedger {
             }
         }
 
+        const tx = { to: quote.tx.to, data: quote.tx.data, value: BigInt(quote.tx.value).toString() };
         let prepared;
         try {
             prepared = await chain.prepare(network, {
-                to: quote.tx.to as Address,
-                data: quote.tx.data as Hex,
-                value: BigInt(quote.tx.value),
+                to: tx.to as Address,
+                data: tx.data as Hex,
+                value: BigInt(tx.value),
             });
         } catch (error) {
             if (refused(error)) return this.#fail(hedge, `The network refused it: ${firstLine(error)}`);
             throw error;
         }
-        // The hash is recorded before the transaction goes out
+        // The hash and nonce are recorded before the transaction goes out
         const claimed = await this.#deps.collections.hedges.findOneAndUpdate(
             { _id: hedge._id, state: "planned" },
             {
                 $set: {
                     state: "sending",
                     txHash: prepared.hash,
+                    nonce: prepared.nonce,
+                    tx,
+                    attempts: [attemptOf(prepared)],
                     tool: quote.tool,
                     reason: null,
                     updatedAt: new Date(this.#now()),
@@ -281,20 +298,29 @@ export class TradeHedger {
             },
             { returnDocument: "after" },
         );
-        if (!claimed) return;
+        if (!claimed) return chain.release(network, prepared.nonce);
         this.#deps.onChange?.(claimed);
 
         try {
             await chain.broadcast(network, prepared);
         } catch (error) {
-            if (alreadySent(error)) return;
-            if (refused(error)) {
-                await this.#fail(claimed, `The network refused it: ${firstLine(error)}`);
-                return chain.release(network, prepared.nonce);
-            }
-            throw error;
+            return this.#answered(claimed, error, network, prepared.nonce, false);
         }
         await this.#move(claimed, "sending", { state: "sent" });
+    }
+
+    /** A refused first attempt fails and frees its nonce, but a refused replacement leaves the earlier attempts to the receipts */
+    async #answered(hedge: HedgeDoc, error: unknown, network: EvmNetworkId, nonce: number, replacing: boolean) {
+        if (alreadySent(error) || (replacing && refused(error))) {
+            this.#deps.logger.warn(
+                { hedge: hedge._id.toString(), reason: firstLine(error) },
+                "The nonce is already in use, the receipts decide",
+            );
+            return;
+        }
+        if (!refused(error)) throw error;
+        await this.#fail(hedge, `The network refused it: ${firstLine(error)}`);
+        this.#deps.chain.release(network, nonce);
     }
 
     /** Follows a sent hedge's hash to done or failed: first the source transaction, then LI.FI's view of the crossing to Arc. */
@@ -302,9 +328,14 @@ export class TradeHedger {
         const home = homeOf(hedge.symbol);
         if (!hedge.txHash || !home || home.network.kind !== "evm") return;
         const network = home.network.id as EvmNetworkId;
+        const { chain } = this.#deps;
 
-        const receipt = await this.#deps.chain.receipt(network, hedge.txHash as Hex);
-        if (receipt === null) {
+        // A recorded nonce is held back from new sells even while its resend window runs
+        if (hedge.nonce != null) chain.reserve(network, hedge.nonce);
+        const attempts = attemptsOf(hedge);
+        const mined = await minedAmong(chain, network, attempts);
+        if (mined === null) {
+            if (this.#due(hedge, attempts)) return this.#resend(hedge, network, attempts);
             const last = this.#logged.get(hedge.txHash) ?? 0;
             if (this.#now() - hedge.updatedAt.getTime() > STUCK_LOG_MS && this.#now() - last > STUCK_LOG_MS) {
                 this.#logged.set(hedge.txHash, this.#now());
@@ -315,13 +346,17 @@ export class TradeHedger {
             }
             return;
         }
-        if (receipt === "reverted") return this.#fail(hedge, "The sell reverted on the network");
+        if (mined.status === "reverted") return this.#fail(hedge, "The sell reverted on the network");
 
+        // Whichever attempt mined is the sell to follow
         let current = hedge;
-        if (hedge.state === "sending") current = (await this.#move(hedge, "sending", { state: "sent" })) ?? hedge;
+        if (hedge.state === "sending")
+            current = (await this.#move(hedge, "sending", { state: "sent", txHash: mined.hash })) ?? hedge;
+        else if (hedge.txHash !== mined.hash)
+            current = (await this.#move(hedge, "sent", { txHash: mined.hash })) ?? hedge;
 
         const status = await this.#deps.lifi.status({
-            txHash: hedge.txHash,
+            txHash: mined.hash,
             fromChain: home.network.chainId,
             toChain: ARC_CHAIN_ID,
             ...(hedge.tool ? { bridge: hedge.tool } : {}),
@@ -332,6 +367,52 @@ export class TradeHedger {
                 current,
                 `LI.FI reports the sell failed${status.substatus ? `: ${status.substatus}` : ""}`,
             );
+    }
+
+    /** True once a stored sell has gone a window without a receipt and has replacements left */
+    #due(hedge: HedgeDoc, attempts: SendAttempt[]): boolean {
+        if (hedge.nonce == null || !hedge.tx || attempts.length >= MAX_ATTEMPTS) return false;
+        return this.#now() - hedge.updatedAt.getTime() >= (this.#deps.resendAfterMs ?? DEFAULT_RESEND_MS);
+    }
+
+    /** Signs the stored sell again on its nonce paying more than the attempts so far, and sends it */
+    async #resend(hedge: HedgeDoc, network: EvmNetworkId, attempts: SendAttempt[]) {
+        const { chain, collections } = this.#deps;
+        const nonce = hedge.nonce!;
+        const tx = hedge.tx!;
+        let prepared;
+        try {
+            prepared = await chain.prepare(
+                network,
+                { to: tx.to as Address, data: tx.data as Hex, value: BigInt(tx.value) },
+                nonce,
+                highestFees(attempts),
+            );
+        } catch (error) {
+            return this.#answered(hedge, error, network, nonce, true);
+        }
+        const resent = await collections.hedges.findOneAndUpdate(
+            { _id: hedge._id, state: hedge.state },
+            {
+                $set: {
+                    txHash: prepared.hash,
+                    attempts: [...attempts, attemptOf(prepared)],
+                    updatedAt: new Date(this.#now()),
+                },
+            },
+            { returnDocument: "after" },
+        );
+        if (!resent) return;
+        if (attempts.length + 1 === MAX_ATTEMPTS) {
+            this.#deps.logger.error({ hedge: hedge._id.toString() }, "A hedge is still unmined after its last resend");
+        }
+
+        try {
+            await chain.broadcast(network, prepared);
+        } catch (error) {
+            return this.#answered(resent, error, network, nonce, true);
+        }
+        if (resent.state === "sending") await this.#move(resent, "sending", { state: "sent" });
     }
 
     async #move(hedge: HedgeDoc, from: HedgeDoc["state"], set: Partial<HedgeDoc>) {

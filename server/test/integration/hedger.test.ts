@@ -7,6 +7,7 @@ import type { Collections } from "../../src/db/mongo.ts";
 import { createLifi, LifiError, type Lifi } from "../../src/swaps/lifi.ts";
 import type { HedgeDoc, TradeDoc } from "../../src/trading/docs.ts";
 import { TradeHedger } from "../../src/trading/hedger.ts";
+import { MAX_ATTEMPTS } from "../../src/trading/inventory-chain.ts";
 import { fromUnitsDecimal, toUnitsDecimal } from "../../src/trading/units.ts";
 import { startFakeLifi, type FakeLifi } from "../support/fake-lifi.ts";
 import { fakeInventoryChain, type FakeInventoryChain } from "../support/fake-inventory-chain.ts";
@@ -17,6 +18,7 @@ let hedges: Collection<HedgeDoc>;
 let fakeLifi: FakeLifi;
 let lifi: Lifi;
 let chain: FakeInventoryChain;
+let clock: number;
 const logger = pino({ level: "silent" });
 const INVENTORY = privateKeyToAddress(generatePrivateKey()) as Address;
 const TREASURY = privateKeyToAddress(generatePrivateKey()) as Address;
@@ -38,6 +40,7 @@ afterAll(async () => {
 beforeEach(async () => {
     await Promise.all([trades.deleteMany({}), hedges.deleteMany({})]);
     chain = fakeInventoryChain();
+    clock = 1_800_000_000_000;
 });
 
 const hedger = (extra: Partial<ConstructorParameters<typeof TradeHedger>[0]> = {}) =>
@@ -50,6 +53,7 @@ const hedger = (extra: Partial<ConstructorParameters<typeof TradeHedger>[0]> = {
         treasury: TREASURY,
         integrator: "test",
         logger,
+        now: () => clock,
         ...extra,
     });
 
@@ -262,6 +266,101 @@ describe("TradeHedger selling", () => {
         await hedger().tick();
         expect((await hedgeList())[0]!.state).toBe("done");
         expect(chain.prepared).toHaveLength(1);
+    });
+
+    test("a sell that never reached a node is signed again on its nonce after the window", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        chain.failNext("broadcast", new Error("fetch failed ETIMEDOUT"));
+        const worker = hedger();
+        await worker.tick();
+        const [sending] = await hedgeList();
+        expect(sending).toMatchObject({ state: "sending", nonce: 0 });
+        expect(sending!.attempts).toHaveLength(1);
+        expect(sending!.tx).toMatchObject({ data: "0xdeadbeef" });
+
+        // Within the window a pass leaves it alone
+        clock += 30_000;
+        await worker.tick();
+        expect(chain.prepared).toHaveLength(1);
+
+        clock += 200_000;
+        await worker.tick();
+        const [first, second] = chain.prepared;
+        expect(second!.tx.nonce).toBe(0);
+        expect(second!.intent).toEqual(first!.intent);
+        expect(second!.previous).toEqual(first!.tx.fees);
+        const [resent] = await hedgeList();
+        expect(resent).toMatchObject({ state: "sent", txHash: second!.tx.hash });
+        expect(resent!.attempts?.map((attempt) => attempt.hash)).toEqual([first!.tx.hash, second!.tx.hash]);
+        expect(chain.broadcasts).toEqual([second!.tx.hash]);
+
+        chain.receipts.set(second!.tx.hash, "success");
+        fakeLifi.setStatus(second!.tx.hash, { status: "DONE" });
+        await worker.tick();
+        expect((await hedgeList())[0]!.state).toBe("done");
+    });
+
+    test("a restarted hedger signs a sell that never reached a node again on its nonce", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        chain.failNext("broadcast", new Error("fetch failed ETIMEDOUT"));
+        await hedger().tick();
+
+        chain = fakeInventoryChain();
+        clock += 200_000;
+        await hedger().tick();
+        expect(chain.prepared).toHaveLength(1);
+        expect(chain.prepared[0]!.tx.nonce).toBe(0);
+        expect((await hedgeList())[0]).toMatchObject({ state: "sent" });
+    });
+
+    test("a replacement the node calls underpriced leaves the sell sent, and the first transaction mining finishes it", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        const worker = hedger();
+        await worker.tick();
+        const original = chain.prepared[0]!.tx.hash;
+
+        clock += 200_000;
+        chain.failNext("broadcast", new Error("replacement transaction underpriced"));
+        await worker.tick();
+        expect((await hedgeList())[0]).toMatchObject({ state: "sent" });
+        expect(chain.prepared).toHaveLength(2);
+
+        chain.receipts.set(original, "success");
+        fakeLifi.setStatus(original, { status: "DONE" });
+        await worker.tick();
+        expect((await hedgeList())[0]).toMatchObject({ state: "done", txHash: original });
+    });
+
+    test("a replacement the network refuses outright leaves the sell for the first transaction", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        const worker = hedger();
+        await worker.tick();
+        clock += 200_000;
+        chain.failNext("prepare", new Error("insufficient funds for gas * price + value"));
+        await worker.tick();
+        expect((await hedgeList())[0]).toMatchObject({ state: "sent" });
+    });
+
+    test("a sell stuck after several replacements stops being replaced", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        const worker = hedger();
+        for (let pass = 0; pass < 30; pass++) {
+            await worker.tick();
+            clock += 200_000;
+        }
+        expect(chain.prepared).toHaveLength(MAX_ATTEMPTS);
+    });
+
+    test("a nonce stored before a restart is held back from the next sell while its window runs", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        await hedger().tick();
+        expect(chain.prepared[0]!.tx.nonce).toBe(0);
+
+        chain = fakeInventoryChain();
+        clock += 1;
+        await trade("sell", "ETH", 1, 2000);
+        await hedger().tick();
+        expect(chain.prepared.map((entry) => entry.tx.nonce)).toEqual([1]);
     });
 
     test("no route fails the hedge and a refused send fails it with the reason", async () => {

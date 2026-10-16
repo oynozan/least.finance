@@ -47,7 +47,14 @@ export type HedgeDoc = {
     usd: Decimal128;
     tradeIds: ObjectId[];
     state: HedgeState;
+    /** The latest attempt's hash, or the mined one once it is known */
     txHash: string | null;
+    /** The nonce the sell was signed on, so a sell that never landed is signed again on it */
+    nonce?: number | null;
+    /** The transaction signed on the nonce, which a resend signs again paying more */
+    tx?: { to: string; data: string; value: string } | null;
+    /** Every transaction signed on the nonce, since any of them may be the one that mines */
+    attempts?: SendAttempt[];
     tool: string | null;
     reason: string | null;
     createdAt: Date;
