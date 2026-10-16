@@ -515,6 +515,8 @@ export type PerpPositionView = {
     markPx: string | null;
     unrealizedPnlUSD: UsdcAmount;
     cumFundingUSD: UsdcAmount;
+    /** The fees already paid on opening: Hyperliquid's entry fee plus ours. Absent counts as zero. */
+    feesUSD?: UsdcAmount;
     state: "open" | "closing" | "closed" | "liquidated";
     proceedsUSD: UsdcAmount | null;
     /** Why an open position couldn't be closed, such as "Too small to close right now."; null otherwise. */

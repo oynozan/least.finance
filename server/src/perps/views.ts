@@ -33,6 +33,7 @@ export const perpPositionView = (position: PerpPositionDoc): PerpPositionView =>
     markPx: position.snapshot?.markPx ?? null,
     unrealizedPnlUSD: position.snapshot ? formatE6(fromDecimal(position.snapshot.unrealizedPnlE6)) : "0",
     cumFundingUSD: position.snapshot ? formatE6(fromDecimal(position.snapshot.cumFundingE6)) : "0",
+    feesUSD: formatE6(fromDecimal(position.openedFee) + (position.ourFee ? fromDecimal(position.ourFee) : 0n)),
     state: position.state,
     proceedsUSD: position.proceeds ? formatUsdc(fromDecimal(position.proceeds)) : null,
     notice: position.state === "open" ? position.closeReason : null,

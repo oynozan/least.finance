@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, test } from "vitest";
-import { fromDecimal } from "../../src/db/money.ts";
+import { formatE6, fromDecimal } from "../../src/db/money.ts";
 import { isAppError } from "../../src/errors.ts";
+import { PERP_FEE_E6 } from "../../src/perps/fee.ts";
 import { liquidationPrice } from "../../src/perps/math.ts";
 import { e6, perpHarness, wei, type PerpHarness } from "../support/perp-harness.ts";
 
@@ -49,7 +50,7 @@ test("a fill debits, funds, records the real size and credits back the unused co
         asset: "BTC",
         side: "long",
         leverage: 5,
-        sizeCoin: "0.00767",
+        sizeCoin: "0.00759",
         entryPx: "65000",
         state: "open",
         active: true,
@@ -60,18 +61,23 @@ test("a fill debits, funds, records the real size and credits back the unused co
     expect(await h.heldE6()).toBe(0n);
 });
 
-test("our fee stays out of the credit after a fill", async () => {
-    const h = await fresh({ feeBps: 100 });
+test("our $1 fee stays out of the credit after a fill", async () => {
+    const h = await fresh();
     const account = await h.seedAccount("1000");
     const { order } = await h.place(account);
     const done = await h.settled(order._id);
 
     expect(done.state).toBe("filled");
-    const ourFeeE6 = (fromDecimal(done.notionalE6) * 100n + 9_999n) / 10_000n;
+    expect(done.steps.feeE6).toBe("1000000");
+    expect(done.steps.ourFeeE6).toBe("1000000");
     const position = (await h.database.collections.perpPositions.findOne({ accountId: account._id }))!;
     const held = fromDecimal(position.collateral) / 10n ** 12n;
     const marginE6 = h.fake.account(await h.addressOf(account._id))!.positions[0]!.marginE6;
-    expect(held - BigInt(marginE6) - fromDecimal(done.fill!.feeE6)).toBeGreaterThanOrEqual(ourFeeE6);
+    expect(held - BigInt(marginE6) - fromDecimal(done.fill!.feeE6)).toBe(PERP_FEE_E6);
+    expect(fromDecimal(position.ourFee!)).toBe(PERP_FEE_E6);
+    // The sidebar's view carries both fees the position already paid
+    const view = (await h.service.positions(account)).positions[0]!;
+    expect(view.feesUSD).toBe(formatE6(fromDecimal(done.fill!.feeE6) + PERP_FEE_E6));
 });
 
 test("a partial fill books the smaller size and returns the rest", async () => {
@@ -82,12 +88,12 @@ test("a partial fill books the smaller size and returns the rest", async () => {
     const done = await h.settled(order._id);
 
     expect(done.state).toBe("filled");
-    expect(done.reason).toBe("Opened $195 of your $498.55. The rest is back in your balance.");
+    expect(done.reason).toBe("Opened $195 of your $493.35. The rest is back in your balance.");
     const position = (await h.database.collections.perpPositions.findOne({ accountId: account._id }))!;
     expect(position.sizeCoin).toBe("0.003");
     const s = await h.state(account._id);
     const refund = fromDecimal(s.rows[2]!.amount);
-    expect(refund).toBeGreaterThan(wei("60"));
+    expect(refund).toBeGreaterThan(wei("59"));
     expect(fromDecimal(position.collateral)).toBe(wei("100") - refund);
 });
 
@@ -131,13 +137,13 @@ test("the first open for a person creates the perpAccounts row and pays the 1 US
     expect(row.address).toBe(h.keyring.perpAddressAt(row.index));
     expect(row.activatedAt).not.toBeNull();
     const credited1 = fromDecimal(first.credited!) / 10n ** 12n;
-    expect(before - h.fake.account(h.master)!.freeE6).toBe(e6("100") - credited1 + e6("1"));
+    expect(before - h.fake.account(h.master)!.freeE6).toBe(e6("100") - credited1 - PERP_FEE_E6 + e6("1"));
 
     const middle = h.fake.account(h.master)!.freeE6;
     const second = await h.settled((await h.place(account, { asset: "ETH", collateralUSD: "50" })).order._id);
     expect(await h.database.collections.perpAccounts.countDocuments({ accountId: account._id })).toBe(1);
     const credited2 = fromDecimal(second.credited!) / 10n ** 12n;
-    expect(middle - h.fake.account(h.master)!.freeE6).toBe(e6("50") - credited2);
+    expect(middle - h.fake.account(h.master)!.freeE6).toBe(e6("50") - credited2 - PERP_FEE_E6);
 });
 
 test("a short balance after activation is topped up once, at most 1 USDC", async () => {
@@ -249,7 +255,7 @@ test("BTC at 25x is refused with 'BTC allows up to 20x.'", async () => {
     expect((await h.state(account._id)).kinds).toEqual(["deposit"]);
 });
 
-test("collateral 9.99 and $10 at 1x are refused with the two minimum messages", async () => {
+test("collateral 9.99, and $10 and $11 at 1x, are refused with the two minimum messages", async () => {
     const h = await fresh();
     const account = await h.seedAccount("1000");
     expect(await refusal(h.place(account, { collateralUSD: "9.99" }))).toEqual({
@@ -260,7 +266,68 @@ test("collateral 9.99 and $10 at 1x are refused with the two minimum messages", 
         code: "below_minimum",
         message: "A position starts at $11. Raise the collateral or the leverage.",
     });
+    // The $1 fee comes off first, so $11 at 1x leaves a $10 position
+    expect(await refusal(h.place(account, { collateralUSD: "11", leverage: 1 }))).toEqual({
+        code: "below_minimum",
+        message: "A position starts at $11. Raise the collateral or the leverage.",
+    });
     expect(await h.database.collections.perpOrders.countDocuments()).toBe(0);
+});
+
+test("$12 at 1x opens a position of about $10.40, which Hyperliquid takes", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const { order } = await h.place(account, { collateralUSD: "12", leverage: 1 });
+    const done = await h.settled(order._id);
+
+    expect(done.state).toBe("filled");
+    expect(done.sizeCoin).toBe("0.00016");
+    expect(Number(fromDecimal(done.notionalE6)) / 1e6).toBeCloseTo(10.4, 2);
+});
+
+test("a coin whose size step leaves the position under the order minimum is refused, naming the step", async () => {
+    const h = await fresh();
+    // $12 at 1x is $11 of position; SOL's step of 0.01 at $200 rounds it down to $10
+    h.fake.setMark("SOL", 200);
+    await h.markets.tick();
+    const account = await h.seedAccount("1000");
+
+    expect(await refusal(h.place(account, { asset: "SOL", collateralUSD: "12", leverage: 1 }))).toEqual({
+        code: "below_minimum",
+        message: "SOL trades in steps of 0.01 (about $2). Raise the collateral or the leverage.",
+    });
+    expect(await refusal(h.service.quote({ asset: "SOL", side: "long", leverage: 1, collateralUSD: "12" }))).toEqual({
+        code: "below_minimum",
+        message: "SOL trades in steps of 0.01 (about $2). Raise the collateral or the leverage.",
+    });
+    expect(await h.database.collections.perpOrders.countDocuments()).toBe(0);
+    expect((await h.state(account._id)).kinds).toEqual(["deposit"]);
+});
+
+test("the fake Hyperliquid refuses an open worth under $10 and takes a reduce-only order of any size", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const order = (reduceOnly: boolean) => ({
+        asset: "BTC",
+        isBuy: true,
+        px: "65650",
+        sz: "0.00012",
+        reduceOnly,
+        cloid: `0x${"0".repeat(31)}${reduceOnly ? "1" : "2"}`,
+    });
+    await h.settled((await h.place(account)).order._id);
+    const signer = h.keyring.perpSignerAt(1);
+
+    // 0.00012 BTC is $7.80
+    expect(await h.client.order(signer, order(false))).toMatchObject({
+        kind: "rejected",
+        message: expect.stringMatching(/minimum value of \$10/),
+    });
+    expect(
+        await h.client.order(h.keyring.perpSignerAt(1), { ...order(true), isBuy: false, px: "64350" }),
+    ).toMatchObject({
+        kind: "filled",
+    });
 });
 
 test("trading off refuses with 'Long and short aren't available right now.' and moves nothing", async () => {
@@ -278,8 +345,8 @@ test("the quote's liquidation price matches liquidationPrice() for the same inpu
     const h = await fresh();
     const view = await h.service.quote({ asset: "BTC", side: "long", leverage: 5, collateralUSD: "100" });
 
-    expect(view.sizeCoin).toBe("0.00767");
-    expect(view.ourFeeUSD).toBe("0");
+    expect(view.sizeCoin).toBe("0.00759");
+    expect(view.ourFeeUSD).toBe("1");
     expect(view.fundingPerHour).toBe("0.0000125");
     const expected = liquidationPrice({
         side: "long",

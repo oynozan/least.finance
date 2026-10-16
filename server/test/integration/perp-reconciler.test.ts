@@ -4,7 +4,7 @@ import { pino } from "pino";
 import { afterEach, expect, test } from "vitest";
 import type { PerpPositionDoc } from "../../src/db/mongo.ts";
 import { fromDecimal, toDecimal } from "../../src/db/money.ts";
-import { ourFeeOf } from "../../src/perps/math.ts";
+import { PERP_FEE_E6 } from "../../src/perps/fee.ts";
 import { PerpReconciler } from "../../src/perps/reconciler.ts";
 import { e6, perpHarness, wei, type PerpHarness } from "../support/perp-harness.ts";
 
@@ -150,8 +150,8 @@ test("an order placed after the snapshot keeps its address from being swept", as
     expect(h.fake.account(stuck)!.freeE6).toBe(e6("5"));
 });
 
-test("our fee left on a closed address is retained, not swept and not owed", async () => {
-    const h = await fresh({ feeBps: 100 });
+test("our fee is with the master once a position opens, so a closed address holds nothing and the report counts it", async () => {
+    const h = await fresh();
     const { account, position } = await heldPosition(h);
     const { order } = await h.service.close(account, {
         requestId: randomUUID(),
@@ -159,15 +159,15 @@ test("our fee left on a closed address is retained, not swept and not owed", asy
     });
     await h.until(async () => ["done", "rejected"].includes((await h.orderOf(order._id)).state));
     const address = await h.addressOf(account._id);
-    const kept = h.fake.account(address)!.freeE6;
-    expect(kept).toBeGreaterThan(e6("1"));
+    expect(h.fake.account(address)!.freeE6).toBe(0n);
 
     const report = await reconciler(h, "100000").run();
 
     const orders = await h.database.collections.perpOrders.find({ kind: "open", state: "filled" }).toArray();
-    expect(report.ourFeeE6).toBe(orders.reduce((sum, o) => sum + ourFeeOf(fromDecimal(o.notionalE6), 0.01), 0n));
+    expect(orders).toHaveLength(1);
+    expect(report.ourFeeE6).toBe(PERP_FEE_E6);
     expect(report.swept).toBe(0);
-    expect(h.fake.account(address)!.freeE6).toBe(kept);
+    expect(h.fake.account(address)!.freeE6).toBe(0n);
 });
 
 test("a solvency shortfall over the tolerance logs an error, one under it doesn't", async () => {
@@ -217,13 +217,13 @@ test("in-flight rebalances count as assets", async () => {
 });
 
 test("the activation and fee totals are in the summary line", async () => {
-    const h = await fresh({ feeBps: 100 });
+    const h = await fresh();
     await heldPosition(h);
 
     const report = await reconciler(h, "100000").run();
 
     expect(report.activationE6).toBe(e6("1"));
-    expect(report.ourFeeE6).toBeGreaterThan(0n);
+    expect(report.ourFeeE6).toBe(PERP_FEE_E6);
     const line = h.lines.find((l) => l.level === 30 && /reconcil/i.test(l.msg)) as unknown as Record<string, unknown>;
     expect(line).toMatchObject({ activationE6: "1000000", ourFeeE6: report.ourFeeE6.toString() });
 });

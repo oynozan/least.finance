@@ -26,7 +26,7 @@ const MNEMONIC = "test test test test test test test test test test test junk";
 const CALL_MS = 300;
 
 /** The service over a fake Hyperliquid and a throwaway database; `crash` freezes the service that makes a chosen client call. */
-export async function perpHarness(o: { trading?: "on" | "off"; feeBps?: number } = {}) {
+export async function perpHarness(o: { trading?: "on" | "off" } = {}) {
     const database: Database = await connectDatabase(inject("mongoUri"), `test_${randomUUID().replaceAll("-", "")}`);
     const lines: Array<{ level: number; msg: string }> = [];
     const logger = pino({ level: "info" }, { write: (line: string) => void lines.push(JSON.parse(line)) });
@@ -79,7 +79,6 @@ export async function perpHarness(o: { trading?: "on" | "off"; feeBps?: number }
         PERPS_SLIPPAGE_BPS: 100,
         PERPS_CLOSE_SLIPPAGE_BPS: 300,
         PERPS_MAX_LEVERAGE: 20,
-        PERPS_FEE_BPS: o.feeBps ?? 0,
     } as Config;
     const markets = new PerpMarkets({ client: timed, config, logger: pino({ level: "silent" }) });
     await markets.tick();

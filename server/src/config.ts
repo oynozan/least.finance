@@ -200,8 +200,6 @@ const fields = z.object({
     /** How far past the mark a closing order may fill, in basis points. */
     PERPS_CLOSE_SLIPPAGE_BPS: z.coerce.number().int().min(1).max(9_999).default(300),
     PERPS_MAX_LEVERAGE: z.coerce.number().int().min(1).max(50).default(20),
-    /** Our fee as basis points of a position's notional, kept from the collateral. */
-    PERPS_FEE_BPS: z.coerce.number().int().min(0).max(999).default(0),
     /** How far the master's Hyperliquid balance may differ from the books before it's flagged. */
     PERPS_RECONCILE_TOLERANCE_USD: z.coerce.number().min(0).default(5),
 });

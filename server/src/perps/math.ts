@@ -29,11 +29,6 @@ export function limitPrice(
     return roundPrice(mark * (1 + (buying ? bps : -bps) / 10_000), szDecimals);
 }
 
-/** Our fee on a notional, rounded up the way sizeFor charges it. */
-export function ourFeeOf(notionalE6: bigint, ourFeeRate: number): bigint {
-    return ceilDiv(notionalE6 * BigInt(Math.round(ourFeeRate * RATE_SCALE)), BigInt(RATE_SCALE));
-}
-
 export type Sizing = {
     sizeCoin: string;
     notionalE6: bigint;
@@ -44,12 +39,12 @@ export type Sizing = {
 
 const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b;
 
-/** The largest position whose margin plus both fees fit in the collateral; null when the size rounds to zero. */
+/** The largest position whose margin plus both fees fit in the collateral, our flat fee coming off the collateral first; null when nothing is left to size or the size rounds to zero. */
 export function sizeFor(o: {
     collateralE6: bigint;
     leverage: number;
     feeRate: number;
-    ourFeeRate: number;
+    ourFeeE6: bigint;
     price: number;
     szDecimals: number;
 }): Sizing | null {
@@ -57,16 +52,17 @@ export function sizeFor(o: {
     const unit = 10n ** BigInt(szDecimals);
     const priceScaled = BigInt(Math.round(price * PRICE_SCALE));
     const feeScaled = BigInt(Math.round(o.feeRate * RATE_SCALE));
-    const ourScaled = BigInt(Math.round(o.ourFeeRate * RATE_SCALE));
     const lev = BigInt(leverage);
     const notionalOf = (units: bigint) => (units * priceScaled * 1_000_000n) / (unit * BigInt(PRICE_SCALE));
     const costOf = (notional: bigint) => ({
         marginE6: ceilDiv(notional, lev),
         entryFeeE6: ceilDiv(notional * feeScaled, BigInt(RATE_SCALE)),
-        ourFeeE6: ceilDiv(notional * ourScaled, BigInt(RATE_SCALE)),
+        ourFeeE6: o.ourFeeE6,
     });
 
-    const notionalUSD = ((Number(collateralE6) / 1e6) * leverage) / (1 + leverage * (o.feeRate + o.ourFeeRate));
+    const investE6 = collateralE6 - o.ourFeeE6;
+    if (investE6 <= 0n) return null;
+    const notionalUSD = ((Number(investE6) / 1e6) * leverage) / (1 + leverage * o.feeRate);
     let units = BigInt(Math.floor((notionalUSD / price) * Number(unit)));
     for (;;) {
         if (units <= 0n) return null;
@@ -112,9 +108,18 @@ export function liquidationPrice(o: {
     return o.entry - (s * (o.marginUSD - mmr * o.notionalUSD)) / o.sizeCoin / (1 - s * mmr);
 }
 
-/** Which minimum a position misses: collateral under $10, or collateral x leverage under $11. */
-export function meetsMinimum(collateralUSD: number, leverage: number): "collateral" | "position" | null {
+/** The least notional an open may be sized to: Hyperliquid refuses an order worth under $10 at its limit price, so a short at the worst slippage still has to clear it, with 0.1% to spare for price rounding. */
+export function minOrderE6(slippageBps: number): bigint {
+    return ceilDiv(10_000_000n * 10_000n * 1_001n, BigInt(10_000 - slippageBps) * 1_000n);
+}
+
+/** Which minimum a position misses: collateral under $10, or what is left of it after our fee, times the leverage, under $11. */
+export function meetsMinimum(
+    collateralUSD: number,
+    leverage: number,
+    feeUSD: number,
+): "collateral" | "position" | null {
     if (collateralUSD < 10) return "collateral";
-    if (collateralUSD * leverage < 11) return "position";
+    if ((collateralUSD - feeUSD) * leverage < 11) return "position";
     return null;
 }

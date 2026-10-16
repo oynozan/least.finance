@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { pino } from "pino";
 import { afterEach, expect, test } from "vitest";
 import { fromDecimal } from "../../src/db/money.ts";
+import { PERP_FEE_E6 } from "../../src/perps/fee.ts";
 import { PerpTracker } from "../../src/perps/tracker.ts";
 import { e6, perpHarness, wei, type PerpHarness } from "../support/perp-harness.ts";
 
@@ -109,11 +110,12 @@ test("a sweep Hyperliquid refuses is re-planned with a fresh nonce and the credi
     expect(done.steps.sweepNonce).not.toBe(stuck.steps.sweepNonce);
     const swept = BigInt(done.steps.sweepE6 as string);
     expect(swept).toBe(planned - e6("20"));
-    expect(fromDecimal(done.credited!)).toBe(swept * 10n ** 12n);
+    // The master gets the whole sweep, the person everything but our fee
+    expect(fromDecimal(done.credited!)).toBe((swept - PERP_FEE_E6) * 10n ** 12n);
     expect(h.fake.account(h.master)!.freeE6 - masterBefore).toBe(swept);
     const s = await h.state(account._id);
     expect(s.kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
-    expect(fromDecimal(s.rows[2]!.amount)).toBe(swept * 10n ** 12n);
+    expect(fromDecimal(s.rows[2]!.amount)).toBe((swept - PERP_FEE_E6) * 10n ** 12n);
     expect(h.lines.some((line) => line.level === 50 && JSON.stringify(line).includes(order._id.toHexString()))).toBe(
         true,
     );
@@ -140,7 +142,7 @@ test("a duplicate answer after a refused send with the same nonce is not taken a
     expect(done.state).toBe("filled");
     const swept = BigInt(done.steps.sweepE6 as string);
     expect(h.fake.account(h.master)!.freeE6 - masterBefore).toBe(swept);
-    expect(fromDecimal(done.credited!)).toBe(swept * 10n ** 12n);
+    expect(fromDecimal(done.credited!)).toBe((swept - PERP_FEE_E6) * 10n ** 12n);
     const toMaster = h.fake.usdSends.filter((send) => send.to === h.master);
     expect(toMaster).toHaveLength(1);
     expect(toMaster[0]!.amountE6).toBe(swept);
@@ -167,7 +169,7 @@ test("a plain refusal of a sweep that already landed is taken as landed from the
     const done = await h.orderOf(order._id);
     expect(done.state).toBe("filled");
     expect(done.steps.sweepNonce).toBe(stuck.steps.sweepNonce);
-    expect(fromDecimal(done.credited!)).toBe(planned * 10n ** 12n);
+    expect(fromDecimal(done.credited!)).toBe((planned - PERP_FEE_E6) * 10n ** 12n);
     expect(h.fake.usdSends.filter((send) => send.to === h.master)).toHaveLength(1);
     expect(h.fake.account(address)!.freeE6).toBe(0n);
     const s = await h.state(account._id);

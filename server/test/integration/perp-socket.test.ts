@@ -81,13 +81,13 @@ describe("perp events", () => {
 
         expect(quote).toMatchObject({
             ok: true,
-            data: { sizeCoin: "0.00755", ourFeeUSD: "0", fundingPerHour: "0.0000125" },
+            data: { sizeCoin: "0.00748", ourFeeUSD: "1", fundingPerHour: "0.0000125" },
         });
         if (!quote.ok) return;
         expect(Number(quote.data.entryPx)).toBeGreaterThan(65000);
         expect(Number(quote.data.liquidationPx)).toBeLessThan(Number(quote.data.entryPx));
         expect(Number(quote.data.takerFeeUSD)).toBeGreaterThan(0);
-        expect(Number(quote.data.marginUSD)).toBeGreaterThan(99);
+        expect(Number(quote.data.marginUSD)).toBeGreaterThan(98);
     });
 
     test("perp:order acks the order and pushes perp:update on fill", async () => {

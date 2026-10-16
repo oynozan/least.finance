@@ -21,8 +21,9 @@ import type { PerpCloseRequest, PerpOrderRequest, PerpQuoteRequest, PerpQuoteVie
 import type { Level } from "../predictions/trader.ts";
 import { formatUsdShort } from "../predictions/views.ts";
 import { nextNonce, type AccountState, type Fill, type HyperliquidClient } from "./client.ts";
+import { PERP_FEE_E6, PERP_FEE_USD } from "./fee.ts";
 import { ACTIVATION_E6, NOTHING_SPENT, PerpFloat } from "./float.ts";
-import { leverageBound, limitPrice, liquidationPrice, meetsMinimum, ourFeeOf, sizeFor } from "./math.ts";
+import { leverageBound, limitPrice, liquidationPrice, meetsMinimum, minOrderE6, sizeFor } from "./math.ts";
 import type { PerpMarkets } from "./markets.ts";
 import { perpOrderView, perpPositionView } from "./views.ts";
 
@@ -72,12 +73,7 @@ type Deps = {
     logger: Logger;
     config: Pick<
         Config,
-        | "PERPS_TRADING"
-        | "PERPS_FLOAT_USD"
-        | "PERPS_SLIPPAGE_BPS"
-        | "PERPS_CLOSE_SLIPPAGE_BPS"
-        | "PERPS_MAX_LEVERAGE"
-        | "PERPS_FEE_BPS"
+        "PERPS_TRADING" | "PERPS_FLOAT_USD" | "PERPS_SLIPPAGE_BPS" | "PERPS_CLOSE_SLIPPAGE_BPS" | "PERPS_MAX_LEVERAGE"
     >;
     /** The clock, for tests. */
     now?: () => number;
@@ -86,6 +82,8 @@ type Deps = {
 const clean = (value: string) => (value.includes(".") ? value.replace(/\.?0+$/, "") : value);
 const cloidOf = (id: ObjectId) => `0x${id.toHexString().padStart(32, "0")}`;
 const reservedOf = (order: PerpOrderDoc) => BigInt(order.steps.reservedE6 as string);
+/** The fee stored on an open order when it was placed; an order from before the fee was stored owes none. */
+const feeOf = (order: PerpOrderDoc) => BigInt((order.steps.feeE6 as string | undefined) ?? "0");
 const minE6 = (a: bigint, b: bigint) => (a < b ? a : b);
 const px = (value: number, figures = 7) => String(Number(value.toPrecision(figures)));
 
@@ -201,13 +199,13 @@ export class PerpService {
         if (!AMOUNT.test(req.collateralUSD))
             throw new AppError("bad_request", "Invalid collateralUSD: an amount such as 10.50");
         const collateralUSD = Number(req.collateralUSD);
-        const minimum = meetsMinimum(collateralUSD, req.leverage);
+        const minimum = meetsMinimum(collateralUSD, req.leverage, PERP_FEE_USD);
         if (minimum === "collateral") throw new AppError("below_minimum", PERP_MESSAGES.minCollateral);
         if (minimum === "position") throw new AppError("below_minimum", PERP_MESSAGES.minPosition);
         const bound = leverageBound({
             maxLeverage: market.maxLeverage,
             marginTables: market.marginTables,
-            notionalUSD: collateralUSD * req.leverage,
+            notionalUSD: (collateralUSD - PERP_FEE_USD) * req.leverage,
             configMax: this.#deps.config.PERPS_MAX_LEVERAGE,
         });
         if (req.leverage > bound) throw new AppError("bad_request", `${req.asset} allows up to ${bound}x.`);
@@ -217,11 +215,13 @@ export class PerpService {
             collateralE6,
             leverage: req.leverage,
             feeRate,
-            ourFeeRate: this.#deps.config.PERPS_FEE_BPS / 10_000,
+            ourFeeE6: PERP_FEE_E6,
             price: market.markPx,
             szDecimals: market.szDecimals,
         });
-        if (!sizing) throw new AppError("below_minimum", PERP_MESSAGES.minPosition);
+        // The position check passed, so only the coin's size step can leave it short of Hyperliquid's order minimum
+        if (!sizing || sizing.notionalE6 < minOrderE6(this.#deps.config.PERPS_SLIPPAGE_BPS))
+            throw new AppError("below_minimum", stepMessage(req.asset, market));
         return { market, collateralE6, sizing };
     }
 
@@ -297,7 +297,7 @@ export class PerpService {
             cloid: cloidOf(_id),
             limitPx: "",
             state: "placing",
-            steps: { reservedE6: hold.toString() },
+            steps: { reservedE6: hold.toString(), feeE6: PERP_FEE_E6.toString() },
             fill: null,
             credited: null,
             reason: null,
@@ -543,7 +543,7 @@ export class PerpService {
         return { totalSz: clean(size.toFixed(8)), avgPx: clean((cost / size).toFixed(8)) };
     }
 
-    /** Sweeps the unused collateral back to the master and books the position at what really filled. */
+    /** Sweeps the unused collateral and our fee to the master and books the position at what really filled; the person is credited the unused collateral, and a short address pays them first. */
     #onFill(order: PerpOrderDoc, fill: { totalSz: string; avgPx: string }): Promise<void> {
         return this.withIndexLock(order.index, () => this.#sweepFill(order, fill));
     }
@@ -555,16 +555,16 @@ export class PerpService {
         const feeE6 = await this.#feeOf(order, address, Number(sizeCoin) * Number(avgPx));
         const state = await this.#deps.client.state(address);
         const margin = state?.positions.find((p) => p.asset === order.asset)?.marginUsedE6 ?? 0n;
-        const filledE6 = BigInt(Math.round(Number(sizeCoin) * Number(avgPx) * 1e6));
-        const ourFeeE6 = ourFeeOf(filledE6, this.#deps.config.PERPS_FEE_BPS / 10_000);
+        const ourFeeE6 = feeOf(order);
         const spare = weiToE6(fromDecimal(order.collateral)) - margin - feeE6 - ourFeeE6;
-        const sweep = minE6(state?.withdrawableE6 ?? 0n, spare > 0n ? spare : 0n);
+        const credit = minE6(state?.withdrawableE6 ?? 0n, spare > 0n ? spare : 0n);
+        const sweep = minE6(state?.withdrawableE6 ?? 0n, credit + ourFeeE6);
         const moved = await this.#startSweep(
             order,
             ["posted"],
             { kind: "filled", sizeCoin, avgPx, feeE6: feeE6.toString() },
             sweep,
-            sweep,
+            credit,
             ourFeeE6,
         );
         if (moved) await this.#finishSweep(moved);
@@ -765,11 +765,12 @@ export class PerpService {
             if (o.state === "sweeping") return sum + BigInt(o.steps.sweepE6 as string);
             return o.kind === "open" ? sum + weiToE6(fromDecimal(o.collateral)) : sum;
         }, 0n);
-        const outcome = order.steps.outcome as Outcome | CloseOutcome;
-        const pending = outcome.kind === "filled" ? BigInt((order.steps.ourFeeE6 as string | undefined) ?? "0") : 0n;
-        const free = (state?.withdrawableE6 ?? 0n) - retainedOf(account) - pending - owed;
+        const free = (state?.withdrawableE6 ?? 0n) - retainedOf(account) - owed;
         const stored = BigInt(order.steps.sweepE6 as string);
         const amount = free > 0n ? minE6(stored, free) : 0n;
+        // Our fee rides in the sweep of a filled open and is never the person's credit
+        const outcome = order.steps.outcome as Outcome | CloseOutcome;
+        const fee = outcome.kind === "filled" ? BigInt((order.steps.ourFeeE6 as string | undefined) ?? "0") : 0n;
         const next = await perpOrders.findOneAndUpdate(
             { _id: order._id, state: "sweeping", "steps.sweepNonce": order.steps.sweepNonce },
             {
@@ -777,7 +778,9 @@ export class PerpService {
                     "steps.sweepE6": amount.toString(),
                     "steps.sweepNonce": amount > 0n ? nextNonce(address) : null,
                     "steps.sweepAt": new Date(this.#now()),
-                    ...(order.kind === "open" ? { "steps.creditE6": amount.toString() } : {}),
+                    ...(order.kind === "open"
+                        ? { "steps.creditE6": (amount > fee ? amount - fee : 0n).toString() }
+                        : {}),
                     updatedAt: new Date(this.#now()),
                 },
             },
@@ -792,7 +795,7 @@ export class PerpService {
 
     /** Sends the stored sweep and, once the master has the money, credits it and settles the order. A repeat does nothing. */
     async #finishSweep(stored: PerpOrderDoc): Promise<void> {
-        const { perpOrders, perpPositions, perpAccounts, accounts } = this.#deps.collections;
+        const { perpOrders, perpPositions, accounts } = this.#deps.collections;
         const order = await this.#pay(stored);
         if (!order) return;
         const outcome = order.steps.outcome as Outcome;
@@ -843,6 +846,7 @@ export class PerpService {
                     entryPx: outcome.avgPx,
                     collateral: toDecimal(collateral - creditWei),
                     openedFee: toDecimal(BigInt(outcome.feeE6)),
+                    ourFee: toDecimal(BigInt((moved.steps.ourFeeE6 as string | undefined) ?? "0")),
                     state: "open",
                     active: true,
                     proceeds: null,
@@ -853,13 +857,6 @@ export class PerpService {
                     updatedAt: at,
                 };
                 await perpPositions.insertOne(position, { session });
-                const retained = BigInt((moved.steps.ourFeeE6 as string | undefined) ?? "0");
-                if (retained > 0n)
-                    await perpAccounts.updateOne(
-                        { index: order.index },
-                        { $inc: { retainedE6: toDecimal(retained) } },
-                        { session },
-                    );
             }
             const account =
                 creditWei > 0n
@@ -1437,6 +1434,12 @@ export class PerpService {
         return { positions: positions.map(perpPositionView), orders: orders.map(perpOrderView) };
     }
 }
+
+/** What to tell someone whose amount can't make an order Hyperliquid accepts because the coin only trades in coarse steps. */
+const stepMessage = (asset: string, market: { szDecimals: number; markPx: number }) => {
+    const step = 10 ** -market.szDecimals;
+    return `${asset} trades in steps of ${step.toFixed(market.szDecimals)} (about ${formatUsdShort(step * market.markPx)}). Raise the collateral or the leverage.`;
+};
 
 const rejectionMessage = (message: string) =>
     /immediately match/i.test(message) ? PERP_MESSAGES.priceMoved : PERP_MESSAGES.rejected;

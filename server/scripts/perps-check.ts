@@ -92,7 +92,7 @@ async function main() {
         collateralE6: COLLATERAL_E6,
         leverage: LEVERAGE,
         feeRate: (await client.userFees(person)).takerRate,
-        ourFeeRate: 0,
+        ourFeeE6: 0n,
         price: meta.markPx,
         szDecimals: meta.szDecimals,
     })!;

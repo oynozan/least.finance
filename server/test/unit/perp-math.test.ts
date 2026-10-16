@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { PERP_FEE_E6, PERP_FEE_USD } from "../../src/perps/fee.ts";
 import {
     leverageBound,
     limitPrice,
     liquidationPrice,
     meetsMinimum,
+    minOrderE6,
     roundPrice,
     roundSize,
     sizeFor,
@@ -44,45 +46,79 @@ describe("limitPrice", () => {
 });
 
 describe("sizeFor", () => {
-    const base = { leverage: 5, feeRate: 0.00045, ourFeeRate: 0, price: 65000, szDecimals: 5 };
+    const base = { leverage: 5, feeRate: 0.00045, ourFeeE6: PERP_FEE_E6, price: 65000, szDecimals: 5 };
 
-    it("sizeFor makes margin plus fees equal the collateral", () => {
+    it("sizeFor makes margin plus both fees fit the collateral", () => {
         const collateralE6 = 100_000_000n;
         const r = sizeFor({ ...base, collateralE6 })!;
         const total = r.marginE6 + r.entryFeeE6 + r.ourFeeE6;
         expect(total).toBeLessThanOrEqual(collateralE6);
-        // 100 x 5 / (1 + 5 x 0.00045) = 498.876...
-        expect(Number(r.notionalE6) / 1e6).toBeGreaterThan(498.2);
-        expect(Number(r.notionalE6) / 1e6).toBeLessThan(498.9);
+        // (100 - 1) x 5 / (1 + 5 x 0.00045) = 493.89...
+        expect(Number(r.notionalE6) / 1e6).toBeGreaterThan(493.2);
+        expect(Number(r.notionalE6) / 1e6).toBeLessThan(493.9);
         // One coin step (1e-5 BTC) costs about 0.65 notional, so about 0.13 of collateral.
         expect(Number(collateralE6 - total) / 1e6).toBeLessThan(0.14);
         expect(r.entryFeeE6).toBeGreaterThan(0n);
     });
 
-    it("sizeFor splits our fee from Hyperliquid's", () => {
-        const r = sizeFor({ ...base, ourFeeRate: 0.001, collateralE6: 100_000_000n })!;
-        expect(r.ourFeeE6).toBeGreaterThan(0n);
-        expect(r.marginE6 + r.entryFeeE6 + r.ourFeeE6).toBeLessThanOrEqual(100_000_000n);
+    it("sizeFor takes the flat fee out of the collateral before it sizes", () => {
+        const r = sizeFor({ ...base, collateralE6: 100_000_000n })!;
+        expect(r.ourFeeE6).toBe(1_000_000n);
+        expect(r.sizeCoin).toBe("0.00759");
+        expect(Number(r.notionalE6) / 1e6).toBeCloseTo(0.00759 * 65000, 4);
+        expect(Number(r.notionalE6) / 1e6).toBeCloseTo(493.35, 2);
+    });
+
+    it("sizeFor charges no fee when given none", () => {
+        const r = sizeFor({ ...base, ourFeeE6: 0n, collateralE6: 100_000_000n })!;
+        expect(r.ourFeeE6).toBe(0n);
+        expect(r.sizeCoin).toBe("0.00767");
     });
 
     it("sizeFor rounds the size down", () => {
         const r = sizeFor({ ...base, collateralE6: 100_000_000n })!;
-        // 498.876 / 65000 = 0.0076750... coin, floored to 5 decimals.
-        expect(r.sizeCoin).toBe("0.00767");
-        expect(Number(r.notionalE6) / 1e6).toBeCloseTo(0.00767 * 65000, 4);
+        // 493.89 / 65000 = 0.0075983... coin, floored to 5 decimals.
+        expect(r.sizeCoin).toBe("0.00759");
     });
 
     it("sizeFor returns null when the size rounds to zero", () => {
-        expect(sizeFor({ ...base, collateralE6: 1_000n })).toBeNull();
+        expect(sizeFor({ ...base, collateralE6: 1_001_000n })).toBeNull();
         expect(sizeFor({ ...base, collateralE6: 100_000_000n, price: 1e9 })).toBeNull();
+    });
+
+    it("sizeFor returns null when the collateral doesn't cover the fee", () => {
+        expect(sizeFor({ ...base, collateralE6: 1_000_000n })).toBeNull();
+        expect(sizeFor({ ...base, collateralE6: 500_000n })).toBeNull();
+        expect(sizeFor({ ...base, collateralE6: 0n })).toBeNull();
     });
 });
 
 describe("meetsMinimum", () => {
-    it("meetsMinimum: 9.99 is collateral, $10 at 1x is position, $10 at 2x passes", () => {
-        expect(meetsMinimum(9.99, 5)).toBe("collateral");
-        expect(meetsMinimum(10, 1)).toBe("position");
-        expect(meetsMinimum(10, 2)).toBeNull();
+    it("meetsMinimum: 9.99 is collateral; $11 at 1x is position, $12 at 1x passes, $10 at 2x passes", () => {
+        expect(meetsMinimum(9.99, 5, PERP_FEE_USD)).toBe("collateral");
+        expect(meetsMinimum(10, 1, PERP_FEE_USD)).toBe("position");
+        expect(meetsMinimum(11, 1, PERP_FEE_USD)).toBe("position");
+        expect(meetsMinimum(12, 1, PERP_FEE_USD)).toBeNull();
+        expect(meetsMinimum(10, 2, PERP_FEE_USD)).toBeNull();
+    });
+
+    it("meetsMinimum takes the fee out before it multiplies", () => {
+        // (11.5 - 1) x 1 = 10.5 is under 11 though 11.5 x 1 is not
+        expect(meetsMinimum(11.5, 1, PERP_FEE_USD)).toBe("position");
+        expect(meetsMinimum(11.5, 1, 0)).toBeNull();
+    });
+});
+
+describe("minOrderE6", () => {
+    it("is $10 grossed up for the slippage a short may fill down to, with 0.1% to spare", () => {
+        expect(minOrderE6(100)).toBe(10_111_112n);
+        expect(minOrderE6(300)).toBe(10_319_588n);
+    });
+
+    it("a short filled down by that slippage still clears Hyperliquid's $10", () => {
+        for (const bps of [1, 100, 300, 500]) {
+            expect(Number(minOrderE6(bps)) * (1 - bps / 10_000)).toBeGreaterThanOrEqual(10_000_000);
+        }
     });
 });
 

@@ -3,9 +3,9 @@ import type { ObjectId } from "mongodb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { AccountDoc, PerpPositionDoc } from "../../src/db/mongo.ts";
 import { fromDecimal } from "../../src/db/money.ts";
-import { ourFeeOf } from "../../src/perps/math.ts";
+import { PERP_FEE_E6 } from "../../src/perps/fee.ts";
 import { isAppError } from "../../src/errors.ts";
-import { perpHarness, type PerpHarness } from "../support/perp-harness.ts";
+import { e6, perpHarness, type PerpHarness } from "../support/perp-harness.ts";
 import { PerpTracker } from "../../src/perps/tracker.ts";
 import { pino } from "pino";
 
@@ -109,7 +109,7 @@ test("the close limit is mark x 0.97 for a long and x 1.03 for a short and reduc
 
     const closes = h.fake.orders.filter((o) => o.reduceOnly);
     expect(closes).toMatchObject([
-        { asset: "BTC", isBuy: false, px: "63050", sz: "0.00767" },
+        { asset: "BTC", isBuy: false, px: "63050", sz: "0.00759" },
         { asset: "ETH", isBuy: true, px: "3090" },
     ]);
 });
@@ -126,7 +126,7 @@ test("a partial close leaves the position open and credits nothing", async () =>
     expect(done.credited).toBeNull();
     expect(done.fill?.sizeCoin).toBe("0.003");
     expect((await h.state(account._id)).kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
-    expect(await positionOf(h, position._id)).toMatchObject({ state: "open", active: true, sizeCoin: "0.00467" });
+    expect(await positionOf(h, position._id)).toMatchObject({ state: "open", active: true, sizeCoin: "0.00459" });
 
     const again = await closeOf(h, account, await positionOf(h, position._id));
     expect((await finished(h, again.order._id)).state).toBe("done");
@@ -241,23 +241,24 @@ test("a position under $10 the fake refuses stays open with the too-small messag
     await h.until(async () => h.lines.some((l) => l.level >= 50 && /too small/i.test(l.msg)));
 });
 
-test("a close leaves our fee on the person's Hyperliquid account and credits none of it", async () => {
-    const h = await fresh({ feeBps: 100 });
+test("a close finds our fee already with the master and credits everything left on the person's account", async () => {
+    const h = await fresh();
     const account = await h.seedAccount("1000");
+    const masterBefore = h.fake.account(h.master)!.freeE6;
     const position = await held(h, account);
-    console.log(
-        "FREE AFTER OPEN",
-        h.fake.account(await h.addressOf(account._id)),
-        await h.database.collections.perpOrders.find({}).toArray(),
-    );
+    const address = await h.addressOf(account._id);
+    const opened = (await h.database.collections.perpOrders.findOne({ accountId: account._id, kind: "open" }))!;
+    const refund = fromDecimal(opened.credited!) / 10n ** 12n;
+    // The master paid the collateral and the 1 USDC activation, and got the unused collateral and our fee back
+    expect(h.fake.account(address)!.freeE6).toBe(0n);
+    expect(masterBefore - h.fake.account(h.master)!.freeE6).toBe(e6("100") + e6("1") - refund - PERP_FEE_E6);
+
     const { order } = await closeOf(h, account, position);
     const done = await finished(h, order._id);
 
-    const opened = (await h.database.collections.perpOrders.findOne({ accountId: account._id, kind: "open" }))!;
-    const fee = ourFeeOf(fromDecimal(opened.notionalE6), 0.01);
-    expect(fee).toBeGreaterThan(0n);
-    const free = h.fake.account(await h.addressOf(account._id))!.freeE6;
     expect(done.state).toBe("done");
-    expect(free).toBe(fee);
-    expect(fromDecimal(done.credited!) + fee * 10n ** 12n).toBeLessThanOrEqual(fromDecimal(position.collateral));
+    expect(h.fake.account(address)!.freeE6).toBe(0n);
+    expect(fromDecimal(done.credited!) + PERP_FEE_E6 * 10n ** 12n).toBeLessThanOrEqual(
+        fromDecimal(position.collateral),
+    );
 });

@@ -177,7 +177,7 @@ export type PerpAccountDoc = {
     /** Lowercase. */
     address: string;
     activatedAt: Date | null;
-    /** E6 of our fees kept on the address; the free balance above it is the person's. Absent counts as zero. */
+    /** E6 of our fees kept on the address by older orders; the free balance above it is the person's. Absent counts as zero. */
     retainedE6?: Decimal128;
     createdAt: Date;
 };
@@ -229,6 +229,8 @@ export type PerpPositionDoc = {
     collateral: Decimal128;
     /** E6 entry fee Hyperliquid took. */
     openedFee: Decimal128;
+    /** E6 of our flat fee, paid when it opened. Absent counts as zero. */
+    ourFee?: Decimal128;
     state: PerpPositionState;
     /** When a poll first found the position gone with no reducing fill; cleared when it shows again. */
     missingSince?: Date;

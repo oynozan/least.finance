@@ -283,6 +283,9 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
         const mark = markOf(asset);
         if (typeof forced === "object" && "reject" in forced) return { error: forced.reject };
         if (!account) return { error: "Cannot place order: the account does not exist." };
+        // Hyperliquid refuses a new order worth under $10 at its limit price
+        if (!reduceOnly && Number(o.s) * limit < 10)
+            return { error: `Order must have minimum value of $10. asset=${o.a as number}` };
         if (!(isBuy ? mark <= limit : mark >= limit)) {
             return { error: `Order could not immediately match against any resting orders. asset=${o.a as number}` };
         }
