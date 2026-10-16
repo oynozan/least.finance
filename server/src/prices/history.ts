@@ -3,13 +3,14 @@ import type { Logger } from "pino";
 import type { PriceHistoryView, PriceRange } from "../protocol.ts";
 import { COINS } from "../swaps/coins.ts";
 import { LLAMA_IDS, LlamaError, MAX_POINTS, type DefiLlama, type PricePoint } from "./defillama.ts";
+import type { PerpPriceHistory } from "./perp-history.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /** Each range's points per coin, the time between them, and how long a read is served before DefiLlama is asked again. */
-const RANGES: Record<PriceRange, { span: number; stepMs: number; ttlMs: number }> = {
+export const RANGES: Record<PriceRange, { span: number; stepMs: number; ttlMs: number }> = {
     "1d": { span: 96, stepMs: 15 * MINUTE, ttlMs: 5 * MINUTE },
     "7d": { span: 168, stepMs: HOUR, ttlMs: 15 * MINUTE },
     "30d": { span: 120, stepMs: 6 * HOUR, ttlMs: HOUR },
@@ -30,6 +31,9 @@ const REFRESH_AT = 0.8;
 
 const SYMBOLS = COINS.map((coin) => coin.symbol).filter((symbol) => symbol in LLAMA_IDS);
 
+/** The swap coin a name stands for, ignoring case; any other name is a perp market or nothing. */
+const swapCoin = (name: string) => [name, name.toUpperCase()].find((symbol) => Object.hasOwn(LLAMA_IDS, symbol));
+
 const periodOf = (ms: number) =>
     ms % DAY === 0 ? `${ms / DAY}d` : ms % HOUR === 0 ? `${ms / HOUR}h` : `${ms / MINUTE}m`;
 
@@ -37,6 +41,8 @@ type Read = { coins: Map<string, PricePoint[]>; at: number };
 
 type Deps = {
     llama: DefiLlama;
+    /** Prices the perp markets DefiLlama has no id for; without it only the swap coins have history. */
+    perps?: Pick<PerpPriceHistory, "market" | "series">;
     logger: Logger;
     /** The clock, for tests. */
     now?: () => number;
@@ -96,15 +102,37 @@ export class PriceHistory {
         }
     }
 
-    /** The range for these coins, every swap coin by default; null when it has never been read and can't be now. */
+    /**
+     * The range for these coins, every swap coin by default, in the order asked.
+     * A swap coin is DefiLlama's, and null means it has never been read and can't
+     * be now; any other name is a perp market Hyperliquid lists, read from its
+     * candles, or is left out. A perp market that can't be read has no points.
+     */
     async view(range: PriceRange, symbols: readonly string[] = SYMBOLS): Promise<PriceHistoryView | null> {
-        const read = await this.#current(range);
-        if (!read) return null;
+        const perps = this.#deps.perps;
+        // Each coin once by its own name, and whether DefiLlama is the one to ask
+        const wanted = new Map<string, boolean>();
+        for (const name of symbols) {
+            const swap = swapCoin(name);
+            const symbol = swap ?? perps?.market(name);
+            if (symbol !== undefined) wanted.set(symbol, swap !== undefined);
+        }
+
+        const swap = [...wanted.values()].includes(true);
+        const read = swap ? await this.#current(range) : null;
+        if (swap && !read) return null;
+        const markets = [...wanted].flatMap(([symbol, llama]) => (llama ? [] : [symbol]));
+        const series = perps && markets.length > 0 ? await perps.series(range, markets) : new Map();
+
+        const readAts = [...(read ? [read.at] : []), ...[...series.values()].map((one) => one.at)];
         return {
             range,
             stepMs: RANGES[range].stepMs,
-            coins: symbols.map((symbol) => ({ symbol, points: read.coins.get(symbol) ?? [] })),
-            readAt: new Date(read.at).toISOString(),
+            coins: [...wanted].map(([symbol, llama]) => ({
+                symbol,
+                points: (llama ? read!.coins.get(symbol) : series.get(symbol)?.points) ?? [],
+            })),
+            readAt: new Date(readAts.length > 0 ? Math.min(...readAts) : this.#now()).toISOString(),
         };
     }
 

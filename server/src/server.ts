@@ -50,6 +50,7 @@ import { inFlight, traderNeeded, withTimeouts, type PoolTrader } from "./predict
 import { createPolymarketData } from "./markets/polymarket-data.ts";
 import { createDefiLlama } from "./prices/defillama.ts";
 import { PriceHistory } from "./prices/history.ts";
+import { PerpPriceHistory } from "./prices/perp-history.ts";
 import { createApp } from "./http/app.ts";
 import type { Services } from "./services.ts";
 import { Sessions } from "./sessions.ts";
@@ -316,10 +317,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             pollMs: config.SWAPS_POLL_MS,
             now: overrides.now,
         });
-        const priceHistory = new PriceHistory({
-            llama: createDefiLlama({ url: config.DEFILLAMA_COINS_URL }),
-            logger: logger.child({ component: "prices" }),
-        });
         const perpClient =
             overrides.hyperliquid ??
             withPerpTimeouts(createNktkasClient({ url: config.HYPERLIQUID_API_URL }), PERP_CALL_MS);
@@ -327,6 +324,15 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             client: perpClient,
             config,
             logger: logger.child({ component: "perps" }),
+        });
+        const priceHistory = new PriceHistory({
+            llama: createDefiLlama({ url: config.DEFILLAMA_COINS_URL }),
+            perps: new PerpPriceHistory({
+                client: perpClient,
+                assets: () => perpMarkets.list().map((market) => market.asset),
+                logger: logger.child({ component: "prices" }),
+            }),
+            logger: logger.child({ component: "prices" }),
         });
         const perps = new PerpService({
             collections,

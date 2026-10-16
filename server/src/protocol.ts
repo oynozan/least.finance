@@ -552,7 +552,7 @@ export type PerpUpdate = { order: PerpOrderView; position: PerpPositionView | nu
 /** How far back a price history reaches; its points are 15 minutes, 1 hour, 6 hours, 1 day and 1 day apart. */
 export type PriceRange = "1d" | "7d" | "30d" | "90d" | "1y";
 
-/** One coin's dollar price over a range, oldest first, as [unix ms, USD] pairs to 6 significant digits. Where DefiLlama has a gap, points are missing, not filled; empty when it has none. */
+/** One coin's dollar price over a range, oldest first, as [unix ms, USD] pairs to 6 significant digits, from DefiLlama or, for a perp market it doesn't price, Hyperliquid. Where there's a gap, points are missing, not filled; empty when there are none. */
 export type PriceSeriesView = { symbol: string; points: [number, number][] };
 
 export type PriceHistoryView = {
@@ -560,7 +560,7 @@ export type PriceHistoryView = {
     /** About how far apart the points are, in ms. */
     stepMs: number;
     coins: PriceSeriesView[];
-    /** When DefiLlama was read (ISO 8601). It can be older than usual while DefiLlama can't be read. */
+    /** When the oldest of these prices was read (ISO 8601). It can be older than usual while DefiLlama or Hyperliquid can't be read. */
     readAt: string;
 };
 

@@ -68,18 +68,26 @@ export const marketHistoryQuery = z.object({
 
 const SWAP_SYMBOLS = new Set(COINS.map((coin) => coin.symbol));
 
+/** The most coins one price history request names. */
+const MAX_HISTORY_COINS = 12;
+
 export const priceHistory = z.object({
     range: z.enum(PRICE_RANGES),
-    // Comma-separated swap coin symbols, such as "ETH,BTC"; every coin when left out
+    // Comma-separated swap coins or perp markets, such as "ETH,kPEPE"; the swap coins when left out
     coins: z
         .string()
         .max(100)
         .optional()
         .transform((list, ctx) => {
             if (list === undefined) return undefined;
-            const symbols = [...new Set(list.split(",").map((symbol) => symbol.trim().toUpperCase()))];
-            if (symbols.every((symbol) => SWAP_SYMBOLS.has(symbol))) return symbols;
-            ctx.addIssue({ code: "custom", message: "comma-separated coin symbols such as ETH,BTC" });
+            const names = list.split(",").map((name) => name.trim());
+            if (names.length <= MAX_HISTORY_COINS && names.every((name) => /^[A-Za-z0-9]{1,12}$/.test(name))) {
+                // A market keeps its case (kPEPE); the service matches it against the listed names
+                return [
+                    ...new Set(names.map((name) => (SWAP_SYMBOLS.has(name.toUpperCase()) ? name.toUpperCase() : name))),
+                ];
+            }
+            ctx.addIssue({ code: "custom", message: "up to 12 comma-separated coin symbols such as ETH,kPEPE" });
             return z.NEVER;
         }),
 });

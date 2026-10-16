@@ -8,6 +8,7 @@ import {
     parse,
     perpOrder,
     perpQuote,
+    priceHistory,
     sourceReport,
     swapOrder,
     withdrawRequest,
@@ -204,5 +205,53 @@ describe("swap order input", () => {
 
     it.each([0, -0.01, 0.0201, 0.05, 1, "0.01", null, Number.NaN])("rejects the slippage %s", (slippage) => {
         expect(() => parse(swapOrder, { ...order, slippage })).toThrow(AppError);
+    });
+});
+
+describe("price history input", () => {
+    it("takes a range alone, for the swap coins", () => {
+        expect(parse(priceHistory, { range: "7d" })).toEqual({ range: "7d", coins: undefined });
+    });
+
+    it("keeps the case of a perp market and upper-cases a swap coin", () => {
+        expect(parse(priceHistory, { range: "7d", coins: "btc, Eth,kPEPE,S,0G,hype" }).coins).toEqual([
+            "BTC",
+            "ETH",
+            "kPEPE",
+            "S",
+            "0G",
+            "hype",
+        ]);
+    });
+
+    it("takes a market it knows nothing about, for the service to leave out", () => {
+        expect(parse(priceHistory, { range: "1y", coins: "XRP,constructor" }).coins).toEqual(["XRP", "constructor"]);
+    });
+
+    it("asks for each coin once", () => {
+        expect(parse(priceHistory, { range: "7d", coins: "eth,ETH,kPEPE,kPEPE" }).coins).toEqual(["ETH", "kPEPE"]);
+    });
+
+    it.each([
+        "",
+        "ETH,,BTC",
+        "ETH,",
+        "bt c",
+        "kPEPE!",
+        "DOGE-PERP",
+        "xyz:AAPL",
+        "ABCDEFGHIJKLM",
+        "A,B,C,D,E,F,G,H,I,J,K,L,M",
+    ])("rejects the coins '%s'", (coins) => {
+        expect(() => parse(priceHistory, { range: "7d", coins })).toThrow(AppError);
+    });
+
+    it("takes up to twelve coins", () => {
+        const twelve = "A,B,C,D,E,F,G,H,I,J,K,L";
+        expect(parse(priceHistory, { range: "7d", coins: twelve }).coins).toHaveLength(12);
+    });
+
+    it.each(["", "2y", "7"])("rejects the range '%s'", (range) => {
+        expect(() => parse(priceHistory, { range })).toThrow(AppError);
     });
 });

@@ -145,7 +145,8 @@ export function createApp(services: Services): express.Express {
         res.json(services.perpMarkets.view());
     });
 
-    // Public: the same for everyone, and it's only DefiLlama's data. The browser never calls DefiLlama itself.
+    // Public: the same for everyone, and it's only DefiLlama's and Hyperliquid's public prices.
+    // The browser never calls either itself.
     app.get("/prices/history", noStore, limit(120, 60_000), async (req, res) => {
         const { range, coins } = parse(priceHistory, req.query);
         const view = await services.priceHistory.view(range, coins);

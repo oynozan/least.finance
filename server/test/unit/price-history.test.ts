@@ -1,5 +1,6 @@
 import { pino } from "pino";
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
+import type { Candle, HyperliquidClient } from "../../src/perps/client.ts";
 import type { PriceRange } from "../../src/protocol.ts";
 import {
     LLAMA_IDS,
@@ -9,11 +10,13 @@ import {
     type PricePoint,
 } from "../../src/prices/defillama.ts";
 import { PRICE_RANGES, PriceHistory } from "../../src/prices/history.ts";
+import { PerpPriceHistory } from "../../src/prices/perp-history.ts";
 import { COINS } from "../../src/swaps/coins.ts";
 
 const logger = pino({ level: "silent" });
 const SYMBOLS = COINS.map((coin) => coin.symbol);
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 
 /** Each id at 100.1234567 for every point asked for, a minute apart. */
 const everyPoint = (request: ChartRequest) =>
@@ -42,6 +45,7 @@ function setup(answer: Answer = everyPoint) {
     const history = new PriceHistory({ llama, logger, now: () => now });
     return {
         history,
+        llama,
         requests,
         answer: (next: Answer) => void (respond = next),
         advance: (ms: number) => void (now += ms),
@@ -212,4 +216,103 @@ test("the loop leaves a failing range alone until its retry", async () => {
     advance(1);
     await history.tick();
     expect(requests).toHaveLength(asked + 26);
+});
+
+describe("perp coins", () => {
+    const asked: string[] = [];
+    const candles: HyperliquidClient["candles"] = async (asset, _interval, startMs, endMs) => {
+        asked.push(asset);
+        if (asset === "BROKEN") throw new Error("Hyperliquid answered 500");
+        const found: Candle[] = [];
+        for (let open = Math.ceil(startMs / HOUR) * HOUR; open <= endMs; open += HOUR)
+            found.push({ openMs: open, close: 0.0041234567 });
+        return found;
+    };
+
+    function withPerps(answer: Answer = everyPoint) {
+        asked.length = 0;
+        const base = setup(answer);
+        const perps = new PerpPriceHistory({
+            client: { candles },
+            assets: () => ["BTC", "ETH", "kPEPE", "HYPE", "S", "0G", "BROKEN"],
+            logger,
+            now: base.now,
+        });
+        const history = new PriceHistory({ llama: base.llama, logger, now: base.now, perps });
+        return { ...base, history };
+    }
+
+    test("a perp coin is read from Hyperliquid, a swap coin from DefiLlama, in the order asked", async () => {
+        const { history, requests } = withPerps();
+
+        const view = await history.view("7d", ["kPEPE", "ETH", "HYPE"]);
+
+        expect(view!.coins.map((coin) => coin.symbol)).toEqual(["kPEPE", "ETH", "HYPE"]);
+        expect(view).toMatchObject({ range: "7d", stepMs: 60 * MINUTE });
+        expect(view!.coins[0]!.points.length).toBeGreaterThan(100);
+        expect(view!.coins[0]!.points[0]![1]).toBe(0.00412346);
+        expect(view!.coins[1]!.points).toHaveLength(168);
+        expect(view!.coins[1]!.points[0]![1]).toBe(100.123);
+        // Hyperliquid never prices a coin DefiLlama does
+        expect(asked.sort()).toEqual(["HYPE", "kPEPE"]);
+        expect(requests.flatMap((request) => request.ids)).toContain(LLAMA_IDS.ETH);
+    });
+
+    test("perp coins alone don't wait on DefiLlama", async () => {
+        const { history, requests } = withPerps(failing);
+
+        const view = await history.view("7d", ["S", "0G"]);
+
+        expect(view!.coins.map((coin) => coin.symbol)).toEqual(["S", "0G"]);
+        expect(view!.coins[0]!.points.length).toBeGreaterThan(100);
+        expect(requests).toHaveLength(0);
+        // But a swap coin does
+        expect(await history.view("7d", ["ETH", "S"])).toBeNull();
+    });
+
+    test("a name Hyperliquid doesn't list is left out, and one it does is matched ignoring case", async () => {
+        const { history } = withPerps();
+
+        const view = await history.view("7d", ["XRP", "kpepe", "constructor", "KPEPE"]);
+
+        expect(view!.coins.map((coin) => coin.symbol)).toEqual(["kPEPE"]);
+        expect(asked).toEqual(["kPEPE"]);
+
+        const nothing = await history.view("7d", ["XRP"]);
+        expect(nothing).toMatchObject({ range: "7d", coins: [] });
+    });
+
+    test("the swap coins alone are the default, and none of them is read from Hyperliquid", async () => {
+        const { history } = withPerps();
+
+        const view = await history.view("7d");
+        await history.view("7d", ["BTC", "eth"]);
+
+        expect(view!.coins.map((coin) => coin.symbol)).toEqual(SYMBOLS);
+        expect(asked).toEqual([]);
+    });
+
+    test("a perp coin that can't be read comes back without points", async () => {
+        const { history } = withPerps();
+
+        const view = await history.view("7d", ["BROKEN", "kPEPE"]);
+
+        expect(view!.coins.map((coin) => [coin.symbol, coin.points.length > 0])).toEqual([
+            ["BROKEN", false],
+            ["kPEPE", true],
+        ]);
+    });
+
+    test("it was read when the oldest of what it answers was read", async () => {
+        const { history, advance, now } = withPerps();
+        const first = now();
+        await history.view("7d", ["kPEPE"]);
+        advance(10 * MINUTE);
+
+        const view = await history.view("7d", ["ETH", "kPEPE", "HYPE"]);
+
+        expect(view!.readAt).toBe(new Date(first).toISOString());
+        const later = await history.view("7d", ["HYPE"]);
+        expect(later!.readAt).toBe(new Date(first + 10 * MINUTE).toISOString());
+    });
 });
