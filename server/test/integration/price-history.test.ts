@@ -180,9 +180,11 @@ describe("price history of perp coins", () => {
         await stack.server.services.perpMarkets.tick();
         stack.hyperliquid.failCandles(true);
         try {
-            const { status, json } = await get("/prices/history?range=7d&coins=TRUMP");
+            const { status, headers, json } = await get("/prices/history?range=7d&coins=TRUMP");
             expect(status).toBe(200);
             expect(json.coins).toEqual([{ symbol: "TRUMP", points: [] }]);
+            // Empty because the read failed, so the browser asks again soon
+            expect(headers.get("cache-control")).toBe("public, max-age=5");
         } finally {
             stack.hyperliquid.failCandles(false);
         }
