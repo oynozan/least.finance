@@ -351,6 +351,40 @@ test.describe("a wanted coin whose read failed", () => {
             restore();
         }
     });
+
+    test("is not read again on a switch back to the tab until 15 s have passed", async () => {
+        await inUse(async ({ store, asked, advance, visible }) => {
+            // The server doesn't know it
+            await store.want("NOPE");
+            expect(asked).toHaveLength(2);
+
+            advance(15_000 - 1);
+            visible();
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            expect(asked).toHaveLength(2);
+
+            advance(1);
+            visible();
+            await expect.poll(() => asked.length).toBe(3);
+        });
+    });
+
+    test("is not read again by the refresh timer until 15 s have passed", async () => {
+        await inUse(async ({ store, asked, advance, timers }) => {
+            await store.want("NOPE");
+            expect(asked).toHaveLength(2);
+
+            // The swap coins are read again; the coin that just failed is left for now
+            timers.fire(10 * MINUTE);
+            await expect.poll(() => asked.length).toBe(3);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            expect(asked).toHaveLength(3);
+
+            advance(15_000);
+            timers.fire(10 * MINUTE);
+            await expect.poll(() => asked.length).toBe(5);
+        });
+    });
 });
 
 test.describe("coinName", () => {

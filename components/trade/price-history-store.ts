@@ -125,6 +125,9 @@ export function createPriceHistoryStore(options: {
         }
     }
 
+    /** Whether the coin's last read failed less than the pause ago. */
+    const failedLately = (symbol: string) => now() - (failedAt.get(symbol) ?? -Infinity) < RETRY_MS;
+
     /** A failed read is tried again after the pause while the coin is still the one wanted, so its card doesn't wait for the refresh. */
     function failed(symbol: string, time: number) {
         failedAt.set(symbol, time);
@@ -143,7 +146,7 @@ export function createPriceHistoryStore(options: {
             async () => {
                 if (visible()) {
                     await refresh();
-                    if (current && !swapCoins.has(current)) await readCoin(current);
+                    if (current && !swapCoins.has(current) && !failedLately(current)) await readCoin(current);
                 }
                 schedule();
             },
@@ -154,7 +157,12 @@ export function createPriceHistoryStore(options: {
     const onVisible = () => {
         if (users === 0 || !visible()) return;
         if (now() - askedAt >= REFRESH_MS) void refresh();
-        if (current && !swapCoins.has(current) && now() - (readAt.get(current) ?? -Infinity) >= REFRESH_MS)
+        if (
+            current &&
+            !swapCoins.has(current) &&
+            now() - (readAt.get(current) ?? -Infinity) >= REFRESH_MS &&
+            !failedLately(current)
+        )
             void readCoin(current);
     };
 
@@ -176,7 +184,7 @@ export function createPriceHistoryStore(options: {
             const time = now();
             if (swapCoins.has(symbol)) return;
             if (time - (readAt.get(symbol) ?? -Infinity) < REFRESH_MS) return;
-            if (time - (failedAt.get(symbol) ?? -Infinity) < RETRY_MS) return;
+            if (failedLately(symbol)) return;
             retries = 0;
             await readCoin(symbol);
         },
