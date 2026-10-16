@@ -57,7 +57,7 @@ const hedger = (extra: Partial<ConstructorParameters<typeof TradeHedger>[0]> = {
         ...extra,
     });
 
-/** Units are whole coins, usd whole dollars. */
+/** Units are whole coins, usd whole dollars; `spread` is the dollars the spread came to, left off the trade when not given, as on trades filled before it. */
 async function trade(
     verb: "buy" | "sell" | "swap",
     symbol: string,
@@ -65,6 +65,7 @@ async function trade(
     usd: number,
     toSymbol: string | null = null,
     gotUnits = 0,
+    spread: number | null = null,
 ) {
     const units18 = BigInt(Math.round(units * 1e6)) * 10n ** 12n;
     const usd18 = BigInt(Math.round(usd * 1e6)) * 10n ** 12n;
@@ -84,6 +85,7 @@ async function trade(
         usd: toUnitsDecimal(usd18),
         priceUSD: "1",
         toPriceUSD: null,
+        ...(spread === null ? {} : { spreadUSD: toUnitsDecimal(BigInt(Math.round(spread * 1e6)) * 10n ** 12n) }),
         hedged: false,
         createdAt: new Date(),
     };
@@ -149,6 +151,45 @@ describe("TradeHedger netting", () => {
         expect(only).toMatchObject({ state: "done" });
         expect(await trades.countDocuments({ hedged: false })).toBe(0);
         expect(chain.prepared).toHaveLength(0);
+    });
+
+    test("nets the coins at the market price, so the spread of offsetting trades is not counted as a net", async () => {
+        // ETH is 2000: a buy of 1 pays the ask, 2006, and a sale of 0.9999 nets 1993.8006 at the bid, so 0.0001 ETH (about $0.20) is left over
+        await trade("buy", "ETH", 1, 2006, null, 0, 6);
+        await trade("sell", "ETH", 0.9999, 1993.8006, null, 0, 5.9994);
+        await hedger().tick();
+        expect(await hedges.countDocuments()).toBe(0);
+        expect(await trades.countDocuments({ hedged: false })).toBe(2);
+    });
+
+    test("a net sale left by a sale and a buy is valued at the market price too", async () => {
+        await trade("sell", "ETH", 1, 1994, null, 0, 6);
+        await trade("buy", "ETH", 0.9999, 2005.7994, null, 0, 5.9994);
+        await hedger().tick();
+        expect(await hedges.countDocuments()).toBe(0);
+        expect(await trades.countDocuments({ hedged: false })).toBe(2);
+    });
+
+    test("a swap's coin given up is valued at the market price and the coin got as bought", async () => {
+        // ETH 2000, SOL 100: 1 ETH swaps at its bid, 1994, for 19.94 SOL, and 19.9399 SOL sells at 99.7; the buy of 1 ETH closes the ETH leg
+        await trade("swap", "ETH", 1, 1994, "SOL", 19.94, 6);
+        await trade("sell", "SOL", 19.9399, 1988.00803, null, 0, 5.98197);
+        await trade("buy", "ETH", 1, 2006, null, 0, 6);
+        await hedger().tick();
+        expect(await hedges.countDocuments({ symbol: "SOL" })).toBe(0);
+        const [eth] = await hedges.find({ symbol: "ETH" }).toArray();
+        expect(eth).toMatchObject({ state: "done", reason: "Trades netted to nothing" });
+    });
+
+    test("a net that is worth more than a dollar at the market price is still hedged, with that value", async () => {
+        // 1 ETH bought at 2006 and 0.999 sold at 1992.006: 0.001 ETH is left, which is $2 at the market price (the old sum read $13.99)
+        await trade("buy", "ETH", 1, 2006, null, 0, 6);
+        await trade("sell", "ETH", 0.999, 1992.006, null, 0, 5.994);
+        await hedger().tick();
+        const [only] = await hedgeList();
+        expect(only).toMatchObject({ symbol: "ETH", side: "buy", state: "planned" });
+        expect(fromUnitsDecimal(only!.units)).toBe(10n ** 15n);
+        expect(fromUnitsDecimal(only!.usd)).toBe(2n * E18);
     });
 
     test("a swap stays unhedged until both its legs are covered, and no leg is hedged twice", async () => {

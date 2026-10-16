@@ -50,15 +50,25 @@ const STUCK_LOG_MS = 60 * 60_000;
 type Leg = { symbol: string; units: bigint; usd: bigint };
 type Bucket = { units: bigint; usd: bigint; tradeIds: ObjectId[] };
 
-/** The coin legs of a trade from our side: positive units are coins we owe the person's holding, negative are coins that came back to us. */
+/**
+ * The coin legs of a trade from our side: positive units are coins we owe the person's holding, negative are coins that came back to us.
+ * Each leg is worth its coins at the market price, which is not the trade's dollars: a buy paid its spread on top, and a sale or swap was paid it off.
+ */
 function legsOf(trade: TradeDoc): Leg[] {
     const usd = fromUnitsDecimal(trade.usd);
+    // Trades filled before the spread have none
+    const spread = trade.spreadUSD ? fromUnitsDecimal(trade.spreadUSD) : 0n;
     const legs: Leg[] = [];
     if (trade.paidSymbol !== "USDC") {
-        legs.push({ symbol: trade.paidSymbol, units: -fromUnitsDecimal(trade.paidUnits), usd: -usd });
+        legs.push({ symbol: trade.paidSymbol, units: -fromUnitsDecimal(trade.paidUnits), usd: -(usd + spread) });
     }
     if (trade.gotSymbol !== "USDC") {
-        legs.push({ symbol: trade.gotSymbol, units: fromUnitsDecimal(trade.gotUnits), usd });
+        // A buy's coins cost the spread more than they are worth; a swap's coins are bought at the market price
+        legs.push({
+            symbol: trade.gotSymbol,
+            units: fromUnitsDecimal(trade.gotUnits),
+            usd: trade.verb === "buy" ? usd - spread : usd,
+        });
     }
     return legs;
 }
