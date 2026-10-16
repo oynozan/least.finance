@@ -168,7 +168,7 @@ test.describe("GET /coin-logo/<symbol>", () => {
     let calls: string[] = [];
     let metaCalls: (RequestInit | undefined)[] = [];
     let answer: (url: string) => Response | Promise<Response> = () => new Response("", { status: 404 });
-    let metaAnswer: () => Response | Promise<Response> = () => listing(LISTED);
+    let metaAnswer: (init?: RequestInit) => Response | Promise<Response> = () => listing(LISTED);
     let skew = 0;
 
     /** Hyperliquid's answer to the list of perps: these coins live, and those delisted. */
@@ -202,7 +202,7 @@ test.describe("GET /coin-logo/<symbol>", () => {
             const url = String(input instanceof Request ? input.url : input);
             if (url === META_URL) {
                 metaCalls.push(init);
-                return metaAnswer();
+                return metaAnswer(init);
             }
             calls.push(url);
             return answer(url);
@@ -335,6 +335,7 @@ test.describe("GET /coin-logo/<symbol>", () => {
         expect(metaCalls).toHaveLength(1);
         expect(metaCalls[0]?.method).toBe("POST");
         expect(metaCalls[0]?.body).toBe(JSON.stringify({ type: "meta" }));
+        expect(metaCalls[0]?.redirect).toBe("manual");
         expect(metaCalls[0]?.signal).toBeInstanceOf(AbortSignal);
     });
 
@@ -395,9 +396,16 @@ test.describe("GET /coin-logo/<symbol>", () => {
         expect(calls).toEqual([`${LOGO_URL}OLDX.svg`, `${LOGO_URL}NEWX.svg`]);
     });
 
-    const BAD_ANSWERS: [string, () => Response | Promise<Response>][] = [
+    const BAD_ANSWERS: [string, (init?: RequestInit) => Response | Promise<Response>][] = [
         ["a server error", () => new Response("", { status: 503 })],
-        ["a redirect", () => new Response("", { status: 302, headers: { location: "https://evil.example/info" } })],
+        [
+            "a redirect",
+            // Followed, it would lead to a good-looking list of somebody else's coins
+            (init) =>
+                init?.redirect === "manual"
+                    ? new Response("", { status: 302, headers: { location: "https://evil.example/info" } })
+                    : listing(["EVILX"]),
+        ],
         ["a network failure", () => Promise.reject(new Error("network down"))],
         ["something that isn't JSON", () => new Response("<html></html>", { status: 200 })],
         ["JSON with no coins", () => new Response('{"universe":[]}', { status: 200 })],
