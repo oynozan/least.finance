@@ -24,10 +24,12 @@ beforeAll(async () => {
 });
 afterAll(() => database.close());
 
-type Fill =
+/** `spread` is the dollars the fill gave up; trades filled before the spread have none, so most of these leave it out. */
+type Fill = { spread?: string } & (
     | { verb: "buy"; symbol: string; usd: string; units: string; at: Date }
     | { verb: "sell"; symbol: string; units: string; usd: string; at: Date }
-    | { verb: "swap"; symbol: string; units: string; toSymbol: string; toUnits: string; usd: string; at: Date };
+    | { verb: "swap"; symbol: string; units: string; toSymbol: string; toUnits: string; usd: string; at: Date }
+);
 
 async function fill(accountId: ObjectId, trade: Fill): Promise<ObjectId> {
     const dec = Decimal128.fromString;
@@ -53,6 +55,7 @@ async function fill(accountId: ObjectId, trade: Fill): Promise<ObjectId> {
         usd: dec(trade.usd),
         priceUSD: "1",
         toPriceUSD: null,
+        ...(trade.spread === undefined ? {} : { spreadUSD: dec(trade.spread) }),
         hedged: false,
         createdAt: trade.at,
     });
@@ -154,4 +157,63 @@ test("activity rows carry the realized PnL of a sell or swap and nothing for a b
     expect(realized.get(buy.toHexString())).toBeUndefined();
     expect(realized.get(swap.toHexString())).toBe("10");
     expect(realized.get(sell.toHexString())).toBe("-2");
+});
+
+test("a buy costs what was paid for the coins, so a round trip at an unchanged market price loses the spread", async () => {
+    const id = new ObjectId();
+    // BNB at $600 buys 0.1 coins for $60.18 at the ask and sells them for $59.82 at the bid
+    const buy = await fill(id, { verb: "buy", symbol: "BNB", usd: "60.18", units: "0.1", spread: "0.18", at: ago(4) });
+    const sell = await fill(id, {
+        verb: "sell",
+        symbol: "BNB",
+        units: "0.1",
+        usd: "59.82",
+        spread: "0.18",
+        at: ago(1),
+    });
+
+    const points = await days(id);
+    const page = await feed.page(id, {});
+    const realized = new Map(
+        page.items.flatMap((item) => (item.kind === "trade" ? [[item.trade.id, item.trade.realized]] : [])),
+    );
+
+    expect(points.map((point) => point.pnl)).toEqual(["0", "0", "0", "0", "0", "-0.36", "0"]);
+    expect(realized.get(buy.toHexString())).toBeUndefined();
+    expect(realized.get(sell.toHexString())).toBe("-0.36");
+});
+
+test("a swap realizes its net of the spread and starts the new coin at what the coin given up fetched", async () => {
+    const id = new ObjectId();
+    await fill(id, { verb: "buy", symbol: "BNB", usd: "60.18", units: "0.1", spread: "0.18", at: ago(5) });
+    // Half the BNB, at its bid of $598.20, is $29.91 against a basis of $30.09
+    const swap = await fill(id, {
+        verb: "swap",
+        symbol: "BNB",
+        units: "0.05",
+        toSymbol: "USDT",
+        toUnits: "29.91",
+        usd: "29.91",
+        spread: "0.09",
+        at: ago(3),
+    });
+    // The USDT sells at its own bid of $0.997 a coin: $29.82027 against that basis of $29.91
+    const sell = await fill(id, {
+        verb: "sell",
+        symbol: "USDT",
+        units: "29.91",
+        usd: "29.82027",
+        spread: "0.08973",
+        at: ago(1),
+    });
+
+    const points = await days(id);
+    const page = await feed.page(id, {});
+    const realized = new Map(
+        page.items.flatMap((item) => (item.kind === "trade" ? [[item.trade.id, item.trade.realized]] : [])),
+    );
+
+    expect(points.map((point) => point.pnl)).toEqual(["0", "0", "0", "-0.18", "0", "-0.08973", "0"]);
+    expect(realized.get(swap.toHexString())).toBe("-0.18");
+    expect(realized.get(sell.toHexString())).toBe("-0.08973");
 });

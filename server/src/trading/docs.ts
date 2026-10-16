@@ -26,8 +26,12 @@ export type TradeDoc = {
     gotUnits: Decimal128;
     /** Dollars at the fill price, as a decimal. */
     usd: Decimal128;
+    /** The price the person got: the ask for a buy, the bid of the coin sold for a sell or swap. */
     priceUSD: string;
+    /** The swap's second coin at its market price. */
     toPriceUSD: string | null;
+    /** The dollars the spread came to: the trade at the market price less the trade at the fill price. Trades filled before the spread have none. */
+    spreadUSD?: Decimal128;
     /** True once the hedger has netted this trade into a market order. */
     hedged: boolean;
     createdAt: Date;

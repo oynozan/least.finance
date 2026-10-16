@@ -7,6 +7,7 @@ import type { SwapCatalog } from "../swaps/catalog.ts";
 import { COINS, NETWORKS, type SwapCoin } from "../swaps/coins.ts";
 import type { CoinWithdrawalDoc, TradeDoc } from "./docs.ts";
 import { listHoldings } from "./holdings.ts";
+import { TRADE_SPREAD_BPS } from "./spread.ts";
 import type {
     CoinWithdrawalView,
     CoinWithdrawRequest,
@@ -41,6 +42,9 @@ const MIN_SEND = 10n ** 18n;
 const PRICE_TOLERANCE_BPS = 100n;
 /** The least a fill may come to: a $0.10 trade still fills once its coin amount is rounded down and the price moves within tolerance. */
 const MIN_FILL = MIN_TRADE - (MIN_TRADE * PRICE_TOLERANCE_BPS) / 10_000n;
+const SPREAD_BPS = BigInt(TRADE_SPREAD_BPS);
+/** The least a sale may net: the least fill with the spread already taken off it, as a sale is paid at the bid. */
+const MIN_SALE = MIN_FILL - (MIN_FILL * SPREAD_BPS) / 10_000n;
 const SCALE = 10n ** BigInt(UNIT_DECIMALS);
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -87,6 +91,7 @@ export class TradeService {
             usd: toUnitsDecimal(plan.usd),
             priceUSD: formatUnits18(plan.price),
             toPriceUSD: plan.toPrice === null ? null : formatUnits18(plan.toPrice),
+            spreadUSD: toUnitsDecimal(plan.spread),
             hedged: false,
             createdAt: new Date(this.#now()),
         };
@@ -214,8 +219,10 @@ export class TradeService {
             if (amount === null || amount <= 0n) throw new TradeError("bad_request", "Enter an amount to spend.");
             // Dearer than the app showed by more than the tolerance
             if (from.price * 10_000n > quoted * (10_000n + PRICE_TOLERANCE_BPS)) throw movedError();
-            const units = floorToDecimals((amount * SCALE) / from.price, from.decimals);
-            const cost = ceilDiv(units * from.price, SCALE);
+            // The person spends their amount at the ask and gets the fewer coins it buys
+            const ask = askOf(from.price);
+            const units = floorToDecimals((amount * SCALE) / ask, from.decimals);
+            const cost = ceilDiv(units * ask, SCALE);
             if (units <= 0n || cost < MIN_FILL) throw belowMinimum();
             return {
                 verb: "buy",
@@ -226,8 +233,9 @@ export class TradeService {
                 gotSymbol: from.coin.symbol,
                 got: units,
                 usd: cost,
-                price: from.price,
+                price: ask,
                 toPrice: null,
+                spread: cost - (units * from.price) / SCALE,
                 wholeOnly: false,
             };
         }
@@ -239,7 +247,8 @@ export class TradeService {
         if (request.verb === "sell") {
             // Cheaper than the app showed by more than the tolerance
             if (from.price * 10_000n < quoted * (10_000n - PRICE_TOLERANCE_BPS)) throw movedError();
-            const usd = (units * from.price) / SCALE;
+            const bid = bidOf(from.price);
+            const usd = (units * bid) / SCALE;
             if (usd <= 0n) throw belowMinimum();
             return {
                 verb: "sell",
@@ -250,9 +259,10 @@ export class TradeService {
                 gotSymbol: CASH,
                 got: usd,
                 usd,
-                price: from.price,
+                price: bid,
                 toPrice: null,
-                wholeOnly: usd < MIN_FILL,
+                spread: spreadOf(units, from.price, usd),
+                wholeOnly: usd < MIN_SALE,
             };
         }
 
@@ -264,7 +274,9 @@ export class TradeService {
         const to = this.#priced(request.toSymbol);
         // The rate (from price over to price) is worse than the app's by more than the tolerance
         if (from.price * quotedTo * 10_000n < quoted * to.price * (10_000n - PRICE_TOLERANCE_BPS)) throw movedError();
-        const usd = (units * from.price) / SCALE;
+        // The one spread of a swap comes off the coin given up, which is valued at its bid; the coin got is bought at its market price
+        const bid = bidOf(from.price);
+        const usd = (units * bid) / SCALE;
         const got = floorToDecimals((usd * SCALE) / to.price, to.decimals);
         if (got <= 0n) throw belowMinimum();
         return {
@@ -276,9 +288,10 @@ export class TradeService {
             gotSymbol: to.coin.symbol,
             got,
             usd,
-            price: from.price,
+            price: bid,
             toPrice: to.price,
-            wholeOnly: usd < MIN_FILL,
+            spread: spreadOf(units, from.price, usd),
+            wholeOnly: usd < MIN_SALE,
         };
     }
 
@@ -358,12 +371,22 @@ type Plan = {
     gotSymbol: string;
     got: bigint;
     usd: bigint;
+    /** The price the person got: the ask for a buy, the bid of the coin sold for a sell or swap. */
     price: bigint;
+    /** The swap's second coin at its market price. */
     toPrice: bigint | null;
-    /** The sale is under the smallest fill, so it only goes through when it sells the account's whole holding. */
+    /** The dollars the spread came to: the trade at the market price less the trade at the fill price. */
+    spread: bigint;
+    /** The sale is under the smallest sale, so it only goes through when it sells the account's whole holding. */
     wholeOnly: boolean;
 };
 
 const ceilDiv = (numerator: bigint, divisor: bigint) => (numerator + divisor - 1n) / divisor;
+/** What a buyer pays for a coin at this market price: the price plus the spread, rounded up. */
+const askOf = (price: bigint) => ceilDiv(price * (10_000n + SPREAD_BPS), 10_000n);
+/** What a seller gets for a coin at this market price: the price less the spread, rounded down. */
+const bidOf = (price: bigint) => (price * (10_000n - SPREAD_BPS)) / 10_000n;
+/** The dollars a sale of `units` at this market price gave up, given what it fetched. */
+const spreadOf = (units: bigint, price: bigint, fetched: bigint) => (units * price) / SCALE - fetched;
 const movedError = () => new TradeError("price_moved", "The price moved. Review it and try again.");
 const belowMinimum = () => new TradeError("below_minimum", "The smallest trade is $0.10.");
