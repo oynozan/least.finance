@@ -64,6 +64,12 @@ export type UsdSendResult = { kind: "ok" } | { kind: "duplicate" } | { kind: "re
 /** A USDC transfer between two Hyperliquid accounts, from the ledger of either one. */
 export type Transfer = { from: string; to: string; amountE6: bigint; time: number };
 
+/** The candle widths the price history reads. */
+export type CandleInterval = "15m" | "1h" | "2h" | "1d";
+
+/** One price candle: when it opened (unix ms) and where it closed. */
+export type Candle = { openMs: number; close: number };
+
 /** `expiresAfter` is a millisecond time after which Hyperliquid refuses the order. */
 export type PerpOrder = {
     asset: string;
@@ -85,6 +91,8 @@ export interface HyperliquidClient {
     userFees(address: string): Promise<{ takerRate: number }>;
     fills(address: string, sinceMs: number): Promise<Fill[]>;
     orderStatus(address: string, cloid: string): Promise<OrderStatus>;
+    /** A market's candles opening in the window, oldest first; empty for a market Hyperliquid doesn't list. */
+    candles(asset: string, interval: CandleInterval, startMs: number, endMs: number): Promise<Candle[]>;
     /** The USDC sends in an account's non-funding ledger since a time, lowercase addresses. */
     transfers(address: string, sinceMs: number): Promise<Transfer[]>;
     usdSend(from: HDAccount, to: string, amountE6: bigint, nonce: number): Promise<UsdSendResult>;
@@ -111,6 +119,8 @@ export function withPerpTimeouts(client: HyperliquidClient, ms: number): Hyperli
         userFees: (address) => bounded(client.userFees(address), ms, "userFees"),
         fills: (address, sinceMs) => bounded(client.fills(address, sinceMs), ms, "fills"),
         orderStatus: (address, cloid) => bounded(client.orderStatus(address, cloid), ms, "orderStatus"),
+        candles: (asset, interval, startMs, endMs) =>
+            bounded(client.candles(asset, interval, startMs, endMs), ms, "candles"),
         transfers: (address, sinceMs) => bounded(client.transfers(address, sinceMs), ms, "transfers"),
         usdSend: (from, to, amountE6, nonce) => bounded(client.usdSend(from, to, amountE6, nonce), ms, "usdSend"),
         updateLeverage: (signer, asset, leverage) =>

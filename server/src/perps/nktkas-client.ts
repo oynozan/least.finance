@@ -3,6 +3,7 @@ import { formatUnits, parseUnits } from "viem";
 import type { HDAccount } from "viem/accounts";
 import type {
     AccountState,
+    Candle,
     Fill,
     HyperliquidClient,
     OrderResult,
@@ -165,6 +166,13 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
             if (status === "filled") return { kind: "filled", totalSz: order.origSz, avgPx: order.limitPx };
             if (status.endsWith("Rejected")) return { kind: "rejected", message: status };
             return { kind: "canceled" };
+        },
+
+        async candles(asset, interval, startMs, endMs): Promise<Candle[]> {
+            const raw = await info.candleSnapshot({ coin: asset, interval, startTime: startMs, endTime: endMs });
+            return raw
+                .map((candle) => ({ openMs: candle.t, close: Number(candle.c) }))
+                .sort((a, b) => a.openMs - b.openMs);
         },
 
         async transfers(address, sinceMs): Promise<Transfer[]> {

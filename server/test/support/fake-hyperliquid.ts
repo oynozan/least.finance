@@ -13,6 +13,9 @@ export type FakeBook = {
 
 export type NextOrder = "fill" | { partial: string } | { reject: string } | "hold" | "drop";
 
+/** A candleSnapshot the fake was asked for. */
+export type FakeCandleRead = { coin: string; interval: string; startTime: number; endTime: number | null };
+
 export type FakeUsdSend = { from: string; to: string; amountE6: bigint; nonce: number };
 
 /** How a numbered usdSend goes wrong: refused, never answered or applied, or applied only after a delay (its reply is late too). */
@@ -71,6 +74,12 @@ export type FakeHyperliquid = {
     requests: string[];
     usdSends: FakeUsdSend[];
     orders: FakeOrder[];
+    /** Every candleSnapshot asked for, refused ones included. */
+    candleReads: FakeCandleRead[];
+    /** The close the fake serves for a market's candle that opens at a unix ms. */
+    candleClose(asset: string, openMs: number): number;
+    /** Answers every candleSnapshot with a 500 while on. */
+    failCandles(on: boolean): void;
     setMark(asset: string, px: number): void;
     /** Adds a market to the universe, as Hyperliquid lists a new perp; its marginTableId is its flat leverage, as most real ones are. */
     listMarket(market: {
@@ -104,6 +113,19 @@ export type FakeHyperliquid = {
     reset(): void;
     stop(): Promise<void>;
 };
+
+/** The candle widths the fake serves, in ms; Hyperliquid's own open on multiples of these. */
+const CANDLE_MS: Record<string, number> = {
+    "1m": 60_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "1d": 86_400_000,
+};
+/** Hyperliquid answers a candleSnapshot with the 5000 newest candles at most. */
+const CANDLE_CAP = 5000;
 
 const TAKER_RATE = 0.00045;
 const ACTIVATION_E6 = 1_000_000n;
@@ -191,6 +213,8 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
     const usdSends: FakeUsdSend[] = [];
     const transferLog: { from: string; to: string; amountE6: bigint; time: number }[] = [];
     const orders: FakeOrder[] = [];
+    const candleReads: FakeCandleRead[] = [];
+    let candlesFail = false;
     const accounts = new Map<string, Account>();
     const fills = new Map<string, FillRecord[]>();
     const statuses = new Map<string, OrderRecord>();
@@ -211,6 +235,9 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
     let ctxs: Ctx[] = CTXS.map((ctx) => ({ ...ctx }));
     const indexOf = (asset: string) => universe.findIndex((entry) => entry.name === asset);
     const markOf = (asset: string) => marks.get(asset) ?? Number(ctxs[indexOf(asset)]?.markPx);
+    /** The mark swaying 3% over a day, so every candle of a market has a price of its own. */
+    const candleClose = (asset: string, openMs: number) =>
+        Number((markOf(asset) * (1 + 0.03 * Math.sin((openMs / 86_400_000) * 2 * Math.PI))).toPrecision(8));
     const send = (response: ServerResponse, body: unknown) => {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify(body));
@@ -449,6 +476,40 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
             const level = (l: { price: number; size: number }) => ({ px: String(l.price), sz: String(l.size), n: 1 });
             return send(response, { coin, time: Date.now(), levels: [book.bids.map(level), book.asks.map(level)] });
         }
+        if (type === "candleSnapshot") {
+            const req = body.req as { coin: string; interval: string; startTime: number; endTime?: number | null };
+            candleReads.push({
+                coin: req.coin,
+                interval: req.interval,
+                startTime: req.startTime,
+                endTime: req.endTime ?? null,
+            });
+            if (candlesFail) return void response.writeHead(500).end("Failing on purpose");
+            const width = CANDLE_MS[req.interval];
+            if (!width || indexOf(req.coin) < 0) return send(response, []);
+            const now = Date.now();
+            const last = Math.min(req.endTime ?? now, now);
+            const opens: number[] = [];
+            for (let open = Math.ceil(req.startTime / width) * width; open <= last; open += width) opens.push(open);
+            return send(
+                response,
+                opens.slice(-CANDLE_CAP).map((open) => {
+                    const close = fmt(candleClose(req.coin, open));
+                    return {
+                        t: open,
+                        T: open + width - 1,
+                        s: req.coin,
+                        i: req.interval,
+                        o: close,
+                        c: close,
+                        h: close,
+                        l: close,
+                        v: "1.0",
+                        n: 1,
+                    };
+                }),
+            );
+        }
         if (type === "clearinghouseState") return send(response, stateOf(user));
         if (type === "userFees") {
             return send(response, {
@@ -544,6 +605,9 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
         requests,
         usdSends,
         orders,
+        candleReads,
+        candleClose,
+        failCandles: (on) => void (candlesFail = on),
         setMark: (asset, px) => void marks.set(asset, px),
         setBook: (asset, book) => void books.set(asset, book),
         fund: (address, usdE6) => void (accountOf(address).freeE6 += usdE6),
@@ -609,6 +673,8 @@ export async function startFakeHyperliquid(): Promise<FakeHyperliquid> {
             requests.length = 0;
             usdSends.length = 0;
             orders.length = 0;
+            candleReads.length = 0;
+            candlesFail = false;
             for (const map of [accounts, fills, statuses, marks, books, seenNonces]) map.clear();
             next = undefined;
             usdSendFails = false;

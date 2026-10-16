@@ -102,6 +102,40 @@ describe("meta", () => {
     });
 });
 
+describe("candles", () => {
+    const HOUR = 3_600_000;
+
+    it("candles read a window oldest first as each candle's open time and close", async () => {
+        const end = Date.now();
+        const candles = await client.candles("BTC", "1h", end - 5 * HOUR, end);
+
+        // The hours opening inside the window, the current one included
+        const opens = candles.map((candle) => candle.openMs);
+        expect(opens).toEqual(Array.from({ length: opens.length }, (_, i) => opens[0]! + i * HOUR));
+        expect(opens.length).toBeGreaterThanOrEqual(5);
+        expect(opens[0]!).toBeGreaterThanOrEqual(end - 5 * HOUR);
+        expect(opens.at(-1)).toBe(Math.floor(end / HOUR) * HOUR);
+        for (const { openMs, close } of candles) expect(close).toBe(fake.candleClose("BTC", openMs));
+        expect(fake.candleReads.at(-1)).toEqual({
+            coin: "BTC",
+            interval: "1h",
+            startTime: end - 5 * HOUR,
+            endTime: end,
+        });
+    });
+
+    it("candles of a market Hyperliquid doesn't list are empty", async () => {
+        const end = Date.now();
+        expect(await client.candles("NOPE", "1h", end - 5 * HOUR, end)).toEqual([]);
+    });
+
+    it("a refused read throws", async () => {
+        fake.failCandles(true);
+        const end = Date.now();
+        await expect(client.candles("BTC", "1h", end - HOUR, end)).rejects.toThrow();
+    });
+});
+
 describe("order", () => {
     it("a filled order parses totalSz and avgPx", async () => {
         fake.setMark("BTC", 65_000);

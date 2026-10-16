@@ -8,6 +8,7 @@ const stuck = {
     state: () => hung,
     userFees: () => hung,
     fills: () => hung,
+    candles: () => hung,
     orderStatus: () => hung,
     usdSend: () => hung,
     updateLeverage: () => hung,
@@ -22,6 +23,7 @@ test("each call is bounded by ms", async () => {
     await expect(client.state("0x1")).rejects.toThrow(/timed out/);
     await expect(client.userFees("0x1")).rejects.toThrow(/timed out/);
     await expect(client.fills("0x1", 0)).rejects.toThrow(/timed out/);
+    await expect(client.candles("BTC", "1h", 0, 1)).rejects.toThrow(/timed out/);
     await expect(client.orderStatus("0x1", "0xc")).rejects.toThrow(/timed out/);
     await expect(client.usdSend(signer, "0x2", 1n, 1)).rejects.toThrow(/timed out/);
     await expect(client.updateLeverage(signer, "BTC", 2)).rejects.toThrow(/timed out/);
