@@ -10,7 +10,8 @@ const ICON_URL = "https://app.hyperliquid.xyz/coins/";
  */
 const STAND_INS = new Set(["41e67d90ffbc848e546755c84fa4e888edd15035f9f5d0986513fb6195e4695d"]);
 
-const TIMEOUT_MS = 5_000;
+/** The whole download, body included: the largest logos are a few MB and a busy link reads them slowly. */
+const TIMEOUT_MS = 15_000;
 const MAX_BYTES = 5 * 1024 * 1024;
 
 const HIT_MS = 24 * 3_600_000;

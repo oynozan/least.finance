@@ -22,9 +22,9 @@ const LIT = 0.4;
 
 /**
  * A logo with less than this share of lit pixels is black on the dark app and shows nothing, so it gets the
- * light disc. On the live set only FARTCOIN (0.013) is below it; the next darkest coin, GOAT, has 0.031.
+ * light disc. On the live set FARTCOIN (0.013) and GOAT (0.031) are below it; the next darkest coin, INIT, has 0.044.
  */
-export const MIN_LIT_SHARE = 0.02;
+export const MIN_LIT_SHARE = 0.038;
 
 export type Measure = {
     /** The share of the circle just inside a round coin's edge that is opaque. */
