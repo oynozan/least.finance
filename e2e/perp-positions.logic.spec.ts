@@ -39,6 +39,37 @@ const position = (over: Partial<PerpPositionView> = {}): PerpPositionView => ({
 const rows = (positions: PerpPositionView[], now = NOW): LivePerpPosition[] =>
     livePerpRows({ positions, orders: [] } satisfies PerpsView, now);
 
+/** An open order that filled into `positionId` */
+const openOrder = (requestId: string, positionId: string | null): PerpsView["orders"][number] => ({
+    id: `o-${requestId}`,
+    requestId,
+    kind: "open",
+    asset: "BTC",
+    side: "long",
+    leverage: 5,
+    state: positionId ? "filled" : "posted",
+    reason: null,
+    positionId,
+    filledSizeCoin: positionId ? "0.00769" : null,
+    requestedSizeCoin: "0.00769",
+    collateralUSD: "100",
+    creditedUSD: null,
+    createdAt: iso(NOW - 60_000),
+    updatedAt: iso(NOW - 30_000),
+});
+
+test("an open keeps one row key from its pending stand-in to its filled position, so the fill updates the row in place", () => {
+    const [pending] = livePerpRows({ positions: [position({ id: "pending:req-1" })], orders: [] }, NOW);
+    const [filled] = livePerpRows(
+        { positions: [position({ id: "pos-1" })], orders: [openOrder("req-1", "pos-1")] },
+        NOW,
+    );
+    expect(pending?.rowKey).toBe("perp:req-1");
+    expect(filled?.rowKey).toBe(pending?.rowKey);
+    // A position no open order names keeps its own id
+    expect(livePerpRows({ positions: [position({ id: "pos-2" })], orders: [] }, NOW)[0]?.rowKey).toBe("perp:pos-2");
+});
+
 const only = (over: Partial<PerpPositionView> = {}, now = NOW) => {
     const [row] = rows([position(over)], now);
     if (!row) throw new Error("no row");

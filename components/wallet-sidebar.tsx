@@ -303,7 +303,7 @@ function SignedInWallet() {
                         <AnimatePresence mode="popLayout">
                             {positions.map((position, i) => (
                                 <PositionRow
-                                    key={position.id}
+                                    key={position.kind === "perp-live" ? position.rowKey : position.id}
                                     position={position}
                                     entranceDelay={entranceDelay(i, positions.length)}
                                     market={marketOf(position, known)}

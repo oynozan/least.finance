@@ -30,6 +30,8 @@ export type LivePredictionPosition = {
 /** A Hyperliquid position the server holds, or an open on its way; its worth comes from the last mark. */
 export type LivePerpPosition = {
     id: string;
+    /** The row's key: an open keeps one from its pending stand-in to its filled position, so the fill updates the row in place. */
+    rowKey: string;
     kind: "perp-live";
     /** The asset, for the logo. */
     symbol: CoinSymbol;
@@ -236,10 +238,15 @@ function marked(p: PerpPositionView, marks: Record<string, number>): PerpPositio
 
 /** The rows for the person's perps: open and closing ones, an open on its way, and ones settled in the last week; `marks` are live prices by asset. */
 export function livePerpRows(
-    { positions }: PerpsView,
+    { positions, orders }: PerpsView,
     now = Date.now(),
     marks: Record<string, number> = {},
 ): LivePerpPosition[] {
+    const openedBy = new Map(
+        orders.filter((o) => o.kind === "open" && o.positionId).map((o) => [o.positionId, o.requestId]),
+    );
+    const rowKey = (p: PerpPositionView) =>
+        `perp:${isPendingPerp(p) ? p.id.slice("pending:".length) : (openedBy.get(p.id) ?? p.id)}`;
     return positions
         .map((p) => marked(p, marks))
         .filter(
@@ -255,6 +262,7 @@ export function livePerpRows(
             const payout = settled ? Number(p.proceedsUSD ?? 0) : null;
             return {
                 id: p.id,
+                rowKey: rowKey(p),
                 kind: "perp-live",
                 symbol: p.asset,
                 size: collateral,
