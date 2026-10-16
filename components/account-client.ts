@@ -46,6 +46,7 @@ import type {
     SwapHoldingsView,
     SwapOrderView,
     SwapQuoteView,
+    SwapOrderRequest,
     SwapRequest,
     SwapTxView,
     WithdrawQuote,
@@ -1029,7 +1030,7 @@ export class AccountClient {
      * are reported; they are kept until the server acknowledges them. The order is listed only
      * once the wallet has sent it: one whose prompt was turned down never started.
      */
-    async placeSwap(req: SwapRequest & { reviewedMin: string }, signer: SwapSigner): Promise<SwapResult> {
+    async placeSwap(req: SwapOrderRequest, signer: SwapSigner): Promise<SwapResult> {
         const socket = this.#socket;
         const userId = this.#userId;
         if (this.#snapshot.state.status !== "ready" || !socket || !userId) {

@@ -4,7 +4,7 @@ import type { IdentityProvider, Identity } from "../auth/identity.ts";
 import type { AccountDoc, Collections, SwapOrderDoc } from "../db/mongo.ts";
 import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
-import type { SwapQuoteView, SwapRequest, SwapSide, SwapTxView } from "../protocol.ts";
+import type { SwapOrderRequest, SwapQuoteView, SwapRequest, SwapSide, SwapTxView } from "../protocol.ts";
 import type { SwapCatalog } from "./catalog.ts";
 import { checkQuote } from "./check.ts";
 import type { EvmNetworkId } from "./clients.ts";
@@ -87,11 +87,15 @@ export class SwapOrders {
         return this.#remember(key, view);
     }
 
-    /** Quotes again, checks the price against the reviewed one and opens an order; the wallet then signs `txs` and reports their hashes. */
+    /**
+     * Quotes again, checks the price against the reviewed one and opens an order; the wallet then signs `txs` and reports
+     * their hashes. A `slippage` is the one the review showed, which LI.FI is asked for so that only a move in the price
+     * changes the minimum; without it LI.FI picks again.
+     */
     async create(
         account: AccountDoc,
         identity: Identity,
-        req: SwapRequest & { reviewedMin: string },
+        req: SwapOrderRequest,
         ip: string,
     ): Promise<{ order: SwapOrderDoc; txs: SwapTxView[] }> {
         const { collections } = this.#deps;
@@ -103,8 +107,8 @@ export class SwapOrders {
             throw new AppError("rate_limited", "Too many swaps are still waiting. Try again in a few minutes.");
         }
 
-        const { reviewedMin, ...request } = req;
-        const prepared = await this.#fetch(await this.#plan(account, identity, request));
+        const { reviewedMin, slippage, ...request } = req;
+        const prepared = await this.#fetch(await this.#plan(account, identity, request), slippage);
         const { quote, from, to } = prepared;
         // The fresh quote becomes the cached one, so a refused confirm shows the new price
         const approvals = await this.#approvals(prepared);
@@ -231,6 +235,8 @@ export class SwapOrders {
             fromAmount: formatUnits(BigInt(quote.fromAmount), from.decimals),
             toAmount: formatUnits(BigInt(quote.toAmount), to.decimals),
             toAmountMin: formatUnits(BigInt(quote.toAmountMin), to.decimals),
+            // Over the most an order may pin, as an intent route can report, there is none to send back
+            ...(quote.slippage > 0 && quote.slippage <= MAX_QUOTE_SLIPPAGE && { slippage: quote.slippage }),
             fees: quote.fees.map((fee) => ({ name: fee.name, usd: fee.amountUSD })),
             gasUSD: quote.gasUSD,
             etaSeconds: quote.etaSeconds,
@@ -314,8 +320,8 @@ export class SwapOrders {
         return { from, symbol: req.from.token, to, fromNetwork, toNetwork, wallet, receiver, fromUnits };
     }
 
-    /** Asks LI.FI for the plan's swap and checks the transaction it built. */
-    async #fetch(plan: Plan): Promise<Prepared> {
+    /** Asks LI.FI for the plan's swap, at `slippage` when given, and checks the transaction it built. */
+    async #fetch(plan: Plan, slippage?: number): Promise<Prepared> {
         const { lifi, integrator, fee } = this.#deps;
         const { from, to, fromNetwork, toNetwork, wallet, receiver, fromUnits } = plan;
         const [quote, diamond] = await this.#lifi(async () => {
@@ -328,6 +334,7 @@ export class SwapOrders {
                 fromAddress: wallet,
                 toAddress: receiver,
                 fromAmount: fromUnits.toString(),
+                ...(slippage !== undefined && { slippage }),
                 integrator,
                 ...(fee > 0 && { fee }),
             });

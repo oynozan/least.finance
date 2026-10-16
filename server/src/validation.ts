@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AppError } from "./errors.ts";
 import { PRICE_RANGES } from "./prices/history.ts";
 import { COINS, NETWORKS, type NetworkId } from "./swaps/coins.ts";
+import { MAX_QUOTE_SLIPPAGE } from "./swaps/lifi.ts";
 
 export const depositReport = z.object({
     txHash: z
@@ -162,6 +163,7 @@ export const swapRequest = z.object({
 
 export const swapOrder = swapRequest.extend({
     reviewedMin: z.string().regex(/^\d{1,30}(\.\d{1,30})?$/, "an amount such as 0.5"),
+    slippage: z.number().gt(0).max(MAX_QUOTE_SLIPPAGE).optional(),
 });
 
 export const swapSent = z.object({

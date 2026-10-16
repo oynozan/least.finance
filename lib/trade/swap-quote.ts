@@ -1,5 +1,5 @@
 import type { PreviewRow } from "@/lib/sentence";
-import type { SwapQuoteView } from "@/server/src/protocol";
+import type { SwapOrderRequest, SwapQuoteView } from "@/server/src/protocol";
 import { priceOf, type TradeCtx } from "./context";
 import { formatUnits, formatUsd } from "./format";
 import { networkName } from "./networks";
@@ -48,4 +48,13 @@ export function swapQuoteRows(quote: SwapQuoteView, ctx: TradeCtx): PreviewRow[]
         { id: "time", label: "Time", value: formatEta(quote.etaSeconds) },
         { id: "route", label: "Route", value: quote.tool },
     ];
+}
+
+/** The order to open for a reviewed quote: its request, the minimum shown, and the slippage it was built with so the confirm is quoted the same way. */
+export function swapOrderOf(quote: SwapQuoteView): SwapOrderRequest {
+    return {
+        ...quote.request,
+        reviewedMin: quote.toAmountMin,
+        ...(quote.slippage !== undefined && { slippage: quote.slippage }),
+    };
 }

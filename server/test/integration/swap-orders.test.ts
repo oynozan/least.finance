@@ -310,6 +310,74 @@ describe("opening orders", () => {
         expect(again).toMatchObject({ ok: true, data: { toAmountMin: formatUnits((min * 99n) / 100n, 18) } });
     });
 
+    test("the review carries the slippage LI.FI picked, and none when it is one no order may pin", async () => {
+        const user = await holder();
+        const { socket } = await bind(user);
+
+        expect(await quote(socket, request(user, { amountUSD: "109" }))).toMatchObject({
+            ok: true,
+            data: { slippage: 0.006 },
+        });
+
+        // An intent route can report more than the 2% an order may pin
+        stack.lifi.nextQuote({ action: { slippage: 0.0471 } }, user.wallet);
+        const intent = await quote(socket, request(user, { amountUSD: "110" }));
+        expect(intent.ok && intent.data).not.toHaveProperty("slippage");
+    });
+
+    test("the confirm is quoted at the slippage that was reviewed, so a different pick isn't read as a price move", async () => {
+        const user = await holder();
+        const { socket } = await bind(user);
+        const req = request(user, { amountUSD: "111" });
+        const reviewed = await quote(socket, req);
+        if (!reviewed.ok) throw new Error(reviewed.error.code);
+        const { toAmount, toAmountMin, slippage } = reviewed.data;
+        expect(slippage).toBe(0.006);
+
+        // Left to Smart Slippage, LI.FI picks 1.9% this time, and the minimum falls past the drift tolerance
+        const repicked = () =>
+            stack.lifi.nextQuote(
+                {
+                    action: { slippage: 0.019 },
+                    estimate: { toAmountMin: String((parseUnits(toAmount, 18) * 981n) / 1000n) },
+                },
+                user.wallet,
+            );
+        repicked();
+        expect(await order(socket, req, toAmountMin)).toMatchObject({ ok: false, error: { code: "price_moved" } });
+        expect(stack.lifi.quotes.at(-1)).not.toHaveProperty("slippage");
+
+        // Asked for the reviewed slippage, LI.FI builds the same minimum
+        const pinned = (await socket
+            .timeout(5000)
+            .emitWithAck("swap:order", { ...req, reviewedMin: toAmountMin, slippage })) as Awaited<
+            ReturnType<typeof order>
+        >;
+        if (!pinned.ok) throw new Error(pinned.error.code);
+        expect(stack.lifi.quotes.at(-1)).toMatchObject({ slippage: 0.006 });
+        const made = await orders().findOne({ _id: new ObjectId(pinned.data.order.id) });
+        expect(made?.to.minAmount).toBe(toAmountMin);
+    });
+
+    test("an order that names no slippage is quoted without one", async () => {
+        const user = await holder();
+        const { socket } = await bind(user);
+        await opened(socket, request(user, { amountUSD: "112" }));
+        expect(stack.lifi.quotes.at(-1)).not.toHaveProperty("slippage");
+    });
+
+    test("a slippage over 2% on an order is refused", async () => {
+        const user = await holder();
+        const { socket } = await bind(user);
+        const result = (await socket
+            .timeout(5000)
+            .emitWithAck("swap:order", { ...request(user), reviewedMin: "0", slippage: 0.03 })) as Awaited<
+            ReturnType<typeof order>
+        >;
+        expect(result).toMatchObject({ ok: false, error: { code: "bad_request" } });
+        expect(await orders().countDocuments({ wallet: getAddress(user.wallet) })).toBe(0);
+    });
+
     test("a small move inside the drift tolerance still opens", async () => {
         const user = await holder();
         const { socket } = await bind(user);

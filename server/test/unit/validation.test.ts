@@ -9,6 +9,7 @@ import {
     perpOrder,
     perpQuote,
     sourceReport,
+    swapOrder,
     withdrawRequest,
 } from "../../src/validation.ts";
 
@@ -181,4 +182,27 @@ describe("perp input", () => {
             expect(() => parse(perpQuote, { ...quote, asset })).toThrow(AppError);
         },
     );
+});
+
+describe("swap order input", () => {
+    const order = {
+        from: { token: "USDC", network: "ethereum" },
+        to: { token: "ETH", network: "base" },
+        amountUSD: "100",
+        wallet: "0x1111111111111111111111111111111111111111",
+        receiver: "0x1111111111111111111111111111111111111111",
+        reviewedMin: "0.03",
+    };
+
+    it("takes an order with no slippage, as an older client sends it", () => {
+        expect(parse(swapOrder, order)).not.toHaveProperty("slippage");
+    });
+
+    it.each([0.0001, 0.006, 0.0159, 0.02])("takes the reviewed slippage %s", (slippage) => {
+        expect(parse(swapOrder, { ...order, slippage }).slippage).toBe(slippage);
+    });
+
+    it.each([0, -0.01, 0.0201, 0.05, 1, "0.01", null, Number.NaN])("rejects the slippage %s", (slippage) => {
+        expect(() => parse(swapOrder, { ...order, slippage })).toThrow(AppError);
+    });
 });

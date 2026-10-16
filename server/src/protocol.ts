@@ -254,9 +254,9 @@ export type ClientToServerEvents = TradingClientEvents & {
     ) => void;
     /** What a swap would pay right now, with no order opened. */
     "swap:quote": (req: SwapRequest, ack: (result: Ack<SwapQuoteView>) => void) => void;
-    /** Quotes again and opens a swap order; `reviewedMin` is the `toAmountMin` the person saw. */
+    /** Quotes again, at the reviewed slippage when the request names one, and opens a swap order. */
     "swap:order": (
-        req: SwapRequest & { reviewedMin: string },
+        req: SwapOrderRequest,
         ack: (result: Ack<{ order: SwapOrderView; txs: SwapTxView[] }>) => void,
     ) => void;
     /** Reports the hashes of the transactions the wallet sent for a swap order, approvals first. */
@@ -586,12 +586,17 @@ export type SwapSide = { token: string; network: SwapNetworkId };
 /** `wallet` pays and signs; `receiver` is the person's own wallet on the receiving network's kind. */
 export type SwapRequest = { from: SwapSide; to: SwapSide; amountUSD: string; wallet: string; receiver: string };
 
+/** A swap request to open as an order: `reviewedMin` is the `toAmountMin` the person saw, and `slippage` the quote's, which asks LI.FI for the same slippage again. */
+export type SwapOrderRequest = SwapRequest & { reviewedMin: string; slippage?: number };
+
 /** Amounts are decimal coin units. */
 export type SwapQuoteView = {
     request: SwapRequest;
     fromAmount: string;
     toAmount: string;
     toAmountMin: string;
+    /** The slippage LI.FI built `toAmountMin` with, sent back with the order; left out when it is over what an order may pin. */
+    slippage?: number;
     fees: { name: string; usd: number }[];
     gasUSD: number;
     etaSeconds: number;

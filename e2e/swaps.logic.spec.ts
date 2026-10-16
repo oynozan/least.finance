@@ -14,7 +14,7 @@ import type { SwapHoldingsView, SwapOrderView, SwapQuoteView } from "@/server/sr
 import { swapActivity } from "@/lib/trade/activity";
 import { CATALOG, TOKENS } from "@/lib/trade/catalog";
 import type { TradeCtx } from "@/lib/trade/context";
-import { formatEta, swapQuoteRows } from "@/lib/trade/swap-quote";
+import { formatEta, swapOrderOf, swapQuoteRows } from "@/lib/trade/swap-quote";
 
 const EVM = "0xAbCdEf0000000000000000000000000000000001";
 const SOL = "So11111111111111111111111111111111111111112";
@@ -185,6 +185,17 @@ test("the quote's rows show what is paid, got, at least, the fees, the gas, the 
         ["Route", "Fake Bridge"],
     ]);
     expect(rows.filter((r) => r.primary).map((r) => r.id)).toEqual(["pay", "get"]);
+});
+
+test("the order for a reviewed quote carries its request, the minimum shown and the slippage it was built with", () => {
+    const reviewed = { ...quote(), slippage: 0.0159 };
+    expect(swapOrderOf(reviewed)).toEqual({ ...reviewed.request, reviewedMin: "9.925", slippage: 0.0159 });
+});
+
+test("a quote with no slippage to pin makes an order without one", () => {
+    const order = swapOrderOf(quote());
+    expect(order).toEqual({ ...quote().request, reviewedMin: "9.925" });
+    expect(order).not.toHaveProperty("slippage");
 });
 
 test("a coin without a price shows a dash, never $0", () => {

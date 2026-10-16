@@ -29,6 +29,7 @@ import {
 import type { CoinWithdrawRequest, TradeOrderRequest } from "@/server/src/trading/types";
 import { sameWallet } from "@/lib/account/balances";
 import { API_URL } from "@/lib/api";
+import { swapOrderOf } from "@/lib/trade/swap-quote";
 import { ensureNetwork } from "@/lib/wallet/network";
 import type {
     ActivityFilter,
@@ -86,8 +87,8 @@ export type Account = {
     connected: Signers;
     /** What a swap would pay right now, with no order opened. */
     quoteSwap: (req: SwapRequest) => Promise<SwapQuoteView | { error: ApiError }>;
-    /** Opens a swap order and has the wallet that pays sign it; `reviewedMin` is the minimum received the person saw. */
-    placeSwap: (req: SwapRequest, reviewedMin: string) => Promise<SwapResult>;
+    /** Opens an order for the quote the person reviewed and has the wallet that pays sign it. */
+    placeSwap: (quote: SwapQuoteView) => Promise<SwapResult>;
     /** Bridge orders still open, newest first. */
     orders: DepositOrderView[];
     /** Whether a deposit can be sent from this wallet now: it's connected in this browser and can sign. */
@@ -280,9 +281,10 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
         }
     };
 
-    const placeSwap = async (req: SwapRequest, reviewedMin: string): Promise<SwapResult> => {
+    const placeSwap = async (quote: SwapQuoteView): Promise<SwapResult> => {
+        const order = swapOrderOf(quote);
         // The wallet that pays signs: the linked EVM one, or the Solana one.
-        const paying = wallets.find((w) => w.address.toLowerCase() === req.wallet.toLowerCase());
+        const paying = wallets.find((w) => w.address.toLowerCase() === order.wallet.toLowerCase());
         try {
             const evm = paying
                 ? {
@@ -291,7 +293,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
                       ensure: (id: number) => ensureNetwork(paying, id),
                   }
                 : undefined;
-            return await client.placeSwap({ ...req, reviewedMin }, { evm, solana: solanaSigner });
+            return await client.placeSwap(order, { evm, solana: solanaSigner });
         } catch (error) {
             return (error as { code?: unknown }).code === 4001
                 ? { status: "cancelled" }
