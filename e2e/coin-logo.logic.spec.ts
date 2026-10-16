@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import sharp from "sharp";
 import { GET } from "@/app/coin-logo/[symbol]/route";
 import { LOGO_SIZE, renderLogo } from "@/lib/coin-logo/render";
+import { clearListedCoins } from "@/lib/coin-logo/listed";
 import { clearCoinLogos, isStandIn } from "@/lib/coin-logo/source";
 import { WORK_SIZE, chooseLook, measure } from "@/lib/coin-logo/shape";
 import { baseTicker, coinLogoBase } from "@/lib/coin-logo/symbol";
@@ -143,17 +144,66 @@ test.describe("coin logo rendering", () => {
 test.describe("GET /coin-logo/<symbol>", () => {
     test.describe.configure({ mode: "serial" });
 
+    const META_URL = "https://api.hyperliquid.xyz/info";
+    const LOGO_URL = "https://app.hyperliquid.xyz/coins/";
+    /** The coins the stubbed list has by default: every ticker the tests below ask a logo for. */
+    const LISTED = [
+        "BTC",
+        "kPEPE",
+        "SOLX",
+        "PEOPLE",
+        "DOWN",
+        "MOVED",
+        "BROKEN",
+        "HUGE",
+        "GONE",
+        "JSONY",
+        "PNGY",
+        ...Array.from({ length: 210 }, (_, n) => `C${n}`),
+    ];
+
     const realFetch = globalThis.fetch;
+    const realNow = Date.now;
+    /** Logo downloads, and reads of the list of coins, as the stubbed fetch saw them. */
     let calls: string[] = [];
+    let metaCalls: (RequestInit | undefined)[] = [];
     let answer: (url: string) => Response | Promise<Response> = () => new Response("", { status: 404 });
+    let metaAnswer: () => Response | Promise<Response> = () => listing(LISTED);
+    let skew = 0;
+
+    /** Hyperliquid's answer to the list of perps: these coins live, and those delisted. */
+    const listing = (names: string[], delisted: string[] = []) =>
+        new Response(
+            JSON.stringify({
+                universe: [
+                    ...names.map((name) => ({ name, szDecimals: 1, maxLeverage: 5 })),
+                    ...delisted.map((name) => ({ name, szDecimals: 1, maxLeverage: 5, isDelisted: true })),
+                ],
+                marginTables: [],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+        );
+    /** Moves the clock on. */
+    const later = (minutes: number) => {
+        skew += minutes * 60_000;
+    };
 
     test.beforeEach(() => {
         calls = [];
+        metaCalls = [];
         answer = () => new Response("", { status: 404 });
+        metaAnswer = () => listing(LISTED);
+        skew = 0;
         clearCoinLogos();
+        clearListedCoins();
         delete process.env.COIN_LOGOS_REMOTE;
-        globalThis.fetch = (async (input: string | URL | Request) => {
+        Date.now = () => realNow() + skew;
+        globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
             const url = String(input instanceof Request ? input.url : input);
+            if (url === META_URL) {
+                metaCalls.push(init);
+                return metaAnswer();
+            }
             calls.push(url);
             return answer(url);
         }) as typeof fetch;
@@ -161,6 +211,7 @@ test.describe("GET /coin-logo/<symbol>", () => {
 
     test.afterEach(() => {
         globalThis.fetch = realFetch;
+        Date.now = realNow;
         delete process.env.COIN_LOGOS_REMOTE;
     });
 
@@ -175,6 +226,7 @@ test.describe("GET /coin-logo/<symbol>", () => {
         expect(res.status).toBe(404);
         expect(res.headers.get("cache-control")).toBe("no-store");
         expect(calls).toEqual([]);
+        expect(metaCalls).toEqual([]);
     });
 
     test("is a cacheable 404, and asks nobody, for a symbol that can't be a ticker", async () => {
@@ -184,6 +236,7 @@ test.describe("GET /coin-logo/<symbol>", () => {
             expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
         }
         expect(calls).toEqual([]);
+        expect(metaCalls).toEqual([]);
     });
 
     test("serves a drawn WebP with a day's caching, fetched from the one host under the base coin's name", async () => {
@@ -271,6 +324,132 @@ test.describe("GET /coin-logo/<symbol>", () => {
         const png = await sharp(Buffer.from(ROUND)).resize(64, 64).png().toBuffer();
         answer = () => new Response(new Uint8Array(png), { status: 200, headers: { "content-type": "image/png" } });
         expect((await get("PNGY")).status).toBe(200);
+    });
+
+    test("reads Hyperliquid's list of perps with one fixed request, and fetches a listed coin's logo once", async () => {
+        answer = () => image_(ROUND);
+        expect((await get("PEPE")).status).toBe(200);
+        expect((await get("kPEPE")).status).toBe(200);
+        expect((await get("PEPE")).status).toBe(200);
+        expect(calls).toEqual([`${LOGO_URL}PEPE.svg`]);
+        expect(metaCalls).toHaveLength(1);
+        expect(metaCalls[0]?.method).toBe("POST");
+        expect(metaCalls[0]?.body).toBe(JSON.stringify({ type: "meta" }));
+        expect(metaCalls[0]?.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    test("never asks for a logo of a ticker Hyperliquid doesn't list, or has delisted", async () => {
+        answer = () => image_(ROUND);
+        metaAnswer = () => listing(["BTC", "kPEPE"], ["MATIC"]);
+        for (const made of ["NOSUCH", "kNOSUCH", "MATIC", "kMATIC", "pepe", "KPEPE"]) {
+            const res = await get(made);
+            expect(res.status, made).toBe(404);
+            expect(res.headers.get("cache-control"), made).toBe("public, max-age=3600");
+        }
+        expect(calls).toEqual([]);
+        expect(metaCalls).toHaveLength(1);
+    });
+
+    test("lets a k-asset through when its base coin is the one listed, and the base when the k-asset is", async () => {
+        answer = () => image_(ROUND);
+        metaAnswer = () => listing(["PEPE", "kBONK"]);
+        expect((await get("kPEPE")).status).toBe(200);
+        expect((await get("BONK")).status).toBe(200);
+        expect((await get("kBONK")).status).toBe(200);
+        expect((await get("SHIB")).status).toBe(404);
+        expect((await get("kSHIB")).status).toBe(404);
+        expect(calls).toEqual([`${LOGO_URL}PEPE.svg`, `${LOGO_URL}BONK.svg`]);
+    });
+
+    test("shares one read of the list between asks at the same time", async () => {
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        metaAnswer = async () => {
+            await gate;
+            return listing(LISTED);
+        };
+        answer = () => image_(ROUND);
+        const asks = [get("PEPE"), get("SOLX"), get("NOSUCH")];
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(metaCalls).toHaveLength(1);
+        expect(calls).toEqual([]);
+        release();
+        expect((await Promise.all(asks)).map((res) => res.status)).toEqual([200, 200, 404]);
+        expect(metaCalls).toHaveLength(1);
+    });
+
+    test("reads the list again after ten minutes, and a coin no longer on it loses its logo", async () => {
+        answer = () => image_(ROUND);
+        metaAnswer = () => listing(["OLDX"]);
+        expect((await get("OLDX")).status).toBe(200);
+        later(9);
+        expect((await get("OLDX")).status).toBe(200);
+        expect(metaCalls).toHaveLength(1);
+        metaAnswer = () => listing(["NEWX"]);
+        later(2);
+        expect((await get("NEWX")).status).toBe(200);
+        expect(metaCalls).toHaveLength(2);
+        const gone = await get("OLDX");
+        expect(gone.status).toBe(404);
+        expect(gone.headers.get("cache-control")).toBe("public, max-age=3600");
+        expect(calls).toEqual([`${LOGO_URL}OLDX.svg`, `${LOGO_URL}NEWX.svg`]);
+    });
+
+    const BAD_ANSWERS: [string, () => Response | Promise<Response>][] = [
+        ["a server error", () => new Response("", { status: 503 })],
+        ["a redirect", () => new Response("", { status: 302, headers: { location: "https://evil.example/info" } })],
+        ["a network failure", () => Promise.reject(new Error("network down"))],
+        ["something that isn't JSON", () => new Response("<html></html>", { status: 200 })],
+        ["JSON with no coins", () => new Response('{"universe":[]}', { status: 200 })],
+        ["JSON of another shape", () => new Response('{"coins":["BTC"]}', { status: 200 })],
+        ["more than the size limit", () => new Response("x".repeat(600 * 1024), { status: 200 })],
+    ];
+
+    test("keeps the last good list when a later read fails, and tries again after a minute", async () => {
+        answer = () => image_(ROUND);
+        expect((await get("PEPE")).status).toBe(200);
+        for (const [what, respond] of BAD_ANSWERS) {
+            later(11);
+            metaAnswer = respond;
+            const before = metaCalls.length;
+            expect((await get("SOLX")).status, what).toBe(200);
+            expect(metaCalls.length, what).toBe(before + 1);
+            // Within the minute nobody asks Hyperliquid again.
+            later(0.5);
+            expect((await get("PEPE")).status, what).toBe(200);
+            expect((await get("NOSUCH")).status, what).toBe(404);
+            expect(metaCalls.length, what).toBe(before + 1);
+        }
+        later(1);
+        metaAnswer = () => listing(["OTHERX"]);
+        expect((await get("OTHERX")).status).toBe(200);
+        expect((await get("SOLX")).status).toBe(404);
+    });
+
+    test("denies every coin, with a short-cached 404 and no logo fetch, while the first read of the list fails", async () => {
+        answer = () => image_(ROUND);
+        for (const [what, respond] of BAD_ANSWERS) {
+            clearListedCoins();
+            metaAnswer = respond;
+            const res = await get("PEPE");
+            expect(res.status, what).toBe(404);
+            expect(res.headers.get("cache-control"), what).toBe("public, max-age=60");
+        }
+        expect(calls).toEqual([]);
+    });
+
+    test("tries the first read again after a minute, and not before", async () => {
+        answer = () => image_(ROUND);
+        metaAnswer = () => new Response("", { status: 503 });
+        expect((await get("PEPE")).status).toBe(404);
+        metaAnswer = () => listing(LISTED);
+        later(0.5);
+        expect((await get("PEPE")).status).toBe(404);
+        expect(metaCalls).toHaveLength(1);
+        expect(calls).toEqual([]);
+        later(1);
+        expect((await get("PEPE")).status).toBe(200);
+        expect(metaCalls).toHaveLength(2);
     });
 
     test("treats a file the source puts in place of a logo as no logo", () => {

@@ -1,3 +1,4 @@
+import { coinListing } from "@/lib/coin-logo/listed";
 import { coinLogoBase } from "@/lib/coin-logo/symbol";
 import { coinLogo, remoteLogosOn } from "@/lib/coin-logo/source";
 
@@ -10,12 +11,15 @@ const FAILED = "public, max-age=60";
 const notFound = (cacheControl: string) =>
     new Response(null, { status: 404, headers: { "Cache-Control": cacheControl } });
 
-/** A coin's logo as a 128 px WebP, fetched from Hyperliquid and drawn on first request. 404 when there is none. */
+/** A listed coin's logo as a 128 px WebP, fetched from Hyperliquid and drawn on first request. 404 when there is none. */
 export async function GET(_request: Request, ctx: { params: Promise<{ symbol: string }> }) {
     const { symbol } = await ctx.params;
     const base = coinLogoBase(symbol);
     if (!base) return notFound(MISSING);
     if (!remoteLogosOn()) return notFound("no-store");
+    // Only a coin Hyperliquid lists is asked for, so a made-up ticker costs nothing upstream.
+    const listing = await coinListing(symbol);
+    if (listing !== "listed") return notFound(listing === "unlisted" ? MISSING : FAILED);
     const logo = await coinLogo(base);
     if (logo.status === "found") {
         return new Response(new Uint8Array(logo.webp), {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readCapped } from "./body";
 import { renderLogo, type RenderedLogo } from "./render";
 
 /** Where the logos come from: one fixed host, never a URL a visitor can steer. */
@@ -62,29 +63,6 @@ async function turn<T>(run: () => Promise<T>): Promise<T | null> {
     }
 }
 
-/** The body of a response up to MAX_BYTES, or null when it is bigger. */
-async function readCapped(res: Response): Promise<Buffer | null> {
-    if (Number(res.headers.get("content-length")) > MAX_BYTES) {
-        await res.body?.cancel();
-        return null;
-    }
-    if (!res.body) return Buffer.alloc(0);
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    const reader = res.body.getReader();
-    for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.length;
-        if (total > MAX_BYTES) {
-            await reader.cancel();
-            return null;
-        }
-        chunks.push(value);
-    }
-    return Buffer.concat(chunks);
-}
-
 /** The source's file for a coin: its bytes and whether it is an SVG, or null when the source has none. */
 async function download(base: string): Promise<{ bytes: Buffer; vector: boolean } | null> {
     const res = await fetch(`${ICON_URL}${base}.svg`, {
@@ -104,7 +82,7 @@ async function download(base: string): Promise<{ bytes: Buffer; vector: boolean 
         }
         return null;
     }
-    const bytes = await readCapped(res);
+    const bytes = await readCapped(res, MAX_BYTES);
     if (!bytes?.length) throw new Error("source file is empty or over the size limit");
     return isStandIn(bytes) ? null : { bytes, vector };
 }
