@@ -5,7 +5,7 @@ import type { NetworkId } from "./coins.ts";
 
 export type EvmNetworkId = Exclude<NetworkId, "solana">;
 
-/** One client per EVM network the swaps read, each falling through its RPCs in order and failing fast. */
+/** One client per EVM network the inventory wallet and the hedger trade on, each falling through its RPCs in order and failing fast. */
 export function createSwapClients(urls: Record<EvmNetworkId, readonly string[]>): Record<EvmNetworkId, PublicClient> {
     const client = (chain: Chain, rpcUrls: readonly string[]): PublicClient =>
         createPublicClient({

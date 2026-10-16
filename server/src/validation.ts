@@ -1,8 +1,7 @@
 import { z } from "zod";
 import { AppError } from "./errors.ts";
 import { PRICE_RANGES } from "./prices/history.ts";
-import { COINS, NETWORKS, type NetworkId } from "./swaps/coins.ts";
-import { MAX_QUOTE_SLIPPAGE } from "./swaps/lifi.ts";
+import { COINS } from "./swaps/coins.ts";
 
 export const depositReport = z.object({
     txHash: z
@@ -154,32 +153,6 @@ export const coinWithdraw = z.object({
     symbol: coinSymbol,
     units: coinDecimal,
     to: z.string().trim().min(32).max(64),
-});
-
-const swapSide = z.object({
-    token: z.string().trim().min(1).max(16),
-    network: z.enum(NETWORKS.map((network) => network.id) as [NetworkId, ...NetworkId[]]),
-});
-
-export const swapRequest = z.object({
-    from: swapSide,
-    to: swapSide,
-    amountUSD: z
-        .string()
-        .regex(/^\d{1,9}(\.\d{1,6})?$/, "an amount such as 10.50")
-        .refine((amount) => Number(amount) > 0, "an amount over zero"),
-    wallet: z.string().trim().min(32).max(64),
-    receiver: z.string().trim().min(32).max(64),
-});
-
-export const swapOrder = swapRequest.extend({
-    reviewedMin: z.string().regex(/^\d{1,30}(\.\d{1,30})?$/, "an amount such as 0.5"),
-    slippage: z.number().gt(0).max(MAX_QUOTE_SLIPPAGE).optional(),
-});
-
-export const swapSent = z.object({
-    orderId: sourceReport.shape.orderId,
-    txHashes: z.array(swapTxHash).min(1).max(4),
 });
 
 export const withdrawRequest = z.object({

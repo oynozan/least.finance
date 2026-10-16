@@ -1,5 +1,5 @@
 import { MongoServerError, ObjectId, type ClientSession, type MongoClient } from "mongodb";
-import type { AccountDoc, Collections, LedgerEntryDoc, PositionDoc } from "./mongo.ts";
+import type { AccountDoc, Collections, LedgerEntryDoc, PositionDoc, SwapOrderDoc } from "./mongo.ts";
 import { fromDecimal, toDecimal } from "./money.ts";
 
 export type MigrationReport = { rekeyed: number; merged: number };
@@ -39,6 +39,20 @@ export async function mergeAccountsByPerson(client: MongoClient, collections: Co
 
     const { modifiedCount } = await accounts.updateMany({ wallet: { $exists: true } }, { $unset: { wallet: "" } });
     return { rekeyed: modifiedCount, merged };
+}
+
+/**
+ * Wallet swaps are no longer placed or followed, so an order still open (waiting for the wallet or
+ * sent and unsettled) would show as on its way forever. This marks each one expired, which is what
+ * the old tracker did once it gave up, and returns how many it changed. Run it any time: a second
+ * run finds none.
+ */
+export async function expireOpenSwapOrders({ swapOrders }: Collections): Promise<number> {
+    const { modifiedCount } = await swapOrders.updateMany(
+        { state: { $in: ["created", "sent"] satisfies SwapOrderDoc["state"][] } },
+        { $set: { state: "expired", updatedAt: new Date() } },
+    );
+    return modifiedCount;
 }
 
 /** Moves one account into another in a single transaction, so the ledger stays double-entry. */

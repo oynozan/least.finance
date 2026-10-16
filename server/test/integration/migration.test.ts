@@ -3,7 +3,7 @@ import { Decimal128, MongoClient, ObjectId } from "mongodb";
 import { parseUnits, type Address } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { afterEach, beforeAll, afterAll, expect, inject, test, vi } from "vitest";
-import { mergeAccountsByPerson } from "../../src/db/migrations.ts";
+import { expireOpenSwapOrders, mergeAccountsByPerson } from "../../src/db/migrations.ts";
 import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import type { Ack, DepositView, WalletSession } from "../../src/protocol.ts";
 import { startStack, type Stack, type User } from "../support/stack.ts";
@@ -195,6 +195,66 @@ test("an account merge carries withdrawals over", async () => {
 
     const withdrawal = await collections(running).withdrawals.findOne({ _id: withdrawalId });
     expect(withdrawal?.accountId.equals(a.id)).toBe(true);
+});
+
+test("a merged account's swap orders follow it to the survivor", async () => {
+    const did = newDid();
+    let a!: Seed;
+    const swapId = new ObjectId();
+    const running = await boot(async (db) => {
+        a = await seedAccount(db, did, "3");
+        const b = await seedAccount(db, did, "2");
+        await mongo
+            .db(db)
+            .collection("swap_orders")
+            .insertOne({ _id: swapId, accountId: b.id, state: "done" } as never);
+    });
+
+    const swap = await collections(running).swapOrders.findOne({ _id: swapId });
+    expect(swap?.accountId.equals(a.id)).toBe(true);
+});
+
+test("a swap order left open by the wallet path is expired at startup, once, and settled ones stay as they were", async () => {
+    const did = newDid();
+    const long = new Date(Date.UTC(2026, 9, 1));
+    const ids = Object.fromEntries(
+        ["created", "sent", "done", "partial", "refunded", "failed", "expired"].map((state) => [state, new ObjectId()]),
+    );
+    const running = await boot(async (db) => {
+        const account = await seedAccount(db, did, "1");
+        await mongo
+            .db(db)
+            .collection("swap_orders")
+            .insertMany(
+                Object.entries(ids).map(([state, _id]) => ({
+                    _id,
+                    accountId: account.id,
+                    state,
+                    txHashes: state === "created" ? [] : ["0xaa"],
+                    createdAt: long,
+                    updatedAt: long,
+                })) as never,
+            );
+    });
+    const { swapOrders } = collections(running);
+    const read = async () =>
+        Object.fromEntries((await swapOrders.find().toArray()).map((order) => [order._id.toHexString(), order]));
+
+    const first = await read();
+    for (const state of ["created", "sent"] as const) {
+        const order = first[ids[state]!.toHexString()]!;
+        expect(order.state, state).toBe("expired");
+        expect(order.updatedAt.getTime(), state).toBeGreaterThan(long.getTime());
+    }
+    for (const state of ["done", "partial", "refunded", "failed", "expired"] as const) {
+        const order = first[ids[state]!.toHexString()]!;
+        expect(order.state, state).toBe(state);
+        expect(order.updatedAt, state).toEqual(long);
+    }
+
+    // A second run finds nothing open, and changes nothing.
+    expect(await expireOpenSwapOrders(running.server.services.database.collections)).toBe(0);
+    expect(await read()).toEqual(first);
 });
 
 const orderDoc = (accountId: ObjectId, requestId: string) => ({

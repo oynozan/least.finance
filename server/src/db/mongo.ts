@@ -1,7 +1,7 @@
 import { MongoClient, MongoServerError, type Collection, type Db, type Decimal128, type ObjectId } from "mongodb";
 import type { Hex, OrderState, SwapNetworkId, SwapOrderState, WithdrawalState } from "../protocol.ts";
 import type { CoinWithdrawalDoc, HedgeDoc, HoldingDoc, TradeDoc } from "../trading/docs.ts";
-import { mergeAccountsByPerson, type MigrationReport } from "./migrations.ts";
+import { expireOpenSwapOrders, mergeAccountsByPerson, type MigrationReport } from "./migrations.ts";
 
 /** A person's account. Addresses are stored lowercase. */
 export type AccountDoc = {
@@ -440,7 +440,7 @@ export type SolanaWithdrawal = {
     irisCheckedAt: Date | null;
 };
 
-/** A swap through LI.FI, signed by the person's own wallet; amounts are decimal coin units and `units` are the integers LI.FI works in. */
+/** A swap through LI.FI that the person signed with their own wallet, a path that has been removed; the activity feed reads what is left. Amounts are decimal coin units and `units` are the integers LI.FI works in. */
 export type SwapOrderDoc = {
     _id: ObjectId;
     accountId: ObjectId;
@@ -465,9 +465,6 @@ export type SwapOrderDoc = {
     updatedAt: Date;
 };
 
-/** The IP an order was placed from, kept apart from the order and dropped after 30 days. */
-export type SwapIpDoc = { _id: ObjectId; orderId: ObjectId; ip: string; expiresAt: Date };
-
 /** How far a chain scan has got. */
 export type CursorDoc = { _id: string; block: number; updatedAt: Date };
 
@@ -490,7 +487,6 @@ export type Collections = {
     predictionRedemptions: Collection<PredictionRedemptionDoc>;
     withdrawals: Collection<WithdrawalDoc>;
     swapOrders: Collection<SwapOrderDoc>;
-    swapIps: Collection<SwapIpDoc>;
     holdings: Collection<HoldingDoc>;
     trades: Collection<TradeDoc>;
     hedges: Collection<HedgeDoc>;
@@ -534,7 +530,6 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             predictionRedemptions: db.collection("prediction_redemptions"),
             withdrawals: db.collection("withdrawals"),
             swapOrders: db.collection("swap_orders"),
-            swapIps: db.collection("swap_ips"),
             holdings: db.collection("holdings"),
             trades: db.collection("trades"),
             hedges: db.collection("hedges"),
@@ -543,6 +538,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             counters: db.collection("counters"),
         };
         const migration = await mergeAccountsByPerson(client, collections);
+        await expireOpenSwapOrders(collections);
         await ensureIndexes(collections);
         return { client, db, collections, migration, close: () => client.close() };
     } catch (error) {
@@ -570,7 +566,6 @@ async function ensureIndexes({
     predictionRedemptions,
     withdrawals,
     swapOrders,
-    swapIps,
     perpAccounts,
     perpOrders,
     perpPositions,
@@ -639,7 +634,6 @@ async function ensureIndexes({
             { key: { accountId: 1, createdAt: -1 }, name: "account_orders" },
             { key: { state: 1, updatedAt: 1 }, name: "state_updated" },
         ]),
-        swapIps.createIndexes([{ key: { expiresAt: 1 }, name: "expires", expireAfterSeconds: 0 }]),
         perpAccounts.createIndexes([
             { key: { index: 1 }, name: "index_unique", unique: true },
             { key: { address: 1 }, name: "address_unique", unique: true },

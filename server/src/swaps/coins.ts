@@ -6,7 +6,7 @@ export type NetworkId =
 /** `chainId` is LI.FI's id for the network. */
 export type SwapNetwork = { id: NetworkId; name: string; chainId: number; kind: "evm" | "solana" };
 
-/** `reserve` is the gas kept out of the cap, in coin units, and only native gas coins have one. */
+/** `reserve` is the gas to keep back, in coin units, and only native gas coins have one, which is how a native coin is told from a token. */
 export type CoinEntry = {
     network: NetworkId;
     address: string;

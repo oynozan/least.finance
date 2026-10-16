@@ -19,8 +19,6 @@ import type { PredictionService } from "./predictions/predictions.ts";
 import type { PriceHistory } from "./prices/history.ts";
 import type { Sessions } from "./sessions.ts";
 import type { SwapCatalog } from "./swaps/catalog.ts";
-import type { SwapHoldings } from "./swaps/holdings.ts";
-import type { SwapOrders } from "./swaps/orders.ts";
 import type { Withdrawals } from "./withdrawals/withdrawals.ts";
 import type { TradeService } from "./trading/trades.ts";
 import type { Sweeper } from "./withdrawals/sweeper.ts";
@@ -48,8 +46,6 @@ export type Services = {
     predictions: PredictionService;
     priceHistory: PriceHistory;
     swapCatalog: SwapCatalog;
-    swapHoldings: SwapHoldings;
-    swapOrders: SwapOrders;
     sweeper: Sweeper;
     trades: TradeService;
     withdrawals: Withdrawals;

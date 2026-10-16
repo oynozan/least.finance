@@ -58,11 +58,7 @@ import { SwapCatalog } from "./swaps/catalog.ts";
 import { createTradingExecution } from "./trading/execution.ts";
 import { TradeService } from "./trading/trades.ts";
 import { createSwapClients } from "./swaps/clients.ts";
-import { SwapHoldings, multicallReader, solanaReader } from "./swaps/holdings.ts";
 import { createLifi } from "./swaps/lifi.ts";
-import { SwapOrders } from "./swaps/orders.ts";
-import { createSolanaSignatureStatus } from "./swaps/solana-status.ts";
-import { SwapTracker } from "./swaps/tracker.ts";
 import { attachSockets } from "./socket/sockets.ts";
 import { Payouts } from "./withdrawals/payouts.ts";
 import { Sweeper } from "./withdrawals/sweeper.ts";
@@ -104,7 +100,7 @@ type Overrides = {
     hyperliquid?: HyperliquidClient;
     /** Sends the signed payout transactions; tests wrap it to cut a broadcast short. */
     payoutBroadcast?: (rawTx: Hex) => Promise<Hex>;
-    /** The clock the balance and holdings refresh limits run on. */
+    /** The clock the balance refresh limits run on. */
     now?: () => number;
 };
 
@@ -285,38 +281,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             logger: logger.child({ component: "swaps" }),
             syncMs: config.SWAPS_CATALOG_SYNC_MS,
         });
-        const swapHoldings = new SwapHoldings({
-            identity,
-            bus,
-            logger: logger.child({ component: "swap-holdings" }),
-            catalog: swapCatalog,
-            readEvm: multicallReader(swapClients),
-            readSolana: solanaReader(solana),
-            now: overrides.now,
-        });
-        const swapOrders = new SwapOrders({
-            collections,
-            lifi,
-            catalog: swapCatalog,
-            holdings: swapHoldings,
-            clients: swapClients,
-            identity,
-            bus,
-            integrator: config.LIFI_INTEGRATOR,
-            fee: config.LIFI_FEE,
-        });
-        const swapTracker = new SwapTracker({
-            collections,
-            lifi,
-            clients: swapClients,
-            bus,
-            holdings: swapHoldings,
-            solanaStatus: createSolanaSignatureStatus(config.SOLANA_RPC_URLS),
-            accounts,
-            logger: logger.child({ component: "swap-tracker" }),
-            pollMs: config.SWAPS_POLL_MS,
-            now: overrides.now,
-        });
         const perpClient =
             overrides.hyperliquid ??
             withPerpTimeouts(createNktkasClient({ url: config.HYPERLIQUID_API_URL }), PERP_CALL_MS);
@@ -494,8 +458,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             predictions: service,
             priceHistory,
             swapCatalog,
-            swapHoldings,
-            swapOrders,
             sweeper,
             trades,
             withdrawals,
@@ -520,7 +482,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         perps.start();
         perpTracker.start();
         perpReconciler.start();
-        swapTracker.start();
         predictionTracker.start();
         predictionResolver.start();
         predictionRedeemer.start();
@@ -554,7 +515,6 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 await predictionRedeemer.stop();
                 await predictionResolver.stop();
                 await predictionTracker.stop();
-                await swapTracker.stop();
                 await swapCatalog.stop();
                 await priceHistory.stop();
                 await perpReconciler.stop();

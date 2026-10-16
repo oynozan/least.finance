@@ -21,7 +21,6 @@ import { loadConfig } from "../../src/config.ts";
 import type { DepositDoc } from "../../src/db/mongo.ts";
 import { formatUsdc, fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { startServer } from "../../src/server.ts";
-import { COINS, NETWORKS } from "../../src/swaps/coins.ts";
 import { TREASURY_GAS_RESERVE } from "../../src/withdrawals/withdrawals.ts";
 import { seedRows, type SeedRow } from "../support/history-seed.ts";
 import { startAnvil } from "../support/anvil.ts";
@@ -39,7 +38,7 @@ import { installStub } from "../support/stub-token-messenger.ts";
 import { createIris } from "../../src/crosschain/iris.ts";
 import { ARC_USDC_ERC20, TOKEN_MESSENGER_V2 } from "../../src/withdrawals/cctp-burn.ts";
 import { startMongo } from "../support/mongo.ts";
-import { installMulticall3, sourceChain } from "../support/source-chains.ts";
+import { sourceChain } from "../support/source-chains.ts";
 import { chainHelpers, SWAP_PRICES, swapRpcEnv } from "../support/stack.ts";
 
 const API_PORT = Number(process.env.E2E_API_PORT ?? 4100);
@@ -60,8 +59,6 @@ for (const { chain, token } of EVM_COINS) {
     if (token && chain === "ethereum") await sourceChain(ethereum.url, 1).installToken(token);
     if (token && chain === "bnb") await sourceChain(bnb.url, 56).installToken(token);
 }
-// The swap holdings read through Multicall3, which the fresh anvils lack.
-for (const url of [ethereum.url, bnb.url, anvil.url]) await installMulticall3(url);
 const solanaRpc = await startFakeSolanaRpc();
 const iris = await startFakeIris();
 // Burns for Solana withdrawals land on stand-ins at the real TokenMessengerV2 and USDC addresses.
@@ -443,58 +440,6 @@ const routes: Record<string, (body: Record<string, unknown>) => Promise<unknown>
     /** Makes the fake refuse the server's usdSend transfers (funding and sweeps) while on. */
     "/perp/fail-usdsend": async ({ on }) => {
         hyperliquid.failUsdSend(Boolean(on));
-        return {};
-    },
-    /** Serves LI.FI status for a sent swap's last hash; `receiving` names the coin and amount that arrived, the order's own by default. */
-    "/lifi/status": async ({ txHash, status, substatus, receiving }) => {
-        const hash = String(txHash);
-        const orders = services.database.collections.swapOrders;
-        let order = await orders.findOne({ txHashes: { $elemMatch: { $eq: hash } } });
-        // The wallet's report may still be on its way to the server
-        for (let tries = 0; !order && tries < 50; tries++) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            order = await orders.findOne({ txHashes: { $elemMatch: { $eq: hash } } });
-        }
-        if (!order) throw new Error("No swap with that hash");
-        const want = receiving as { symbol?: string; amount?: string } | undefined;
-        const symbol = want?.symbol ?? order.to.token;
-        const network = NETWORKS.find((candidate) => candidate.id === order.to.network)!;
-        const coin = COINS.find((candidate) => candidate.symbol === symbol)?.entries.find(
-            (candidate) => candidate.network === network.id,
-        );
-        const decimals = coin?.decimals ?? 18;
-        const units = want?.amount === undefined ? order.to.units : parseUnits(want.amount, decimals).toString();
-        lifi.setStatus(hash, {
-            status,
-            substatus: substatus ?? null,
-            fromAddress: order.wallet,
-            toAddress: order.receiver,
-            sending: { txHash: hash },
-            receiving:
-                status === "DONE"
-                    ? {
-                          txHash: `0x${"ab".repeat(32)}`,
-                          chainId: network.chainId,
-                          amount: units,
-                          token: {
-                              address: coin?.address ?? "0x1111111111111111111111111111111111111111",
-                              symbol,
-                              decimals,
-                              chainId: network.chainId,
-                          },
-                      }
-                    : null,
-        });
-        return {};
-    },
-    /** Merges `patch` into the next raw LI.FI quote. */
-    "/lifi/quote": async ({ patch, fromAddress }) => {
-        lifi.nextQuote(patch as Record<string, unknown>, fromAddress === undefined ? undefined : String(fromAddress));
-        return {};
-    },
-    /** Answers the next LI.FI quote request with no route. */
-    "/lifi/no-route": async ({ fromAddress }) => {
-        lifi.noRoute(fromAddress === undefined ? undefined : String(fromAddress));
         return {};
     },
     /** Runs one pass of the resolver now, instead of waiting for its timer. */

@@ -9,10 +9,9 @@ import type {
     PoolRebalanceDoc,
     PositionDoc,
     PredictionOrderDoc,
-    SwapOrderDoc,
     WithdrawalDoc,
 } from "./db/mongo.ts";
-import type { BalancesView, SwapHoldingsView } from "./protocol.ts";
+import type { BalancesView } from "./protocol.ts";
 import type { CoinWithdrawalDoc } from "./trading/docs.ts";
 
 type Events = {
@@ -20,12 +19,8 @@ type Events = {
     "deposit:credited": [{ deposit: DepositDoc; account: AccountDoc }];
     /** Fired when a bridge order is opened or changes state. */
     "order:updated": [{ order: DepositOrderDoc }];
-    /** Fired when a swap order is opened or changes state. */
-    "swap:updated": [{ order: SwapOrderDoc }];
     /** Fired after each read of an account's wallets. */
     "balances:updated": [{ accountId: ObjectId; privyUserId: string; view: BalancesView }];
-    /** Fired after each read of an account's swap holdings. */
-    "swap:holdings": [{ accountId: ObjectId; privyUserId: string; view: SwapHoldingsView }];
     /** Fired after a prediction order settles, once its transaction commits. */
     "prediction:updated": [{ order: PredictionOrderDoc; position: PositionDoc | null; account: AccountDoc }];
     /** Fired when a perp order changes state, once the change has committed. */

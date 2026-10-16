@@ -27,7 +27,7 @@ import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
 import { startFakeSolanaRpc, type FakeSolanaRpc } from "./fake-solana-rpc.ts";
 import { TREASURY_GAS_RESERVE } from "../../src/withdrawals/withdrawals.ts";
-import { installMulticall3, sourceChain } from "./source-chains.ts";
+import { sourceChain } from "./source-chains.ts";
 
 export const WEB_ORIGIN = "http://localhost:3000";
 
@@ -49,7 +49,7 @@ export const SWAP_PRICES = {
 /** Nothing listens here, so a network pointed at it refuses every request. */
 const REFUSED_RPC = "http://127.0.0.1:9";
 
-/** The swap holdings' RPC lists: the local Ethereum and BNB Chain, and a refusing URL for the five networks without a local chain. */
+/** The networks' RPC lists for the swap clients: the local Ethereum and BNB Chain, and a refusing URL for the five networks without a local chain. */
 export const swapRpcEnv = (ethereumUrl: string, bnbUrl: string) => ({
     ETHEREUM_RPC_URLS: ethereumUrl,
     BNB_RPC_URLS: bnbUrl,
@@ -177,8 +177,6 @@ export async function startStack({
             if (token && key === (id === 1 ? "ethereum" : "bnb")) await chain.installToken(token);
         }
     }
-    // The swap holdings read through Multicall3, which the fresh anvils lack.
-    for (const url of [ethereumUrl, bnbUrl, anvilUrl]) await installMulticall3(url);
     const solanaRpc = await startFakeSolanaRpc();
     const iris = await startFakeIris();
     const polymarket = await startFakePolymarket();

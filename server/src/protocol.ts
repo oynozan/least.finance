@@ -230,8 +230,6 @@ export type ClientToServerEvents = TradingClientEvents & {
     "deposit:submit": (payload: { txHash: string }, ack: (result: Ack<DepositReceipt>) => void) => void;
     /** Asks for fresh balances; within 30 s of the last read nothing happens and `read` is false. */
     "balances:refresh": (payload: Record<string, never>, ack: (result: Ack<{ read: boolean }>) => void) => void;
-    /** Asks for fresh swap holdings; within 15 s of the last read nothing happens and `read` is false. */
-    "swap:holdings:refresh": (payload: Record<string, never>, ack: (result: Ack<{ read: boolean }>) => void) => void;
     /** What a coin in one of the person's wallets would pay out on Arc. */
     "deposit:quote": (
         payload: { coin: string; amount: string; wallet: string },
@@ -252,15 +250,6 @@ export type ClientToServerEvents = TradingClientEvents & {
         payload: Record<string, never>,
         ack: (result: Ack<{ blockhash: string; lastValidBlockHeight: number }>) => void,
     ) => void;
-    /** What a swap would pay right now, with no order opened. */
-    "swap:quote": (req: SwapRequest, ack: (result: Ack<SwapQuoteView>) => void) => void;
-    /** Quotes again, at the reviewed slippage when the request names one, and opens a swap order. */
-    "swap:order": (
-        req: SwapOrderRequest,
-        ack: (result: Ack<{ order: SwapOrderView; txs: SwapTxView[] }>) => void,
-    ) => void;
-    /** Reports the hashes of the transactions the wallet sent for a swap order, approvals first. */
-    "swap:sent": (payload: { orderId: string; txHashes: string[] }, ack: (result: Ack<SwapOrderView>) => void) => void;
     /** What a withdrawal may be right now. */
     "withdraw:limits": (payload: Record<string, never>, ack: (result: Ack<WithdrawLimits>) => void) => void;
     /** The fee and net amount of a withdrawal to a linked Solana wallet. */
@@ -309,12 +298,6 @@ export type ServerToClientEvents = TradingServerEvents & {
     "deposit:credited": (payload: { deposit: DepositView; account: AccountView }) => void;
     /** The account's coin balances, pushed after `account:open` and whenever a read finishes. */
     balances: (payload: BalancesView) => void;
-    /** The coins the account's wallets hold on the swap networks, pushed after `account:open` and whenever a read finishes. */
-    "swap:holdings": (payload: SwapHoldingsView) => void;
-    /** A swap order was opened or changed state. */
-    "swap:update": (payload: { order: SwapOrderView }) => void;
-    /** The account's open swap orders and those settled in the last 7 days, newest first, at most 50; pushed after `account:open`. */
-    swaps: (payload: { orders: SwapOrderView[] }) => void;
     /** A bridge order changed state. */
     "deposit:progress": (payload: { order: DepositOrderView }) => void;
     /** The access token expired; the server disconnects next, and the client reconnects with a fresh one. */
@@ -564,58 +547,8 @@ export type PriceHistoryView = {
     readAt: string;
 };
 
-/** One coin a wallet holds on one network; `amount` is a decimal string in coin units and `usd` is null without a price. */
-export type SwapHoldingRow = {
-    wallet: string;
-    network: SwapNetworkId;
-    symbol: string;
-    amount: string;
-    usd: number | null;
-};
-
-/** Only the non-zero holdings of the account's linked wallets, as of `readAt` (ISO 8601), and the wallet and network pairs read at least once: any other pair is unread, not empty. */
-export type SwapHoldingsView = {
-    readAt: string;
-    rows: SwapHoldingRow[];
-    read: { wallet: string; network: SwapNetworkId }[];
-};
-
 /** One side of a swap: a coin symbol on a network. */
 export type SwapSide = { token: string; network: SwapNetworkId };
-
-/** `wallet` pays and signs; `receiver` is the person's own wallet on the receiving network's kind. */
-export type SwapRequest = { from: SwapSide; to: SwapSide; amountUSD: string; wallet: string; receiver: string };
-
-/** A swap request to open as an order: `reviewedMin` is the `toAmountMin` the person saw, and `slippage` the quote's, which asks LI.FI for the same slippage again. */
-export type SwapOrderRequest = SwapRequest & { reviewedMin: string; slippage?: number };
-
-/** Amounts are decimal coin units. */
-export type SwapQuoteView = {
-    request: SwapRequest;
-    fromAmount: string;
-    toAmount: string;
-    toAmountMin: string;
-    /** The slippage LI.FI built `toAmountMin` with, sent back with the order; left out when it is over what an order may pin. */
-    slippage?: number;
-    fees: { name: string; usd: number }[];
-    gasUSD: number;
-    etaSeconds: number;
-    tool: string;
-    needsApproval: boolean;
-};
-
-/** One transaction the wallet signs: EVM ones name their chain, a Solana one is LI.FI's base64 transaction. */
-export type SwapTxView =
-    | {
-          kind: "evm";
-          purpose: "reset" | "approve" | "swap";
-          chainId: number;
-          to: string;
-          data: string;
-          /** Wei, as a decimal string. */
-          value: string;
-      }
-    | { kind: "solana"; data: string };
 
 export type SwapOrderState = "created" | "sent" | "done" | "partial" | "refunded" | "failed" | "expired";
 

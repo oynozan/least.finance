@@ -10,8 +10,6 @@ import {
     type Hex,
 } from "viem";
 import { bsc, mainnet } from "viem/chains";
-import { MULTICALL3_CODE } from "../fixtures/multicall3.ts";
-import { MULTICALL3 } from "../../src/swaps/holdings.ts";
 
 /** Returns `sload(calldataload(4))`, the first argument read as a storage slot; for `allowance` it returns `sload(calldataload(36))`, the spender's slot. */
 const TOKEN_CODE: Hex = "0x60003560e01c63dd62ed3e14601b576004355460005260206000f35b6024355460005260206000f3";
@@ -68,12 +66,4 @@ export function sourceChain(url: string, chainId: 1 | 56) {
             return hashes;
         },
     };
-}
-
-/** Puts the real Multicall3 at its usual address on a local chain, as every network the swaps read has it. */
-export async function installMulticall3(url: string) {
-    await createTestClient({ mode: "anvil", transport: http(url) }).setCode({
-        address: MULTICALL3,
-        bytecode: MULTICALL3_CODE,
-    });
 }
