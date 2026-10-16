@@ -25,7 +25,7 @@ export function validAddress(network: string, to: string): boolean {
     return isSolana(network) ? /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(to) : /^0x[0-9a-fA-F]{40}$/.test(to);
 }
 
-/** The decimals a held coin can be sent in, which its home network keeps; the server rounds down to them. */
+/** The decimals a held coin can be sent in, as its home network keeps them */
 export function sendDecimals(symbol: string): number {
     const coin = COINS.find((c) => c.symbol === symbol);
     return coin?.entries.find((e) => e.network === coin.home)?.decimals ?? 18;
