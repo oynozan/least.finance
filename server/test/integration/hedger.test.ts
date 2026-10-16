@@ -268,6 +268,55 @@ describe("TradeHedger selling", () => {
         expect(chain.prepared).toHaveLength(1);
     });
 
+    test.each([
+        [
+            "a transaction to another contract",
+            "ETH",
+            { transactionRequest: { to: "0x000000000000000000000000000000000000dEaD" } },
+        ],
+        [
+            "a transaction from another wallet",
+            "ETH",
+            { transactionRequest: { from: "0x000000000000000000000000000000000000dEaD" } },
+        ],
+        [
+            "a receiver other than the treasury",
+            "ETH",
+            { action: { toAddress: "0x000000000000000000000000000000000000dEaD" } },
+        ],
+        ["a value above the amount sold", "ETH", { transactionRequest: { value: `0x${(2n * E18).toString(16)}` } }],
+        ["a value on a token sale", "LINK", { transactionRequest: { value: "0x1" } }],
+        [
+            "an approval to another address",
+            "LINK",
+            { estimate: { approvalAddress: "0x000000000000000000000000000000000000dEaD" } },
+        ],
+        ["another amount than asked", "ETH", { action: { fromAmount: "1" } }],
+    ])(
+        "a quote with %s is neither approved nor signed, and the next pass tries again",
+        async (_name, symbol, patch) => {
+            await trade("sell", symbol, symbol === "ETH" ? 1 : 100, 2000);
+            fakeLifi.nextQuote(patch);
+            const worker = hedger();
+            await worker.tick();
+            expect(await hedgeList()).toMatchObject([{ state: "planned", txHash: null }]);
+            expect(chain.approvals).toHaveLength(0);
+            expect(chain.prepared).toHaveLength(0);
+            expect(chain.broadcasts).toHaveLength(0);
+
+            await worker.tick();
+            expect((await hedgeList())[0]).toMatchObject({ state: "sent" });
+            expect(chain.prepared).toHaveLength(1);
+        },
+    );
+
+    test("without LI.FI's chain list no quote can be checked, so none is signed", async () => {
+        await trade("sell", "ETH", 1, 2000);
+        await hedger({ lifi: { quote: lifi.quote, status: lifi.status } }).tick();
+        expect(await hedgeList()).toMatchObject([{ state: "planned" }]);
+        expect(chain.prepared).toHaveLength(0);
+    });
+
     test("a sell that never reached a node is signed again on its nonce after the window", async () => {
         await trade("sell", "ETH", 1, 2000);
         chain.failNext("broadcast", new Error("fetch failed ETIMEDOUT"));

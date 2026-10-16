@@ -5,7 +5,8 @@ import { ARC_CHAIN_ID } from "../chain/arc.ts";
 import type { Collections } from "../db/mongo.ts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
 import { COINS, NETWORKS, type CoinEntry } from "../swaps/coins.ts";
-import { LifiError, type Lifi } from "../swaps/lifi.ts";
+import { checkQuote } from "../swaps/check.ts";
+import { LifiError, type Lifi, type LifiQuote } from "../swaps/lifi.ts";
 import type { HedgeDoc, SendAttempt, TradeDoc } from "./docs.ts";
 import {
     MAX_ATTEMPTS,
@@ -21,7 +22,8 @@ import { UNIT_DECIMALS, fromUnitsDecimal, toUnitsDecimal } from "./units.ts";
 type Deps = {
     client: MongoClient;
     collections: Pick<Collections, "trades" | "hedges">;
-    lifi: Pick<Lifi, "quote" | "status">;
+    /** Without `chains` the hedger can't tell LI.FI's diamond, so it signs no quote */
+    lifi: Pick<Lifi, "quote" | "status"> & Partial<Pick<Lifi, "chains">>;
     chain: InventoryChain;
     /** The inventory wallet's EVM address, which sells are sent from. */
     inventory: Address;
@@ -67,6 +69,8 @@ const homeOf = (symbol: string): { entry: CoinEntry; network: (typeof NETWORKS)[
     const network = NETWORKS.find((candidate) => candidate.id === coin?.home);
     return entry && network ? { entry, network } : null;
 };
+
+type Home = NonNullable<ReturnType<typeof homeOf>>;
 
 const arcUsdc = COINS.find((coin) => coin.symbol === "USDC")!.entries.find((entry) => entry.network === "arc")!;
 
@@ -260,6 +264,8 @@ export class TradeHedger {
         }
         if (quote.tx.kind !== "evm") return this.#fail(hedge, "LI.FI sent a transaction for another kind of chain");
 
+        await this.#check(quote, home, network, fromAmount);
+
         const native = home.entry.reserve !== undefined;
         if (!native && !quote.skipApproval && quote.approvalAddress) {
             const spender = quote.approvalAddress as Address;
@@ -321,6 +327,33 @@ export class TradeHedger {
         if (!refused(error)) throw error;
         await this.#fail(hedge, `The network refused it: ${firstLine(error)}`);
         this.#deps.chain.release(network, nonce);
+    }
+
+    /** Throws unless the quote is the sell that was asked for, with any approval going to LI.FI's diamond */
+    async #check(quote: LifiQuote, home: Home, network: EvmNetworkId, fromAmount: bigint) {
+        const { lifi, inventory, treasury, logger } = this.#deps;
+        if (!lifi.chains) throw new Error("The hedger can't read LI.FI's chains, so it can't check a quote");
+        const chains = await lifi.chains();
+        const diamond = chains.find((chain) => chain.id === home.network.chainId)?.diamondAddress ?? null;
+        checkQuote(
+            quote,
+            {
+                fromNetwork: network,
+                from: home.entry,
+                toNetwork: "arc",
+                to: arcUsdc,
+                fromAddress: inventory,
+                toAddress: treasury,
+                fromUnits: fromAmount,
+                diamond,
+            },
+            logger,
+        );
+        // An approval goes to the contract the checked transaction calls, and nowhere else
+        const approves = home.entry.reserve === undefined && !quote.skipApproval;
+        if (approves && quote.approvalAddress?.toLowerCase() !== diamond?.toLowerCase()) {
+            throw new Error("LI.FI asked for an approval to an address other than its diamond");
+        }
     }
 
     /** Follows a sent hedge's hash to done or failed: first the source transaction, then LI.FI's view of the crossing to Arc. */
