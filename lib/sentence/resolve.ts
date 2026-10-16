@@ -159,11 +159,21 @@ export function resolve<I, T extends Str, C>(
             const { min, max } = spec.bounds?.(values, ctx) ?? {};
             const low = min?.value ?? spec.range?.min;
             const high = max?.value ?? spec.range?.max;
+            // A minimum over the maximum leaves no amount that fits, so both are said whatever is typed
+            const crossed = !!min && !!max && min.value > max.value;
             if (!isEntered(value)) {
                 slotIssues.push({ code: "missing", severity: "incomplete", slot: id, ...spec.missing });
             } else {
                 const amount = Number(value);
-                if (min && amount < min.value) {
+                if (crossed) {
+                    slotIssues.push({
+                        code: "max",
+                        severity: "error",
+                        slot: id,
+                        message: `${min.message} ${max.message}`,
+                        cta: max.cta,
+                    });
+                } else if (min && amount < min.value) {
                     slotIssues.push({ code: "min", severity: "error", slot: id, message: min.message, cta: min.cta });
                 } else if (max && amount > max.value) {
                     slotIssues.push({ code: "max", severity: "error", slot: id, message: max.message, cta: max.cta });
@@ -179,7 +189,11 @@ export function resolve<I, T extends Str, C>(
                 suffix: spec.suffix,
                 decimals: spec.decimals,
                 placeholder: spec.placeholder,
-                range: low !== undefined && high !== undefined ? { min: low, max: high, capped: !!max } : undefined,
+                // Only ends with room between them make a slider
+                range:
+                    low !== undefined && high !== undefined && low < high
+                        ? { min: low, max: high, capped: !!max }
+                        : undefined,
                 summary: isEntered(value) ? spec.summary?.(values, ctx) : undefined,
             };
         } else {

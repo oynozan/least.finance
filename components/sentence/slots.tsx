@@ -369,6 +369,12 @@ function AmountPanel({
                     </div>
                 </div>
             )}
+            {/* No room to slide (the limits meet or cross): what the amount comes to still shows */}
+            {!range && view.summary && (
+                <p className="px-[18px] pt-3 pb-2 text-center text-[15px] leading-snug font-medium text-balance">
+                    {view.summary}
+                </p>
+            )}
             {invalid && (
                 <p className="px-[18px] pb-2 text-center text-[15px] leading-snug text-loss">{view.issue?.message}</p>
             )}

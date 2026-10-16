@@ -231,9 +231,11 @@ test.describe("trading from the account", () => {
             code: "min",
             message: "The minimum is $0.08.",
         });
-        // Under a cent the minimum is still a cent
+        // Under a cent the minimum is still a cent, which is more than is held: no slider, and both limits said
         const dust = account({ USDC: 50, SOL: 0.00005, ETH: 1 });
-        expect(run("sell", [slot("token", "SOL")], dust).view.slots.amountUSD).toMatchObject({ range: { min: 0.01 } });
+        const tiny = run("sell", [slot("token", "SOL")], dust).view;
+        expect(tiny.slots.amountUSD).toMatchObject({ range: undefined });
+        expect(tiny.blocking?.message).toMatch(/^The minimum is \$0\.01\. /);
         // A holding of 10 cents or more, and a purchase, keep the 10 cent minimum
         const whole = account({ USDC: 50, SOL: 1, ETH: 1 });
         expect(run("sell", [slot("token", "SOL"), slot("amountUSD", "0.05")], whole).view.blocking).toMatchObject({
@@ -416,6 +418,24 @@ test.describe("live prediction markets", () => {
         // The smaller of the two wins.
         const poor = { ...capped(500), holdings: { ...HOLDINGS, USDC: 30 } };
         expect(run("predict", [slot("amountUSD", "50")], poor).view.blocking).toMatchObject({ cta: "Not enough USDC" });
+    });
+
+    test("a minimum over the limit leaves no slider and says both, whatever the amount", () => {
+        // YES on rain takes at least $4.20, but predictions are limited to $2
+        const ctx: TradeCtx = { ...live([rain]), maxOrderUSD: 2 };
+        for (const typed of ["1", "3", "10"]) {
+            const view = run("predict", [slot("marketId", "901"), slot("amountUSD", typed)], ctx).view;
+            expect(view.blocking, typed).toMatchObject({
+                message: "The minimum is $4.20. Predictions are limited to $2 right now.",
+            });
+            const amount = view.slots.amountUSD;
+            expect(amount.kind === "number" && amount.range, typed).toBeUndefined();
+        }
+        // A limit that meets the minimum allows that one amount, with nothing to slide
+        const exact = run("predict", [slot("marketId", "901"), slot("amountUSD", "4.2")], { ...ctx, maxOrderUSD: 4.2 });
+        expect(exact.view.blocking).toBeUndefined();
+        const one = exact.view.slots.amountUSD;
+        expect(one.kind === "number" && one.range).toBeUndefined();
     });
 
     test("a picked question that isn't listed still resolves", () => {
