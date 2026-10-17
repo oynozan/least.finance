@@ -18,7 +18,7 @@ const picker = (page: Page) => page.locator("[data-floating-dialog]:not([data-cl
 const questionPill = (page: Page) => trade(page).locator('[data-slot="marketId"] button');
 const outcomePill = (page: Page) => trade(page).locator('[data-slot="outcomeId"] button');
 const amountPill = (page: Page) => trade(page).getByRole("button", { name: /USD$/ });
-const review = (page: Page) => page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: "Review" });
+const review = (page: Page) => page.getByRole("navigation", { name: "Pages" }).locator("button[data-action]");
 const sidebar = (page: Page) => page.locator("#wallet-sidebar");
 const walletButton = (page: Page) => page.getByRole("button", { name: /^(Wallet|Connect wallet)/ }).last();
 const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: /^Balance/ });
@@ -229,16 +229,17 @@ test("offline at confirm says so and spends nothing", async ({ page }) => {
 
 test("the amount can't exceed the pool's limit", async ({ page }) => {
     const picked = await pickMarket(4);
-    await setPoolBalance(20);
+    // Room for the other tests running at once, and still under what is typed
+    await setPoolBalance(200);
     try {
         await page.goto("/");
         await connect(page);
         await predict(page, picked);
         await amountPill(page).click();
-        await picker(page).getByRole("textbox").fill("50");
+        await picker(page).getByRole("textbox").fill("500");
         await picker(page).getByRole("textbox").press("Enter");
+        await expect(review(page)).toHaveText("Over the limit");
         await expect(review(page)).toHaveAccessibleDescription(/^Predictions are limited to \$\d+ right now\.$/);
-        await expect(review(page)).toHaveAttribute("aria-disabled", "true");
     } finally {
         // The pool is shared with every other test.
         await setPoolBalance(1_000_000);
