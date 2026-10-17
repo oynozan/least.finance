@@ -169,6 +169,7 @@ export function TradeComposer({
                     value: view.verb.id,
                     selected: view.verbChoices.find((choice) => choice.value === view.verb.id),
                     choices: view.verbChoices,
+                    issue: view.verbIssue,
                 }}
                 onChange={(verbId) => {
                     edited.current = "verb";

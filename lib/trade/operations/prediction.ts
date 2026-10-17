@@ -1,4 +1,4 @@
-import { VERB, canonicalDecimal, type Bound, type Choice, type Issue } from "@/lib/sentence";
+import { VERB, VERB_SLOT, canonicalDecimal, type Bound, type Choice, type Issue } from "@/lib/sentence";
 import type { Outcome, PredictionMarket } from "../catalog";
 import { operation, type TradeCtx } from "../context";
 import { formatCents, formatUnits, formatUsd, formatUsdShort } from "../format";
@@ -72,8 +72,9 @@ function defaultOutcome(ctx: TradeCtx, market: PredictionMarket | undefined): Ou
 const PAUSED = {
     code: "paused",
     severity: "error",
+    slot: VERB_SLOT,
     message: "Predictions are paused right now. Try again later.",
-    cta: "Paused right now",
+    cta: "Predictions paused",
 } as const;
 
 /** "I want to [Predict] [YES] on [Will BTC reach $150K?] with [10 USD]." */
@@ -145,11 +146,11 @@ export const prediction = operation({
             (v: Values, ctx) =>
                 // What the limit rules out says so at its own slot, so the amount has no minimum or limit to cross
                 stuck(ctx, v)
-                    ? { max: spendCap(ctx) }
+                    ? { max: spendCap(ctx), unbounded: true }
                     : { min: minimum(outcomeOf(ctx, v)?.minUSD ?? 1), max: orderCap(ctx) },
             (v, ctx) => {
                 const outcome = outcomeOf(ctx, v);
-                if (!outcome) return undefined;
+                if (!outcome || stuck(ctx, v)) return undefined;
                 return `Pays ${formatUsd(Number(v.amountUSD) / outcome.price)} if ${outcome.label}`;
             },
         ),
@@ -175,7 +176,7 @@ export const prediction = operation({
         const fitting = likeliest(market.outcomes.filter((o) => !overLimit(ctx, o)));
         return fitting ? { ...next, outcomeId: fitting.id } : next;
     },
-    check: (v, ctx): readonly Issue<keyof Values>[] => {
+    check: (v, ctx): readonly Issue<keyof Values | typeof VERB_SLOT>[] => {
         const problem = stuck(ctx, v);
         if (!problem) return [];
         if (problem.kind === "paused") return [PAUSED];

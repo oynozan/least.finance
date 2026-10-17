@@ -173,4 +173,25 @@ test.describe("what the dock's button says and does", () => {
             slot: "amountUSD",
         });
     });
+
+    test("a pool that can place nothing says Predictions paused on a button that can't be pressed", () => {
+        const fed = view("900", [
+            outcome("fed-nochange", "No change", 0.9, 1),
+            outcome("fed-cut", "25 bps decrease", 0.08, 1),
+        ]);
+        const known = new Map([toPredictionMarket(fed, new Date(2026, 9, 12))].map((m) => [m.id, m]));
+        const paused: TradeCtx = {
+            ...connected,
+            catalog: { ...LOADED_CATALOG, markets: [...known.values()], findMarket: (id) => known.get(id) },
+            maxOrderUSD: 0.5,
+        };
+        // The problem sits on the Predict pill, which the button can't open: it only says so
+        expect(action("predict", [], paused)).toEqual({
+            kind: "blocked",
+            label: "Predictions paused",
+            message: "Predictions are paused right now. Try again later.",
+        });
+        // Other verbs don't mind
+        expect(action("buy", [], paused)).toEqual({ kind: "review" });
+    });
 });

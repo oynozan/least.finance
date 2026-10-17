@@ -496,8 +496,9 @@ test.describe("live prediction markets", () => {
         const PAUSED = {
             code: "paused",
             severity: "error",
+            slot: "verb",
             message: "Predictions are paused right now. Try again later.",
-            cta: "Paused right now",
+            cta: "Predictions paused",
         };
         /** No change on one Fed question, where it fits, then on the October one, where it doesn't */
         const switched = (ctx: TradeCtx) =>
@@ -618,6 +619,12 @@ test.describe("live prediction markets", () => {
                     expect(view.blocking, `${max} ${typed}`).toEqual(PAUSED);
                     expect(view.intent).toBeNull();
                     expect(amountIssue(view), `${max} ${typed}`).toBeUndefined();
+                    // The issue is on the Predict pill, which is where the notice is read
+                    expect(view.verbIssue, `${max} ${typed}`).toEqual(PAUSED);
+                    // No slider to drag and no payout to promise
+                    const amount = view.slots.amountUSD;
+                    expect(amount.kind === "number" && amount.range, `${max} ${typed}`).toBeUndefined();
+                    expect(amount.kind === "number" && amount.summary, `${max} ${typed}`).toBeUndefined();
                 }
             }
             const { view } = run("predict", [], limited([oct], 0));

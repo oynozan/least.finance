@@ -99,7 +99,8 @@ export type NumberSpec<V, Ctx, Term extends string> = SlotBase<Term> & {
     placeholder: string;
     /** Typing is kept to this many digits before the decimal point. */
     maxIntegerDigits?: number;
-    bounds?: (values: V, ctx: Ctx) => { min?: Bound; max?: Bound };
+    /** `unbounded` leaves no slider, for an amount that can't be placed at all */
+    bounds?: (values: V, ctx: Ctx) => { min?: Bound; max?: Bound; unbounded?: true };
     /** The slider's ends where `bounds` leave them open (no wallet, so no cap). */
     range?: { min: number; max: number };
     /** What the amount comes to, under the slider: "You get 0.0443 SOL". */
@@ -124,9 +125,13 @@ export type TemplateItem<K extends string> = string | { slot: K } | typeof VERB 
  */
 export type Severity = "incomplete" | "error" | "warning";
 
+/** The slot id an issue uses to land on the verb's pill */
+export const VERB_SLOT = "verb";
+
 export type Issue<K extends string = string> = {
     code: string;
     severity: Severity;
+    /** The pill that holds the problem; `VERB_SLOT` is the verb's. */
     slot?: K;
     message: string;
     /** Short label for the action button while this issue blocks it. */
@@ -194,7 +199,7 @@ export type OperationDef<Id extends string, S extends Str, F extends Str, Intent
     /** Keeps the values consistent after any change (e.g. a swap's two coins never match). */
     normalize?: (next: S, cause: Cause<keyof S & string>, fixed: F, ctx: Ctx) => S;
     /** Rules across slots; per-slot limits come from the slot specs. */
-    check?: (values: Readonly<S & F>, ctx: Ctx) => readonly Issue<keyof S & string>[];
+    check?: (values: Readonly<S & F>, ctx: Ctx) => readonly Issue<(keyof S & string) | typeof VERB_SLOT>[];
     /** Only called by the engine, and only when nothing blocks. */
     toIntent: (values: Readonly<S & F>, ctx: Ctx) => Intent;
     preview: (values: Readonly<S & F>, ctx: Ctx) => Preview;

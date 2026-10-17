@@ -1,7 +1,7 @@
 import { isEntered } from "./decimal";
 import { findVerb, type Registry } from "./schema";
 import type { SentenceState } from "./state";
-import type { Choice, ChoiceSpec, Issue, Preview, Str } from "./types";
+import { VERB_SLOT, type Choice, type ChoiceSpec, type Issue, type Preview, type Str } from "./types";
 
 /**
  * One item of the rendered sentence. Keys are stable across verbs: words by
@@ -77,6 +77,8 @@ export type SentenceView<Intent> = {
     verbChoices: Choice[];
     parts: SentencePart[];
     slots: Record<string, SlotView>;
+    /** The first issue on the verb's pill, if any. */
+    verbIssue?: Issue;
     /** Issues on slots in the sentence, in reading order, then cross-slot ones. */
     issues: Issue[];
     /** The first issue that stops the intent, if any. */
@@ -156,7 +158,7 @@ export function resolve<I, T extends Str, C>(
         const slotIssues: Issue[] = [];
 
         if (spec.kind === "number") {
-            const { min, max } = spec.bounds?.(values, ctx) ?? {};
+            const { min, max, unbounded } = spec.bounds?.(values, ctx) ?? {};
             const low = min?.value ?? spec.range?.min;
             const high = max?.value ?? spec.range?.max;
             // A minimum over the maximum leaves no amount that fits, so both are said whatever is typed
@@ -191,7 +193,7 @@ export function resolve<I, T extends Str, C>(
                 placeholder: spec.placeholder,
                 // Only ends with room between them make a slider
                 range:
-                    low !== undefined && high !== undefined && low < high
+                    !unbounded && low !== undefined && high !== undefined && low < high
                         ? { min: low, max: high, capped: !!max }
                         : undefined,
                 summary: isEntered(value) ? spec.summary?.(values, ctx) : undefined,
@@ -261,8 +263,9 @@ export function resolve<I, T extends Str, C>(
     issues.splice(0, issues.length, ...issues.filter((issue) => !quiet(issue)));
 
     for (const issue of op.check?.(values, ctx) ?? []) {
-        if (!issue.slot || slots[issue.slot]) issues.push(issue);
+        if (!issue.slot || issue.slot === VERB_SLOT || slots[issue.slot]) issues.push(issue);
     }
+    const verbIssue = issues.find((issue) => issue.slot === VERB_SLOT);
     for (const issue of issues) {
         const slot = issue.slot ? slots[issue.slot] : undefined;
         if (slot && !slot.issue) slot.issue = issue;
@@ -297,6 +300,7 @@ export function resolve<I, T extends Str, C>(
         })),
         parts,
         slots,
+        verbIssue,
         issues,
         blocking,
         intent: blocking ? null : op.toIntent(values, ctx),
