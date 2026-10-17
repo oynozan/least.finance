@@ -198,7 +198,7 @@ test("a question that stops being offered asks for a question again", async ({ p
     );
     await page.clock.fastForward(10_000);
     await expect(questionPill(page)).toHaveAccessibleName("pick one");
-    await expect(page.getByRole("button", { name: "Review", exact: true })).toHaveAccessibleDescription(
+    await expect(page.getByRole("navigation", { name: "Pages" }).locator("button[data-action]")).toHaveAccessibleDescription(
         "Pick a question.",
     );
 });

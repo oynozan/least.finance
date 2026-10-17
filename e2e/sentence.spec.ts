@@ -16,7 +16,8 @@ const picker = (page: Page) => page.locator("[data-floating-dialog]:not([data-cl
 const amountPill = (page: Page) => trade(page).getByRole("button", { name: /USD$/ });
 const amountField = (page: Page) => picker(page).getByRole("textbox");
 const slider = (page: Page) => picker(page).getByRole("slider");
-const review = (page: Page) => page.getByRole("button", { name: "Review", exact: true });
+/** The dock's button: Review, or the way out of what blocks the sentence. */
+const review = (page: Page) => page.getByRole("navigation", { name: "Pages" }).locator("button[data-action]");
 const sidebar = (page: Page) => page.locator("#wallet-sidebar");
 const reviewPanel = (page: Page) => page.getByRole("complementary", { name: "Review" });
 
@@ -146,10 +147,10 @@ test("starts as a swap sentence, with only the sentence on the page", async ({ p
 
     await connect(page);
     // The account holds no ETH to swap yet; buying some from the balance gives it one.
-    await expect(review(page)).toHaveAttribute("aria-disabled", "true");
+    await expect(review(page)).toHaveText("Pick a coin");
     await expect(review(page)).toHaveAccessibleDescription("Pick a coin to swap from.");
     await holdEth(page);
-    await expect(review(page)).not.toHaveAttribute("aria-disabled");
+    await expect(review(page)).toHaveText("Review");
     await expect(review(page)).toHaveCSS("background-color", "rgb(104, 214, 112)");
     // The wallet button sits above the sentence; Review is in the dock below it.
     await expect(page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: "Review" })).toBeVisible();
@@ -232,23 +233,24 @@ test("persisting pills glide to their new places", async ({ page, isMobile }) =>
     expect(Math.max(...jumps), "it glides instead of jumping").toBeLessThan(Math.abs(moved) * 0.5);
 });
 
-test("Review stays disabled until the sentence is complete and valid", async ({ page }) => {
+test("the dock says the way out until the sentence is complete and valid", async ({ page }) => {
     await fund(page);
     await connect(page);
     // A buy is paid from the $500 balance; a swap would first need a coin held.
     await pick(page, "Swap", /^Buy/);
     await setAmount(page, "");
-    await expect(review(page)).toHaveAttribute("aria-disabled", "true");
+    await expect(review(page)).toHaveText("Enter an amount");
     await expect(review(page)).toHaveAccessibleDescription("Enter an amount.");
-    // Forced: Playwright won't click an aria-disabled button on its own, and a
-    // forced click doesn't wait for the page to finish sliding back into view.
+    // The button opens the amount instead of the review.
     await expect(review(page)).toBeInViewport();
-    await review(page).click({ force: true });
-    await page.waitForTimeout(300);
+    await review(page).click();
+    await expect(amountField(page)).toBeVisible();
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
+    await page.keyboard.press("Escape");
+    await expect(picker(page)).toBeHidden();
 
     await setAmount(page, "0.05");
-    await expect(review(page)).toHaveAttribute("aria-disabled", "true");
+    await expect(review(page)).toHaveText("Minimum $0.10");
     await expect(review(page)).toHaveAccessibleDescription("The minimum is $0.10.");
     // The page itself shows nothing but the sentence: the amount turns red.
     expect(await strayText(page)).toEqual([]);
@@ -259,14 +261,14 @@ test("Review stays disabled until the sentence is complete and valid", async ({ 
     await expect(amountField(page)).toHaveValue("1250.00");
     // Closing and reopening the dropdown never rewrites what was typed.
     await amountField(page).press("Enter");
-    await expect(review(page)).toHaveAttribute("aria-disabled", "true");
+    await expect(review(page)).toHaveText("Not enough USDC");
     await expect(review(page)).toHaveAccessibleDescription("You have $500.00 USDC to spend.");
     await amountPill(page).click();
     await expect(amountField(page)).toHaveValue("1250.00");
     await amountField(page).fill("25");
     await expect(amountField(page)).toHaveValue("25");
     await amountField(page).press("Enter");
-    await expect(review(page)).not.toHaveAttribute("aria-disabled");
+    await expect(review(page)).toHaveText("Review");
 });
 
 test("a swap's review shows what you pay and get, folds the rest away until pointed at, and confirms from the balance", async ({

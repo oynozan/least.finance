@@ -8,7 +8,7 @@ export const balanceButton = (page: Page) => sidebar(page).getByRole("button", {
 export const status = (page: Page) => sidebar(page).getByRole("status");
 export const reviewPanel = (page: Page) => page.getByRole("complementary", { name: "Review" });
 export const reviewButton = (page: Page) =>
-    page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: "Review" });
+    page.getByRole("navigation", { name: "Pages" }).locator("button[data-action]");
 const picker = (page: Page) => page.locator("[data-floating-dialog]:not([data-closing])");
 
 /** The sidebar's rows for the person's open positions, newest last. */

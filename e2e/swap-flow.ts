@@ -6,7 +6,7 @@ export const picker = (page: Page) => page.locator("[data-floating-dialog]:not([
 export const sidebar = (page: Page) => page.locator("#wallet-sidebar");
 export const reviewPanel = (page: Page) => page.getByRole("complementary", { name: "Review" });
 export const reviewButton = (page: Page) =>
-    page.getByRole("navigation", { name: "Pages" }).getByRole("button", { name: "Review" });
+    page.getByRole("navigation", { name: "Pages" }).locator("button[data-action]");
 const walletButton = (page: Page) => page.getByRole("button", { name: /^(Wallet|Connect wallet)/ }).last();
 const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: /^Balance/ });
 const amountPill = (page: Page) => trade(page).getByRole("button", { name: /USD$/ });
