@@ -353,6 +353,77 @@ test("on a range of cents, the thumb stays where it lets go", async ({ page, isM
     await expect.poll(off, { timeout: 3_000 }).toBeLessThanOrEqual(2);
 });
 
+test("sliding holds the amount pill at its widest and moves the sentence with it", async ({ page }) => {
+    await seedDeposits(addressOf(page), [{ amount: "2", daysAgo: 0 }]);
+    await connect(page);
+    await pick(page, "Swap", /^Buy/);
+    await amountPill(page).click();
+    await expect(slider(page)).toHaveAttribute("aria-valuemax", "2");
+    await settledBoxes(page, amountPill(page));
+    const track = (await slider(page).boundingBox())!;
+    const y = track.y + track.height / 2;
+    // 6px inset and a 44px thumb: 0.42 of the way is about $0.90, 0.58 about $1.20.
+    const xAt = (f: number) => track.x + 28 + f * (track.width - 56);
+    await page.mouse.move(xAt(0.42), y);
+
+    // Every frame: the pill's drawn width, and the gap from it to the word after.
+    await page.evaluate(() => {
+        const button = [...document.querySelectorAll("[data-sentence] button")].find((b) =>
+            b.getAttribute("aria-label")?.endsWith("USD"),
+        )!;
+        const parts = [...document.querySelectorAll<HTMLElement>("[data-sentence] [data-part]")];
+        const next = parts[parts.indexOf(button.closest<HTMLElement>("[data-part]")!) + 1];
+        const frames: { label: string; width: number; gap: number; sameLine: boolean }[] = [];
+        Object.assign(window, { __frames: frames });
+        const tick = () => {
+            const pill = button.firstElementChild!.getBoundingClientRect();
+            const word = next.getBoundingClientRect();
+            frames.push({
+                label: button.getAttribute("aria-label")!,
+                width: pill.width,
+                gap: word.left - pill.right,
+                sameLine: Math.abs(word.top - pill.top) < pill.height,
+            });
+            if (!(window as unknown as { __stop?: boolean }).__stop) requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+    });
+    const frames = () =>
+        page.evaluate(() => (window as unknown as { __frames: { label: string; width: number; gap: number; sameLine: boolean }[] }).__frames.splice(0));
+
+    await page.mouse.down();
+    for (let i = 0; i <= 32; i++) {
+        await page.mouse.move(xAt(0.42 + (0.16 * i) / 32), y);
+        await page.waitForTimeout(30);
+    }
+    const held = await frames();
+    await page.mouse.up();
+    await page.waitForTimeout(900);
+    const settled = await frames();
+    await page.evaluate(() => Object.assign(window, { __stop: true }));
+
+    // It went through amounts of every width: 0.9, 0.99, 1, 1.1.
+    const labels = new Set(held.map((frame) => frame.label));
+    expect(labels).toContain("1 USD");
+    expect([...labels].some((label) => /^0\.9\d USD$/.test(label))).toBe(true);
+    expect([...labels].some((label) => /^1\.\d USD$/.test(label))).toBe(true);
+    // Held: the pill never narrows while the pointer is down, only grows (a spring may overshoot a little).
+    let widest = 0;
+    for (const frame of held) {
+        expect(frame.width).toBeGreaterThan(widest - 3);
+        widest = Math.max(widest, frame.width);
+    }
+    // The word after keeps its distance the whole way, so nothing opens up or runs into the pill.
+    const sameLine = [...held, ...settled].filter((frame) => frame.sameLine);
+    expect(sameLine.length).toBeGreaterThan(20);
+    const gaps = sameLine.map((frame) => frame.gap);
+    expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThan(3);
+    // Let go, it settles to the amount's own width.
+    const natural = await amountPill(page).evaluate((button) => (button.firstElementChild as HTMLElement).offsetWidth);
+    expect(Math.abs(settled.at(-1)!.width - natural)).toBeLessThan(1);
+    expect(settled.at(-1)!.width).toBeLessThan(widest - 10);
+});
+
 test("the amount field grows with every digit and never scrolls", async ({ page }) => {
     const field = () =>
         amountField(page).evaluate((input: HTMLInputElement) => {

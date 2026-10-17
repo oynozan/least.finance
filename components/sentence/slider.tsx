@@ -56,6 +56,8 @@ type SliderProps = {
     /** The value is out of bounds: the fill takes the loss tone. */
     invalid?: boolean;
     onChange: (value: number) => void;
+    /** Told when a drag or a held arrow key starts sliding, before the value it moves to, and when it stops. */
+    onScrub?: (active: boolean) => void;
     ref?: Ref<HTMLDivElement>;
 };
 
@@ -64,7 +66,7 @@ type SliderProps = {
  * exactly and reports stepped values; a change from elsewhere (typing)
  * springs the thumb to its place.
  */
-export function Slider({ scale, value, label, valueText, decimals = 0, invalid, onChange, ref }: SliderProps) {
+export function Slider({ scale, value, label, valueText, decimals = 0, invalid, onChange, onScrub, ref }: SliderProps) {
     const reduce = useReducedMotion();
     const track = useRef<HTMLDivElement>(null);
     const fraction = useMotionValue(toFraction(scale, value));
@@ -118,6 +120,7 @@ export function Slider({ scale, value, label, valueText, decimals = 0, invalid, 
         const move = moves[event.key];
         if (!move) return;
         event.preventDefault();
+        onScrub?.(true);
         onChange(clamp(move(), scale.min, scale.max));
     };
 
@@ -141,11 +144,14 @@ export function Slider({ scale, value, label, valueText, decimals = 0, invalid, 
                 disabled ? "cursor-default opacity-50" : "cursor-grab data-dragging:cursor-grabbing"
             }`}
             onKeyDown={onKeyDown}
+            onKeyUp={() => onScrub?.(false)}
+            onBlur={() => onScrub?.(false)}
             onPointerDown={(event) => {
                 if (disabled || event.button !== 0) return;
                 event.currentTarget.setPointerCapture(event.pointerId);
                 dragged.current = true;
                 setDragging(true);
+                onScrub?.(true);
                 drag(event);
             }}
             onPointerMove={(event) => {
@@ -155,12 +161,14 @@ export function Slider({ scale, value, label, valueText, decimals = 0, invalid, 
                 if (!dragged.current) return;
                 dragged.current = false;
                 setDragging(false);
+                onScrub?.(false);
                 // Into the notch of the stepped value it reported.
                 settle(toFraction(scale, fromFraction(scale, fractionAt(event.clientX), decimals)));
             }}
             onPointerCancel={() => {
                 dragged.current = false;
                 setDragging(false);
+                onScrub?.(false);
                 settle(target);
             }}
         >

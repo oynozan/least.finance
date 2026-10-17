@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
-import NumberFlow from "@number-flow/react";
+import { flushSync } from "react-dom";
+import NumberFlow, { type NumberFlowElement } from "@number-flow/react";
 import { motion } from "motion/react";
 import { filterChoices, type ChoiceSlotView, type NumberSlotView } from "@/lib/sentence";
 import { ChevronIcon } from "@/components/icons";
@@ -242,6 +243,7 @@ function formatNumber(value: number, decimals: number, compact = false) {
  */
 export function NumberSlot({ view, onChange, onFocusChange, describedBy, openRequest }: NumberSlotProps) {
     const [open, setOpenState] = useState(false);
+    const [scrubbing, setScrubbing] = useState(false);
     const button = useRef<HTMLButtonElement>(null);
     const dropdownId = useId();
     const hintId = useId();
@@ -291,7 +293,7 @@ export function NumberSlot({ view, onChange, onFocusChange, describedBy, openReq
                 onClick={() => setOpen(true)}
             >
                 {view.prefix && <span className="text-muted">{view.prefix}</span>}
-                <NumberFlow value={amount} format={{ maximumFractionDigits: view.decimals }} willChange />
+                <HeldNumber value={amount} decimals={view.decimals} hold={open && scrubbing} />
                 {view.suffix && <span className="whitespace-pre text-muted">{view.suffix}</span>}
             </PillButton>
             <span id={hintId} className="sr-only">
@@ -303,9 +305,42 @@ export function NumberSlot({ view, onChange, onFocusChange, describedBy, openReq
                 anchor={button}
                 view={view}
                 onChange={onChange}
+                // Held from the width before the first step, so that step is held too.
+                onScrub={(active) => (active ? flushSync(() => setScrubbing(true)) : setScrubbing(false))}
                 onClose={() => setOpen(false)}
             />
         </>
+    );
+}
+
+/**
+ * The amount's digits. While `hold` is set they keep the widest they have
+ * been, so sliding through 0.9, 0.99 and 1 doesn't resize the pill at every
+ * step; a wider amount, and the settle once let go, ease the width in CSS,
+ * which reflows the sentence frame by frame and can't be cut short by the
+ * next step's render the way a layout animation is.
+ */
+function HeldNumber({ value, decimals, hold }: { value: number; decimals: number; hold: boolean }) {
+    const flow = useRef<NumberFlowElement>(null);
+    const [width, setWidth] = useState<number | null>(null);
+    useLayoutEffect(() => {
+        const natural = flow.current?.offsetWidth;
+        if (natural === undefined) return;
+        setWidth((held) => {
+            if (hold) return Math.max(held ?? natural, natural);
+            return held === null || held === natural ? null : natural;
+        });
+    }, [hold, value]);
+    return (
+        <span
+            className="inline-flex justify-end transition-[width] duration-500 ease-spring"
+            style={{ width: width ?? undefined }}
+            onTransitionEnd={(event) => {
+                if (!hold && event.propertyName === "width") setWidth(null);
+            }}
+        >
+            <NumberFlow ref={flow} value={value} format={{ maximumFractionDigits: decimals }} willChange />
+        </span>
     );
 }
 
@@ -315,14 +350,15 @@ type AmountDropdownProps = {
     anchor: RefObject<HTMLElement | null>;
     view: NumberSlotView;
     onChange: (value: string) => void;
+    onScrub: (active: boolean) => void;
     onClose: () => void;
 };
 
-function AmountDropdown({ id, open, anchor, view, onChange, onClose }: AmountDropdownProps) {
+function AmountDropdown({ id, open, anchor, view, onChange, onScrub, onClose }: AmountDropdownProps) {
     const titleId = useId();
     return (
         <FloatingDialog open={open} onClose={onClose} id={id} labelledBy={titleId} width={440} anchor={anchor}>
-            <AmountPanel titleId={titleId} view={view} onChange={onChange} onClose={onClose} />
+            <AmountPanel titleId={titleId} view={view} onChange={onChange} onScrub={onScrub} onClose={onClose} />
         </FloatingDialog>
     );
 }
@@ -331,8 +367,9 @@ function AmountPanel({
     titleId,
     view,
     onChange,
+    onScrub,
     onClose,
-}: Pick<AmountDropdownProps, "view" | "onChange" | "onClose"> & { titleId: string }) {
+}: Pick<AmountDropdownProps, "view" | "onChange" | "onScrub" | "onClose"> & { titleId: string }) {
     const input = useRef<HTMLInputElement>(null);
     const slider = useRef<HTMLDivElement>(null);
     const invalid = view.issue?.severity === "error";
@@ -405,6 +442,7 @@ function AmountPanel({
                         decimals={view.decimals}
                         invalid={invalid}
                         onChange={(value) => onChange(String(value))}
+                        onScrub={onScrub}
                     />
                     {/* The ends stay on one line; the summary between them wraps if it must. */}
                     <div className="grid grid-cols-[auto_1fr_auto] items-baseline gap-3 px-[18px] pt-3 pb-2 text-[15px] leading-snug">
