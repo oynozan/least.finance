@@ -44,48 +44,52 @@ export function TransactionPreview({ preview }: { preview: Preview }) {
                     {preview.title}
                 </motion.p>
             )}
-            <motion.div
-                variants={rowVariants}
-                className="group rounded-[28px] bg-pill px-5 py-5 outline-none focus-visible:shadow-[0_0_0_2px_rgb(255_255_255/0.28)]"
-                data-preview-card=""
-                tabIndex={details.length > 0 ? 0 : undefined}
-                data-open={tapped || undefined}
-                // A mouse opens it by pointing; a tap opens it and the next one closes it.
-                onPointerUp={(event) => details.length > 0 && event.pointerType !== "mouse" && setTapped((t) => !t)}
-            >
-                <dl className="flex flex-col gap-3">
-                    {primary.map((row) => (
-                        <div key={row.id} className="flex flex-col gap-0.5">
-                            <dt className="text-[14px] text-muted">{row.label}</dt>
-                            <dd
-                                className={`text-[22px] font-medium tracking-[-0.015em] tabular-nums ${TONE[row.tone ?? "neutral"]}`}
-                            >
-                                {row.value}
-                            </dd>
-                            {row.note && <dd className="text-[14px] text-muted">{row.note}</dd>}
+            {preview.rows.length > 0 && (
+                <motion.div
+                    variants={rowVariants}
+                    className="group rounded-[28px] bg-pill px-5 py-5 outline-none focus-visible:shadow-[0_0_0_2px_rgb(255_255_255/0.28)]"
+                    data-preview-card=""
+                    tabIndex={details.length > 0 ? 0 : undefined}
+                    data-open={tapped || undefined}
+                    // A mouse opens it by pointing; a tap opens it and the next one closes it.
+                    onPointerUp={(event) => details.length > 0 && event.pointerType !== "mouse" && setTapped((t) => !t)}
+                >
+                    <dl className="flex flex-col gap-3">
+                        {primary.map((row) => (
+                            <div key={row.id} className="flex flex-col gap-0.5">
+                                <dt className="text-[14px] text-muted">{row.label}</dt>
+                                <dd
+                                    className={`text-[22px] font-medium tracking-[-0.015em] tabular-nums ${TONE[row.tone ?? "neutral"]}`}
+                                >
+                                    {row.value}
+                                </dd>
+                                {row.note && <dd className="text-[14px] text-muted">{row.note}</dd>}
+                            </div>
+                        ))}
+                        {warnings.length > 0 && <div className="my-1 h-px bg-white/[0.06]" aria-hidden="true" />}
+                        {warnings.map((row) => (
+                            <SmallRow key={row.id} row={row} />
+                        ))}
+                    </dl>
+                    {details.length > 0 && (
+                        <div
+                            data-preview-details=""
+                            className={`grid grid-rows-[0fr] opacity-0 transition-[grid-template-rows,opacity] duration-200 ease-out ${OPEN}`}
+                        >
+                            <div className="min-h-0 overflow-hidden">
+                                {warnings.length === 0 && (
+                                    <div className="mt-4 h-px bg-white/[0.06]" aria-hidden="true" />
+                                )}
+                                <dl className="flex flex-col gap-3 pt-4">
+                                    {details.map((row) => (
+                                        <SmallRow key={row.id} row={row} />
+                                    ))}
+                                </dl>
+                            </div>
                         </div>
-                    ))}
-                    {warnings.length > 0 && <div className="my-1 h-px bg-white/[0.06]" aria-hidden="true" />}
-                    {warnings.map((row) => (
-                        <SmallRow key={row.id} row={row} />
-                    ))}
-                </dl>
-                {details.length > 0 && (
-                    <div
-                        data-preview-details=""
-                        className={`grid grid-rows-[0fr] opacity-0 transition-[grid-template-rows,opacity] duration-200 ease-out ${OPEN}`}
-                    >
-                        <div className="min-h-0 overflow-hidden">
-                            {warnings.length === 0 && <div className="mt-4 h-px bg-white/[0.06]" aria-hidden="true" />}
-                            <dl className="flex flex-col gap-3 pt-4">
-                                {details.map((row) => (
-                                    <SmallRow key={row.id} row={row} />
-                                ))}
-                            </dl>
-                        </div>
-                    </div>
-                )}
-            </motion.div>
+                    )}
+                </motion.div>
+            )}
         </section>
     );
 }

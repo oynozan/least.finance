@@ -361,12 +361,15 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     // Only an answer to the request on screen; a stale one would show the wrong price.
     const perpQuote = perpKey && perpAnswer?.key === perpKey && "quote" in perpAnswer ? perpAnswer.quote : null;
     const perpError = perpKey && perpAnswer?.key === perpKey && "error" in perpAnswer ? perpAnswer.error : null;
+    // A sentence an error blocks promises nothing: no "You buy 2.299 YES shares" beside the reason it can't go ahead.
     const preview =
-        live && quote && outcome
-            ? { ...view.preview, rows: quoteRows(quote, outcome.label, other?.label, outcome.chance) }
-            : perp && perpQuote
-              ? { ...view.preview, rows: perpQuoteRows(perpQuote, perp) }
-              : view.preview;
+        view.blocking?.severity === "error"
+            ? { title: view.preview.title, rows: [] }
+            : live && quote && outcome
+              ? { ...view.preview, rows: quoteRows(quote, outcome.label, other?.label, outcome.chance) }
+              : perp && perpQuote
+                ? { ...view.preview, rows: perpQuoteRows(perpQuote, perp) }
+                : view.preview;
 
     // A trade waits for the prices it is made at; a perp for its quote.
     const awaitingQuote = (!!spotIntent && !tradeRequest) || (perpLive && !perpQuote);
