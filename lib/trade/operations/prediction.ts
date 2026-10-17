@@ -1,4 +1,4 @@
-import { VERB, canonicalDecimal, type Bound, type Choice } from "@/lib/sentence";
+import { VERB, canonicalDecimal, type Bound, type Choice, type Issue } from "@/lib/sentence";
 import type { Outcome, PredictionMarket } from "../catalog";
 import { operation, type TradeCtx } from "../context";
 import { formatCents, formatUnits, formatUsd, formatUsdShort } from "../format";
@@ -29,9 +29,54 @@ function orderCap(ctx: TradeCtx): Bound | undefined {
     return caps.reduce<Bound | undefined>((a, b) => (a && a.value <= b.value ? a : b), undefined);
 }
 
-/** The outcome the market rates most likely. */
-const top = (market: PredictionMarket) =>
-    market.outcomes.reduce<Outcome | undefined>((a, b) => (a && a.chance >= b.chance ? a : b), undefined);
+/** The outcome rated most likely */
+const likeliest = (outcomes: readonly Outcome[]) =>
+    outcomes.reduce<Outcome | undefined>((a, b) => (a && a.chance >= b.chance ? a : b), undefined);
+
+/** Polymarket's smallest order, so a pool under it can place nothing */
+const FLOOR_USD = 1;
+
+const limitOf = (ctx: TradeCtx) => (typeof ctx.maxOrderUSD === "number" ? ctx.maxOrderUSD : undefined);
+
+/** Why the pool's limit rules an outcome out, or nothing while it fits or no limit is set */
+function limitReason(ctx: TradeCtx, outcome: Outcome): string | undefined {
+    const limit = limitOf(ctx);
+    if (limit === undefined) return undefined;
+    if (limit < FLOOR_USD) return "Paused right now";
+    return outcome.minUSD > limit
+        ? `From ${formatUsdShort(outcome.minUSD)}, over today's ${formatUsdShort(limit)} limit`
+        : undefined;
+}
+
+const overLimit = (ctx: TradeCtx, outcome: Outcome) => limitReason(ctx, outcome) !== undefined;
+
+type Stuck =
+    { kind: "paused" } | { kind: "question"; limit: number } | { kind: "outcome"; limit: number; outcome: Outcome };
+
+/** What keeps the sentence from being placed at any amount because of the pool's limit */
+function stuck(ctx: TradeCtx, v: Values): Stuck | undefined {
+    const limit = limitOf(ctx);
+    if (limit === undefined) return undefined;
+    if (limit < FLOOR_USD) return { kind: "paused" };
+    const outcomes = marketOf(ctx, v.marketId)?.outcomes ?? [];
+    if (outcomes.length > 0 && outcomes.every((o) => o.minUSD > limit)) return { kind: "question", limit };
+    const outcome = outcomes.find((o) => o.id === v.outcomeId);
+    return outcome && outcome.minUSD > limit ? { kind: "outcome", limit, outcome } : undefined;
+}
+
+/** The outcome a question starts on, the likeliest one that fits the limit when the usual one doesn't */
+function defaultOutcome(ctx: TradeCtx, market: PredictionMarket | undefined): Outcome | undefined {
+    const usual = market?.outcomes.find((o) => o.label === "YES") ?? market?.outcomes[0];
+    if (!market || !usual || !overLimit(ctx, usual)) return usual;
+    return likeliest(market.outcomes.filter((o) => !overLimit(ctx, o))) ?? usual;
+}
+
+const PAUSED = {
+    code: "paused",
+    severity: "error",
+    message: "Predictions are paused right now. Try again later.",
+    cta: "Paused right now",
+} as const;
 
 /** "I want to [Predict] [YES] on [Will BTC reach $150K?] with [10 USD]." */
 export const prediction = operation({
@@ -55,17 +100,22 @@ export const prediction = operation({
             needs: "marketId",
             missing: { message: "Pick an outcome for this question.", cta: "Pick an outcome" },
             choices: (v: Values, ctx) =>
-                (marketOf(ctx, v.marketId)?.outcomes ?? []).map((o): Choice => ({
-                    value: o.id,
-                    label: o.label,
-                    detail: formatCents(o.price),
-                    tone: o.tone,
-                    icon: isYesNo(o)
-                        ? { set: "outcome", id: o.label.toLowerCase(), tone: o.tone }
-                        : o.image
-                          ? { set: "image", id: o.image }
-                          : undefined,
-                })),
+                (marketOf(ctx, v.marketId)?.outcomes ?? []).map((o): Choice => {
+                    const reason = limitReason(ctx, o);
+                    return {
+                        value: o.id,
+                        label: o.label,
+                        detail: reason ?? formatCents(o.price),
+                        tone: o.tone,
+                        icon: isYesNo(o)
+                            ? { set: "outcome", id: o.label.toLowerCase(), tone: o.tone }
+                            : o.image
+                              ? { set: "image", id: o.image }
+                              : undefined,
+                        // The picked outcome stays pickable so its pill keeps showing, and the issue says the way out
+                        disabled: o.id === v.outcomeId ? undefined : reason,
+                    };
+                }),
         },
         marketId: {
             kind: "choice",
@@ -82,7 +132,7 @@ export const prediction = operation({
                         ? [...ctx.catalog.markets, picked]
                         : ctx.catalog.markets;
                 return listed.map((m): Choice => {
-                    const lead = top(m);
+                    const lead = likeliest(m.outcomes);
                     return {
                         value: m.id,
                         label: m.question,
@@ -94,10 +144,11 @@ export const prediction = operation({
             },
         },
         amountUSD: usdAmount(
-            (v: Values, ctx) => ({
-                min: minimum(outcomeOf(ctx, v)?.minUSD ?? 1),
-                max: orderCap(ctx),
-            }),
+            (v: Values, ctx) =>
+                // What the limit rules out says so at its own slot, so the amount has no minimum or limit to cross
+                stuck(ctx, v)
+                    ? { max: spendCap(ctx) }
+                    : { min: minimum(outcomeOf(ctx, v)?.minUSD ?? 1), max: orderCap(ctx) },
             (v, ctx) => {
                 const outcome = outcomeOf(ctx, v);
                 if (!outcome) return undefined;
@@ -107,16 +158,51 @@ export const prediction = operation({
     },
     defaults: (ctx: TradeCtx): Values => {
         const market = ctx.catalog.markets[0];
-        const outcome = market?.outcomes.find((o) => o.label === "YES") ?? market?.outcomes[0];
-        return { outcomeId: outcome?.id ?? "", marketId: market?.id ?? "", amountUSD: "10" };
+        return { outcomeId: defaultOutcome(ctx, market)?.id ?? "", marketId: market?.id ?? "", amountUSD: "10" };
     },
     template: () => [VERB, { slot: "outcomeId" }, "on", { slot: "marketId" }, "with", { slot: "amountUSD" }, "."],
-    // A new question keeps your side when it offers an outcome with the same label.
     normalize: (next, cause, _fixed, ctx) => {
-        if (cause.type !== "slot" || cause.slot !== "marketId") return next;
-        const label = marketOf(ctx, cause.prev)?.outcomes.find((o) => o.id === next.outcomeId)?.label;
-        const kept = marketOf(ctx, next.marketId)?.outcomes.find((o) => o.label === label);
-        return { ...next, outcomeId: kept?.id ?? "" };
+        if (cause.type === "slot") {
+            // A new question keeps your side when it offers an outcome with the same label, fit or not
+            if (cause.slot !== "marketId") return next;
+            const label = marketOf(ctx, cause.prev)?.outcomes.find((o) => o.id === next.outcomeId)?.label;
+            const kept = marketOf(ctx, next.marketId)?.outcomes.find((o) => o.label === label);
+            return { ...next, outcomeId: kept?.id ?? "" };
+        }
+        // A side nobody chose moves to the likeliest one that fits a new limit
+        if (cause.chosen.includes("outcomeId") || cause.chosen.includes("marketId")) return next;
+        const market = marketOf(ctx, next.marketId);
+        const current = market?.outcomes.find((o) => o.id === next.outcomeId);
+        if (!market || !current || !overLimit(ctx, current)) return next;
+        const fitting = likeliest(market.outcomes.filter((o) => !overLimit(ctx, o)));
+        return fitting ? { ...next, outcomeId: fitting.id } : next;
+    },
+    check: (v, ctx): readonly Issue<keyof Values>[] => {
+        const problem = stuck(ctx, v);
+        if (!problem) return [];
+        if (problem.kind === "paused") return [PAUSED];
+        const limit = formatUsdShort(problem.limit);
+        if (problem.kind === "question") {
+            return [
+                {
+                    code: "question_over_limit",
+                    severity: "error",
+                    slot: "marketId",
+                    message: `Every outcome of this question starts above today's ${limit} limit. Pick another question, or try again later.`,
+                    cta: "Pick another question",
+                },
+            ];
+        }
+        const { outcome } = problem;
+        return [
+            {
+                code: "outcome_over_limit",
+                severity: "error",
+                slot: "outcomeId",
+                message: `${outcome.label} needs at least ${formatUsdShort(outcome.minUSD)}, and predictions are limited to ${limit} right now. Pick an outcome that starts at ${limit} or less, or try again later.`,
+                cta: "Pick another outcome",
+            },
+        ];
     },
     toIntent: (v): Extract<TransactionIntent, { type: "prediction" }> => ({
         type: "prediction",

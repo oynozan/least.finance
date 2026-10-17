@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import {
     initialState,
     reduce,
+    refit,
     resolve,
     sanitizeDecimal,
     canonicalDecimal,
@@ -339,8 +340,42 @@ test.describe("live prediction markets", () => {
             { ...outcome("rain-no", "NO", 0.71, 0.7), tone: "loss" },
         ],
     };
+    // Five shares at 87¢ cost $4.35 and at 13¢ cost 65¢, which Polymarket's $1 floor lifts to $1
+    const oct: MarketView = {
+        id: "910",
+        title: "Fed Decision in October?",
+        image: null,
+        endDate: "2026-10-29T18:00:00Z",
+        volume24hUSD: 5,
+        outcomes: [
+            outcome("oct-nochange", "No change", 0.87, 0.87, 4.35),
+            outcome("oct-cut", "25 bps decrease", 0.13, 0.13, 1),
+        ],
+    };
+    // Every outcome starts above a $2 limit
+    const final: MarketView = {
+        id: "911",
+        title: "Who wins the final?",
+        image: null,
+        endDate: "2026-10-30T18:00:00Z",
+        volume24hUSD: 5,
+        outcomes: [outcome("final-home", "Home", 0.55, 0.55, 2.75), outcome("final-away", "Away", 0.45, 0.45, 2.25)],
+    };
+    // The first outcome doesn't fit a $2 limit, and the likeliest of the two that do isn't second
+    const sector: MarketView = {
+        id: "912",
+        title: "Which sector leads?",
+        image: null,
+        endDate: "2026-10-30T18:00:00Z",
+        volume24hUSD: 5,
+        outcomes: [
+            outcome("sector-tech", "Tech", 0.62, 0.62, 3.1),
+            outcome("sector-banks", "Banks", 0.12, 0.12, 1),
+            outcome("sector-energy", "Energy", 0.25, 0.25, 1.25),
+        ],
+    };
     const now = new Date(2026, 9, 12);
-    const known = new Map([fed, rain].map((m) => [m.id, toPredictionMarket(m, now)]));
+    const known = new Map([fed, rain, oct, final, sector].map((m) => [m.id, toPredictionMarket(m, now)]));
     const live = (listed: MarketView[]): TradeCtx => ({
         catalog: {
             ...CATALOG,
@@ -420,22 +455,212 @@ test.describe("live prediction markets", () => {
         expect(run("predict", [slot("amountUSD", "50")], poor).view.blocking).toMatchObject({ cta: "Not enough USDC" });
     });
 
-    test("a minimum over the limit leaves no slider and says both, whatever the amount", () => {
-        // YES on rain takes at least $4.20, but predictions are limited to $2
-        const ctx: TradeCtx = { ...live([rain]), maxOrderUSD: 2 };
-        for (const typed of ["1", "3", "10"]) {
-            const view = run("predict", [slot("marketId", "901"), slot("amountUSD", typed)], ctx).view;
-            expect(view.blocking, typed).toMatchObject({
-                message: "The minimum is $4.20. Predictions are limited to $2 right now.",
-            });
-            const amount = view.slots.amountUSD;
-            expect(amount.kind === "number" && amount.range, typed).toBeUndefined();
-        }
-        // A limit that meets the minimum allows that one amount, with nothing to slide
-        const exact = run("predict", [slot("marketId", "901"), slot("amountUSD", "4.2")], { ...ctx, maxOrderUSD: 4.2 });
+    test("a limit that meets the minimum allows that one amount, with nothing to slide", () => {
+        const ctx: TradeCtx = { ...live([rain]), maxOrderUSD: 4.2 };
+        const exact = run("predict", [slot("outcomeId", "rain-yes"), slot("amountUSD", "4.2")], ctx);
         expect(exact.view.blocking).toBeUndefined();
         const one = exact.view.slots.amountUSD;
         expect(one.kind === "number" && one.range).toBeUndefined();
+    });
+
+    test.describe("a pool limit under an outcome's minimum", () => {
+        const limited = (listed: MarketView[], maxOrderUSD: number | null = 2): TradeCtx => ({
+            ...live(listed),
+            maxOrderUSD,
+        });
+        type View = ReturnType<typeof run>["view"];
+        const rows = (view: View) => {
+            const picker = view.slots.outcomeId;
+            return picker.kind === "choice" ? picker.choices : [];
+        };
+        const row = (view: View, label: string) => rows(view).find((choice) => choice.label === label);
+        const amountIssue = (view: View) => view.slots.amountUSD.issue;
+
+        const OVER = "From $4.35, over today's $2 limit";
+        const OUTCOME_ISSUE = {
+            code: "outcome_over_limit",
+            severity: "error",
+            slot: "outcomeId",
+            message:
+                "No change needs at least $4.35, and predictions are limited to $2 right now. Pick an outcome that starts at $2 or less, or try again later.",
+            cta: "Pick another outcome",
+        };
+        const QUESTION_ISSUE = {
+            code: "question_over_limit",
+            severity: "error",
+            slot: "marketId",
+            message:
+                "Every outcome of this question starts above today's $2 limit. Pick another question, or try again later.",
+            cta: "Pick another question",
+        };
+        const PAUSED = {
+            code: "paused",
+            severity: "error",
+            message: "Predictions are paused right now. Try again later.",
+            cta: "Paused right now",
+        };
+        /** No change on one Fed question, where it fits, then on the October one, where it doesn't */
+        const switched = (ctx: TradeCtx) =>
+            run("predict", [slot("outcomeId", "fed-nochange"), slot("marketId", "910")], ctx);
+
+        test("an outcome whose minimum is over the limit is listed but disabled, with why", () => {
+            const { view } = run("predict", [], limited([oct]));
+            expect(row(view, "No change")).toMatchObject({ disabled: OVER });
+            expect(row(view, "25 bps decrease")).toMatchObject({ detail: "13\u00a2" });
+            expect(row(view, "25 bps decrease")?.disabled).toBeUndefined();
+        });
+
+        test("the person's balance is no reason: only the pool's limit disables an outcome", () => {
+            const poor = { ...limited([oct], 100), holdings: { ...HOLDINGS, USDC: 1 } };
+            const { view } = run("predict", [], poor);
+            expect(rows(view).map((choice) => choice.disabled)).toEqual([undefined, undefined]);
+            // No limit at all (signed out, or trading off): nothing is disabled either
+            for (const none of [limited([oct], null), live([oct])]) {
+                expect(rows(run("predict", [], none).view).map((choice) => choice.disabled)).toEqual([
+                    undefined,
+                    undefined,
+                ]);
+            }
+        });
+
+        test("a disabled outcome can't be picked", () => {
+            const ctx = limited([oct]);
+            const { view } = run("predict", [slot("outcomeId", "oct-nochange")], ctx);
+            expect(view.slots.outcomeId).toMatchObject({ value: "oct-cut" });
+        });
+
+        test("a kept outcome over the limit stays picked and the issue points at it", () => {
+            const ctx = limited([fed, oct]);
+            for (const typed of ["1", "3", "5", "10"]) {
+                const { view } = run(
+                    "predict",
+                    [slot("outcomeId", "fed-nochange"), slot("marketId", "910"), slot("amountUSD", typed)],
+                    ctx,
+                );
+                // The side isn't switched under the person
+                expect(view.text, typed).toBe(
+                    `I want to Predict No change on Fed Decision in October? with ${typed} USD.`,
+                );
+                expect(view.blocking, typed).toEqual(OUTCOME_ISSUE);
+                expect(view.slots.outcomeId.issue, typed).toEqual(OUTCOME_ISSUE);
+                expect(view.intent, typed).toBeNull();
+                // The amount says nothing and only the outcome does
+                expect(amountIssue(view), typed).toBeUndefined();
+                expect(view.issues.map((issue) => issue.message).join(" "), typed).not.toMatch(/The minimum is/);
+            }
+        });
+
+        test("the kept outcome still lists as picked, and the rest of the list is one pick away", () => {
+            const { view } = switched(limited([fed, oct]));
+            const picker = view.slots.outcomeId;
+            expect(picker.kind === "choice" && picker.selected).toMatchObject({ label: "No change" });
+            // Picked, so not disabled, and its row says why it is the problem
+            expect(row(view, "No change")).toMatchObject({ detail: OVER });
+            expect(row(view, "No change")?.disabled).toBeUndefined();
+            expect(row(view, "25 bps decrease")?.disabled).toBeUndefined();
+        });
+
+        test("picking the outcome that fits clears it", () => {
+            const ctx = limited([fed, oct]);
+            const { state } = switched(ctx);
+            const fixed = reduce(
+                TRADE,
+                reduce(TRADE, state, slot("outcomeId", "oct-cut"), ctx),
+                slot("amountUSD", "2"),
+                ctx,
+            );
+            const view = resolve(TRADE, fixed, ctx);
+            expect(view.blocking).toBeUndefined();
+            expect(view.intent).toEqual({ type: "prediction", marketId: "910", outcomeId: "oct-cut", amountUSD: "2" });
+        });
+
+        test("an amount over the limit still says the limit when the outcome fits", () => {
+            const ctx = limited([oct]);
+            const { view } = run("predict", [slot("amountUSD", "5")], ctx);
+            expect(view.text).toMatch(/25 bps decrease/);
+            expect(view.blocking).toMatchObject({
+                message: "Predictions are limited to $2 right now.",
+                cta: "Over the limit",
+            });
+        });
+
+        test("the limit coming after the pick moves it from the amount to the outcome", () => {
+            const picked = run("predict", [slot("outcomeId", "rain-yes"), slot("amountUSD", "3")], live([rain]));
+            expect(picked.view.blocking).toMatchObject({ message: "The minimum is $4.20." });
+            const view = resolve(TRADE, picked.state, limited([rain]));
+            expect(view.blocking).toMatchObject({
+                code: "outcome_over_limit",
+                slot: "outcomeId",
+                message:
+                    "YES needs at least $4.20, and predictions are limited to $2 right now. Pick an outcome that starts at $2 or less, or try again later.",
+            });
+            expect(amountIssue(view)).toBeUndefined();
+        });
+
+        test("with every outcome over the limit, the issue points at the question", () => {
+            const ctx = limited([final]);
+            for (const typed of ["1", "10"]) {
+                const { view } = run("predict", [slot("amountUSD", typed)], ctx);
+                expect(view.blocking, typed).toEqual(QUESTION_ISSUE);
+                expect(view.slots.marketId.issue, typed).toEqual(QUESTION_ISSUE);
+                expect(amountIssue(view), typed).toBeUndefined();
+            }
+            // Arriving from another question with no outcome of the same name, the question is still what is said
+            const arrived = run("predict", [slot("marketId", "911")], limited([rain, final]));
+            expect(arrived.view.blocking).toEqual(QUESTION_ISSUE);
+            expect(row(arrived.view, "Away")).toMatchObject({ disabled: "From $2.25, over today's $2 limit" });
+        });
+
+        test("under $1 nothing can be placed, so Predict reads as paused", () => {
+            for (const max of [0, 0.5]) {
+                for (const typed of ["1", "10"]) {
+                    const { view } = run("predict", [slot("amountUSD", typed)], limited([oct], max));
+                    expect(view.blocking, `${max} ${typed}`).toEqual(PAUSED);
+                    expect(view.intent).toBeNull();
+                    expect(amountIssue(view), `${max} ${typed}`).toBeUndefined();
+                }
+            }
+            const { view } = run("predict", [], limited([oct], 0));
+            expect(rows(view).map((choice) => choice.disabled ?? choice.detail)).toEqual([
+                "Paused right now",
+                "Paused right now",
+            ]);
+            // $1 is Polymarket's floor, so an outcome that starts there fits
+            const floor = run("predict", [slot("amountUSD", "1")], limited([oct], 1)).view;
+            expect(floor.blocking).toBeUndefined();
+            expect(floor.intent).toMatchObject({ outcomeId: "oct-cut", amountUSD: "1" });
+            // Trading off or signed out is not "paused"
+            expect(run("predict", [], limited([oct], null)).view.blocking).toBeUndefined();
+        });
+
+        test("the default outcome is the likeliest one that fits the limit", () => {
+            // The usual default is YES, or the first outcome
+            expect(run("predict", [], live([oct])).view.text).toMatch(/Predict No change on/);
+            expect(run("predict", [], limited([oct], 5)).view.text).toMatch(/Predict No change on/);
+            expect(run("predict", [], limited([oct])).view.text).toMatch(/Predict 25 bps decrease on/);
+            expect(run("predict", [], limited([rain], 5)).view.text).toMatch(/Predict YES on/);
+            expect(run("predict", [], limited([rain])).view.text).toMatch(/Predict NO on/);
+            // Of several that fit, the likeliest
+            expect(run("predict", [], limited([sector])).view.text).toMatch(/Predict Energy on/);
+            // Where none fit, the usual one, with the question's issue
+            const none = run("predict", [], limited([final])).view;
+            expect(none.text).toMatch(/Predict Home on/);
+            expect(none.blocking).toEqual(QUESTION_ISSUE);
+        });
+
+        test("a limit arriving after the default moves it, unless the person chose a side or a question", () => {
+            const before = live([oct]);
+            const after = limited([oct]);
+            const start = initialState(TRADE, "predict", before);
+            expect(resolve(TRADE, start, before).text).toMatch(/Predict No change on/);
+            expect(resolve(TRADE, refit(TRADE, start, after), after).text).toMatch(/Predict 25 bps decrease on/);
+            // Their own side stays, and the issue says so
+            const sided = reduce(TRADE, start, slot("outcomeId", "oct-nochange"), before);
+            expect(resolve(TRADE, refit(TRADE, sided, after), after).blocking).toMatchObject({ slot: "outcomeId" });
+            // So does the side that came along with a question they picked
+            const asked = reduce(TRADE, start, slot("marketId", "910"), before);
+            expect(resolve(TRADE, refit(TRADE, asked, after), after).blocking).toMatchObject({ slot: "outcomeId" });
+        });
     });
 
     test("a picked question that isn't listed still resolves", () => {
