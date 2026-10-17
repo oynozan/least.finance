@@ -168,13 +168,10 @@ export const prediction = operation({
             const kept = marketOf(ctx, next.marketId)?.outcomes.find((o) => o.label === label);
             return { ...next, outcomeId: kept?.id ?? "" };
         }
-        // A side nobody chose moves to the likeliest one that fits a new limit
+        // A side nobody chose is the question's default for the limit of the moment, so it comes back when the limit does
         if (cause.chosen.includes("outcomeId") || cause.chosen.includes("marketId")) return next;
-        const market = marketOf(ctx, next.marketId);
-        const current = market?.outcomes.find((o) => o.id === next.outcomeId);
-        if (!market || !current || !overLimit(ctx, current)) return next;
-        const fitting = likeliest(market.outcomes.filter((o) => !overLimit(ctx, o)));
-        return fitting ? { ...next, outcomeId: fitting.id } : next;
+        const usual = defaultOutcome(ctx, marketOf(ctx, next.marketId));
+        return usual && usual.id !== next.outcomeId ? { ...next, outcomeId: usual.id } : next;
     },
     check: (v, ctx): readonly Issue<keyof Values | typeof VERB_SLOT>[] => {
         const problem = stuck(ctx, v);
