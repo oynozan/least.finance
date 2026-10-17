@@ -53,7 +53,7 @@ export function Dock() {
                 aria-label="Pages"
                 // Hover cards keep clear of it
                 data-keep-clear=""
-                className="absolute bottom-[max(24px,env(safe-area-inset-bottom))] left-1/2 z-20 flex h-16 -translate-x-1/2 items-end gap-2 rounded-full bg-panel p-2 shadow-[0_0_0_1px_rgb(255_255_255/0.07),0_20px_50px_-16px_rgb(0_0_0/0.75)]"
+                className="absolute bottom-[max(24px,env(safe-area-inset-bottom))] left-1/2 z-20 flex h-16 w-max max-w-[calc(100%-2rem)] -translate-x-1/2 items-end gap-2 rounded-full bg-panel p-2 shadow-[0_0_0_1px_rgb(255_255_255/0.07),0_20px_50px_-16px_rgb(0_0_0/0.75)]"
                 onPointerMove={(event) => {
                     if (event.pointerType === "mouse") pointerX.set(event.clientX);
                 }}
@@ -67,7 +67,7 @@ export function Dock() {
                         <motion.div
                             key="review"
                             // Clipped while it slides open; the margin leaves room for its hover swell.
-                            className="flex items-center self-center [overflow-clip-margin:12px] [overflow:clip]"
+                            className="flex min-w-0 items-center self-center [overflow-clip-margin:12px] [overflow:clip]"
                             initial={{ width: 0, opacity: 0 }}
                             animate={{ width: "auto", opacity: 1 }}
                             exit={{ width: 0, opacity: 0 }}

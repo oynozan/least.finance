@@ -60,6 +60,8 @@ type ChoiceSlotProps = {
     preview?: ReactNode;
     /** The hover card's width in px; 300 when left out. */
     previewWidth?: number;
+    /** Opens the picker each time this number changes, as the dock's button asks. */
+    openRequest?: number;
 };
 
 /** A pill that opens a picker; its label changes only once a choice is made. */
@@ -74,6 +76,7 @@ export function ChoiceSlot({
     searchEmpty,
     preview,
     previewWidth,
+    openRequest,
 }: ChoiceSlotProps) {
     const [open, setOpen] = useState(false);
     const button = useRef<HTMLButtonElement>(null);
@@ -100,6 +103,21 @@ export function ChoiceSlot({
         }
         wasOpen.current = open;
     }, [open, hold]);
+
+    const openPicker = () => {
+        hover.hide();
+        setOpen(true);
+        onOpen?.();
+    };
+    // The dock asks for the picker that holds the way out of a problem.
+    const asked = useRef(openRequest);
+    useEffect(() => {
+        if (openRequest === undefined || openRequest === asked.current) return;
+        asked.current = openRequest;
+        openPicker();
+        // The request is the only trigger; opening reads the latest props.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openRequest]);
 
     const selected = view.selected && !view.selected.disabled ? view.selected : undefined;
     const invalid = view.issue?.severity === "error";
@@ -129,11 +147,7 @@ export function ChoiceSlot({
                 aria-expanded={open}
                 aria-controls={open ? pickerId : undefined}
                 aria-invalid={invalid || undefined}
-                onClick={() => {
-                    hover.hide();
-                    setOpen(true);
-                    onOpen?.();
-                }}
+                onClick={openPicker}
                 onHoverChange={hover.pill}
             >
                 {selected ? <Label label={selected.label} short={selected.short} /> : placeholder}
@@ -203,6 +217,8 @@ type NumberSlotProps = {
     /** Whether the amount is being edited (its dropdown is open). */
     onFocusChange?: (focused: boolean) => void;
     describedBy?: string;
+    /** Opens the dropdown each time this number changes, as the dock's button asks. */
+    openRequest?: number;
 };
 
 const formats = new Map<string, Intl.NumberFormat>();
@@ -224,7 +240,7 @@ function formatNumber(value: number, decimals: number, compact = false) {
  * An amount pill whose digits roll as it changes. It drops down a field to
  * type into and a slider to drag, and the sentence follows both live.
  */
-export function NumberSlot({ view, onChange, onFocusChange, describedBy }: NumberSlotProps) {
+export function NumberSlot({ view, onChange, onFocusChange, describedBy, openRequest }: NumberSlotProps) {
     const [open, setOpenState] = useState(false);
     const button = useRef<HTMLButtonElement>(null);
     const dropdownId = useId();
@@ -241,6 +257,16 @@ export function NumberSlot({ view, onChange, onFocusChange, describedBy }: Numbe
         setOpenState(next);
         onFocusChange?.(next);
     };
+
+    // The dock asks for the dropdown that holds the way out of a problem.
+    const asked = useRef(openRequest);
+    useEffect(() => {
+        if (openRequest === undefined || openRequest === asked.current) return;
+        asked.current = openRequest;
+        setOpen(true);
+        // The request is the only trigger.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openRequest]);
 
     const invalid = view.issue?.severity === "error";
     const amount = Number(view.value) || 0;

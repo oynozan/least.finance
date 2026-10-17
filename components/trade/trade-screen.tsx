@@ -22,7 +22,7 @@ function whenIdle(run: () => void): () => void {
 
 /** The page's trade sentence, wired to the shared trade state. */
 export function TradeScreen() {
-    const { view, dispatch, search, catalog } = useTrade();
+    const { view, dispatch, openRequest, search, catalog } = useTrade();
     // Loads in the background, so a coin's chart is ready before its pill is hovered.
     const history = usePriceHistory();
     // A read that lands while a market's pill is hovered opens its card.
@@ -97,6 +97,7 @@ export function TradeScreen() {
         <TradeComposer
             view={view}
             dispatch={dispatch}
+            openRequest={openRequest}
             search={search}
             coinPreview={coinPreview}
             marketPreview={marketPreview}

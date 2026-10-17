@@ -1,6 +1,15 @@
 "use client";
 
-import { createContext, use, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+    createContext,
+    use,
+    useCallback,
+    useEffect,
+    useMemo,
+    useState,
+    useSyncExternalStore,
+    type ReactNode,
+} from "react";
 import { useLogin, usePrivy } from "@privy-io/react-auth";
 import type { MarketView } from "@/server/src/protocol";
 import type { SentenceAction, SentenceView } from "@/lib/sentence";
@@ -26,9 +35,15 @@ import { useTradeSentence } from "./use-trade-sentence";
 export type WalletStatus =
     { status: "connected" } | { status: "loading" } | { status: "disconnected"; connect: () => void };
 
+/** The dock asking for a slot's picker to open; every ask has a number of its own, so each opens it once. */
+export type OpenRequest = { slot: string; id: number };
+
 type TradeState = {
     view: SentenceView<TransactionIntent>;
     dispatch: (action: SentenceAction) => void;
+    /** The latest ask to open a slot's picker, and how to make one. */
+    openRequest: OpenRequest | null;
+    openSlot: (slot: string) => void;
     wallet: WalletStatus;
     /** The question picker's search. */
     search: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
@@ -238,6 +253,11 @@ function Provide({
         [heldAssets],
     );
     const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, perpTrading, openPerps);
+    const [openRequest, setOpenRequest] = useState<OpenRequest | null>(null);
+    const openSlot = useCallback(
+        (slot: string) => setOpenRequest((last) => ({ slot, id: (last?.id ?? 0) + 1 })),
+        [],
+    );
     const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;
     const marketId = watched?.kind === "choice" && watched.value ? watched.value : null;
     useEffect(() => {
@@ -245,6 +265,8 @@ function Provide({
         return () => store.watch(null);
     }, [store, marketId]);
     return (
-        <TradeContext value={{ view, dispatch, wallet, search, catalog, maxOrderUSD, known }}>{children}</TradeContext>
+        <TradeContext value={{ view, dispatch, openRequest, openSlot, wallet, search, catalog, maxOrderUSD, known }}>
+            {children}
+        </TradeContext>
     );
 }

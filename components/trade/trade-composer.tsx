@@ -9,10 +9,13 @@ import { Sentence } from "@/components/sentence/sentence";
 import { ChoiceSlot, NumberSlot } from "@/components/sentence/slots";
 import { QUESTION_CARD_WIDTH } from "./market-chart-card";
 import { renderTradeIcon } from "./trade-icons";
+import type { OpenRequest } from "./trade-provider";
 
 type TradeComposerProps = {
     view: SentenceView<TransactionIntent>;
     dispatch: (action: SentenceAction) => void;
+    /** The dock asking for a slot's picker, as the way out of a problem. */
+    openRequest?: OpenRequest | null;
     /** Answers the question picker's search. */
     search?: { onQuery: (query: string) => void; empty?: string; loading?: boolean };
     /** Called as a coin's picker opens, to refresh what the wallet holds. */
@@ -55,7 +58,15 @@ function useAnnouncer() {
  * The trade sentence itself. Fully controlled: the view and dispatch come
  * from the shared trade state. The details live in the review sidebar.
  */
-export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview, marketPreview }: TradeComposerProps) {
+export function TradeComposer({
+    view,
+    dispatch,
+    openRequest,
+    search,
+    onCoinOpen,
+    coinPreview,
+    marketPreview,
+}: TradeComposerProps) {
     const headingId = useId();
     const issueId = useId();
     const [typing, setTyping] = useState(false);
@@ -111,6 +122,7 @@ export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview,
             const other = view.slots[slotId];
             return other?.kind === "choice" && other.value ? other.value : null;
         };
+        const asked = openRequest?.slot === id ? openRequest.id : undefined;
         const marketValue = chosen("marketId");
         const outcomeValue = chosen("outcomeId");
         const preview = coin
@@ -133,11 +145,13 @@ export function TradeComposer({ view, dispatch, search, onCoinOpen, coinPreview,
                         searchEmpty={search?.empty}
                         preview={preview}
                         previewWidth={id === "marketId" ? QUESTION_CARD_WIDTH : undefined}
+                        openRequest={asked}
                     />
                 ) : (
                     <NumberSlot
                         view={slot}
                         describedBy={slot.issue?.severity === "error" ? issueId : undefined}
+                        openRequest={asked}
                         onChange={(value) => set(id, value)}
                         onFocusChange={setTyping}
                     />
