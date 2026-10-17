@@ -174,7 +174,7 @@ test.describe("what the dock's button says and does", () => {
         });
     });
 
-    test("a pool that can place nothing says Predictions paused on a button that can't be pressed", () => {
+    test("a pool that can place nothing says Predictions paused, and the button opens the Predict pill to pick another trade", () => {
         const fed = view("900", [
             outcome("fed-nochange", "No change", 0.9, 1),
             outcome("fed-cut", "25 bps decrease", 0.08, 1),
@@ -185,11 +185,12 @@ test.describe("what the dock's button says and does", () => {
             catalog: { ...LOADED_CATALOG, markets: [...known.values()], findMarket: (id) => known.get(id) },
             maxOrderUSD: 0.5,
         };
-        // The problem sits on the Predict pill, which the button can't open: it only says so
+        // The problem sits on the Predict pill, whose picker offers the other trades
         expect(action("predict", [], paused)).toEqual({
-            kind: "blocked",
+            kind: "open",
             label: "Predictions paused",
-            message: "Predictions are paused right now. Try again later.",
+            message: "Predictions are paused right now. Pick another trade, or try again later.",
+            slot: "verb",
         });
         // Other verbs don't mind
         expect(action("buy", [], paused)).toEqual({ kind: "review" });

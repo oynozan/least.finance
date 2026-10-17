@@ -73,7 +73,7 @@ const PAUSED = {
     code: "paused",
     severity: "error",
     slot: VERB_SLOT,
-    message: "Predictions are paused right now. Try again later.",
+    message: "Predictions are paused right now. Pick another trade, or try again later.",
     cta: "Predictions paused",
 } as const;
 

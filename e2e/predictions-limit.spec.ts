@@ -132,17 +132,20 @@ test("a pool that can place nothing reads Predictions paused, on the Predict pil
     await chooseVerb(page, /^Predict/);
 
     await expect(dockButton(page)).toHaveText("Predictions paused");
-    await expect(dockButton(page)).toHaveAttribute("aria-disabled", "true");
-    await expect(dockButton(page)).toHaveAccessibleDescription("Predictions are paused right now. Try again later.");
+    await expect(dockButton(page)).not.toHaveAttribute("aria-disabled", "true");
+    await expect(dockButton(page)).toHaveAccessibleDescription(
+        "Predictions are paused right now. Pick another trade, or try again later.",
+    );
     await expect(verbPill(page)).toHaveAttribute("aria-invalid", "true");
     await expect(body(verbPill(page))).toHaveCSS("box-shadow", LOSS);
 
-    // Pressing it does nothing; the Predict pill says why
-    await dockButton(page).click({ force: true });
-    await expect(picker(page)).toBeHidden();
+    // Pressing it opens the Predict pill's picker, which says why and offers the other trades
+    await dockButton(page).click();
+    await expect(picker(page)).toContainText(
+        "Predictions are paused right now. Pick another trade, or try again later.",
+    );
+    await expect(picker(page).getByRole("option", { name: /^Buy/ })).toBeVisible();
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
-    await verbPill(page).click();
-    await expect(picker(page)).toContainText("Predictions are paused right now. Try again later.");
     await page.keyboard.press("Escape");
 
     // Nothing to slide and no payout to promise

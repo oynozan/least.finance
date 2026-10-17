@@ -497,7 +497,7 @@ test.describe("live prediction markets", () => {
             code: "paused",
             severity: "error",
             slot: "verb",
-            message: "Predictions are paused right now. Try again later.",
+            message: "Predictions are paused right now. Pick another trade, or try again later.",
             cta: "Predictions paused",
         };
         /** No change on one Fed question, where it fits, then on the October one, where it doesn't */

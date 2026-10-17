@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { MotionConfig } from "motion/react";
-import type { SentenceAction, SentenceView, SlotView } from "@/lib/sentence";
+import { VERB_SLOT, type SentenceAction, type SentenceView, type SlotView } from "@/lib/sentence";
 import type { TransactionIntent } from "@/lib/trade/intent";
 import { SentenceIcons } from "@/components/sentence/icons";
 import { Sentence } from "@/components/sentence/sentence";
@@ -171,6 +171,7 @@ export function TradeComposer({
                     choices: view.verbChoices,
                     issue: view.verbIssue,
                 }}
+                openRequest={openRequest?.slot === VERB_SLOT ? openRequest.id : undefined}
                 onChange={(verbId) => {
                     edited.current = "verb";
                     dispatch({ type: "verb", verbId });
