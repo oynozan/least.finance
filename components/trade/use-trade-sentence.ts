@@ -11,24 +11,21 @@ export function useTradeSentence(
     holdings: TradeCtx["holdings"],
     catalog: Catalog,
     maxOrderUSD: number | null = null,
-    wallet?: TradeCtx["wallet"],
     perpTrading?: TradeCtx["perpTrading"],
     openPerps?: TradeCtx["openPerps"],
 ) {
     const ctx = useMemo<TradeCtx>(
-        () => ({ catalog, holdings, wallet, maxOrderUSD, perpTrading, openPerps }),
-        [catalog, holdings, wallet, maxOrderUSD, perpTrading, openPerps],
+        () => ({ catalog, holdings, maxOrderUSD, perpTrading, openPerps }),
+        [catalog, holdings, maxOrderUSD, perpTrading, openPerps],
     );
     const [state, setState] = useState<SentenceState<TradeTerms>>(() => initialState(TRADE, DEFAULT_VERB, ctx));
-    // Coins that load after the sentence, or a new signing wallet's, re-default everything the person didn't choose.
+    // Coins that load after the sentence re-default everything the person didn't choose.
     // The coins the account holds decide what Sell and Swap start on, so a change in which are held refits too.
-    const fit = `${
-        holdings
-            ? Object.keys(holdings)
-                  .filter((symbol) => holdings[symbol])
-                  .join()
-            : ""
-    }|${wallet ? 1 : 0}`;
+    const fit = holdings
+        ? Object.keys(holdings)
+              .filter((symbol) => holdings[symbol])
+              .join()
+        : "";
     const [fitted, setFitted] = useState(fit);
     if (fitted !== fit) {
         setFitted(fit);

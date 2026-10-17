@@ -237,7 +237,7 @@ function Provide({
         () => (heldAssets ? heldAssets.split(",").map((asset) => ({ asset })) : undefined),
         [heldAssets],
     );
-    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, undefined, perpTrading, openPerps);
+    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, perpTrading, openPerps);
     const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;
     const marketId = watched?.kind === "choice" && watched.value ? watched.value : null;
     useEffect(() => {
