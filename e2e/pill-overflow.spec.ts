@@ -49,9 +49,13 @@ test("a question too long for its line ends in an ellipsis and keeps its chevron
         )
         .toEqual({ ellipsis: true, cut: !isMobile });
 
-    // The chevron is drawn inside the pill, not pushed past its clipped edge
-    const pillBox = (await pill.boundingBox())!;
-    const chevronBox = (await pill.locator("svg").last().boundingBox())!;
-    expect(chevronBox.x + chevronBox.width).toBeLessThanOrEqual(pillBox.x + pillBox.width + 0.5);
-    expect(chevronBox.x).toBeGreaterThan(pillBox.x);
+    // The chevron is drawn inside the pill, not pushed past its clipped edge, once the pill has settled into its line
+    const chevron = pill.locator("svg").last();
+    await expect
+        .poll(async () => {
+            const [pillBox, chevronBox] = await Promise.all([pill.boundingBox(), chevron.boundingBox()]);
+            if (!pillBox || !chevronBox) return false;
+            return chevronBox.x > pillBox.x && chevronBox.x + chevronBox.width <= pillBox.x + pillBox.width + 0.5;
+        })
+        .toBe(true);
 });
