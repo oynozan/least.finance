@@ -5,7 +5,8 @@ const MAX_SPREAD = 0.1;
 const MIN_PRICE = 0.01;
 const MAX_PRICE = 0.99;
 const MIN_TIME_LEFT_MS = 60 * 60 * 1000;
-const MIN_ORDER_USD = 1;
+/** Polymarket's smallest order, in dollars */
+export const MIN_ORDER_USD = 1;
 
 const round4 = (value: number) => Math.round(value * 10_000) / 10_000;
 

@@ -111,7 +111,48 @@ test("an amount over the free float is refused with float_short", async () => {
         await own.service.refreshFloat();
         const error = await own.service.place(account, input("60")).catch((e: unknown) => e);
         expect(isAppError(error) && error.code).toBe("float_short");
-        expect(isAppError(error) && error.message).toBe("Predictions are limited to $50 right now. Nothing was spent.");
+        expect(isAppError(error) && error.message).toBe(
+            "Predictions are limited to $50 right now. Try a smaller amount, or try again later. Nothing was spent.",
+        );
+        expect((await own.state(account._id)).rows).toHaveLength(1);
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("an outcome whose minimum is past the free float is refused by name, with the way out", async () => {
+    const own = await predictionHarness();
+    try {
+        const account = await own.seedAccount("5000");
+        own.trader.setBalance(2_000_000n);
+        await own.service.refreshFloat();
+        const offered = own.offered.current!;
+        own.offered.current = {
+            ...offered,
+            outcome: { ...offered.outcome, label: "No change", buyPrice: 0.87, minUSD: 4.35 },
+        };
+        const error = await own.service.place(account, input("5")).catch((e: unknown) => e);
+        expect(isAppError(error) && error.code).toBe("float_short");
+        expect(isAppError(error) && error.message).toBe(
+            "No change needs at least $4.35, and predictions are limited to $2 right now. Pick another outcome or question, or try again later. Nothing was spent.",
+        );
+        expect((await own.state(account._id)).rows).toHaveLength(1);
+    } finally {
+        await own.database.close();
+    }
+});
+
+test("a float under Polymarket's $1 floor refuses as paused", async () => {
+    const own = await predictionHarness();
+    try {
+        const account = await own.seedAccount("5000");
+        own.trader.setBalance(900_000n);
+        await own.service.refreshFloat();
+        const error = await own.service.place(account, input("5")).catch((e: unknown) => e);
+        expect(isAppError(error) && error.code).toBe("float_short");
+        expect(isAppError(error) && error.message).toBe(
+            "Predictions are paused right now. Try again later. Nothing was spent.",
+        );
         expect((await own.state(account._id)).rows).toHaveLength(1);
     } finally {
         await own.database.close();

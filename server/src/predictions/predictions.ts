@@ -17,6 +17,7 @@ import type { Ledger } from "../deposits/ledger.ts";
 import { AppError, isAppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { MarketService } from "../markets/markets.ts";
+import { MIN_ORDER_USD } from "../markets/shape.ts";
 import type { PositionsView, PredictionOrderView, QuoteView, SellQuoteView } from "../protocol.ts";
 import {
     costOfFill,
@@ -49,6 +50,9 @@ const AMOUNT = /^\d+(\.\d{1,6})?$/;
 export const NOTHING_SPENT = "Nothing was spent.";
 const PRICE_MOVED = `The price moved, so your prediction didn't go through. ${NOTHING_SPENT}`;
 const TOO_SMALL = "Too small to sell. It pays out when the market resolves.";
+
+/** The outcome a buy is for, so a refusal can name it */
+type Ask = { label: string; minUSD: number };
 
 export type CloseInput = { requestId: string; positionId: string; quotedPrice: number };
 
@@ -340,7 +344,8 @@ export class PredictionService {
         const check = referenceBuyPrice(input.quotedPrice, offered.outcome.buyPrice);
         if (!check.ok) throw new AppError("price_moved", PRICE_MOVED);
         const amount = this.#amount(input.amountUSD, offered.outcome.minUSD);
-        await this.#checkFloat(weiToE6(amount));
+        const ask = { label: offered.outcome.label, minUSD: offered.outcome.minUSD };
+        await this.#checkFloat(weiToE6(amount), ask);
 
         const now = new Date(this.#now());
         const order: PredictionOrderDoc = {
@@ -376,7 +381,7 @@ export class PredictionService {
         const held = await this.#record(order, async (session) => {
             await this.#deps.ledger.debitInSession(session, order.accountId, amount, "prediction_buy", order._id);
             // The shared float document goes last, to hold its lock briefly
-            reserved = await this.#reserve(session, weiToE6(amount));
+            reserved = await this.#reserve(session, weiToE6(amount), ask);
         });
         if (!held.fresh) return orderView(held.order);
 
@@ -847,14 +852,14 @@ export class PredictionService {
     }
 
     /** Refuses an order the float obviously can't cover, before a transaction opens; the reservation is the real guard. */
-    async #checkFloat(amountE6: bigint) {
+    async #checkFloat(amountE6: bigint, ask: Ask) {
         const { poolFloat } = this.#deps.collections;
         let doc = await poolFloat.findOne({ _id: FLOAT_ID });
         if (!doc || this.#stale(doc)) {
             await this.#readBalance();
             doc = await poolFloat.findOne({ _id: FLOAT_ID });
         }
-        if (!doc || this.#stale(doc) || freeOf(doc) < amountE6) throw this.#short(doc);
+        if (!doc || this.#stale(doc) || freeOf(doc) < amountE6) throw this.#short(doc, ask);
     }
 
     /** Reads the balance once, giving up after a while; a failed read leaves the old figure to be judged stale. */
@@ -880,7 +885,7 @@ export class PredictionService {
     }
 
     /** Takes the order's pUSD from the float inside the order's transaction; nothing is taken if it doesn't fit. */
-    async #reserve(session: ClientSession, amountE6: bigint): Promise<PoolFloatDoc> {
+    async #reserve(session: ClientSession, amountE6: bigint, ask?: Ask): Promise<PoolFloatDoc> {
         const now = this.#now();
         const amount = toDecimal(amountE6);
         const doc = await this.#deps.collections.poolFloat.findOneAndUpdate(
@@ -895,7 +900,7 @@ export class PredictionService {
             { session, returnDocument: "after" },
         );
         if (doc) return doc;
-        throw this.#short(await this.#deps.collections.poolFloat.findOne({ _id: FLOAT_ID }, { session }));
+        throw this.#short(await this.#deps.collections.poolFloat.findOne({ _id: FLOAT_ID }, { session }), ask);
     }
 
     /** Takes a pool move's pUSD from free float inside the caller's transaction; float_short and nothing held if it doesn't fit. */
@@ -924,14 +929,22 @@ export class PredictionService {
         );
     }
 
-    #short(doc: PoolFloatDoc | null): AppError {
+    #short(doc: PoolFloatDoc | null, ask?: Ask): AppError {
         const free = doc && !this.#stale(doc) ? freeOf(doc) : 0n;
         const usd = free <= 0n ? 0 : Number(free / 1_000_000n);
-        return new AppError(
-            "float_short",
-            `Predictions are limited to ${formatUsdShort(usd)} right now. ${NOTHING_SPENT}`,
-        );
+        return new AppError("float_short", `${floatShortMessage(usd, ask)} ${NOTHING_SPENT}`);
     }
+}
+
+/** Why a float of whole dollars can't cover an order, and for a buy what to do instead */
+function floatShortMessage(usd: number, ask?: Ask): string {
+    const limit = formatUsdShort(usd);
+    if (!ask) return `Predictions are limited to ${limit} right now.`;
+    if (usd < MIN_ORDER_USD) return "Predictions are paused right now. Try again later.";
+    if (ask.minUSD > usd) {
+        return `${ask.label} needs at least ${formatUsdShort(ask.minUSD)}, and predictions are limited to ${limit} right now. Pick another outcome or question, or try again later.`;
+    }
+    return `Predictions are limited to ${limit} right now. Try a smaller amount, or try again later.`;
 }
 
 const freeOf = (doc: PoolFloatDoc): bigint =>
