@@ -66,7 +66,10 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("an outcome over the pool's limit is named on the dock, and the dock opens the outcomes", async ({ page }) => {
-    const [first, second] = await binary();
+    // An outcome comes along to another question only where that one has an outcome of the same name: two YES / NO questions
+    const markets = await binary();
+    const pair = markets.filter((m) => m.outcomes[0].label === "YES");
+    const [first, second] = pair;
     const yes = first.outcomes[0];
     // YES on the first question starts at $4.35 and every other outcome at $1, under a $2 limit
     await limitTo(page, 2, (markets) => {

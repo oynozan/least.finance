@@ -115,15 +115,17 @@ test("dock tiles swell toward the pointer and name themselves", async ({ page, i
     await expect(dock(page).getByText("PnL", { exact: true })).toBeHidden();
 });
 
-test("Review sits in the dock on the trade page only", async ({ page }) => {
+test("The trade button sits in the dock on the trade page only", async ({ page }) => {
+    // Its words follow the sentence ("Review", or the way out of what blocks it), so it is found by what it is.
+    const action = dock(page).locator("button[data-action]");
     await page.goto("/");
     await connect(page);
-    await expect(dock(page).getByRole("button", { name: "Review" })).toBeVisible();
+    await expect(action).toBeVisible();
     await tile(page, "PnL").click();
     await expect(page).toHaveURL(/\/pnl$/);
-    await expect(dock(page).getByRole("button", { name: "Review" })).toHaveCount(0);
+    await expect(action).toHaveCount(0);
     await tile(page, "Trade").click();
-    await expect(dock(page).getByRole("button", { name: "Review" })).toBeVisible();
+    await expect(action).toBeVisible();
 });
 
 test("the PnL page asks for a wallet until one is connected", async ({ page }) => {
