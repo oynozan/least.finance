@@ -1,6 +1,7 @@
 "use client";
 
 import {
+    useEffect,
     useLayoutEffect,
     useRef,
     useState,
@@ -41,9 +42,12 @@ export function FloatingDialog(props: DialogProps) {
         () => true,
         () => false,
     );
+    // Each opening is a panel of its own: one asked for again while the last is still leaving mounts afresh, and takes focus.
+    const [opening, setOpening] = useState({ open: props.open, count: 0 });
+    if (props.open !== opening.open) setOpening({ open: props.open, count: opening.count + (props.open ? 1 : 0) });
     if (!isClient) return null;
     return createPortal(
-        <AnimatePresence>{props.open && <Panel key="panel" {...props} />}</AnimatePresence>,
+        <AnimatePresence>{props.open && <Panel key={opening.count} {...props} />}</AnimatePresence>,
         document.body,
     );
 }
@@ -108,6 +112,12 @@ function Panel({ onClose, id, labelledBy, onKeyDown, width = 440, anchor, classN
         };
     }, [anchor, width]);
     const up = placement?.bottom !== undefined;
+
+    // Whatever the panel holds takes focus first; where it holds nothing to focus, the panel does, so Escape reaches it.
+    useEffect(() => {
+        const element = panel.current;
+        if (element && !element.contains(document.activeElement)) element.focus({ preventScroll: true });
+    }, []);
 
     const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.key === "Escape") {
