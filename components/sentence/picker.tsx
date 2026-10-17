@@ -45,6 +45,8 @@ type PickerProps = {
     };
     /** Room for long labels: the panel widens and details go under the label. */
     wide?: boolean;
+    /** Said under the title while the slot has a problem, with the way out */
+    notice?: string;
     /** Said under the title when there are no choices. */
     empty?: string;
     /** A second step for a picked row, its follow-up choices (a coin's networks) replacing the list; for pickers with no search or custom input. */
@@ -119,6 +121,7 @@ function Options({
     custom,
     search,
     wide,
+    notice,
     empty,
     then,
     onSelect,
@@ -329,6 +332,7 @@ function Options({
                     {second ? (then?.title ?? then?.label) : (title ?? label)}
                 </p>
             </div>
+            {notice && !second && <p className="px-[18px] pb-2 text-[15px] leading-snug text-loss">{notice}</p>}
             {empty && !loading && choices.length === 0 && (
                 <p className="px-[18px] pb-3 text-base tracking-[-0.01em] text-muted">{empty}</p>
             )}

@@ -102,6 +102,7 @@ export function ChoiceSlot({
     }, [open, hold]);
 
     const selected = view.selected && !view.selected.disabled ? view.selected : undefined;
+    const invalid = view.issue?.severity === "error";
     const companion = view.then;
     // A change of the companion alone swaps the pill's content too.
     const contentKey = `${selected?.value ?? "none"}${companion ? `@${companion.value}` : ""}`;
@@ -114,17 +115,20 @@ export function ChoiceSlot({
                 icon={selected?.icon && <SentenceIcon icon={selected.icon} />}
                 trailing={<Chevron open={open} />}
                 tone={
-                    selected
-                        ? selected.tone === "gain" || selected.tone === "loss"
-                            ? selected.tone
-                            : "default"
-                        : "muted"
+                    invalid
+                        ? "loss"
+                        : selected
+                          ? selected.tone === "gain" || selected.tone === "loss"
+                              ? selected.tone
+                              : "default"
+                          : "muted"
                 }
                 aria-label={selected?.label ?? placeholder}
                 aria-describedby={hintId}
                 aria-haspopup="dialog"
                 aria-expanded={open}
                 aria-controls={open ? pickerId : undefined}
+                aria-invalid={invalid || undefined}
                 onClick={() => {
                     hover.hide();
                     setOpen(true);
@@ -156,6 +160,7 @@ export function ChoiceSlot({
                 selected={selected?.value}
                 custom={view.custom}
                 wide={view.wide}
+                notice={invalid ? view.issue?.message : undefined}
                 empty={view.empty}
                 search={
                     view.search &&
