@@ -56,7 +56,7 @@ export function PillBody({
                 <AnimatePresence mode="popLayout" initial={false}>
                     <motion.span
                         key={contentKey}
-                        className={`flex min-w-0 shrink-0 items-center gap-[0.2em] whitespace-nowrap ${
+                        className={`flex min-w-0 items-center gap-[0.2em] whitespace-nowrap ${
                             icon ? "pl-[0.13em]" : "pl-[0.36em]"
                         } ${trailing ? "pr-[0.14em]" : "pr-[0.36em]"}`}
                         initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.5, y: "40%" }}
@@ -77,8 +77,9 @@ export function PillBody({
                         )}
                         {/* The only baseline-aligned item: the pill shares the text's baseline.
                 Trimmed to cap height and baseline, even padding centers the
-                caps at any size; without text-box, the leading approximates it. */}
-                        <span className="self-baseline py-[0.08em] leading-[1.06] [text-box:trim-both_cap_alphabetic] supports-[text-box:trim-both_cap_alphabetic]:py-[calc((1.22em-1cap)/2)]">
+                caps at any size; without text-box, the leading approximates it.
+                A label longer than its line ends in an ellipsis, clipped only sideways so descenders still show. */}
+                        <span className="min-w-0 self-baseline text-ellipsis py-[0.08em] leading-[1.06] [overflow-x:clip] [overflow-y:visible] [text-box:trim-both_cap_alphabetic] supports-[text-box:trim-both_cap_alphabetic]:py-[calc((1.22em-1cap)/2)]">
                             {children}
                         </span>
                     </motion.span>
