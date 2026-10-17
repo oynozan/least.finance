@@ -43,9 +43,7 @@ function limitReason(ctx: TradeCtx, outcome: Outcome): string | undefined {
     const limit = limitOf(ctx);
     if (limit === undefined) return undefined;
     if (limit < FLOOR_USD) return "Paused right now";
-    return outcome.minUSD > limit
-        ? `From ${formatUsdShort(outcome.minUSD)}, over today's ${formatUsdShort(limit)} limit`
-        : undefined;
+    return outcome.minUSD > limit ? `Over the ${formatUsdShort(limit)} limit` : undefined;
 }
 
 const overLimit = (ctx: TradeCtx, outcome: Outcome) => limitReason(ctx, outcome) !== undefined;

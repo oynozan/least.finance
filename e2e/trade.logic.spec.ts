@@ -476,7 +476,7 @@ test.describe("live prediction markets", () => {
         const row = (view: View, label: string) => rows(view).find((choice) => choice.label === label);
         const amountIssue = (view: View) => view.slots.amountUSD.issue;
 
-        const OVER = "From $4.35, over today's $2 limit";
+        const OVER = "Over the $2 limit";
         const OUTCOME_ISSUE = {
             code: "outcome_over_limit",
             severity: "error",
@@ -608,7 +608,7 @@ test.describe("live prediction markets", () => {
             // Arriving from another question with no outcome of the same name, the question is still what is said
             const arrived = run("predict", [slot("marketId", "911")], limited([rain, final]));
             expect(arrived.view.blocking).toEqual(QUESTION_ISSUE);
-            expect(row(arrived.view, "Away")).toMatchObject({ disabled: "From $2.25, over today's $2 limit" });
+            expect(row(arrived.view, "Away")).toMatchObject({ disabled: "Over the $2 limit" });
         });
 
         test("under $1 nothing can be placed, so Predict reads as paused", () => {
