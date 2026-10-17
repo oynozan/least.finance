@@ -98,6 +98,8 @@ type PillButtonProps = Omit<PillBodyProps, "pose" | "className"> & {
     "aria-expanded"?: boolean;
     "aria-controls"?: string;
     "aria-invalid"?: boolean;
+    /** Rings the pill in the loss colour, so a problem reads whatever the tone of its text. */
+    problem?: boolean;
     tone?: "default" | "muted" | "gain" | "loss";
     /** Told when a mouse starts and stops hovering the pill; touch never hovers. */
     onHoverChange?: (hovered: boolean) => void;
@@ -111,7 +113,7 @@ const TONE = {
 } as const;
 
 /** A pill that opens something: springs on hover and press. */
-export function PillButton({ ref, onClick, tone = "default", onHoverChange, ...props }: PillButtonProps) {
+export function PillButton({ ref, onClick, tone = "default", problem, onHoverChange, ...props }: PillButtonProps) {
     const [hovered, setHovered] = useState(false);
     const [pressed, setPressed] = useState(false);
     const {
@@ -171,7 +173,7 @@ export function PillButton({ ref, onClick, tone = "default", onHoverChange, ...p
                 pose={pose}
                 trailing={trailing}
                 layoutTransition={layoutTransition}
-                className="group-hover:bg-pill-hover group-hover:[--badge-ring:var(--pill-hover)] group-focus-visible:bg-pill-hover group-focus-visible:[--badge-ring:var(--pill-hover)] group-aria-expanded:bg-pill-hover group-aria-expanded:[--badge-ring:var(--pill-hover)]"
+                className={`${problem ? "ring-2 ring-loss " : ""}group-hover:bg-pill-hover group-hover:[--badge-ring:var(--pill-hover)] group-focus-visible:bg-pill-hover group-focus-visible:[--badge-ring:var(--pill-hover)] group-aria-expanded:bg-pill-hover group-aria-expanded:[--badge-ring:var(--pill-hover)]`}
             >
                 {children}
             </PillBody>

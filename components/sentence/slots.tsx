@@ -132,14 +132,14 @@ export function ChoiceSlot({
                 contentKey={contentKey}
                 icon={selected?.icon && <SentenceIcon icon={selected.icon} />}
                 trailing={<Chevron open={open} />}
+                // A problem rings the pill and leaves the text its own colour, so a red NO isn't a problem until it has one
+                problem={invalid}
                 tone={
-                    invalid
-                        ? "loss"
-                        : selected
-                          ? selected.tone === "gain" || selected.tone === "loss"
-                              ? selected.tone
-                              : "default"
-                          : "muted"
+                    selected
+                        ? selected.tone === "gain" || selected.tone === "loss"
+                            ? selected.tone
+                            : "default"
+                        : "muted"
                 }
                 aria-label={selected?.label ?? placeholder}
                 aria-describedby={hintId}
@@ -280,6 +280,7 @@ export function NumberSlot({ view, onChange, onFocusChange, describedBy, openReq
                 layoutKey={formatNumber(amount, view.decimals)}
                 layoutTransition={open ? typingLayout : layoutSpring}
                 trailing={<Chevron open={open} />}
+                problem={invalid}
                 tone={invalid ? "loss" : view.value ? "default" : "muted"}
                 aria-label={shown}
                 aria-describedby={[hintId, describedBy].filter(Boolean).join(" ")}
