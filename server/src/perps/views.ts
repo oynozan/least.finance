@@ -1,6 +1,7 @@
 import type { AccountDoc, PerpOrderDoc, PerpPositionDoc } from "../db/mongo.ts";
 import { formatE6, formatUsdc, fromDecimal } from "../db/money.ts";
 import { accountView } from "../deposits/views.ts";
+import { PERP_MESSAGES } from "./failures.ts";
 import type { PerpOrderView, PerpPositionView, PerpUpdate } from "../protocol.ts";
 
 export const perpOrderView = (order: PerpOrderDoc): PerpOrderView => ({
@@ -38,6 +39,7 @@ export const perpPositionView = (position: PerpPositionDoc): PerpPositionView =>
     state: position.state,
     proceedsUSD: position.proceeds ? formatUsdc(fromDecimal(position.proceeds)) : null,
     notice: position.state === "open" ? position.closeReason : null,
+    closeBlocked: position.state === "open" && position.closeReason === PERP_MESSAGES.tooSmall,
     openedAt: position.openedAt.toISOString(),
     settledAt: position.settledAt?.toISOString() ?? null,
     updatedAt: position.updatedAt.toISOString(),

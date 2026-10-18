@@ -169,6 +169,15 @@ test.describe("perp rows in the sidebar", () => {
     test("a too-small position shows 'Too small to close right now.'", () => {
         const row = only({ notice: "Too small to close right now." });
         expect(perpCloseBlock(row)).toBe("Too small to close right now.");
+        expect(perpCloseBlock(only({ notice: "Too small.", closeBlocked: true }))).toBe("Too small.");
+    });
+
+    test("a close that nobody took stays closable, with the reason still on the row", () => {
+        const notice =
+            "Nobody on the book took your close at an acceptable price. Your position is still open. Try again in a moment.";
+        const row = only({ notice, closeBlocked: false });
+        expect(row.notice).toBe(notice);
+        expect(perpCloseBlock(row)).toBeNull();
     });
 });
 

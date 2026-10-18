@@ -192,6 +192,8 @@ test("a rejected close restores open", async () => {
     expect(await positionOf(h, position._id)).toMatchObject({ state: "open", active: true });
     // The reason stays on the position after the toast is gone
     expect((await h.service.positions(account)).positions[0]!.notice).toBe(done.reason);
+    // Asking again can work, so the view doesn't block the Close button
+    expect((await h.service.positions(account)).positions[0]!.closeBlocked).toBe(false);
     // Logged just after the order is stored as rejected
     await h.until(async () => h.lines.some((line) => line.event === "perp.close.refused"));
     const refused = h.lines.filter((line) => line.event === "perp.close.refused");
@@ -313,6 +315,8 @@ test("a position under $10 the fake refuses stays open with the too-small messag
     expect(done.detail).toBe("Order must have minimum value of $10.");
     expect(await positionOf(h, position._id)).toMatchObject({ state: "open", active: true });
     expect((await h.service.positions(account)).positions[0]!.notice).toBe(tooSmall);
+    // Closing it again can't work, so the view blocks the Close button
+    expect((await h.service.positions(account)).positions[0]!.closeBlocked).toBe(true);
     await h.until(async () => h.lines.some((l) => l.level >= 50 && l.code === "too_small"));
 });
 

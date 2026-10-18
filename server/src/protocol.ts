@@ -518,6 +518,8 @@ export type PerpPositionView = {
     proceedsUSD: UsdcAmount | null;
     /** Why an open position couldn't be closed, such as "Too small to close right now."; null otherwise. */
     notice: string | null;
+    /** True when closing again can't work (the position is under the exchange's minimum); any other refusal may pass on a retry. Absent from an older server, which only set a notice for this one. */
+    closeBlocked?: boolean;
     openedAt: string;
     settledAt: string | null;
     updatedAt: string;

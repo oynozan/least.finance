@@ -99,7 +99,8 @@ export const PERP_CLOSING = "Closing now.";
 export function perpCloseBlock(p: LivePerpPosition): string | null {
     if (p.status === "pending") return PERP_OPEN_PENDING;
     if (p.status === "closing") return PERP_CLOSING;
-    return p.notice;
+    // Only a refusal that asking again can't fix blocks the button; any other leaves its reason on the row and a retry open
+    return p.position.closeBlocked === false ? null : p.notice;
 }
 
 export const TOO_SMALL = "Too small to sell. It pays out when the market resolves.";
