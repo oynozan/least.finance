@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { ApiError, ErrorCode } from "./protocol.ts";
 
 const STATUS: Record<ErrorCode, number> = {
@@ -36,10 +37,15 @@ export class AppError extends Error {
     }
 }
 
-/** What the client sees for any error; anything unexpected becomes a generic "internal". */
-export function toApiError(error: unknown): ApiError {
+/** A short reference for one unexpected failure; the person is shown it and the log line carries it, so it can be found. */
+export const newRef = () => randomBytes(3).toString("hex");
+
+export const wentWrong = (ref: string) => `Something went wrong on our side (ref ${ref}).`;
+
+/** What the client sees for any error; anything unexpected becomes "internal", with `ref` when the caller logged it under one. */
+export function toApiError(error: unknown, ref?: string): ApiError {
     if (error instanceof AppError) return { code: error.code, message: error.message };
-    return { code: "internal", message: "Something went wrong on our side." };
+    return { code: "internal", message: ref ? wentWrong(ref) : "Something went wrong on our side." };
 }
 
 export const isAppError = (error: unknown): error is AppError => error instanceof AppError;

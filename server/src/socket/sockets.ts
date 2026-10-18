@@ -10,7 +10,7 @@ import { positionView, predictionUpdate } from "../predictions/views.ts";
 import { accountView, depositView } from "../deposits/views.ts";
 import { formatUsdc } from "../db/money.ts";
 import { withdrawalView } from "../withdrawals/views.ts";
-import { AppError, isAppError, toApiError } from "../errors.ts";
+import { AppError, isAppError, newRef, toApiError, wentWrong } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
 import { listHoldings } from "../trading/holdings.ts";
 import { isTradeError } from "../trading/trades.ts";
@@ -114,6 +114,13 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         }
     });
 
+    /** What each request's acknowledgement was asked for, so a failure can say which event and whose. */
+    const requests = new WeakMap<object, { event: string; accountId: ObjectId | undefined }>();
+    const describe = (ack: object) => {
+        const request = requests.get(ack);
+        return { event: request?.event ?? "unknown", account: request?.accountId?.toHexString() ?? null };
+    };
+
     // Pushes go one at a time per account, so a step never overtakes the one before it.
     const pushing = new Map<string, Promise<void>>();
     function enqueue(key: string, work: () => Promise<void>) {
@@ -133,7 +140,10 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         );
         socket.on("disconnect", () => clearTimeout(expiry));
 
-        socket.use(([, ...args], next) => {
+        socket.use(([event, ...args], next) => {
+            // The acknowledgement stands for the request, so a failure can name the event and who sent it
+            const ack = args.at(-1);
+            if (typeof ack === "function") requests.set(ack, { event, accountId: socket.data.account?.id });
             events.consume(socket.data.identity.userId).then(
                 () => next(),
                 () => {
@@ -616,9 +626,17 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         try {
             ack({ ok: true, data: await work() } satisfies Ack<T>);
         } catch (error) {
-            if (!isAppError(error)) logger.error({ err: error }, "Socket request failed");
-            else if (error.status >= 500) logger.error({ err: error.cause ?? error }, error.message);
-            ack(failure(toApiError(error)));
+            const { event, account } = describe(ack);
+            let ref: string | undefined;
+            if (!isAppError(error)) {
+                ref = newRef();
+                logger.error({ err: error, event, account, ref }, `Unexpected error in socket request ${event}`);
+            } else if (error.status >= 500)
+                logger.error(
+                    { err: error.cause ?? error, event, account, code: error.code },
+                    `${error.message} (${event})`,
+                );
+            ack(failure(toApiError(error, ref)));
         }
     }
 
@@ -634,7 +652,12 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             else if (isAppError(error)) {
                 code = TRADING_CODES[error.code] ?? "unavailable";
                 message = error.message;
-            } else logger.error({ err: error }, "Trading request failed");
+            } else {
+                const ref = newRef();
+                const { event, account } = describe(ack);
+                logger.error({ err: error, event, account, ref }, `Unexpected error in socket request ${event}`);
+                message = wentWrong(ref);
+            }
             ack({ ok: false, code, message } satisfies TradingAck<never>);
         }
     }

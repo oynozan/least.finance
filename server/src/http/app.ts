@@ -20,6 +20,9 @@ import {
 
 const REQUEST_ID = /^[\w.:-]{1,64}$/;
 
+/** A URL without its query string, which can carry tokens. */
+const pathOf = (url = "") => url.split("?")[0]!;
+
 /** The HTTP API. Everything under /v1 needs a Privy access token as a Bearer token. */
 export function createApp(services: Services): express.Express {
     const { config, logger } = services;
@@ -37,8 +40,26 @@ export function createApp(services: Services): express.Express {
                 res.setHeader("X-Request-Id", id);
                 return id;
             },
+            // A success writes nothing; a failure the error handler already logged writes nothing more
             customLogLevel: (_req, res, error) =>
-                error || res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info",
+                res.locals.logged
+                    ? "silent"
+                    : error || res.statusCode >= 500
+                      ? "error"
+                      : res.statusCode >= 400
+                        ? "warn"
+                        : "silent",
+            customSuccessMessage: (req, res) => `${req.method} ${pathOf(req.url)} answered ${res.statusCode}`,
+            customErrorMessage: (req, res) => `${req.method} ${pathOf(req.url)} failed with ${res.statusCode}`,
+            // Only what finding a request takes: no headers, no query string, no body
+            serializers: {
+                req: (req: { id: unknown; method: string; url: string }) => ({
+                    id: req.id,
+                    method: req.method,
+                    path: pathOf(req.url),
+                }),
+                res: (res: { statusCode: number }) => ({ statusCode: res.statusCode }),
+            },
             autoLogging: { ignore: (req) => req.url === "/health" },
         }),
     );
@@ -231,10 +252,19 @@ const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
         return;
     }
     if (error instanceof AppError) {
-        if (error.status >= 500) req.log.error({ err: error.cause ?? error }, error.message);
+        if (error.status >= 500) {
+            res.locals.logged = true;
+            req.log.error(
+                { err: error.cause ?? error, code: error.code },
+                `${error.message} (${req.method} ${pathOf(req.originalUrl)})`,
+            );
+        }
         res.status(error.status).json(errorBody(toApiError(error)));
         return;
     }
-    req.log.error({ err: error }, "Unhandled error");
-    res.status(500).json(errorBody(toApiError(error)));
+    // The ref is the head of the request id, which every log line of this request carries
+    const ref = String(req.id).slice(0, 8);
+    res.locals.logged = true;
+    req.log.error({ err: error, ref }, `Unexpected error in ${req.method} ${pathOf(req.originalUrl)}`);
+    res.status(500).json(errorBody(toApiError(error, ref)));
 };

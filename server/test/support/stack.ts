@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { generateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
-import { pino } from "pino";
+import { pino, type Logger } from "pino";
 import { io as connectSocket, type Socket } from "socket.io-client";
 import { createTestClient, http, parseUnits, publicActions, walletActions, type Address, type Hash } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
@@ -149,6 +149,8 @@ type StackOptions = {
     emulator?: EmulatorOptions;
     /** Adds the real CCTP deposit provider, after the Relay stand-in, reading the fake Iris. */
     cctp?: boolean;
+    /** Where the server logs; by default a plain pino at the config's level. */
+    logger?: Logger;
 };
 
 /** The real server, against a throwaway database, the emulated chain and the fake Privy. */
@@ -161,6 +163,7 @@ export async function startStack({
     env = {},
     emulator: emulatorOptions,
     cctp,
+    logger: given,
 }: StackOptions): Promise<Stack> {
     if (!ethereumUrl || !bnbUrl) {
         const { inject } = await import("vitest");
@@ -215,7 +218,7 @@ export async function startStack({
     const bridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates, chains: ["ethereum", "bnb"] });
     const solanaBridge = new FakeBridge({ arcRpcUrl: anvilUrl, rates, name: "relay", chains: ["solana"] });
     const trader = fakePoolTrader(polymarket);
-    const logger = pino({ level: config.LOG_LEVEL });
+    const logger = given ?? pino({ level: config.LOG_LEVEL });
     const solana = createSolanaRpc([solanaRpc.url]);
     const server = await startServer(config, logger, {
         sources: createSourceClients({ ethereum: [ethereumUrl], bnb: [bnbUrl] }),
