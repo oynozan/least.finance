@@ -213,6 +213,8 @@ test.describe("the market history store", () => {
     test("a failed read isn't asked again until 10 seconds have passed", async () => {
         const { store, urls, advance } = setup(() => ({ status: 503 }));
         await store.want("1", ["a"]);
+        // The hover card can say why there is no chart
+        expect(store.getSnapshot().errors.get("a")).toBe("The server answered 503.");
         await store.want("1", ["a"]);
         advance(9_999);
         await store.want("1", ["a"]);
@@ -230,7 +232,7 @@ test.describe("the market history store", () => {
         advance(180_000);
         fail = true;
         await store.want("1", ["a"]);
-        expect(store.getSnapshot()).toBe(before);
+        expect(store.getSnapshot().lines).toBe(before.lines);
         advance(10_000);
         await store.want("1", ["a"]);
         expect(urls).toHaveLength(3);
@@ -251,7 +253,8 @@ test.describe("the market history store", () => {
         const { store } = setup(() => ({ body: { outcomes: "nope" } }));
         const before = store.getSnapshot();
         await store.want("1", ["a"]);
-        expect(store.getSnapshot()).toBe(before);
+        expect(store.getSnapshot().lines).toBe(before.lines);
+        expect(store.getSnapshot().errors.get("a")).toBe("The server sent something we couldn't read.");
     });
 
     test("points keep the order the server sent", async () => {

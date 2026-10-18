@@ -1,3 +1,4 @@
+import { REQUEST_TIMEOUT_MS, serverSaid, silenceOf } from "@/lib/fetch-failure";
 import { isMarketView, loadCachedTrending, saveCachedTrending, validMarkets } from "@/lib/trade/markets";
 import type { MarketView, TrendingView } from "@/server/src/protocol";
 
@@ -30,7 +31,6 @@ const WARMING_MS = 2_000;
 /** After this many empty answers in a row the wait stretches, so a server that can't read Polymarket isn't asked every 2 s. */
 const WARMING_TRIES = 5;
 const SLOW_WARMING_MS = 10_000;
-const REQUEST_TIMEOUT_MS = 15_000;
 const WATCH_MS = 10_000;
 const HELD_MAX = 20;
 const SEARCH_MIN = 2;
@@ -53,20 +53,6 @@ const EMPTY: MarketsSnapshot = {
 const limitOf = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
 
 const isTrending = (value: unknown): value is TrendingView => !!value && Array.isArray((value as TrendingView).markets);
-
-/** The server's own message from a failed answer, else its status. */
-async function said(response: Response): Promise<string> {
-    try {
-        const body = (await response.json()) as { error?: unknown };
-        const error = body?.error;
-        if (typeof error === "string") return error;
-        const message = (error as { message?: unknown } | undefined)?.message;
-        if (typeof message === "string" && message) return message;
-    } catch {
-        // Not JSON: a proxy's page
-    }
-    return `The server answered ${response.status}.`;
-}
 
 /** Polymarket's questions as the server serves them, kept fresh while the page is open. */
 export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fetch; now?: () => number }) {
@@ -127,19 +113,9 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
                 signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
             });
             if (response.ok) return { status: response.status, body: await response.json(), error: null };
-            return { status: response.status, body: null, error: await said(response) };
+            return { status: response.status, body: null, error: await serverSaid(response) };
         } catch (error) {
-            const offline = typeof navigator !== "undefined" && navigator.onLine === false;
-            const slow = error instanceof Error && error.name === "TimeoutError";
-            return {
-                status: 0,
-                body: null,
-                error: offline
-                    ? "You're offline."
-                    : slow
-                      ? `The server didn't answer in ${REQUEST_TIMEOUT_MS / 1000} seconds.`
-                      : "Couldn't reach the server.",
-            };
+            return { status: 0, body: null, error: silenceOf(error) };
         }
     }
 

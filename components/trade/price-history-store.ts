@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import type { PriceHistoryView, PriceRange } from "@/server/src/protocol";
 import { API_URL } from "@/lib/api";
 import { reportRefusal, reportUnreachable } from "@/lib/net/report";
+import { REQUEST_TIMEOUT_MS, serverSaid, silenceOf } from "@/lib/fetch-failure";
 
 /** One coin's dollar prices, oldest first: [unix ms, USD]. */
 export type PricePoints = readonly (readonly [number, number])[];
@@ -10,6 +11,10 @@ export type PriceHistorySnapshot = {
     range: PriceRange;
     /** Each coin's prices by symbol; empty until the server has answered. */
     coins: ReadonlyMap<string, PricePoints>;
+    /** Why a coin's prices couldn't be read, in plain words, until a read of it works. */
+    errors: ReadonlyMap<string, string>;
+    /** Why the swap coins' prices couldn't be read, until a read works. */
+    swapError: string | null;
 };
 
 /** The server reads its week again every 12 minutes, so this never asks for nothing new. */
@@ -57,7 +62,9 @@ export function createPriceHistoryStore(options: {
     const request = options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
     const now = options.now ?? Date.now;
     const listeners = new Set<() => void>();
-    let snapshot: PriceHistorySnapshot = { range, coins: new Map() };
+    let snapshot: PriceHistorySnapshot = { range, coins: new Map(), errors: new Map(), swapError: null };
+    const errors = new Map<string, string>();
+    let swapError: string | null = null;
     // The swap coins' read, and the coins read when wanted
     let swapCoins: ReadonlyMap<string, PricePoints> = new Map();
     const wantedCoins = new Map<string, PricePoints>();
@@ -79,7 +86,7 @@ export function createPriceHistoryStore(options: {
     const visible = () => typeof document === "undefined" || document.visibilityState !== "hidden";
 
     function publish() {
-        snapshot = { range, coins: new Map([...wantedCoins, ...swapCoins]) };
+        snapshot = { range, coins: new Map([...wantedCoins, ...swapCoins]), errors: new Map(errors), swapError };
         listeners.forEach((listener) => listener());
     }
 
@@ -92,15 +99,28 @@ export function createPriceHistoryStore(options: {
     async function read() {
         askedAt = now();
         let coins: Map<string, PricePoints> | null = null;
+        let reason: string | null = null;
         try {
-            const response = await request(`${options.apiUrl}/prices/history?range=${range}`);
-            if (response.ok) coins = toCoins(await response.json());
-            else await reportRefusal("Price history", response);
+            const response = await request(`${options.apiUrl}/prices/history?range=${range}`, {
+                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            });
+            coins = response.ok ? toCoins(await response.json()) : null;
+            if (!response.ok) {
+                await reportRefusal("Price history", response.clone());
+                reason = await serverSaid(response);
+            }
         } catch (error) {
             // Offline or the server is down; the next refresh tries again.
-            reportUnreachable("Price history", error);
+            reason = silenceOf(error);
         }
-        if (users === 0 || !coins || coins.size === 0) return;
+        if (users === 0) return;
+        if (!coins || coins.size === 0) {
+            // The coins stay as they were; the card says why they haven't loaded
+            swapError = reason ?? "The server sent no prices.";
+            publish();
+            return;
+        }
+        swapError = null;
         swapCoins = coins;
         publish();
     }
@@ -113,13 +133,17 @@ export function createPriceHistoryStore(options: {
         try {
             const response = await request(
                 `${options.apiUrl}/prices/history?range=${range}&coins=${encodeURIComponent(symbol)}`,
+                { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
             );
-            if (!response.ok) await reportRefusal("Price history", response);
+            if (!response.ok) await reportRefusal("Price history", response.clone());
             const points = response.ok ? toCoins(await response.json())?.get(symbol) : undefined;
             if (!points) {
+                errors.set(symbol, response.ok ? "No prices for this coin yet." : await serverSaid(response));
+                publish();
                 failed(symbol, time);
                 return;
             }
+            errors.delete(symbol);
             wantedCoins.set(symbol, points);
             readAt.set(symbol, time);
             retries.delete(symbol);
@@ -127,6 +151,8 @@ export function createPriceHistoryStore(options: {
         } catch (error) {
             // Offline or the server is down; the pause below tries again.
             reportUnreachable("Price history", error);
+            errors.set(symbol, silenceOf(error));
+            publish();
             failed(symbol, time);
         } finally {
             reading.delete(symbol);
@@ -241,7 +267,7 @@ let shared: PriceHistoryStore | null = null;
 /** The shared store; components call `priceHistoryStore().want(...)` to read a coin ahead. */
 export const priceHistoryStore = () => (shared ??= createPriceHistoryStore({ apiUrl: API_URL }));
 
-const EMPTY: PriceHistorySnapshot = { range: "7d", coins: new Map() };
+const EMPTY: PriceHistorySnapshot = { range: "7d", coins: new Map(), errors: new Map(), swapError: null };
 
 /** The swap coins' week of prices, and any coin wanted, loading in the background from the first component that asks. */
 export function usePriceHistory(): PriceHistorySnapshot {

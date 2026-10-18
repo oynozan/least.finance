@@ -20,17 +20,25 @@ function whenIdle(run: () => void): () => void {
     return () => clearTimeout(handle);
 }
 
+/** What a hover card says when the chart couldn't be read: why, from the server's own words; nothing while it is only loading. */
+const noChart = (why: string | null | undefined) =>
+    why ? (
+        <p className="px-5 py-4 text-[14px] leading-snug text-muted" data-chart-note="">
+            The chart isn&apos;t available right now. {why}
+        </p>
+    ) : null;
+
 /** The page's trade sentence, wired to the shared trade state. */
 export function TradeScreen() {
     const { view, dispatch, openRequest, search, catalog } = useTrade();
     // Loads in the background, so a coin's chart is ready before its pill is hovered.
     const history = usePriceHistory();
     // A read that lands while a market's pill is hovered opens its card.
-    const { lines: chances } = useMarketHistory();
+    const { lines: chances, errors: chanceErrors } = useMarketHistory();
     const coinPreview = useCallback(
         (symbol: string) => {
             const points = history.coins.get(symbol);
-            if (!points) return null;
+            if (!points) return noChart(history.errors.get(symbol) ?? history.swapError);
             const name = coinName(symbol, catalog.tokens.find((token) => token.symbol === symbol)?.name);
             return <CoinPriceCard symbol={symbol} name={name} points={points} />;
         },
@@ -83,15 +91,21 @@ export function TradeScreen() {
                     const points = live(outcomeId, chance);
                     if (points) lines.set(outcomeId, points);
                 }
-                return drawable(lines.values()) ? <QuestionChartCard market={market} lines={lines} /> : null;
+                if (drawable(lines.values())) return <QuestionChartCard market={market} lines={lines} />;
+                const why = chartedOutcomes(market)
+                    .drawn.map(({ id: outcomeId }) => chanceErrors.get(outcomeId))
+                    .find(Boolean);
+                return noChart(why);
             }
             const picked = market.outcomes.find((o) => o.id === outcome);
             const points = picked && live(picked.id, picked.chance);
             return picked && points && drawable([points]) ? (
                 <OutcomeChartCard market={market} outcome={picked} points={points} />
-            ) : null;
+            ) : (
+                noChart(picked && chanceErrors.get(picked.id))
+            );
         },
-        [findMarket, chances],
+        [findMarket, chances, chanceErrors],
     );
     return (
         <TradeComposer

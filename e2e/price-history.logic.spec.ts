@@ -269,12 +269,15 @@ test.describe("a wanted coin whose read failed", () => {
             status(500);
             await store.want("HYPE");
             expect(store.getSnapshot().coins.has("HYPE")).toBe(false);
+            // The card can say why, and drops it once a read works
+            expect(store.getSnapshot().errors.get("HYPE")).toBe("The server answered 500.");
             expect(timers.waiting()).toContain(15_000);
 
             status(200);
             advance(15_000);
             timers.fire(15_000);
             await expect.poll(() => store.getSnapshot().coins.has("HYPE")).toBe(true);
+            expect(store.getSnapshot().errors.has("HYPE")).toBe(false);
         });
     });
 
