@@ -146,11 +146,6 @@ export function ActivityCard({ live }: { live: readonly Activity[] }) {
                     {failure?.kind === "more" ? "Try again" : "Show older"}
                 </button>
             )}
-            {failure?.kind === "more" && (
-                <p role="status" className="px-[18px] pb-3 text-center text-[14px] text-muted">
-                    {`Couldn't load older history. ${failure.message}`}
-                </p>
-            )}
         </section>
     );
 }

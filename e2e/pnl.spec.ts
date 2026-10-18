@@ -24,6 +24,7 @@ const chart = (page: Page) => page.getByRole("slider", { name: "Balance by day" 
 const activity = (page: Page) => page.getByRole("region", { name: "Activity" });
 const rows = (page: Page) => activity(page).locator("tbody tr");
 const showOlder = (page: Page) => activity(page).getByRole("button", { name: "Show older" });
+const tryAgain = (page: Page) => activity(page).getByRole("button", { name: "Try again" });
 // The line under the balance, with the PnL pill in it
 const pnlLine = (page: Page) => balance(page).locator("p").filter({ hasText: "PnL" });
 const FAILURE = "Couldn't load your history.";
@@ -398,12 +399,18 @@ test("a failed older page leaves Show older, which then works", async ({ page })
         await showOlder(page).click();
         // The request went out and was refused, so the button is back
         await expect.poll(requests).toBeGreaterThan(before);
-        await expect(showOlder(page)).toBeEnabled();
+        // One message says why, and the button turns into Try again
+        await expect(activity(page).getByRole("status")).toHaveText(
+            "Couldn't load older activity. The server can't read your history right now. Try again shortly.",
+        );
+        await expect(tryAgain(page)).toBeEnabled();
         await expect(rows(page)).toHaveCount(50);
 
         await gate(address, "feed", "off");
-        await showOlder(page).click();
+        await tryAgain(page).click();
         await expect(rows(page)).toHaveCount(100);
+        await expect(activity(page).getByRole("status")).toHaveCount(0);
+        await expect(showOlder(page)).toBeVisible();
     } finally {
         await gate(address, "feed", "off");
     }

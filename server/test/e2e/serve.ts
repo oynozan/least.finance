@@ -18,6 +18,7 @@ import { createSourceClients } from "../../src/crosschain/chains.ts";
 import { fixedPrices } from "../../src/crosschain/prices.ts";
 import { createSolanaRpc } from "../../src/crosschain/solana.ts";
 import { loadConfig } from "../../src/config.ts";
+import { AppError } from "../../src/errors.ts";
 import type { DepositDoc } from "../../src/db/mongo.ts";
 import { formatUsdc, fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { startServer } from "../../src/server.ts";
@@ -259,7 +260,9 @@ let gatesInstalled = false;
 /** Waits while the account's gate holds, throws while it fails, and runs on when there is none. */
 async function passGate(table: Map<string, Gate>, accountId: ObjectId) {
     const gate = table.get(accountId.toHexString());
-    if (gate?.mode === "fail") throw new Error("gated");
+    // A server that is away, which a client asks again by itself
+    if (gate?.mode === "fail")
+        throw new AppError("unavailable", "The server can't read your history right now. Try again shortly.");
     if (gate) await gate.released;
 }
 
