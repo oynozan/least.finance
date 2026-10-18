@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { ObjectId } from "mongodb";
+import { MongoServerError, ObjectId } from "mongodb";
 import { pino } from "pino";
 import { parseUnits } from "viem";
 import { afterAll, beforeAll, beforeEach, expect, inject, test, vi } from "vitest";
@@ -260,4 +260,33 @@ test("a swap, sell or send refusal is logged by the trade service only, not agai
     const refusals = lines.filter((line) => line.level === WARN && /Nothing was sold/.test(line.msg));
     expect(refusals).toHaveLength(1);
     expect(refusals[0]).toMatchObject({ event: "trade:order" });
+});
+
+test("a clash on another key than the request id is logged, and the trade that vanished names its ids and carries the clash", async () => {
+    const { socket, accountId } = await person();
+    const clash = new MongoServerError({ code: 11000, errmsg: "E11000 duplicate key error collection: holdings" });
+    Object.assign(clash, { keyPattern: { accountId: 1, symbol: 1 } });
+    vi.spyOn(stack.server.services.database.collections.trades, "insertOne").mockRejectedValueOnce(clash);
+    const requestId = randomUUID();
+
+    const answer = await trade(socket, { requestId, verb: "buy", symbol: "BNB", amountUSD: "10" });
+
+    expect(answer).toMatchObject({
+        ok: false,
+        message: expect.stringMatching(/^Something went wrong on our side \(ref [0-9a-f]{6}\)\.$/),
+    });
+    expect(
+        lines.find((line) => line.msg === "A duplicate key other than the request id stopped a write"),
+    ).toMatchObject({
+        level: WARN,
+        event: "trade:order",
+        account: accountId.toHexString(),
+        requestId,
+        keyPattern: { accountId: 1, symbol: 1 },
+    });
+    const unexpected = lines.find((line) => line.msg === "Unexpected error in socket request trade:order")!;
+    expect(unexpected.ref).toBe(/ref ([0-9a-f]{6})/.exec((answer as { message: string }).message)![1]);
+    expect(unexpected.err.message).toContain(
+        `Trade ${requestId} for account ${accountId.toHexString()} vanished after it filled`,
+    );
 });
