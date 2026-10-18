@@ -270,7 +270,16 @@ async function submitWrap(ctx: FlowContext, row: PoolRebalanceDoc): Promise<void
             try {
                 sent = await ctx.trader.wrapUsdc(idle);
             } catch (error) {
-                ctx.logger.warn({ ...rowFields(row), err: error }, "A pool wrap batch got no clear answer");
+                ctx.logger.warn(
+                    {
+                        ...rowFields(row),
+                        batch: "wrap",
+                        attemptedAt: marked.polygon.wrapAttemptedAt,
+                        ...relayerSaid(error),
+                        err: error,
+                    },
+                    "A pool wrap batch got no clear answer",
+                );
                 sent = { kind: "unknown" };
             }
             if (sent.kind === "submitted") {
@@ -490,7 +499,16 @@ async function sendDrain(ctx: FlowContext, row: PoolRebalanceDoc): Promise<void>
                     recipient: ctx.treasury,
                 });
             } catch (error) {
-                ctx.logger.warn({ ...rowFields(row), err: error }, "A pool drain batch got no clear answer");
+                ctx.logger.warn(
+                    {
+                        ...rowFields(row),
+                        batch: "unwrap-and-burn",
+                        attemptedAt: marked.polygon.attemptedAt,
+                        ...relayerSaid(error),
+                        err: error,
+                    },
+                    "A pool drain batch got no clear answer",
+                );
                 sent = { kind: "unknown" };
             }
             if (sent.kind === "submitted") {
@@ -543,6 +561,12 @@ async function burnsHeldByOthers(ctx: FlowContext, row: PoolRebalanceDoc, hashes
     return new Set(held.map((other) => other.polygon.burnTxHash!.toLowerCase()));
 }
 
+/** What a relayer error says besides its message: the HTTP status, the code and any Retry-After. */
+const relayerSaid = (error: unknown) => {
+    const said = (error ?? {}) as { status?: number; code?: string; retryAfter?: unknown };
+    return { relayerStatus: said.status ?? null, relayerCode: said.code ?? null, retryAfter: said.retryAfter ?? null };
+};
+
 /** Looks on Polygon for the burn of a batch whose answer is missing: one with the move's amount that no other row holds is adopted, none ends the row as `onNone` says. */
 async function scanForBurn(ctx: FlowContext, row: PoolRebalanceDoc, onNone: "failed" | "stuck"): Promise<void> {
     const attemptedAt = row.polygon.attemptedAt ?? row.updatedAt;
@@ -579,7 +603,10 @@ async function scanForBurn(ctx: FlowContext, row: PoolRebalanceDoc, onNone: "fai
             ctx,
             row,
             "failed",
-            { lastError: "No burn was found on Polygon.", "polygon.relayerFinalAt": finalAt },
+            {
+                lastError: `No burn of $${formatE6(amountE6)} was found on Polygon since ${attemptedAt.toISOString()}.`,
+                "polygon.relayerFinalAt": finalAt,
+            },
             { spent: false, read: true },
         );
     } else {
@@ -644,7 +671,7 @@ async function trackDrain(ctx: FlowContext, row: PoolRebalanceDoc, id: string): 
                 ctx,
                 current,
                 "failed",
-                { lastError: found.errorMsg ?? "The relayer failed." },
+                { lastError: found.errorMsg ?? `The relayer failed transaction ${id}, with no message.` },
                 { spent: false, read: true },
             );
         return;
@@ -671,7 +698,7 @@ async function trackDrain(ctx: FlowContext, row: PoolRebalanceDoc, id: string): 
             ctx,
             current,
             "failed",
-            { lastError: found.errorMsg ?? "The relayer failed." },
+            { lastError: found.errorMsg ?? `The relayer failed transaction ${id}, with no message.` },
             { spent: false, read: true },
         );
     }

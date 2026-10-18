@@ -104,7 +104,7 @@ describe("a top-up (arc_to_polygon)", () => {
 
         const ended = await h.rowOf(row._id);
         expect(ended.state).toBe("failed");
-        expect(ended.lastError).toBe("That is above the most one move may carry.");
+        expect(ended.lastError).toBe("$150 is above the $100 limit for one move.");
         expect(ended.active).toBeUndefined();
         expect(ended.doneAt?.getTime()).toBe(h.clock.t);
         await expectNothingSigned(h);
@@ -119,7 +119,7 @@ describe("a top-up (arc_to_polygon)", () => {
 
         const ended = await h.rowOf(row._id);
         expect(ended.state).toBe("failed");
-        expect(ended.lastError).toBe("That would pass the daily limit for moves to Polygon.");
+        expect(ended.lastError).toBe("Today's moves to Polygon would reach $310, above the $300 daily limit.");
         await expectNothingSigned(h);
     });
 
@@ -144,7 +144,9 @@ describe("a top-up (arc_to_polygon)", () => {
 
         const over = await h.queue({ direction: "arc_to_polygon", usdc: "61" });
         await h.rebalancer.tick();
-        expect((await h.rowOf(over._id)).lastError).toBe("That would pass the daily limit for moves to Polygon.");
+        expect((await h.rowOf(over._id)).lastError).toBe(
+            "Today's moves to Polygon would reach $301, above the $300 daily limit.",
+        );
     });
 
     test("a top-up the Arc reserve refuses ends failed and logs 'Treasury too low to top up the pool' once an hour", async () => {
@@ -155,7 +157,7 @@ describe("a top-up (arc_to_polygon)", () => {
 
         const ended = await h.rowOf(first._id);
         expect(ended.state).toBe("failed");
-        expect(ended.lastError).toBe("That would leave the Arc treasury below its reserve.");
+        expect(ended.lastError).toBe("The Arc treasury would drop to $89.99, below its $100 reserve.");
         expect(h.logged(POOL_ERRORS.treasuryLow)).toHaveLength(1);
         expect(h.logged(POOL_ERRORS.treasuryLow)[0]).toMatchObject({ level: 50, rebalance: first._id.toString() });
         await expectNothingSigned(h);
@@ -192,7 +194,9 @@ describe("a top-up (arc_to_polygon)", () => {
         const second = await h.queue({ direction: "arc_to_polygon", usdc: "70" });
         await h.rebalancer.tick();
 
-        expect((await h.rowOf(second._id)).lastError).toBe("That would leave the Arc treasury below its reserve.");
+        expect((await h.rowOf(second._id)).lastError).toBe(
+            "The Arc treasury would drop to $99.99, below its $100 reserve.",
+        );
     });
 
     test("an RPC failure reading the treasury leaves the row queued and signs nothing", async () => {
@@ -410,7 +414,7 @@ describe("a drain (polygon_to_arc)", () => {
 
         const ended = await h.rowOf(row._id);
         expect(ended.state).toBe("failed");
-        expect(ended.lastError).toBe("The pool does not have that much free float.");
+        expect(ended.lastError).toBe("Only $60 of the pool's float is free, and the move needs $80.");
         expect(ended.active).toBeUndefined();
         expect(fromDecimal((await floatOf(h)).heldE6)).toBe(0n);
         expect(h.rebalancer.pendingSend.size).toBe(0);
@@ -445,19 +449,23 @@ describe("a drain (polygon_to_arc)", () => {
 
         expect(await h.rowOf(row._id)).toMatchObject({
             state: "failed",
-            lastError: "The pool does not have that much free float.",
+            lastError: "Only $30 of the pool's float is free, and the move needs $40.",
         });
         expect(fromDecimal((await floatOf(h)).heldE6)).toBe(e6("70"));
     });
 
-    test("a float document older than three minutes refuses the reservation: Free float is short.", async () => {
+    test("a float document older than three minutes refuses the reservation and the row says the balance could not be read", async () => {
         const h = await open({ poolUsdc: "100" });
         const row = await h.queue({ direction: "polygon_to_arc", usdc: "40" });
         h.advance(181_000);
 
         await h.rebalancer.tick();
 
-        expect(await h.rowOf(row._id)).toMatchObject({ state: "failed", lastError: "Free float is short." });
+        expect(await h.rowOf(row._id)).toMatchObject({
+            state: "failed",
+            lastError:
+                "The pool's float couldn't cover $40 when the move began: Predictions are briefly unavailable because we can't read the pool's balance right now. Try again in a minute.",
+        });
         expect(fromDecimal((await floatOf(h)).heldE6)).toBe(0n);
     });
 
@@ -965,7 +973,9 @@ describe("the whole server", () => {
             await until(async () => (await poolRebalances.findOne({ _id: row._id }))?.state === "failed", 10_000);
 
             const ended = (await poolRebalances.findOne({ _id: row._id }))!;
-            expect(ended.lastError).toBe("That would leave the Arc treasury below its reserve.");
+            expect(ended.lastError).toMatch(
+                /^The Arc treasury would drop to \$\d+(\.\d+)?, below its \$100 reserve\.$/,
+            );
             expect(ended.active).toBeUndefined();
             expect(await stack.chain.client.getTransactionCount({ address: stack.treasury })).toBe(0);
         } finally {

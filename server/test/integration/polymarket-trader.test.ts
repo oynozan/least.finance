@@ -531,7 +531,10 @@ describe("the Polymarket trader", () => {
             fake.nextSubmit({ status: 400, body: { error: "invalid signature" } });
             const refused = await trader.wrapUsdc(4_000_000n);
             expect(refused).toMatchObject({ kind: "refused" });
-            expect((refused as { message: string }).message).toBeTruthy();
+            // The refusal says which batch, the HTTP status and the relayer's own words
+            expect((refused as { message: string }).message).toMatch(
+                /^.+: the relayer refused \(HTTP 400\): .*invalid signature/,
+            );
 
             fake.nextSubmit({ status: 403, body: { error: "forbidden" } });
             expect(

@@ -1,3 +1,4 @@
+import { formatE6 } from "../db/money.ts";
 import type { PoolDirection, PoolRebalanceState } from "../db/mongo.ts";
 
 export const BAND_LOW_PCT = 50;
@@ -7,6 +8,9 @@ export const FLOAT_MAX_AGE_MS = 180_000;
 
 const DOLLAR_E6 = 1_000_000n;
 const PERCENT = 100n;
+
+/** A dollar figure for a reason, such as "$1,200"; the plan's reasons carry numbers so a failed row says which limit it hit. */
+const usd = (e6: bigint) => `$${formatE6(e6 < 0n ? 0n : e6)}`;
 
 const ceilToDollar = (e6: bigint): bigint => ((e6 + DOLLAR_E6 - 1n) / DOLLAR_E6) * DOLLAR_E6;
 const floorToDollar = (e6: bigint): bigint => (e6 / DOLLAR_E6) * DOLLAR_E6;
@@ -32,19 +36,35 @@ export function planPoolMove(o: {
 }): PoolPlan {
     if (o.amountE6 <= 0n) return { ok: false, kind: "amount", reason: "The amount must be above zero." };
     if (o.amountE6 > o.maxMoveE6) {
-        return { ok: false, kind: "cap", reason: "That is above the most one move may carry." };
+        return {
+            ok: false,
+            kind: "cap",
+            reason: `${usd(o.amountE6)} is above the ${usd(o.maxMoveE6)} limit for one move.`,
+        };
     }
     if (o.direction === "polygon_to_arc") {
         if (o.amountE6 > o.freeFloatE6) {
-            return { ok: false, kind: "float", reason: "The pool does not have that much free float." };
+            return {
+                ok: false,
+                kind: "float",
+                reason: `Only ${usd(o.freeFloatE6)} of the pool's float is free, and the move needs ${usd(o.amountE6)}.`,
+            };
         }
         return { ok: true };
     }
     if (o.movedTodayE6 + o.amountE6 > o.maxDayE6) {
-        return { ok: false, kind: "day", reason: "That would pass the daily limit for moves to Polygon." };
+        return {
+            ok: false,
+            kind: "day",
+            reason: `Today's moves to Polygon would reach ${usd(o.movedTodayE6 + o.amountE6)}, above the ${usd(o.maxDayE6)} daily limit.`,
+        };
     }
     if (o.treasuryFreeE6 - o.amountE6 < o.arcReserveE6) {
-        return { ok: false, kind: "reserve", reason: "That would leave the Arc treasury below its reserve." };
+        return {
+            ok: false,
+            kind: "reserve",
+            reason: `The Arc treasury would drop to ${usd(o.treasuryFreeE6 - o.amountE6)}, below its ${usd(o.arcReserveE6)} reserve.`,
+        };
     }
     return { ok: true };
 }

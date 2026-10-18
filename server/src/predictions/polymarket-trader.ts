@@ -250,7 +250,10 @@ export async function createPolymarketTrader(
                 } else throw new Error(`the relayer workflow asked for ${request.kind}`);
             }
             if (!step.value.transactionId) {
-                logger.warn("the relayer took a pool batch but returned no transaction id");
+                logger.error(
+                    { batch: metadata },
+                    "The Polymarket relayer took a pool batch but returned no transaction id, so it waits out its window",
+                );
                 return { kind: "unknown" };
             }
             return { kind: "submitted", transactionId: step.value.transactionId };
@@ -260,11 +263,24 @@ export async function createPolymarketTrader(
                 error instanceof RateLimitError ||
                 error instanceof UserInputError ||
                 (error instanceof RequestRejectedError && error.status < 500);
+            const said = error as { status?: number; code?: string; retryAfter?: unknown; message?: string };
+            const fields = {
+                batch: metadata,
+                status: said.status ?? null,
+                code: said.code ?? null,
+                relayerMessage: said.message ?? String(error),
+                retryAfter: said.retryAfter ?? null,
+                err: error,
+            };
             if (refused) {
-                logger.warn({ err: error }, "the relayer refused a pool batch");
-                return { kind: "refused", message: error.message };
+                logger.warn(fields, "The Polymarket relayer refused a pool batch");
+                const http = said.status === undefined ? "" : ` (HTTP ${said.status})`;
+                return {
+                    kind: "refused",
+                    message: `${metadata}: the relayer refused${http}: ${said.message ?? String(error)}`,
+                };
             }
-            logger.warn({ err: error }, "submitting a pool batch got no clear answer");
+            logger.error(fields, "The relayer's answer to a pool batch is unclear; it waits out its window");
             return { kind: "unknown" };
         }
     };
@@ -433,7 +449,8 @@ export async function createPolymarketTrader(
         async redeem(conditionId) {
             // wait() would hold the call for minutes; the redeemer polls the transaction instead
             const handle = await client.redeemPositions({ conditionId: conditionId });
-            if (!handle.transactionId) throw new Error("the relayer returned no transaction id");
+            if (!handle.transactionId)
+                throw new Error(`The relayer returned no transaction id for condition ${conditionId}`);
             return { transactionId: handle.transactionId };
         },
 

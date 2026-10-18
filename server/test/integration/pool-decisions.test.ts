@@ -427,7 +427,7 @@ describe("the advisory guard", () => {
                 direction: "arc_to_polygon",
                 amountUSD: "70",
                 kind: "day",
-                refusal: "That would pass the daily limit for moves to Polygon.",
+                refusal: "Today's moves to Polygon would reach $320, above the $300 daily limit.",
             },
         ]);
         expect(h.logged(POOL_ERRORS.treasuryLow)).toEqual([]);
@@ -467,13 +467,19 @@ describe("the advisory guard", () => {
             const refused = await h.rowOf(auto!._id);
             expect(refused).toMatchObject({
                 state: "failed",
-                lastError: "That would leave the Arc treasury below its reserve.",
+                lastError: "The Arc treasury would drop to $79.99, below its $100 reserve.",
             });
             expect(refused.active).toBeUndefined();
 
             const operator = await h.queue({ direction: "arc_to_polygon", usdc: "70" });
             await h.rebalancer.tick();
-            expect(await h.rowOf(operator._id)).toMatchObject({ state: "failed", lastError: refused.lastError });
+            // The operator asked for another amount, so the numbers differ and the limit hit is the same
+            expect(await h.rowOf(operator._id)).toMatchObject({
+                state: "failed",
+                lastError: expect.stringMatching(
+                    /^The Arc treasury would drop to \$\d+(\.\d+)?, below its \$100 reserve\.$/,
+                ),
+            });
             await expectNothingSigned(h);
         });
 
@@ -489,7 +495,7 @@ describe("the advisory guard", () => {
             const refused = await h.rowOf(auto!._id);
             expect(refused).toMatchObject({
                 state: "failed",
-                lastError: "The pool does not have that much free float.",
+                lastError: "Only $30 of the pool's float is free, and the move needs $60.",
             });
 
             const operator = await h.queue({ direction: "polygon_to_arc", usdc: "60" });
@@ -609,8 +615,15 @@ describe("the per-direction halt", () => {
         await setPool(stuckTopUp, "30");
         await stuckTopUp.rebalancer.tick();
         expect(await autoRows(stuckTopUp)).toEqual([]);
+        // The halt line carries the rows behind it and what clears it, not only the direction
         expect(stuckTopUp.logged(POOL_ERRORS.halted)).toMatchObject([
-            { level: PINO.error, direction: "arc_to_polygon" },
+            {
+                level: PINO.error,
+                direction: "arc_to_polygon",
+                stuck: true,
+                rows: [{ state: "stuck" }],
+                clearedBy: "resolve the stuck row, or mark the failed rows resolved",
+            },
         ]);
 
         // The drain direction of the same pool is not blocked

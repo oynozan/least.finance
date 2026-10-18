@@ -1172,7 +1172,7 @@ export class PredictionService {
         const usd = free <= 0n ? 0 : Number(free / 1_000_000n);
         // A balance we couldn't read is not a limit, so it isn't described as one
         const message = stale
-            ? `Predictions are briefly unavailable because we can't read the pool's balance right now. ${NOTHING_SPENT} Try again in a minute.`
+            ? `Predictions are briefly unavailable because we can't read the pool's balance right now. Try again in a minute. ${NOTHING_SPENT}`
             : `${floatShortMessage(usd, ask)} ${NOTHING_SPENT}`;
         if (!ask?.log) return new AppError("float_short", message);
         const now = this.#now();

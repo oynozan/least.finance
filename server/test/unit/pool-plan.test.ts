@@ -193,7 +193,7 @@ describe("planPoolMove", () => {
         ];
         for (const refusal of refusals) {
             expect(refusal.ok).toBe(false);
-            if (!refusal.ok) expect(refusal.reason).toMatch(/^[A-Z].*\.$/);
+            if (!refusal.ok) expect(refusal.reason).toMatch(/^[A-Z$].*\.$/);
         }
     });
 });

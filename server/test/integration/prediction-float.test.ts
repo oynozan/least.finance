@@ -171,7 +171,7 @@ test("a stale balance refuses orders when it can't be read again", async () => {
     expect(codeOf(error)).toBe("float_short");
     // The person is told the balance can't be read, not that predictions are limited to nothing
     expect(isAppError(error) && error.message).toBe(
-        "Predictions are briefly unavailable because we can't read the pool's balance right now. Nothing was spent. Try again in a minute.",
+        "Predictions are briefly unavailable because we can't read the pool's balance right now. Try again in a minute. Nothing was spent.",
     );
     // The failed read is logged once, and the refusal once with the numbers and why the read failed
     expect(warn).toHaveBeenCalledWith(

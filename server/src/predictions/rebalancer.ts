@@ -187,13 +187,39 @@ export class PoolRebalancer {
         }
     }
 
+    /** Says why a direction is halted: the newest rows' states and last errors, and what clears it. */
+    async #reportHalt(direction: PoolDirection) {
+        const { poolRebalances } = this.#deps.collections;
+        const rows = await poolRebalances
+            .find({ kind: "move", direction })
+            .sort({ createdAt: -1, _id: -1 })
+            .limit(3)
+            .toArray();
+        const stuck = await poolRebalances.countDocuments({ kind: "move", direction, state: "stuck" }, { limit: 1 });
+        this.#log.once(
+            `halted:${direction}`,
+            "error",
+            {
+                direction,
+                stuck: stuck > 0,
+                rows: rows.map((row) => ({
+                    rebalance: row._id.toString(),
+                    state: row.state,
+                    lastError: row.lastError ?? null,
+                    updatedAt: row.updatedAt,
+                })),
+                clearedBy: "resolve the stuck row, or mark the failed rows resolved",
+            },
+            POOL_ERRORS.halted,
+        );
+    }
+
     /** Decides from one read of the inputs; a move that passes the advisory guard becomes a `queued` row for the start path. */
     async #decide(now: number) {
         const { collections, config, logger } = this.#deps;
         const inputs = await readDecisionInputs(collections, config, now);
         for (const direction of DIRECTIONS) {
-            if (inputs.halted[direction])
-                this.#log.once(`halted:${direction}`, "error", { direction }, POOL_ERRORS.halted);
+            if (inputs.halted[direction]) await this.#reportHalt(direction);
         }
         if (inputs.active > 0 || inputs.freeE6 === null || inputs.floatAt === null) return;
 
@@ -455,7 +481,9 @@ export class PoolRebalancer {
         } catch (error) {
             if (error instanceof Superseded) return;
             if (error instanceof AppError && error.code === "float_short") {
-                await ctx.move(row, "failed", { lastError: "Free float is short." });
+                await ctx.move(row, "failed", {
+                    lastError: `The pool's float couldn't cover $${formatE6(amountE6)} when the move began: ${error.message.replace(/ Nothing was spent\.$/, "")}`,
+                });
                 return;
             }
             throw error;
