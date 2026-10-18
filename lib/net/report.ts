@@ -8,7 +8,8 @@ function warnOnce(kind: string, message: string) {
 }
 
 /** A public fetch the server refused: the console gets its status and its own words. */
-export async function reportRefusal(what: string, response: Response) {
+export async function reportRefusal(what: string, response: Response, told?: string) {
+    if (told !== undefined) return warnOnce(`${what}:${response.status}`, `${what} answered ${response.status}: ${told}`);
     const body = (await response.json().catch(() => null)) as { error?: { message?: unknown } } | null;
     const said = typeof body?.error?.message === "string" ? `: ${body.error.message}` : "";
     warnOnce(`${what}:${response.status}`, `${what} answered ${response.status}${said}`);

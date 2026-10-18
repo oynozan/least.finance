@@ -649,11 +649,11 @@ test.describe("the account client's page plumbing", () => {
             // Not signed in yet is said as that, not as an outage
             expect(await stack.client.loadActivityPage({ filter: "all" })).toEqual({
                 code: "unavailable",
-                message: "Still signing you in.",
+                message: "Still connecting to your account.",
             });
             expect(await stack.client.loadPnlSeries("UTC")).toEqual({
                 code: "unavailable",
-                message: "Still signing you in.",
+                message: "Still connecting to your account.",
             });
             expect(stack.asked).toEqual([]);
             await stack.open();

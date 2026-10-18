@@ -106,8 +106,8 @@ export function createPriceHistoryStore(options: {
             });
             coins = response.ok ? toCoins(await response.json()) : null;
             if (!response.ok) {
-                await reportRefusal("Price history", response.clone());
                 reason = await serverSaid(response);
+                await reportRefusal("Price history", response, reason);
             }
         } catch (error) {
             // Offline or the server is down; the next refresh tries again.
@@ -135,10 +135,11 @@ export function createPriceHistoryStore(options: {
                 `${options.apiUrl}/prices/history?range=${range}&coins=${encodeURIComponent(symbol)}`,
                 { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
             );
-            if (!response.ok) await reportRefusal("Price history", response.clone());
+            const said = response.ok ? null : await serverSaid(response);
+            if (said !== null) await reportRefusal("Price history", response, said);
             const points = response.ok ? toCoins(await response.json())?.get(symbol) : undefined;
             if (!points) {
-                errors.set(symbol, response.ok ? "No prices for this coin yet." : await serverSaid(response));
+                errors.set(symbol, said ?? "No prices for this coin yet.");
                 publish();
                 failed(symbol, time);
                 return;

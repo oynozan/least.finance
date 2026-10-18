@@ -27,13 +27,13 @@ test.describe("a search the server refused", () => {
         expect(store.getSnapshot()).toMatchObject({ searchFailed: false, searchError: null });
     });
 
-    test("with no body leaves the message for the generic line", async () => {
+    test("with no body says what the server answered", async () => {
         const store = createMarketsStore({
             apiUrl: "http://api",
             fetch: async () => new Response("<html>", { status: 502 }),
         });
         store.search("fed");
         await wait(300);
-        expect(store.getSnapshot()).toMatchObject({ searchFailed: true, searchError: null });
+        expect(store.getSnapshot()).toMatchObject({ searchFailed: true, searchError: "The server answered 502." });
     });
 });

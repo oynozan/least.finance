@@ -82,14 +82,15 @@ export function createMarketHistoryStore(options: { apiUrl: string; fetch?: type
                     `${options.apiUrl}/markets/${eventId}/history?outcomes=${tokens.join(",")}`,
                     { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
                 );
-                if (!response.ok) await reportRefusal("Market history", response.clone());
+                const said = response.ok ? null : await serverSaid(response);
+                if (said !== null) await reportRefusal("Market history", response, said);
                 const read = response.ok ? toLines(await response.json()) : null;
                 if (!read || read.size === 0) {
                     fail(
                         tokens,
                         time,
-                        !response.ok
-                            ? await serverSaid(response)
+                        said !== null
+                            ? said
                             : read
                               ? "Polymarket has no chart for this yet."
                               : "The server sent something we couldn't read.",
