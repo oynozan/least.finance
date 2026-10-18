@@ -79,7 +79,7 @@ test("a minimum-size refusal is a warning with a plain sentence of its own", asy
             status: 400,
         }),
     );
-    expect(order.message).toBe("That's under Polymarket's minimum order for this market. Nothing was spent.");
+    expect(order.message).toBe("That's under Polymarket's minimum of 5 shares for this market. Nothing was spent.");
     expect(logs).toHaveLength(1);
     expect(logs[0]).toMatchObject({ level: WARN, polymarketMessage: "Size (4.35) lower than the minimum: 5" });
 });

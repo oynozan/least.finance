@@ -47,7 +47,7 @@ export const priceMoved = (order: Order, msg: string, detail: string, fields?: R
     fields,
 });
 
-type Known = { test: RegExp; level: "warn" | "error"; say: (side: Side) => string };
+type Known = { test: RegExp; level: "warn" | "error"; say: (side: Side, said: string) => string };
 
 /** The exchange's refusals we know, by the words of the CLOB's messages and codes; the first match wins. */
 const KNOWN: Known[] = [
@@ -74,7 +74,10 @@ const KNOWN: Known[] = [
     {
         test: /lower than the minimum|below the minimum|minimum (order )?size|min(imum)? size|invalid_order_min_size/i,
         level: "warn",
-        say: (side) => `That's under Polymarket's minimum order for this market. ${kept(side)}`,
+        say: (side, said) => {
+            const minimum = /minimum[^\d]{0,20}(\d+(?:\.\d+)?)/i.exec(said)?.[1];
+            return `That's under Polymarket's minimum ${minimum ? `of ${minimum} shares` : "order"} for this market. ${kept(side)}`;
+        },
     },
     {
         test: /tick size|tick_size|invalid price|invalid_order_min_tick/i,
@@ -119,7 +122,7 @@ export function polymarketRefused(
         level: known?.level ?? "error",
         detail: refusal.message,
         message:
-            known?.say(order.side) ?? `Polymarket refused the order: ${quote(refusal.message)}. ${kept(order.side)}`,
+            known?.say(order.side, refusal.message) ?? `Polymarket refused the order: ${quote(refusal.message)}. ${kept(order.side)}`,
         fields: {
             ...fields,
             polymarketCode: refusal.code ?? null,

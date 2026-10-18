@@ -11,7 +11,7 @@ test.each([
         "Size (4.35) lower than the minimum: 5",
         undefined,
         "warn",
-        "That's under Polymarket's minimum order for this market. Nothing was spent.",
+        "That's under Polymarket's minimum of 5 shares for this market. Nothing was spent.",
     ],
     [
         "order couldn't be fully filled. FOK orders are fully filled or killed.",
