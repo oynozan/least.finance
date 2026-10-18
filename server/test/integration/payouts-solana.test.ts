@@ -516,7 +516,7 @@ test("forwarding for 15 minutes shows the delayed flag and logs 'Solana withdraw
     clock += 2 * MINUTE;
     await payouts.tick();
     expect(error).toHaveBeenCalledTimes(1);
-    expect(error.mock.calls[0]![1]).toBe("Solana withdrawal stalled");
+    expect(error.mock.calls[0]![1]).toBe("A Solana withdrawal is taking too long to be delivered");
     expect(withdrawalView(await stateOf(withdrawal._id), clock).delayed).toBe(true);
 
     clock += 30 * MINUTE;
@@ -567,4 +567,77 @@ test("Iris is asked at most once per tick and at most 5 times per second in tota
     clock += 1_000;
     await payouts.tick();
     expect(messageRequests() - last).toBe(1);
+});
+
+test("a forward Circle reported failed is stored, logged with the numbers, and told to the person", async () => {
+    await isolated();
+    const burnTxHash: Hex = `0x${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
+    const { account, withdrawal } = await seedSolana("3", { state: "forwarding", burnTxHash });
+    iris.setForwardFailed(burnTxHash);
+    const error = vi.fn();
+    const logger = { error, warn: vi.fn(), info: vi.fn(), debug: vi.fn() } as unknown as Logger;
+    const updates: string[] = [];
+    const listener = ({ withdrawal: moved }: { withdrawal: { _id: ObjectId } }) =>
+        void updates.push(moved._id.toHexString());
+    bus.on("withdrawal:updated", listener);
+
+    await worker({ logger }).tick();
+    bus.off("withdrawal:updated", listener);
+
+    const stored = await stateOf(withdrawal._id);
+    expect(stored.solana!.forwardFailure?.detail).toContain("FAILED");
+    expect(stored.solana!.irisLast).toMatchObject({ forwardState: "FAILED" });
+    expect(updates).toEqual([withdrawal._id.toHexString()]);
+    expect(withdrawalView(stored).message).toBe(
+        `Circle reported that delivering to your Solana wallet failed (ref ${withdrawal._id.toHexString().slice(-6)}). We've been alerted.`,
+    );
+    expect(error.mock.calls[0]![0]).toMatchObject({
+        event: "withdrawal.forward_failed",
+        accountId: account._id.toHexString(),
+        withdrawalId: withdrawal._id.toHexString(),
+        amount: "3",
+        to: WALLET,
+        burnTxHash,
+    });
+    expect(await refunds(withdrawal._id)).toBe(0);
+});
+
+test("a burn that can never be encoded fails the withdrawal with the values in the log, and refunds once", async () => {
+    await isolated();
+    const { account, withdrawal } = await seedSolana("5");
+    // Dust below a USDC unit can't be burned
+    await database.collections.withdrawals.updateOne(
+        { _id: withdrawal._id },
+        { $set: { amount: toDecimal(wei("5") + 1n) } },
+    );
+    const error = vi.fn();
+    const logger = { error, warn: vi.fn(), info: vi.fn(), debug: vi.fn() } as unknown as Logger;
+
+    await worker({ logger }).tick();
+
+    const failed = await stateOf(withdrawal._id);
+    expect(failed.state).toBe("failed");
+    expect(failed.detail).toContain("isn't a whole number of USDC units");
+    expect(failed.message).toBe(
+        "Something is wrong with this withdrawal's details on our side, so it was cancelled. Your balance is back.",
+    );
+    expect(await balanceOf(account._id)).toBe(wei("5") + 1n);
+    expect(await refunds(withdrawal._id)).toBe(1);
+    expect(error.mock.calls[0]![0]).toMatchObject({ event: "withdrawal.failed", step: "burn" });
+});
+
+test("a reverted burn names the burn transaction and Circle's contract", async () => {
+    await isolated();
+    const { withdrawal } = await seedSolana("5");
+    await messenger.revertCalls(true);
+    const payouts = worker();
+    await payouts.tick();
+    await payouts.tick();
+    await messenger.revertCalls(false);
+
+    const failed = await stateOf(withdrawal._id);
+    expect(failed.failure).toBe("Burn reverted on the network");
+    expect(failed.detail).toContain(`Transaction ${failed.solana!.burnTxHash} reverted on Arc`);
+    expect(failed.message).toMatch(/^Circle's burn contract reverted the transfer to Solana \(tx 0x/);
+    expect(withdrawalView(failed).message).toBe(failed.message);
 });

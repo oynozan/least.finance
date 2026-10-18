@@ -2,6 +2,7 @@ import type { WithdrawalDoc } from "../db/mongo.ts";
 import { quoted } from "../errors.ts";
 import { formatUsdc, fromDecimal } from "../db/money.ts";
 import type { WithdrawalView } from "../protocol.ts";
+import { forwardFailedMessage, forwardSlowMessage, withdrawalRef } from "./failures.ts";
 
 /** Time in `forwarding` after which the view says it is taking longer than expected. */
 export const FORWARDING_DELAYED_MS = 15 * 60_000;
@@ -21,6 +22,15 @@ export function withdrawalReason(failure: string | null): string {
 export function withdrawalView(doc: WithdrawalDoc, now = Date.now()): WithdrawalView {
     const solana = doc.network === "solana" ? doc.solana : undefined;
     const fee = solana ? fromDecimal(solana.fee) : null;
+    const delayed = doc.state === "forwarding" && now - doc.updatedAt.getTime() >= FORWARDING_DELAYED_MS;
+    const message =
+        doc.state === "failed"
+            ? (doc.message ?? withdrawalReason(doc.failure))
+            : doc.state === "forwarding" && solana?.forwardFailure
+              ? forwardFailedMessage(withdrawalRef(doc._id))
+              : delayed
+                ? forwardSlowMessage(withdrawalRef(doc._id))
+                : undefined;
     return {
         id: doc._id.toHexString(),
         requestId: doc.requestId,
@@ -32,8 +42,8 @@ export function withdrawalView(doc: WithdrawalDoc, now = Date.now()): Withdrawal
         state: doc.state,
         txHash: solana ? solana.burnTxHash : doc.txHash,
         forwardTxHash: solana?.forwardTxHash ?? null,
-        delayed: doc.state === "forwarding" && now - doc.updatedAt.getTime() >= FORWARDING_DELAYED_MS,
-        reason: doc.state === "failed" ? withdrawalReason(doc.failure) : null,
+        delayed,
+        ...(message && { message }),
         createdAt: doc.createdAt.toISOString(),
         updatedAt: doc.updatedAt.toISOString(),
     };

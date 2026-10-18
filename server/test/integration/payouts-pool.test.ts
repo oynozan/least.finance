@@ -374,7 +374,7 @@ test("a refused approve ends failed with no ledger row and the treasury unchange
     const failed = await rowOf(row._id);
     expect(failed.state).toBe("failed");
     expect(failed.active).toBeUndefined();
-    expect(failed.lastError).toBe("Rejected by the network");
+    expect(failed.lastError).toBe("Rejected by the network: insufficient funds for gas * price + value");
     expect(failed.doneAt).toEqual(new Date(clock));
     expect(failed.updatedAt).toEqual(new Date(clock));
     expect(events).toEqual(["failed"]);
@@ -400,7 +400,9 @@ test("a reverted burn ends failed the same way", async () => {
     const failed = await rowOf(row._id);
     expect(failed.state).toBe("failed");
     expect(failed.active).toBeUndefined();
-    expect(failed.lastError).toBe("Burn reverted on the network");
+    expect(failed.lastError).toMatch(
+        /^Burn reverted on the network: Transaction 0x[0-9a-f]{64} reverted on Arc \(gas used \d+\)$/,
+    );
     expect(failed.doneAt).toEqual(new Date(clock));
     expect(await ledgerCount()).toBe(ledgerBefore);
     expect(await refunds()).toBe(0);
@@ -421,7 +423,7 @@ test("a reverted approve ends failed without a burn", async () => {
 
     const failed = await rowOf(row._id);
     expect(failed.state).toBe("failed");
-    expect(failed.lastError).toBe("Approval reverted on the network");
+    expect(failed.lastError).toMatch(/^Approval reverted on the network: Transaction 0x[0-9a-f]{64} reverted on Arc/);
     expect((await messenger.calls()).length).toBe(burnsBefore);
 });
 
@@ -750,7 +752,7 @@ test("a row with no mint recipient ends failed before anything is signed", async
     const failed = await rowOf(row._id);
     expect(failed.state).toBe("failed");
     expect(failed.active).toBeUndefined();
-    expect(failed.lastError).toBe("No mint recipient");
+    expect(failed.lastError).toBe("No mint recipient: The pool top-up row has no mint recipient address");
     expect(failed.arc.approveRawTx).toBeNull();
     expect(signing).not.toHaveBeenCalled();
 });

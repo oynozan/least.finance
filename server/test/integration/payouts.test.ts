@@ -11,6 +11,7 @@ import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { Ledger } from "../../src/deposits/ledger.ts";
 import { Bus } from "../../src/events.ts";
 import { Payouts } from "../../src/withdrawals/payouts.ts";
+import { withdrawalView } from "../../src/withdrawals/views.ts";
 
 const wei = (usdc: string) => parseUnits(usdc, 18);
 const MNEMONIC = "test test test test test test test test test test test junk";
@@ -289,4 +290,86 @@ test("an opaque broadcast error with the transaction unseen is given several pas
     expect(await balanceOf(account._id)).toBe(wei("2"));
     expect(await refunds(withdrawal._id)).toBe(1);
     expect(await chain.getBalance({ address: to })).toBe(0n);
+});
+
+/** A logger that keeps every line, so a test can read what the owner would. */
+function recording() {
+    const lines: Record<string, unknown>[] = [];
+    const sink = { write: (line: string) => void lines.push(JSON.parse(line)) };
+    return { lines, logger: pino({ level: "info" }, sink) };
+}
+
+test("a refused broadcast keeps the node's words, tells the person, and logs once with the numbers", async () => {
+    const { account, withdrawal, to } = await seedWithdrawal("5");
+    const { lines, logger: recorder } = recording();
+    const payouts = worker({
+        logger: recorder,
+        broadcast: async () => {
+            throw new Error("insufficient funds for gas * price + value");
+        },
+    });
+
+    await payouts.tick();
+    await payouts.tick();
+
+    const failed = await stateOf(withdrawal._id);
+    expect(failed.failure).toBe("Rejected by the network");
+    expect(failed.detail).toBe("insufficient funds for gas * price + value");
+    expect(failed.message).toBe(
+        "Our payout wallet can't cover the network fee right now, so the network refused it. Your balance is back.",
+    );
+    expect(withdrawalView(failed).message).toBe(failed.message);
+    const logged = lines.filter((line) => line.event === "withdrawal.failed");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+        level: 40,
+        msg: "A withdrawal failed and was refunded",
+        accountId: account._id.toHexString(),
+        withdrawalId: withdrawal._id.toHexString(),
+        network: "arc",
+        amount: "5",
+        to: to.toLowerCase(),
+        step: "pay",
+        detail: "insufficient funds for gas * price + value",
+    });
+    expect(logged[0]!.err).toBeTruthy();
+});
+
+test("a reverted payout names the transaction", async () => {
+    const { withdrawal, to } = await seedWithdrawal("5");
+    await chain.setCode({ address: to, bytecode: "0xfe" as Hex });
+    const { lines, logger: recorder } = recording();
+
+    await worker({ logger: recorder }).tick();
+    await worker({ logger: recorder }).tick();
+
+    const failed = await stateOf(withdrawal._id);
+    expect(failed.failure).toBe("Reverted on the network");
+    expect(failed.detail).toContain(`Transaction ${failed.txHash} reverted on Arc (gas used `);
+    expect(failed.message).toMatch(
+        /^The payout was reverted on Arc \(tx 0x[0-9a-f]{8}…[0-9a-f]{4}\)\. Your balance is back\.$/,
+    );
+    expect(lines.filter((line) => line.event === "withdrawal.failed")).toMatchObject([{ txHash: failed.txHash }]);
+});
+
+test("a payout error that keeps repeating is logged once with the withdrawal's numbers, not on every pass", async () => {
+    const { account, withdrawal } = await seedWithdrawal("2");
+    const { lines, logger: recorder } = recording();
+    const payouts = worker({
+        logger: recorder,
+        broadcast: async () => {
+            throw new Error("fetch failed");
+        },
+    });
+
+    for (let pass = 0; pass < 4; pass++) await payouts.tick();
+
+    const retries = lines.filter((line) => line.event === "withdrawal.retry");
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({
+        accountId: account._id.toHexString(),
+        withdrawalId: withdrawal._id.toHexString(),
+        amount: "2",
+    });
+    await database.collections.withdrawals.updateOne({ _id: withdrawal._id }, { $set: { state: "sent" } });
 });

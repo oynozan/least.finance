@@ -10,7 +10,9 @@ import { formatUsdc, fromDecimal } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
 import type { Bus } from "../events.ts";
 import { loopWatch } from "../loop-watch.ts";
+import { alreadySent, refused, upstreamLine } from "../trading/send-errors.ts";
 import {
+    BurnInputError,
     ARC_USDC_ERC20,
     TOKEN_MESSENGER_V2,
     encodeApprove,
@@ -18,6 +20,16 @@ import {
     encodeBurnToEvm,
     weiToUsdc6,
 } from "./cctp-burn.ts";
+import {
+    forwardFailedMessage,
+    networkRefused,
+    rebalanceError,
+    reverted,
+    unsendable,
+    withdrawalRef,
+    type PayoutStep,
+    type Why,
+} from "./failures.ts";
 import { FORWARDING_DELAYED_MS } from "./views.ts";
 
 const GAS_LIMIT = 21_000n;
@@ -28,6 +40,8 @@ const APPROVE_GAS = 120_000n;
 const BURN_GAS = 600_000n;
 /** How often a stalled or failed forward is logged per withdrawal. */
 const STALL_LOG_MS = 60 * 60_000;
+/** How often the same payout error, or the same pass-level error, is logged while it keeps repeating. */
+const RETRY_LOG_MS = 5 * 60_000;
 /** Passes an unrecognised refusal may leave the transaction unseen before the withdrawal is given up. */
 const ABSENT_PASSES_BEFORE_FAIL = 5;
 
@@ -52,16 +66,7 @@ type Deps = {
     now?: () => number;
 };
 
-type Step = "approve" | "burn";
-
-/** A node already holding or having mined the transaction: the receipt decides the rest. */
-const alreadySent = (error: unknown) => /already known|nonce too low|already imported/i.test(String(error));
-
-/** The network turned the transaction down, so it was never accepted and the amount can go back. */
-const refused = (error: unknown) =>
-    /insufficient funds|underpriced|gas too low|intrinsic gas|invalid sender|exceeds (the )?balance/i.test(
-        String(error),
-    );
+type Step = Exclude<PayoutStep, "pay">;
 
 /** The RPC couldn't be reached or answered late, so the transaction may still be on its way. */
 const unreachable = (error: unknown) =>
@@ -160,9 +165,13 @@ export class Payouts {
         } finally {
             // After the payouts, so an Iris that is slow to answer never holds one back.
             if (!this.#stop?.signal.aborted) {
-                await this.#followForwards().catch((error: unknown) =>
-                    this.#deps.logger.warn({ err: error }, "Following Solana withdrawals failed"),
-                );
+                await this.#followForwards().catch((error: unknown) => {
+                    if (this.#dueForLog(`follow:${upstreamLine(error, 80)}`, this.#now(), RETRY_LOG_MS))
+                        this.#deps.logger.warn(
+                            { err: error, event: "payout.follow_failed" },
+                            "Checking on the Solana withdrawals that are being delivered failed",
+                        );
+                });
             }
         }
     }
@@ -185,7 +194,32 @@ export class Payouts {
                     if (!(await this.#paySolana(withdrawal))) return;
                 } else await this.#pay(withdrawal);
             } catch (error) {
-                logger.warn({ err: error, withdrawalId: withdrawal._id.toHexString() }, "Payout failed, will retry");
+                if (error instanceof BurnInputError) {
+                    // Nothing was signed, and the same input would fail again, so the person gets the money back.
+                    await this.#fail(withdrawal, unsendable(error));
+                    continue;
+                }
+                if (
+                    this.#dueForLog(
+                        `retry:${withdrawal._id.toHexString()}:${upstreamLine(error, 80)}`,
+                        this.#now(),
+                        RETRY_LOG_MS,
+                    )
+                ) {
+                    logger.warn(
+                        {
+                            event: "withdrawal.retry",
+                            withdrawalId: withdrawal._id.toHexString(),
+                            accountId: withdrawal.accountId.toHexString(),
+                            network: withdrawal.network ?? "arc",
+                            amount: formatUsdc(fromDecimal(withdrawal.amount)),
+                            to: withdrawal.solana?.wallet ?? withdrawal.to,
+                            txHash: withdrawal.solana?.burnTxHash ?? withdrawal.txHash,
+                            err: error,
+                        },
+                        "Paying a withdrawal hit an error and will be retried",
+                    );
+                }
                 // Whatever this withdrawal signed may be unsent, so later ones must not sign above it.
                 return;
             }
@@ -209,10 +243,18 @@ export class Payouts {
             try {
                 if (!(await this.#payRebalance(rebalance))) return false;
             } catch (error) {
-                logger.warn(
-                    { err: error, rebalanceId: rebalance._id.toHexString() },
-                    "Pool rebalance payout failed, will retry",
-                );
+                if (
+                    this.#dueForLog(
+                        `retry:${rebalance._id.toHexString()}:${upstreamLine(error, 80)}`,
+                        this.#now(),
+                        RETRY_LOG_MS,
+                    )
+                ) {
+                    logger.warn(
+                        { event: "rebalance.retry", rebalanceId: rebalance._id.toHexString(), err: error },
+                        "Paying a pool top-up hit an error and will be retried",
+                    );
+                }
                 return false;
             }
         }
@@ -224,9 +266,26 @@ export class Payouts {
         const { client, signer, collections } = this.#deps;
         const solana = withdrawal.solana!;
         const { nonce, maxFeePerGas } = await this.#nextNonce();
-        const amount6 = weiToUsdc6(fromDecimal(withdrawal.amount));
         const usdc = this.#deps.usdc ?? ARC_USDC_ERC20;
         const messenger = this.#deps.tokenMessenger ?? TOKEN_MESSENGER_V2;
+        // What can never be encoded is told apart from a node error, which is worth retrying
+        let amount6: bigint;
+        let approveData: Hex;
+        let burnData: Hex;
+        try {
+            amount6 = weiToUsdc6(fromDecimal(withdrawal.amount));
+            approveData = encodeApprove(amount6, messenger);
+            burnData = encodeBurn({
+                amount6,
+                usdcAccount: solana.usdcAccount,
+                wallet: solana.wallet,
+                setup: solana.setup,
+                maxFee6: weiToUsdc6(fromDecimal(solana.maxFee)),
+                burnToken: usdc,
+            });
+        } catch (error) {
+            throw error instanceof BurnInputError ? error : new BurnInputError(upstreamLine(error), { cause: error });
+        }
         const sign = (n: number, to: Address, data: Hex, gas: bigint) =>
             signer.signTransaction({
                 type: "eip1559",
@@ -239,20 +298,8 @@ export class Payouts {
                 maxFeePerGas,
                 maxPriorityFeePerGas: PRIORITY_FEE,
             });
-        const approveRawTx = await sign(nonce, usdc, encodeApprove(amount6, messenger), APPROVE_GAS);
-        const burnRawTx = await sign(
-            nonce + 1,
-            messenger,
-            encodeBurn({
-                amount6,
-                usdcAccount: solana.usdcAccount,
-                wallet: solana.wallet,
-                setup: solana.setup,
-                maxFee6: weiToUsdc6(fromDecimal(solana.maxFee)),
-                burnToken: usdc,
-            }),
-            BURN_GAS,
-        );
+        const approveRawTx = await sign(nonce, usdc, approveData, APPROVE_GAS);
+        const burnRawTx = await sign(nonce + 1, messenger, burnData, BURN_GAS);
         const stored = await collections.withdrawals.findOneAndUpdate(
             { _id: withdrawal._id, state: "sending", "solana.approveRawTx": null },
             {
@@ -305,6 +352,18 @@ export class Payouts {
         } catch (error) {
             if (unreachable(error)) throw error;
             if (/nonce too low/i.test(String(error)) && !(await this.#mined(stored))) {
+                this.#deps.logger.warn(
+                    {
+                        event: "withdrawal.resign",
+                        withdrawalId: withdrawal._id.toHexString(),
+                        accountId: withdrawal.accountId.toHexString(),
+                        step,
+                        nonce: step === "approve" ? solana.approveNonce : solana.burnNonce,
+                        txHash: hash,
+                        err: error,
+                    },
+                    "A payout's nonce was already used by another transaction, so it will be signed again",
+                );
                 await collections.withdrawals.updateOne(
                     { _id: withdrawal._id, state: "sending", [`solana.${step}TxHash`]: hash },
                     {
@@ -328,7 +387,7 @@ export class Payouts {
                     throw error;
                 }
                 this.#absent.delete(key);
-                await this.#fail(withdrawal, "Rejected by the network");
+                await this.#fail(withdrawal, networkRefused(error, step, hash));
                 return "ended";
             }
         }
@@ -342,10 +401,7 @@ export class Payouts {
         });
         if (!receipt) return "pending";
         if (receipt.status === "success") return "mined";
-        await this.#fail(
-            withdrawal,
-            step === "approve" ? "Approval reverted on the network" : "Burn reverted on the network",
-        );
+        await this.#fail(withdrawal, reverted(step, hash, receipt.gasUsed));
         return "ended";
     }
 
@@ -402,7 +458,13 @@ export class Payouts {
     async #payRebalance(found: PoolRebalanceDoc): Promise<boolean> {
         const { collections, bus } = this.#deps;
         if (!found.arc.approveRawTx && !found.mintRecipient) {
-            await this.#failRebalance(found, "No mint recipient");
+            await this.#failRebalance(found, {
+                failure: "No mint recipient",
+                detail: "The pool top-up row has no mint recipient address",
+                level: "error",
+                step: "approve",
+                txHash: null,
+            });
             return true;
         }
         const rebalance = found.arc.approveRawTx ? found : await this.#signRebalance(found);
@@ -434,6 +496,17 @@ export class Payouts {
         } catch (error) {
             if (unreachable(error)) throw error;
             if (/nonce too low/i.test(String(error)) && !(await this.#mined(stored))) {
+                this.#deps.logger.warn(
+                    {
+                        event: "rebalance.resign",
+                        rebalanceId: rebalance._id.toHexString(),
+                        step,
+                        nonce: step === "approve" ? rebalance.arc.approveNonce : rebalance.arc.burnNonce,
+                        txHash: hash,
+                        err: error,
+                    },
+                    "A pool top-up's nonce was already used by another transaction, so it will be signed again",
+                );
                 await collections.poolRebalances.updateOne(
                     { _id: rebalance._id, state: "sending", [`arc.${step}TxHash`]: hash },
                     {
@@ -456,7 +529,7 @@ export class Payouts {
                     throw error;
                 }
                 this.#absent.delete(key);
-                await this.#failRebalance(rebalance, "Rejected by the network", step);
+                await this.#failRebalance(rebalance, networkRefused(error, step, hash));
                 return "ended";
             }
         }
@@ -470,21 +543,20 @@ export class Payouts {
         });
         if (!receipt) return "pending";
         if (receipt.status === "success") return "mined";
-        await this.#failRebalance(
-            rebalance,
-            step === "approve" ? "Approval reverted on the network" : "Burn reverted on the network",
-            step,
-        );
+        await this.#failRebalance(rebalance, reverted(step, hash, receipt.gasUsed));
         return "ended";
     }
 
     /** Marks a top-up failed without touching any balance: nothing was burned, so the treasury only lost gas. */
-    async #failRebalance(rebalance: PoolRebalanceDoc, failure: string, step?: Step) {
+    async #failRebalance(rebalance: PoolRebalanceDoc, why: Omit<Why, "message">) {
         const { collections, bus, logger } = this.#deps;
         const at = new Date(this.#now());
         const moved = await collections.poolRebalances.findOneAndUpdate(
             { _id: rebalance._id, state: "sending" },
-            { $set: { state: "failed", lastError: failure, doneAt: at, updatedAt: at }, $unset: { active: "" } },
+            {
+                $set: { state: "failed", lastError: rebalanceError(why), doneAt: at, updatedAt: at },
+                $unset: { active: "" },
+            },
             { returnDocument: "after" },
         );
         if (!moved) return;
@@ -493,9 +565,21 @@ export class Payouts {
             direction: rebalance.direction,
             amountE6: fromDecimal(rebalance.amountE6).toString(),
         };
-        logger.warn({ ...fields, failure }, "Pool rebalance failed before any burn");
+        logger[why.step === "burn" ? "error" : why.level](
+            {
+                ...fields,
+                event: "rebalance.failed",
+                step: why.step,
+                txHash: why.txHash,
+                failure: why.failure,
+                detail: why.detail,
+                err: why.err,
+            },
+            "A pool top-up failed and the treasury kept its USDC",
+        );
         // The approve stays as it is: the next one overwrites it, and a reset would cost another transaction.
-        if (step === "burn") logger.info(fields, "A failed pool burn leaves the TokenMessengerV2 allowance in place");
+        if (why.step === "burn")
+            logger.info(fields, "A failed pool burn leaves the TokenMessengerV2 allowance in place");
         bus.emit("pool-rebalance:updated", { rebalance: moved });
     }
 
@@ -513,8 +597,17 @@ export class Payouts {
             if (now - doc.updatedAt.getTime() < FORWARDING_DELAYED_MS) continue;
             if (!this.#dueForLog(id, now)) continue;
             logger.error(
-                { withdrawalId: id, burnTxHash: doc.solana?.burnTxHash, iris: this.#lastIris.get(id) ?? null },
-                "Solana withdrawal stalled",
+                {
+                    event: "withdrawal.stalled",
+                    withdrawalId: id,
+                    accountId: doc.accountId.toHexString(),
+                    amount: formatUsdc(fromDecimal(doc.amount)),
+                    to: doc.solana?.wallet,
+                    burnTxHash: doc.solana?.burnTxHash,
+                    stalledForMin: Math.round((now - doc.updatedAt.getTime()) / 60_000),
+                    iris: this.#lastIris.get(id) ?? doc.solana?.irisLast ?? null,
+                },
+                "A Solana withdrawal is taking too long to be delivered",
             );
         }
 
@@ -533,15 +626,61 @@ export class Payouts {
             if (error instanceof IrisError && (error.kind === "rate_limited" || error.kind === "timeout")) {
                 this.#irisLimiter.backoff(now);
             }
-            logger.warn({ err: error, withdrawalId: id }, "Iris couldn't be asked about a Solana withdrawal");
+            const kind = error instanceof IrisError ? error.kind : "unknown";
+            if (this.#dueForLog(`iris:${kind}`, now, RETRY_LOG_MS)) {
+                logger.warn(
+                    {
+                        event: "iris.unavailable",
+                        kind,
+                        withdrawalId: id,
+                        burnTxHash: next.solana!.burnTxHash,
+                        err: error,
+                    },
+                    "Circle's Iris couldn't be asked about a Solana withdrawal",
+                );
+            }
             return;
         }
-        this.#lastIris.set(id, message?.raw ?? null);
+        const raw = message?.raw ?? null;
+        const changed = JSON.stringify(this.#lastIris.get(id) ?? next.solana!.irisLast ?? null) !== JSON.stringify(raw);
+        this.#lastIris.set(id, raw);
+        if (changed) {
+            await collections.withdrawals.updateOne(
+                { _id: next._id, state: "forwarding" },
+                { $set: { "solana.irisLast": raw } },
+            );
+        }
         if (message?.status === "failed") {
+            const forwardFields = {
+                event: "withdrawal.forward_failed",
+                withdrawalId: id,
+                accountId: next.accountId.toHexString(),
+                amount: formatUsdc(fromDecimal(next.amount)),
+                to: next.solana!.wallet,
+                burnTxHash: next.solana!.burnTxHash,
+                iris: raw,
+            };
+            if (!next.solana!.forwardFailure) {
+                // Stored once, so the person is told Circle said it failed, also after a restart
+                const flagged = await collections.withdrawals.findOneAndUpdate(
+                    { _id: next._id, state: "forwarding", "solana.forwardFailure": null },
+                    {
+                        $set: {
+                            "solana.forwardFailure": { detail: JSON.stringify(raw).slice(0, 500), at: new Date(now) },
+                            updatedAt: new Date(now),
+                        },
+                    },
+                    { returnDocument: "after" },
+                );
+                if (flagged) {
+                    const account = await collections.accounts.findOne({ _id: flagged.accountId });
+                    bus.emit("withdrawal:updated", { withdrawal: flagged, account });
+                }
+            }
             if (this.#dueForLog(`failed:${id}`, now)) {
                 logger.error(
-                    { withdrawalId: id, burnTxHash: next.solana!.burnTxHash, iris: message.raw },
-                    "Solana withdrawal forward failed",
+                    forwardFields,
+                    `Circle reported a Solana withdrawal's delivery failed (ref ${withdrawalRef(next._id)})`,
                 );
             }
             return;
@@ -559,10 +698,10 @@ export class Payouts {
         bus.emit("withdrawal:updated", { withdrawal: sent, account });
     }
 
-    /** True at most once an hour per key. */
-    #dueForLog(key: string, now: number) {
+    /** True at most once per `every` (an hour by default) per key. */
+    #dueForLog(key: string, now: number, every = STALL_LOG_MS) {
         const last = this.#logged.get(key);
-        if (last !== undefined && now - last < STALL_LOG_MS) return false;
+        if (last !== undefined && now - last < every) return false;
         this.#logged.set(key, now);
         return true;
     }
@@ -644,6 +783,18 @@ export class Payouts {
         } catch (error) {
             if (unreachable(error)) throw error;
             if (/nonce too low/i.test(String(error)) && !(await this.#mined(withdrawal))) {
+                this.#deps.logger.warn(
+                    {
+                        event: "withdrawal.resign",
+                        withdrawalId: withdrawal._id.toHexString(),
+                        accountId: withdrawal.accountId.toHexString(),
+                        step: "pay",
+                        nonce: withdrawal.nonce,
+                        txHash: withdrawal.txHash,
+                        err: error,
+                    },
+                    "A payout's nonce was already used by another transaction, so it will be signed again",
+                );
                 await collections.withdrawals.updateOne(
                     { _id: withdrawal._id, state: "sending", txHash: withdrawal.txHash },
                     { $set: { rawTx: null, txHash: null, nonce: null, updatedAt: new Date() } },
@@ -659,7 +810,7 @@ export class Payouts {
                     throw error;
                 }
                 this.#absent.delete(key);
-                return this.#fail(withdrawal, "Rejected by the network");
+                return this.#fail(withdrawal, networkRefused(error, "pay", withdrawal.txHash));
             }
         }
         this.#absent.delete(withdrawal._id.toHexString());
@@ -673,7 +824,7 @@ export class Payouts {
         });
         if (!receipt) return;
         if (receipt.status === "success") await this.#sent(withdrawal);
-        else await this.#fail(withdrawal, "Reverted on the network");
+        else await this.#fail(withdrawal, reverted("pay", hash, receipt.gasUsed));
     }
 
     /** True when the node knows the stored hash, pending or mined. */
@@ -711,12 +862,20 @@ export class Payouts {
     }
 
     /** Marks it failed and gives the amount back in one transaction, so the refund happens once. */
-    async #fail(withdrawal: WithdrawalDoc, failure: string) {
+    async #fail(withdrawal: WithdrawalDoc, why: Why) {
         const { collections, ledger, bus, logger } = this.#deps;
         const result = await ledger.runInTransaction(async (session: ClientSession) => {
             const moved = await collections.withdrawals.findOneAndUpdate(
                 { _id: withdrawal._id, state: "sending" },
-                { $set: { state: "failed", failure, updatedAt: new Date() } },
+                {
+                    $set: {
+                        state: "failed",
+                        failure: why.failure,
+                        detail: why.detail,
+                        message: why.message,
+                        updatedAt: new Date(),
+                    },
+                },
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
@@ -730,18 +889,22 @@ export class Payouts {
             return { moved, account };
         });
         if (!result) return;
-        logger.warn(
+        logger[why.level](
             {
                 event: "withdrawal.failed",
                 withdrawalId: withdrawal._id.toHexString(),
-                accountId: withdrawal.accountId.toHexString(),
-                amount: formatUsdc(fromDecimal(withdrawal.amount)),
-                to: withdrawal.to,
-                network: withdrawal.network ?? "arc",
-                txHash: withdrawal.txHash,
-                failure,
+                accountId: result.moved.accountId.toHexString(),
+                requestId: result.moved.requestId,
+                network: result.moved.network ?? "arc",
+                amount: formatUsdc(fromDecimal(result.moved.amount)),
+                to: result.moved.solana?.wallet ?? result.moved.to,
+                step: why.step,
+                txHash: why.txHash,
+                failure: why.failure,
+                detail: why.detail,
+                err: why.err,
             },
-            "A withdrawal failed on the network and its amount was refunded",
+            "A withdrawal failed and was refunded",
         );
         bus.emit("withdrawal:updated", { withdrawal: result.moved, account: result.account });
     }

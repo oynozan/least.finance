@@ -150,8 +150,8 @@ export type WithdrawalView = {
     forwardTxHash: string | null;
     /** True once a Solana withdrawal has been forwarding for 15 minutes. */
     delayed: boolean;
-    /** Why a failed withdrawal failed, in a sentence for the person; null while it hasn't failed. */
-    reason?: string | null;
+    /** What to tell the person: why a withdrawal failed, or that Circle reported a Solana forward failed; absent otherwise and from an older server. */
+    message?: string;
     createdAt: string;
     updatedAt: string;
 };

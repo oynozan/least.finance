@@ -39,6 +39,14 @@ function setupHookData(wallet: string): Hex {
     ]);
 }
 
+/** The amounts or recipient of a burn can never be encoded, so retrying would never help. */
+export class BurnInputError extends Error {
+    constructor(message: string, options?: { cause?: unknown }) {
+        super(message, options);
+        this.name = "BurnInputError";
+    }
+}
+
 /** The USDC ERC-20 view's approve for the TokenMessengerV2 (or the given spender). */
 export function encodeApprove(amount6: bigint, spender: Address = TOKEN_MESSENGER_V2): Hex {
     return encodeFunctionData({ abi, functionName: "approve", args: [spender, amount6] });
@@ -78,7 +86,7 @@ export function encodeBurnToEvm(input: {
     burnToken?: Address;
 }): Hex {
     if (!isAddress(input.recipient) || isAddressEqual(input.recipient, zeroAddress)) {
-        throw new Error("The mint recipient isn't a usable address");
+        throw new BurnInputError(`The mint recipient ${input.recipient} isn't a usable address`);
     }
     return encodeFunctionData({
         abi,
@@ -98,8 +106,9 @@ export function encodeBurnToEvm(input: {
 
 /** The most Circle may take for a burn: three times the high forwarding fee (at least $0.10 more), plus the protocol's basis points, always below the amount. */
 export function maxFeeWithHeadroom(input: { amount6: bigint; high6: bigint; minimumFeeBps: number }): bigint {
-    if (input.amount6 <= 0n) throw new Error("The amount must be above zero");
-    if (!Number.isFinite(input.minimumFeeBps) || input.minimumFeeBps < 0) throw new Error("Bad protocol fee rate");
+    if (input.amount6 <= 0n) throw new BurnInputError(`The amount must be above zero, got ${input.amount6}`);
+    if (!Number.isFinite(input.minimumFeeBps) || input.minimumFeeBps < 0)
+        throw new BurnInputError(`Bad protocol fee rate: ${input.minimumFeeBps}`);
     const forwarding = input.high6 * 3n > input.high6 + 100_000n ? input.high6 * 3n : input.high6 + 100_000n;
     const hundredthsOfBps = BigInt(Math.ceil(Number((input.minimumFeeBps * 100).toFixed(6))));
     const protocol = (input.amount6 * hundredthsOfBps + 999_999n) / 1_000_000n;
@@ -109,6 +118,6 @@ export function maxFeeWithHeadroom(input: { amount6: bigint; high6: bigint; mini
 
 /** Wei to ERC-20 units, exactly; dust below a unit can't be burned. */
 export function weiToUsdc6(wei: bigint): bigint {
-    if (wei % WEI_PER_UNIT !== 0n) throw new Error("Amount isn't a whole number of USDC units");
+    if (wei % WEI_PER_UNIT !== 0n) throw new BurnInputError(`Amount ${wei} wei isn't a whole number of USDC units`);
     return wei / WEI_PER_UNIT;
 }

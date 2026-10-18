@@ -425,6 +425,10 @@ export type WithdrawalDoc = {
     rawTx: Hex | null;
     txHash: Hex | null;
     failure: string | null;
+    /** Why it failed in the network's own words, or ours; absent on withdrawals that failed before this was kept. */
+    detail?: string;
+    /** What the person is told about the failure, so a reload shows the same words. */
+    message?: string;
     /** What a Solana withdrawal needs beyond the Arc fields; the Arc nonce, rawTx and txHash are unused for it. */
     solana?: SolanaWithdrawal;
     createdAt: Date;
@@ -450,6 +454,10 @@ export type SolanaWithdrawal = {
     burnTxHash: Hex | null;
     forwardTxHash: string | null;
     irisCheckedAt: Date | null;
+    /** What Circle last said about the forward, kept so a restart still knows. */
+    irisLast?: unknown;
+    /** Set when Circle reported the forward FAILED: its answer, trimmed. */
+    forwardFailure?: { detail: string; at: Date } | null;
 };
 
 /** A swap through LI.FI that the person signed with their own wallet, a path that has been removed; the activity feed reads what is left. Amounts are decimal coin units and `units` are the integers LI.FI works in. */
