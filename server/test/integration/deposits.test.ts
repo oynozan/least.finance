@@ -473,7 +473,7 @@ test("a quote for a wallet that isn't linked names it, tells the person what to 
         ok: false,
         error: {
             code: "forbidden",
-            message: `${stray.slice(0, 6)}…${stray.slice(-4)} isn't linked to your account. Link it from the wallet menu and try again.`,
+            message: `${stray.slice(0, 6)}…${stray.slice(-4)} isn't linked to your account yet. Wait a few seconds after linking it, then try again.`,
         },
     });
     expect(

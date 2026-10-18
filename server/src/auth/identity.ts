@@ -213,6 +213,8 @@ export class PrivyIdentity implements IdentityProvider {
             this.#logger.warn(
                 {
                     event: "auth.wallet_not_linked",
+                    op: "wallet.authorize",
+                    userId: identity.userId,
                     accountId: identity.userId,
                     address,
                     cacheAgeMs: Date.now() - wallets.fetchedAt,
