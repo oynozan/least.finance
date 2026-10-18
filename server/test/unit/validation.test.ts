@@ -44,6 +44,14 @@ describe("parse", () => {
         expect(error.detail).toContain("txHash");
     });
 
+    it("tells a short destination in plain words, not by the wire field's name", () => {
+        const request = { requestId: "7f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f", amount: "5", to: "0xabc" };
+        const error = catchError(() => parse(withdrawRequest, request)) as AppError;
+        expect(error.message).toBe("Enter the full wallet address (32 to 64 characters).");
+        const amount = catchError(() => parse(withdrawRequest, { ...request, to: "a".repeat(40), amount: "x" }));
+        expect((amount as AppError).message).toBe("Enter an amount such as 12.5, with at most 6 decimals.");
+    });
+
     it("accepts an empty deposit page request", () => {
         expect(parse(depositPage, undefined)).toEqual({});
     });

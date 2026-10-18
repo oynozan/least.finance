@@ -563,6 +563,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                         event: "withdrawal:updated",
                         withdrawalId: withdrawal._id.toHexString(),
                         accountId: withdrawal.accountId.toHexString(),
+                        state: withdrawal.state,
                     },
                     "Couldn't push a withdrawal update",
                 );
@@ -672,6 +673,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                         event: "coin-withdrawal:updated",
                         withdrawalId: withdrawal._id.toHexString(),
                         accountId: withdrawal.accountId.toHexString(),
+                        state: withdrawal.state,
                     },
                     "Couldn't push a coin withdrawal",
                 );

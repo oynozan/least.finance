@@ -14,6 +14,21 @@ test("solanaBytes32 matches a known vector", () => {
     expect(() => solanaBytes32("1111")).toThrow();
 });
 
+test("a letter outside base58 is a refusal the person can read, not an internal error", () => {
+    expect(() => solanaBytes32("0OIl".repeat(8))).toThrowError(
+        expect.objectContaining({ code: "bad_request", message: "That isn't a wallet address." }),
+    );
+});
+
+test("a Solana network that doesn't answer is told as that, with nothing taken", async () => {
+    const rpc = createSolanaRpc(["http://127.0.0.1:1"]);
+    await expect(checkRecipient(rpc, WALLET)).rejects.toMatchObject({
+        code: "unavailable",
+        message: "Couldn't check that Solana wallet right now: the Solana network didn't answer. Nothing was taken.",
+        logged: true,
+    });
+});
+
 test("the USDC account is derived, never the wallet", async () => {
     const derived = await usdcAccountOf(WALLET);
     expect(derived).toBe(WALLET_USDC);
@@ -42,7 +57,8 @@ test("a wallet owned by a program is refused", async () => {
         fake.setAccount(WALLET, { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", lamports: 1n });
         await expect(checkRecipient(rpc, WALLET)).rejects.toMatchObject({
             code: "bad_request",
-            message: "That address can't receive USDC.",
+            message:
+                "That Solana address belongs to a program, not a wallet, so it can't receive USDC. Use your wallet's own address.",
         });
     });
 });

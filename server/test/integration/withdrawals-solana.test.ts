@@ -163,7 +163,8 @@ test("a program-owned wallet is refused and nothing is debited", async () => {
 
     expect(await failure(withdrawals.create(account, request(wallet, "10")))).toEqual({
         code: "bad_request",
-        message: "That address can't receive USDC.",
+        message:
+            "That Solana address belongs to a program, not a wallet, so it can't receive USDC. Use your wallet's own address.",
     });
     expect(await balanceOf(account._id)).toBe(wei("100"));
     expect(await ledgerCount(account._id)).toBe(0);
@@ -220,14 +221,14 @@ test("a fee within the tolerance proceeds", async () => {
     iris.setFees({ med: 127_000, high: 150_000 }, { med: 286_000, high: 320_000 });
 });
 
-test("an Iris fee failure is 'Couldn't price this right now. Nothing was taken.'", async () => {
+test("an Iris fee failure says Circle's fee service gave an error, with its status", async () => {
     const account = await seedAccount("100");
     await fundTreasury("500");
     iris.failWith(503);
     try {
         expect(await failure(withdrawals.create(account, request(newWallet(), "10")))).toEqual({
             code: "unavailable",
-            message: "Couldn't price this right now. Nothing was taken.",
+            message: "Circle's fee service gave an error (503). Nothing was taken.",
         });
     } finally {
         iris.failWith(null);
@@ -268,14 +269,37 @@ test("an account missing at the quote and present at create takes the cheaper pa
     gone.delete(usdc);
 });
 
-test("switch off is 'Solana withdrawals aren't open yet.'", async () => {
+test("a rate-limited fee service is told as busy, and an amount under the fee names the fee", async () => {
+    const account = await seedAccount("100");
+    await fundTreasury("500");
+    iris.failWith(429);
+    try {
+        expect(await failure(withdrawals.create(account, request(newWallet(), "10")))).toEqual({
+            code: "unavailable",
+            message: "Circle's fee service is busy right now. Try again in a minute. Nothing was taken.",
+        });
+    } finally {
+        iris.failWith(null);
+    }
+    iris.setFees({ med: 900_000, high: 1_200_000 }, { med: 900_000, high: 1_200_000 });
+    try {
+        expect(await failure(withdrawals.create(account, request(newWallet(), "1.1")))).toEqual({
+            code: "bad_request",
+            message: "The Solana fee is up to 1.2 USDC, so withdraw more than that. Nothing was taken.",
+        });
+    } finally {
+        iris.setFees({ med: 127_000, high: 150_000 }, { med: 286_000, high: 320_000 });
+    }
+});
+
+test("switch off says withdrawals to Solana aren't open yet", async () => {
     const account = await seedAccount("100");
     await fundTreasury("500");
     switches.SOLANA_WITHDRAWALS = "off";
     try {
         expect(await failure(withdrawals.create(account, request(newWallet(), "10")))).toEqual({
             code: "unavailable",
-            message: "Solana withdrawals aren't open yet.",
+            message: "Withdrawals to Solana aren't open yet.",
         });
         expect(await failure(withdrawals.quoteSolana(account, { amount: "10", to: newWallet() }))).toMatchObject({
             code: "unavailable",

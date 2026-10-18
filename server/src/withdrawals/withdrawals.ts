@@ -11,6 +11,7 @@ import { solanaOpen } from "../crosschain/solana-switch.ts";
 import type { SolanaRpc } from "../crosschain/solana.ts";
 import { IrisError, type Iris } from "../crosschain/iris.ts";
 import { AppError } from "../errors.ts";
+import { upstreamLine } from "../trading/send-errors.ts";
 import type { Bus } from "../events.ts";
 import { checkRecipient } from "./solana-recipient.ts";
 
@@ -71,14 +72,39 @@ export class Withdrawals {
         const priced = await this.#priceSolana(input);
         // The part of the fee that creates the recipient's USDC account.
         const plain = priced.setup
-            ? await this.#deps.solana!.iris.forwardFee({ from: 26, to: 5, setup: false }).catch(() => null)
+            ? await this.#deps.solana!.iris.forwardFee({ from: 26, to: 5, setup: false }).catch((error: unknown) => {
+                  this.#deps.logger.warn(
+                      { event: "withdraw.setup_fee_failed", to: input.to, err: error },
+                      "Couldn't split the account setup fee out of a withdrawal quote",
+                  );
+                  return null;
+              })
             : null;
         const setupFee = plain ? (priced.fee > plain.med ? priced.fee - plain.med : 0n) : null;
         return { fee: priced.fee, receive: priced.wei - priced.fee, setup: priced.setup, setupFee };
     }
 
     create(account: AccountDoc, input: CreateInput): Promise<WithdrawalDoc> {
-        return this.withTreasuryLock(() => this.#create(account, input));
+        return this.withTreasuryLock(() =>
+            this.#create(account, input).catch((error: unknown) => {
+                if (!(error instanceof AppError) || error.logged) throw error;
+                // Refusals are the person's to fix, but "my withdrawal was refused" needs a trace to find
+                this.#deps.logger.warn(
+                    {
+                        event: "withdraw.refused",
+                        accountId: account._id.toHexString(),
+                        requestId: input.requestId,
+                        code: error.code,
+                        amount: input.amount,
+                        to: input.to,
+                        network: input.network ?? "arc",
+                        reviewedFee: input.reviewedFee,
+                    },
+                    `A withdrawal was refused: ${error.message}`,
+                );
+                throw new AppError(error.code, error.message, { cause: error.cause, logged: true });
+            }),
+        );
     }
 
     /** Runs `fn` alone among creates and other lock holders, in the order they asked. */
@@ -95,7 +121,13 @@ export class Withdrawals {
     /** The recipient, the fee and the amount checked as a Solana withdrawal needs, before anything is taken. */
     async #priceSolana(input: { amount: string; to: string }) {
         const { solana } = this.#deps;
-        if (!solana) throw new AppError("unavailable", "Solana isn't open yet.");
+        if (!solana) {
+            this.#deps.logger.warn(
+                { event: "withdraw.solana_unconfigured" },
+                "Withdrawals to Solana were asked for but the Solana client isn't configured",
+            );
+            throw new AppError("unavailable", "Withdrawals to Solana aren't open yet.");
+        }
         solanaOpen(solana.switches, "withdrawals");
         if (!/^\d+(\.\d{1,6})?$/.test(input.amount)) {
             throw new AppError("bad_request", "Enter an amount with at most 6 decimals.");
@@ -104,15 +136,35 @@ export class Withdrawals {
         if (wei < solana.min) {
             throw new AppError("bad_request", `The smallest withdrawal to Solana is ${dollars(solana.min)}.`);
         }
-        const { usdcAccount, setup } = await checkRecipient(solana.rpc, input.to);
+        const { usdcAccount, setup } = await checkRecipient(solana.rpc, input.to, this.#deps.logger);
         const { med, high } = await solana.iris.forwardFee({ from: 26, to: 5, setup }).catch((error: unknown) => {
             if (error instanceof IrisError) {
-                throw new AppError("unavailable", "Couldn't price this right now. Nothing was taken.");
+                this.#deps.logger.warn(
+                    {
+                        event: "withdraw.quote_failed",
+                        kind: error.kind,
+                        status: error.status,
+                        to: input.to,
+                        amount: input.amount,
+                        err: error,
+                    },
+                    "Circle's fee service couldn't price a Solana withdrawal",
+                );
+                const said =
+                    error.kind === "rate_limited"
+                        ? "Circle's fee service is busy right now. Try again in a minute."
+                        : error.kind === "timeout"
+                          ? "Circle's fee service didn't answer in 10 seconds."
+                          : `Circle's fee service gave an error (${error.status ?? upstreamLine(error, 80)}).`;
+                throw new AppError("unavailable", `${said} Nothing was taken.`, { cause: error, logged: true });
             }
             throw error;
         });
         if (wei <= high) {
-            throw new AppError("bad_request", "That's too small to cover the fee. Nothing was taken.");
+            throw new AppError(
+                "bad_request",
+                `The Solana fee is up to ${formatUsdc(high)} USDC, so withdraw more than that. Nothing was taken.`,
+            );
         }
         return { wei, usdcAccount, setup, fee: med, maxFee: high };
     }
@@ -132,13 +184,8 @@ export class Withdrawals {
             throw new AppError("bad_request", `The smallest withdrawal is ${dollars(minWithdraw)}.`);
         }
 
-        const free = await this.treasuryFree();
-        if (wei > free) {
-            throw new AppError(
-                "insufficient_funds",
-                `Withdrawals can pay at most ${dollars(free)} right now. Nothing was taken.`,
-            );
-        }
+        const treasury = await this.#treasury();
+        if (wei > treasury.free) throw this.#tooMuchForTreasury(account, input, wei, treasury);
 
         const now = new Date();
         const withdrawal: WithdrawalDoc = {
@@ -165,6 +212,9 @@ export class Withdrawals {
             {
                 accountId: account._id.toHexString(),
                 withdrawalId: withdrawal._id.toHexString(),
+                requestId: input.requestId,
+                network: "arc",
+                to: withdrawal.to,
                 amount: formatUsdc(wei),
             },
             "Withdrawal created",
@@ -185,13 +235,8 @@ export class Withdrawals {
                 );
             }
         }
-        const free = await this.treasuryFree();
-        if (priced.wei > free) {
-            throw new AppError(
-                "insufficient_funds",
-                `Withdrawals can pay at most ${dollars(free)} right now. Nothing was taken.`,
-            );
-        }
+        const treasury = await this.#treasury();
+        if (priced.wei > treasury.free) throw this.#tooMuchForTreasury(account, input, priced.wei, treasury);
 
         const now = new Date();
         const withdrawal: WithdrawalDoc = {
@@ -233,8 +278,12 @@ export class Withdrawals {
             {
                 accountId: account._id.toHexString(),
                 withdrawalId: withdrawal._id.toHexString(),
+                requestId: input.requestId,
                 amount: formatUsdc(priced.wei),
                 network: "solana",
+                to: input.to,
+                fee: formatUsdc(priced.fee),
+                receive: formatUsdc(priced.wei - priced.fee),
             },
             "Withdrawal created",
         );
@@ -242,8 +291,41 @@ export class Withdrawals {
         return withdrawal;
     }
 
+    /** The refusal when the treasury can't pay: it says so, since the person's own limit isn't what stopped them, and the log shows how short the treasury is. */
+    #tooMuchForTreasury(
+        account: AccountDoc,
+        input: CreateInput,
+        wei: bigint,
+        treasury: { balance: bigint; owed: bigint; leaving: bigint; free: bigint },
+    ) {
+        this.#deps.logger.warn(
+            {
+                event: "withdraw.treasury_short",
+                accountId: account._id.toHexString(),
+                requestId: input.requestId,
+                wanted: formatUsdc(wei),
+                free: formatUsdc(treasury.free),
+                balance: formatUsdc(treasury.balance),
+                owedToPending: formatUsdc(treasury.owed),
+                leavingToPool: formatUsdc(treasury.leaving),
+                reserve: formatUsdc(TREASURY_GAS_RESERVE),
+            },
+            "The treasury can't pay a withdrawal right now",
+        );
+        const available = treasury.free < CENT ? "less than $0.01" : dollars(treasury.free);
+        return new AppError(
+            "insufficient_funds",
+            `We can't pay out $${input.amount} right now: only ${available} is available for withdrawals at the moment. Try a smaller amount or try again in a few minutes. Nothing was taken.`,
+            { logged: true },
+        );
+    }
+
     /** The treasury's balance less what pending payouts and a pool top-up still to be burned will take, and the gas reserve. */
     async treasuryFree(): Promise<bigint> {
+        return (await this.#treasury()).free;
+    }
+
+    async #treasury() {
         const { collections, client, treasury } = this.#deps;
         const [balance, sending, toPool] = await Promise.all([
             client.getBalance({ address: treasury }),
@@ -253,6 +335,6 @@ export class Withdrawals {
         const owed = sending.reduce((sum, doc) => sum + fromDecimal(doc.amount), 0n);
         const leaving = toPool.reduce((sum, doc) => sum + e6ToWei(fromDecimal(doc.amountE6)), 0n);
         const free = balance - owed - leaving - TREASURY_GAS_RESERVE;
-        return free > 0n ? free : 0n;
+        return { balance, owed, leaving, free: free > 0n ? free : 0n };
     }
 }

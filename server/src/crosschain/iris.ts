@@ -76,6 +76,7 @@ export function createIris(options: { baseUrl: string; fetch?: typeof fetch; tim
     const base = options.baseUrl.replace(/\/+$/, "");
 
     async function get(path: string): Promise<{ status: number; body: unknown }> {
+        // The query holds a transaction hash, so only the path names the request
         let response: Response;
         try {
             response = await send(`${base}${path}`, { signal: AbortSignal.timeout(timeoutMs) });

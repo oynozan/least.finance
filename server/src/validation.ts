@@ -148,17 +148,24 @@ export const tradeOrder = z.object({
     quotedToPriceUSD: coinDecimal.optional(),
 });
 
+/** A destination as the person typed it; the message is a whole sentence, which `parse` shows as it is. */
+const destination = z
+    .string()
+    .trim()
+    .min(32, "Enter the full wallet address (32 to 64 characters).")
+    .max(64, "That wallet address is too long. Enter the full address (32 to 64 characters).");
+
 export const coinWithdraw = z.object({
     requestId: z.string().regex(UUID, "a UUID"),
     symbol: coinSymbol,
-    units: coinDecimal,
-    to: z.string().trim().min(32).max(64),
+    units: z.string().regex(/^\d{1,15}(\.\d{1,18})?$/, "Enter an amount such as 0.5."),
+    to: destination,
 });
 
 export const withdrawRequest = z.object({
     requestId: z.uuid(),
-    amount: z.string().regex(/^\d+(\.\d{1,6})?$/, "an amount such as 12.5"),
-    to: z.string().trim().min(32).max(64),
+    amount: z.string().regex(/^\d+(\.\d{1,6})?$/, "Enter an amount such as 12.5, with at most 6 decimals."),
+    to: destination,
     /** The fee the person reviewed; a Solana withdrawal is refused when the fee has since risen past it. */
     reviewedFee: z
         .string()
@@ -217,6 +224,8 @@ const fieldName = (path: readonly PropertyKey[]) => {
 
 /** One zod issue as a sentence for the person, in place of zod's own wording. */
 export function sayIssue(issue: z.core.$ZodIssue): string {
+    // A message written as a whole sentence is shown as it is
+    if (issue.code !== "invalid_type" && /^[A-Z].*\.$/.test(issue.message)) return issue.message;
     const name = fieldName(issue.path);
     const address = /^(to|wallet)$/.test(String(issue.path.at(-1)));
     if (issue.code === "invalid_type" && issue.input === undefined) return `${name} is missing.`;

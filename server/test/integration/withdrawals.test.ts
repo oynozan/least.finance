@@ -24,11 +24,13 @@ const chain = createTestClient({
     transport: http(inject("anvilUrl")),
 }).extend(publicActions);
 let seeded = 0;
+/** Every log line the withdrawals wrote, to read what the owner would. */
+const lines: Record<string, unknown>[] = [];
+const logger = pino({ level: "info" }, { write: (line: string) => void lines.push(JSON.parse(line)) });
 
 beforeAll(async () => {
     database = await connectDatabase(inject("mongoUri"), `test_${randomUUID().replaceAll("-", "")}`);
     bus = new Bus();
-    const logger = pino({ level: "silent" });
     const ledger = new Ledger({
         client: database.client,
         collections: database.collections,
@@ -142,9 +144,18 @@ test("a treasury that can't cover it refuses before debiting", async () => {
 
     const error = await withdrawals.create(account, request("50")).catch((caught: Error) => caught);
 
+    expect(lines.filter((line) => line.event === "withdraw.treasury_short").at(-1)).toMatchObject({
+        accountId: account._id.toHexString(),
+        wanted: "50",
+        free: "20",
+        owedToPending: "0",
+        leavingToPool: "0",
+        msg: "The treasury can't pay a withdrawal right now",
+    });
     expect(error).toMatchObject({
         code: "insufficient_funds",
-        message: "Withdrawals can pay at most $20.00 right now. Nothing was taken.",
+        message:
+            "We can't pay out $50 right now: only $20.00 is available for withdrawals at the moment. Try a smaller amount or try again in a few minutes. Nothing was taken.",
     });
     expect(await balanceOf(account._id)).toBe(wei("100"));
     expect(await database.collections.withdrawals.countDocuments({ accountId: account._id })).toBe(0);
@@ -198,4 +209,25 @@ test("an amount of zero is a bad request, even where the minimum is zero", async
     expect(await code(lax.create(account, request("0.000000")))).toBe("bad_request");
     expect(await balanceOf(account._id)).toBe(wei("100"));
     expect(await database.collections.withdrawals.countDocuments({ accountId: account._id })).toBe(0);
+});
+
+test("a refused withdrawal is logged once with the request, the amount and the destination", async () => {
+    const account = await seedAccount("100");
+    await fundTreasury("500");
+    const input = { ...request("0.001") };
+
+    const error = await withdrawals.create(account, input).catch((caught: Error) => caught);
+
+    expect(error).toMatchObject({ code: "bad_request", logged: true });
+    const refused = lines.filter((line) => line.event === "withdraw.refused" && line.requestId === input.requestId);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({
+        level: 40,
+        accountId: account._id.toHexString(),
+        code: "bad_request",
+        amount: "0.001",
+        to: input.to,
+        network: "arc",
+        msg: "A withdrawal was refused: The smallest withdrawal is $0.01.",
+    });
 });
