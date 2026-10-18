@@ -33,6 +33,13 @@ test("an upstream's words are quoted on one short line", () => {
     expect(quoted("x".repeat(500)).length).toBe(122);
 });
 
+test("a quoted upstream sentence drops its own full stop, so the sentence around it doesn't end in two", () => {
+    expect(`Hyperliquid refused the close: ${quoted("Order could not be placed.")}.`).toBe(
+        'Hyperliquid refused the close: "Order could not be placed".',
+    );
+    expect(quoted("Is this allowed?!")).toBe('"Is this allowed"');
+});
+
 test("an internal AppError shows the ref it was logged under, other errors keep their message", () => {
     expect(toApiError(new AppError("internal", "We couldn't open your account."), "abc123").message).toBe(
         "We couldn't open your account (ref abc123).",

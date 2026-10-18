@@ -1,5 +1,6 @@
 import type { ObjectId } from "mongodb";
 import type { PredictionFailure } from "../db/mongo.ts";
+import { quoted } from "../errors.ts";
 
 export const NOTHING_SPENT = "Nothing was spent.";
 const POSITION_BACK = "Your position is back.";
@@ -30,7 +31,7 @@ type Side = "buy" | "sell";
 type Order = { _id: ObjectId; side: Side };
 
 /** One short quoted line of what an upstream said. */
-export const quote = (text: string) => `"${text.replace(/\s+/g, " ").trim().replaceAll('"', "'").slice(0, 120)}"`;
+export const quote = quoted;
 
 const priceMovedText = (side: Side) =>
     side === "sell"

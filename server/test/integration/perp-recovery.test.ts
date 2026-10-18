@@ -110,7 +110,7 @@ test("a transfer Hyperliquid refuses refunds with what Hyperliquid said, kept an
     const done = await h.settled(order._id);
 
     expect(done.state).toBe("rejected");
-    expect(done.reason).toBe('Hyperliquid refused to fund your position: "usdSend is failing.". Nothing was spent.');
+    expect(done.reason).toBe('Hyperliquid refused to fund your position: "usdSend is failing". Nothing was spent.');
     expect(done).toMatchObject({ detail: "usdSend is failing.", code: "transfer_refused" });
     const failed = h.lines.filter((line) => line.event === "perp.open.failed");
     expect(failed).toHaveLength(1);

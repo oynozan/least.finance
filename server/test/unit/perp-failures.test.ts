@@ -55,7 +55,7 @@ test.each([
 
 test("a close refused with unknown words quotes them and says the position is still open", () => {
     expect(closeRefused("Order has invalid size.").message).toBe(
-        'Hyperliquid refused the close: "Order has invalid size.". Your position is still open.',
+        'Hyperliquid refused the close: "Order has invalid size". Your position is still open.',
     );
 });
 
@@ -74,7 +74,7 @@ test("a refused transfer quotes Hyperliquid, and an empty master says it is on o
         detail: "Cannot transfer to this address.",
     });
     expect(refused.message).toBe(
-        'Hyperliquid refused to fund your position: "Cannot transfer to this address.". Nothing was spent.',
+        'Hyperliquid refused to fund your position: "Cannot transfer to this address". Nothing was spent.',
     );
     const empty = openFailed(
         order,

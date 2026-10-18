@@ -1,3 +1,4 @@
+import { quoted } from "../errors.ts";
 import { scrubUrls } from "../logger.ts";
 import { formatUnits18 } from "./units.ts";
 
@@ -154,4 +155,4 @@ export class RepeatGate {
 }
 
 /** The words a person reads for one thing the network said, trimmed to one short quoted line. */
-export const quoted = (text: string) => `"${text.replace(/\s+/g, " ").trim().replaceAll('"', "'").slice(0, 120)}"`;
+export { quoted };
