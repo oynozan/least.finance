@@ -335,3 +335,55 @@ test("a close finds our fee already with the master and credits everything left 
         fromDecimal(position.collateral),
     );
 });
+
+test("a partial close says how much closed, keeps why, and is logged with the sizes", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const position = await held(h, account);
+    h.fake.nextOrder({ partial: "0.003" });
+    const { order } = await closeOf(h, account, position);
+    const done = await finished(h, order._id);
+
+    expect(done.reason).toBe(
+        "Closed 0.003 of 0.00759 BTC; the book was too thin for the rest. Press Close again for the rest.",
+    );
+    expect(done).toMatchObject({ code: "partial_close", detail: expect.stringContaining("filled 0.003 of 0.00759") });
+    const logged = h.lines.filter((line) => line.event === "perp.close.partial");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+        order: order._id.toHexString(),
+        accountId: account._id.toHexString(),
+        closedSizeCoin: "0.003",
+    });
+});
+
+test("a close of a position already closed says so, and is logged with the position", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const position = await held(h, account);
+    const { order } = await closeOf(h, account, position);
+    await finished(h, order._id);
+
+    const error = await closeOf(h, account, await positionOf(h, position._id)).catch((e: unknown) => e);
+    expect(isAppError(error) && error.message).toBe("That position was already closed.");
+    const logged = h.lines.filter((line) => line.event === "perp.close.refused" && line.reason === "closed");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+        level: 40,
+        accountId: account._id.toHexString(),
+        position: position._id.toHexString(),
+    });
+});
+
+test("a close during shutdown says the server is restarting and leaves the position open", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    const position = await held(h, account);
+    h.service.stopOrders();
+
+    const error = await closeOf(h, account, position).catch((e: unknown) => e);
+    expect(isAppError(error) && error.message).toBe(
+        "The server is restarting. Your position is still open. Try again in a minute.",
+    );
+    expect(await positionOf(h, position._id)).toMatchObject({ state: "open" });
+});

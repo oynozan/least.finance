@@ -534,3 +534,57 @@ test("the quote's liquidation price matches liquidationPrice() for the same inpu
     });
     expect(Math.abs(Number(view.liquidationPx) - expected)).toBeLessThan(0.5);
 });
+
+test("an order Hyperliquid never answers is logged once with the wait and the order, and left for the tracker", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.fake.nextOrder("hold");
+    const { order } = await h.place(account);
+    await h.until(async () => h.lines.some((line) => line.event === "perp.order.unanswered"));
+
+    const logged = h.lines.filter((line) => line.event === "perp.order.unanswered");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+        level: 40,
+        order: order._id.toHexString(),
+        accountId: account._id.toHexString(),
+        asset: "BTC",
+        side: "long",
+        timeoutMs: expect.any(Number),
+        msg: expect.stringMatching(
+            /^Hyperliquid didn't answer a perp open in \d+ seconds?; the tracker will settle it$/,
+        ),
+    });
+    expect((await h.orderOf(order._id)).state).toBe("posted");
+});
+
+test("an open during shutdown says the server is restarting", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.service.stopOrders();
+
+    expect(await refusal(h.place(account))).toEqual({
+        code: "trading_off",
+        message: "The server is restarting. Try again in a minute.",
+    });
+    expect(h.lines.filter((line) => line.event === "perp:order" && line.reason === "stopped")).toHaveLength(1);
+});
+
+test("an open below the minimum is logged once with the numbers the person sent", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+
+    expect(await refusal(h.place(account, { collateralUSD: "9.5" }))).toEqual({
+        code: "below_minimum",
+        message: "Positions start at $10.",
+    });
+    const logged = h.lines.filter((line) => line.event === "perp:order" && line.code === "below_minimum");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+        level: 40,
+        accountId: account._id.toHexString(),
+        asset: "BTC",
+        collateralUSD: "9.5",
+        leverage: 5,
+    });
+});
