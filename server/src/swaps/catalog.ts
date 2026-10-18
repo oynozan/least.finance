@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
 import type { SwapCatalogView } from "../protocol.ts";
 import { COINS, NETWORKS } from "./coins.ts";
-import type { Lifi } from "./lifi.ts";
+import { LifiError, type Lifi } from "./lifi.ts";
 
 type Deps = {
     lifi: Pick<Lifi, "tokens">;
@@ -114,8 +114,13 @@ export class SwapCatalog {
                 ageMs,
                 staleInMs: ageMs === null ? null : Math.max(0, staleAfterMs - ageMs),
             };
+            if (error instanceof LifiError && error.kind === "unauthorized") {
+                // Nothing will read until the operator fixes the key
+                this.#stale ||= stale;
+                this.#deps.logger.error(context, "LI.FI rejected our API key, so swap prices can't be read");
+            }
             // Once the prices are too old to trade on, every trade is refused, so that is an error and says so once
-            if (stale && !this.#stale) {
+            else if (stale && !this.#stale) {
                 this.#stale = true;
                 this.#deps.logger.error(
                     context,

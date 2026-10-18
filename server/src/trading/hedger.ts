@@ -285,7 +285,9 @@ export class TradeHedger {
         const said = upstreamSaid(error);
         const again = this.#repeats.note(hedge._id.toHexString(), `${this.#step}:${said}`);
         if (!again) return;
-        this.#deps.logger.warn(
+        // A rejected key stays rejected until the operator changes it
+        const rejected = error instanceof LifiError && error.kind === "unauthorized";
+        this.#deps.logger[rejected ? "error" : "warn"](
             {
                 event: "hedge:stuck",
                 ...this.#fields(hedge),
@@ -295,7 +297,9 @@ export class TradeHedger {
                 repeatsLeftOut: again.skipped,
                 err: error,
             },
-            `Couldn't move a hedge along at its ${this.#step} step: ${said}`,
+            rejected
+                ? `LI.FI rejected our API key, so a hedge can't move along at its ${this.#step} step: ${said}`
+                : `Couldn't move a hedge along at its ${this.#step} step: ${said}`,
         );
         if (hedge.state === "planned") await this.#note(hedge, `Retrying (${this.#step}): ${said}`, said);
     }
@@ -562,7 +566,11 @@ export class TradeHedger {
             return;
         }
         if (mined.status === "reverted")
-            return this.#fail(hedge, `The sell reverted on ${nameOf(network)} (tx ${mined.hash})`, `tx ${mined.hash} reverted`);
+            return this.#fail(
+                hedge,
+                `The sell reverted on ${nameOf(network)} (tx ${mined.hash})`,
+                `tx ${mined.hash} reverted`,
+            );
 
         // Whichever attempt mined is the sell to follow
         let current = hedge;

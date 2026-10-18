@@ -1,5 +1,6 @@
 import { pino } from "pino";
 import { expect, test } from "vitest";
+import { LifiError } from "../../src/swaps/lifi.ts";
 import { NATIVE_EVM } from "../../src/swaps/coins.ts";
 import { SwapCatalog } from "../../src/swaps/catalog.ts";
 
@@ -92,4 +93,25 @@ test("a token list without a single swap coin says how many tokens it did list",
         /holds none of the 11 swap coins \(it listed 0 tokens on \d+ chains\)/,
     );
     expect(lines[0]).toMatchObject({ level: 50, msg: expect.stringContaining("never been read") });
+});
+
+test("a rejected API key is an error from the first failed read, not a warning until the prices go stale", async () => {
+    const lines: Record<string, unknown>[] = [];
+    const logger = pino({ level: "debug" }, { write: (line: string) => lines.push(JSON.parse(line)) });
+    const catalog = new SwapCatalog({
+        lifi: {
+            tokens: async () => {
+                throw new LifiError("unauthorized", "LI.FI rejected our API key (401)", { said: { status: 401 } });
+            },
+        },
+        logger,
+        syncMs: 60_000,
+        now: () => 1_000_000,
+    });
+    await catalog.tick();
+    await catalog.tick();
+    const failed = lines.filter((line) => line.event === "swap-catalog:sync");
+    expect(failed.length).toBeGreaterThan(0);
+    expect(failed.every((line) => line.level === 50)).toBe(true);
+    expect(failed.map((line) => line.msg)).toContain("LI.FI rejected our API key, so swap prices can't be read");
 });

@@ -217,6 +217,24 @@ describe("a hedge that can't move yet", () => {
         expect(logged("hedge:stuck")[1]).toMatchObject({ repeatsLeftOut: 2 });
     });
 
+    test("LI.FI rejecting our API key is an error the operator must act on", async () => {
+        await sellOfEth();
+        const worker = hedger({
+            quote: async () => {
+                throw new LifiError("unauthorized", "LI.FI rejected our API key (401)", { said: { status: 401 } });
+            },
+        });
+        await worker.tick();
+        const stuck = logged("hedge:stuck");
+        expect(stuck).toHaveLength(1);
+        expect(stuck[0]).toMatchObject({
+            level: 50,
+            step: "quote",
+            upstream: { status: 401 },
+            msg: "LI.FI rejected our API key, so a hedge can't move along at its quote step: LI.FI rejected our API key (401)",
+        });
+    });
+
     test("a minimum too far under the amount waits, says so on the hedge, and is logged once", async () => {
         await sellOfEth();
         const worker = hedger({
