@@ -44,3 +44,23 @@ test("a failed order that just ended is shown, one that ended long before the pa
     expect(shownOrder([order()], null, since)?.id).toBe("a".repeat(24));
     expect(shownOrder([order({ updatedAt: "2026-10-15T00:00:00.000Z" })], null, since)).toBeNull();
 });
+
+test("an expired order says why it expired, when it was reported or opened this visit and not otherwise", () => {
+    const since = Date.parse("2026-10-16T00:00:00.000Z");
+    const message = "Your wallet never sent this deposit, so the order expired. Nothing was taken.";
+    const expired = (overrides: Partial<DepositOrderView> = {}) => order({ state: "expired", message, ...overrides });
+    expect(outcomeText(expired())).toBe(message);
+    expect(outcomeText(expired({ message: undefined }))).toBe("The order expired");
+    // Opened this visit
+    expect(
+        shownOrder([expired({ sourceTxHashes: [], createdAt: "2026-10-16T00:00:01.000Z" })], null, since)?.state,
+    ).toBe("expired");
+    // Reported before the page opened, expired while it was open
+    expect(shownOrder([expired({ createdAt: "2026-10-15T00:00:00.000Z" })], null, since)?.state).toBe("expired");
+    // Never reported and opened before this visit
+    expect(
+        shownOrder([expired({ sourceTxHashes: [], createdAt: "2026-10-15T00:00:00.000Z" })], null, since),
+    ).toBeNull();
+    // Expired long before the page opened
+    expect(shownOrder([expired({ updatedAt: "2026-10-15T00:00:00.000Z" })], null, since)).toBeNull();
+});

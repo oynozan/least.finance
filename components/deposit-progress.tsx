@@ -11,6 +11,7 @@ const DONE: Partial<Record<OrderState, number>> = { sent: 0, in_block: 2, bridgi
 const OUTCOMES: Partial<Record<OrderState, string>> = {
     refunded: "Refunded to your wallet",
     failed: "Didn't go through",
+    expired: "The order expired",
 };
 
 /** The order is on its way: reported by the wallet and not yet delivered, refunded or failed. */
@@ -30,7 +31,12 @@ export function shownOrder(orders: DepositOrderView[], dismissed: string | null,
             (order) =>
                 order.id !== dismissed &&
                 (isRunning(order) ||
-                    ((order.state === "delivered" || order.state in OUTCOMES) && Date.parse(order.updatedAt) >= since)),
+                    ((order.state === "delivered" || order.state in OUTCOMES) &&
+                        Date.parse(order.updatedAt) >= since &&
+                        // An order that ran out of time says so only when the wallet reported it or it was opened this visit
+                        (order.state !== "expired" ||
+                            order.sourceTxHashes.length > 0 ||
+                            Date.parse(order.createdAt) >= since))),
         ) ?? null
     );
 }
