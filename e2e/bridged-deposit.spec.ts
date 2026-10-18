@@ -201,7 +201,7 @@ test("a refunded bridge says so and adds nothing", async ({ page }) => {
     await expect(stepOf(page, "In a block")).toHaveAttribute("data-step", "done", { timeout: 20_000 });
 
     await advanceBridge(addressOf(page), "refunded");
-    await expect(statusOf(page)).toHaveText("Refunded to your wallet", { timeout: 20_000 });
+    await expect(statusOf(page)).toContainText("refunded this deposit to your wallet", { timeout: 20_000 });
     await expect(depositOf(page)).toHaveAttribute("data-phase", "error");
     await expect(balanceOf(page)).toHaveAccessibleName("Balance $0.00, show deposits");
 });

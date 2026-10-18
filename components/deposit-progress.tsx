@@ -35,11 +35,26 @@ export function shownOrder(orders: DepositOrderView[], dismissed: string | null,
     );
 }
 
-/** Where the order's own transaction can be looked up; only Solana ones have a link. */
-export function explorerUrl(order: DepositOrderView): string | null {
-    const signature = order.sourceTxHashes[0];
-    return order.coin.startsWith("solana:") && signature ? `https://solscan.io/tx/${signature}` : null;
+/** Where each source chain's transactions can be looked up. */
+const EXPLORERS = [
+    { prefix: "solana:", name: "Solscan", url: "https://solscan.io/tx/" },
+    { prefix: "ethereum:", name: "Etherscan", url: "https://etherscan.io/tx/" },
+    { prefix: "bnb:", name: "BscScan", url: "https://bscscan.com/tx/" },
+] as const;
+
+/** The explorer that shows the order's own transaction, with its name; null before the wallet has reported one. */
+export function explorerOf(order: DepositOrderView): { name: string; url: string } | null {
+    const hash = order.sourceTxHashes[0];
+    const explorer = EXPLORERS.find((e) => order.coin.startsWith(e.prefix));
+    return hash && explorer ? { name: explorer.name, url: `${explorer.url}${hash}` } : null;
 }
+
+/** Where the order's own transaction can be looked up. */
+export const explorerUrl = (order: DepositOrderView): string | null => explorerOf(order)?.url ?? null;
+
+/** What the person is told about an order that ended badly: the server's reason, else the plain outcome. */
+export const outcomeText = (order: DepositOrderView): string | null =>
+    order.state in OUTCOMES ? (order.message ?? OUTCOMES[order.state] ?? null) : null;
 
 /** Whether the order ended badly, which the status line shows in the loss tone. */
 export const isOutcome = (order: DepositOrderView) => order.state in OUTCOMES;
@@ -51,18 +66,29 @@ const STATE_TEXT = { done: "done", active: "in progress", waiting: "waiting" } a
  * status line, which stays mounted so a change in it is announced.
  */
 export function DepositProgress({ order }: { order: DepositOrderView }) {
-    const outcome = OUTCOMES[order.state];
+    const outcome = outcomeText(order);
+    const explorer = explorerOf(order);
     if (outcome) {
         return (
             <span className={styles.outcome}>
                 <CloseIcon className={styles.stepMark} />
-                {order.reason ? `${outcome}: ${order.reason}` : outcome}
+                {outcome}
+                {explorer && (
+                    <a
+                        className={styles.stepLink}
+                        href={explorer.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        aria-label={`View the transaction on ${explorer.name}`}
+                    >
+                        {explorer.name}
+                    </a>
+                )}
             </span>
         );
     }
     const done = DONE[order.state] ?? 0;
     const current = Math.min(done, STEPS.length - 1);
-    const explorer = explorerUrl(order);
     return (
         <>
             {/* The one line that changes with the step, read out as it does. */}
@@ -88,12 +114,12 @@ export function DepositProgress({ order }: { order: DepositOrderView }) {
                             {i === 0 && explorer && (
                                 <a
                                     className={styles.stepLink}
-                                    href={explorer}
+                                    href={explorer.url}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    aria-label="View the transaction on Solscan"
+                                    aria-label={`View the transaction on ${explorer.name}`}
                                 >
-                                    Solscan
+                                    {explorer.name}
                                 </a>
                             )}
                             {step === "active" && i === 2 && (
