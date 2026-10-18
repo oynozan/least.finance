@@ -57,6 +57,8 @@ export function tooFarUnder(quote: Pick<LifiQuote, "toAmount" | "toAmountMin">):
 export type LifiStatus = {
     status: "NOT_FOUND" | "INVALID" | "PENDING" | "DONE" | "FAILED";
     substatus: string | null;
+    /** LI.FI's own sentence for the substatus. */
+    substatusMessage?: string | null;
     sendingTxHash: string | null;
     fromAddress: string | null;
     toAddress: string | null;
@@ -79,13 +81,24 @@ export type Lifi = {
     status(req: LifiStatusRequest): Promise<LifiStatus>;
 };
 
-export class LifiError extends Error {
-    readonly kind: "no_route" | "rate_limited" | "unavailable";
+/** What LI.FI said in an error body, kept as it came. */
+export type LifiSaid = {
+    status?: number;
+    code?: number;
+    /** The body's message, or the first of its `errors`. */
+    upstream?: string;
+    errorTypes?: string[];
+};
 
-    constructor(kind: LifiError["kind"], message: string, options?: { cause?: unknown }) {
+export class LifiError extends Error {
+    readonly kind: "no_route" | "rate_limited" | "unauthorized" | "unavailable";
+    readonly said: LifiSaid;
+
+    constructor(kind: LifiError["kind"], message: string, options?: { cause?: unknown; said?: LifiSaid }) {
         super(message, options);
         this.name = "LifiError";
         this.kind = kind;
+        this.said = options?.said ?? {};
     }
 }
 
@@ -93,6 +106,9 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const CHAINS_TTL_MS = 3_600_000;
 // LI.FI's codes for no route found and for a tool that can't serve the request
 const NO_ROUTE_CODES = new Set([1002, 1011]);
+// 1005 is rate limited, 1010 an unauthorized key
+const RATE_LIMITED_CODE = 1005;
+const UNAUTHORIZED_CODE = 1010;
 const SOLANA_CHAIN_ID = 1151111081099710;
 
 const amount = z.union([z.string(), z.number()]).transform(String);
@@ -143,6 +159,7 @@ const rawQuote = z.object({
 const rawStatus = z.object({
     status: z.enum(["NOT_FOUND", "INVALID", "PENDING", "DONE", "FAILED"]),
     substatus: z.string().nullish(),
+    substatusMessage: z.string().nullish(),
     fromAddress: z.string().nullish(),
     toAddress: z.string().nullish(),
     sending: z.object({ txHash: z.string().nullish() }).nullish(),
@@ -217,33 +234,75 @@ export function createLifi(options: {
         try {
             return await fetchLifi(`${url}${path}?${params}`, { headers, signal: AbortSignal.timeout(timeoutMs) });
         } catch (error) {
-            throw new LifiError("unavailable", `LI.FI could not be reached for ${path}`, { cause: error });
+            const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+            throw new LifiError(
+                "unavailable",
+                timedOut
+                    ? `LI.FI didn't answer ${path} in ${Math.round(timeoutMs / 1000)} seconds`
+                    : `LI.FI could not be reached for ${path}`,
+                { cause: error },
+            );
         }
     }
 
-    async function json(response: Response): Promise<unknown> {
+    async function json(response: Response, path: string): Promise<unknown> {
         try {
             return await response.json();
         } catch (error) {
-            throw new LifiError("unavailable", "LI.FI sent an unreadable answer", { cause: error });
+            throw new LifiError("unavailable", `LI.FI sent an unreadable answer for ${path}`, { cause: error });
         }
     }
 
-    function parse<T>(schema: z.ZodType<T>, body: unknown): T {
+    function parse<T>(schema: z.ZodType<T>, body: unknown, path: string): T {
         const parsed = schema.safeParse(body);
-        if (!parsed.success)
-            throw new LifiError("unavailable", "LI.FI sent an unexpected answer", { cause: parsed.error });
+        if (!parsed.success) {
+            const issue = parsed.error.issues[0];
+            const where = issue?.path.length ? issue.path.join(".") : "the answer";
+            throw new LifiError(
+                "unavailable",
+                `LI.FI's ${path} answer has a bad ${where}: ${issue?.message ?? "invalid"}`,
+                { cause: parsed.error },
+            );
+        }
         return parsed.data;
+    }
+
+    // A refusal: LI.FI's status, code and words are kept on the error, and its kind says what we can do about it
+    async function refusal(what: string, response: Response, notFoundIsNoRoute = false) {
+        const body = (await response.json().catch(() => null)) as {
+            message?: unknown;
+            code?: unknown;
+            errors?: { message?: unknown; errorType?: unknown }[];
+        } | null;
+        const code = Number(body?.code);
+        const errors = Array.isArray(body?.errors) ? body.errors : [];
+        const upstream = [errors[0]?.message, body?.message].find((text) => typeof text === "string" && text !== "") as
+            | string
+            | undefined;
+        const said: LifiSaid = {
+            status: response.status,
+            ...(body?.code !== undefined && Number.isFinite(code) && { code }),
+            ...(upstream !== undefined && { upstream: upstream.slice(0, 300) }),
+            errorTypes: errors.flatMap((entry) => (typeof entry?.errorType === "string" ? [entry.errorType] : [])),
+        };
+        const words = `${response.status}${said.code !== undefined ? ` (code ${said.code})` : ""} for ${what}${
+            said.upstream ? `: "${said.upstream}"` : ""
+        }`;
+        if (response.status === 401 || response.status === 403 || code === UNAUTHORIZED_CODE)
+            return new LifiError("unauthorized", `LI.FI rejected our API key, it answered ${words}`, { said });
+        if (response.status === 429 || code === RATE_LIMITED_CODE)
+            return new LifiError("rate_limited", `LI.FI is rate limiting us, it answered ${words}`, { said });
+        if ((notFoundIsNoRoute && response.status === 404) || (response.status === 400 && NO_ROUTE_CODES.has(code)))
+            return new LifiError("no_route", `LI.FI found no route, it answered ${words}`, { said });
+        return new LifiError("unavailable", `LI.FI answered ${words}`, { said });
     }
 
     return {
         async tokens(chainIds) {
-            const response = await fetchLifi(`${url}/v1/tokens?chains=${chainIds.join(",")}&chainTypes=EVM,SVM`, {
-                headers: apiKey ? { "x-lifi-api-key": apiKey } : {},
-                signal: AbortSignal.timeout(timeoutMs),
-            });
-            if (!response.ok) throw new Error(`LI.FI answered ${response.status} for its token list`);
-            const { tokens } = answer.parse(await response.json());
+            const path = "/v1/tokens";
+            const response = await get(path, `chains=${chainIds.join(",")}&chainTypes=EVM,SVM`);
+            if (!response.ok) throw await refusal(`its token list on chains ${chainIds.join(",")}`, response);
+            const { tokens } = parse(answer, await json(response, path), path);
 
             const found: LifiToken[] = [];
             for (const chainId of chainIds) {
@@ -262,8 +321,8 @@ export function createLifi(options: {
         async chains() {
             if (chainsCache && now() - chainsCache.at < CHAINS_TTL_MS) return chainsCache.chains;
             const response = await get("/v1/chains", "chainTypes=EVM,SVM");
-            if (!response.ok) throw new LifiError("unavailable", `LI.FI answered ${response.status} for its chains`);
-            const chains = parse(rawChains, await json(response)).chains.map((chain) => ({
+            if (!response.ok) throw await refusal("its chains", response);
+            const chains = parse(rawChains, await json(response, "/v1/chains"), "/v1/chains").chains.map((chain) => ({
                 id: chain.id,
                 diamondAddress: chain.diamondAddress ?? null,
             }));
@@ -284,15 +343,8 @@ export function createLifi(options: {
                 integrator: req.integrator,
             });
             const response = await get("/v1/quote", params);
-            if (!response.ok) {
-                const body = (await response.json().catch(() => null)) as { code?: unknown } | null;
-                if (response.status === 404 || (response.status === 400 && NO_ROUTE_CODES.has(Number(body?.code)))) {
-                    throw new LifiError("no_route", "LI.FI has no route for this swap");
-                }
-                if (response.status === 429) throw new LifiError("rate_limited", "LI.FI is rate limiting quotes");
-                throw new LifiError("unavailable", `LI.FI answered ${response.status} for a quote`);
-            }
-            const raw = parse(rawQuote, await json(response));
+            if (!response.ok) throw await refusal("a quote", response, true);
+            const raw = parse(rawQuote, await json(response, "/v1/quote"), "/v1/quote");
             let value: string;
             try {
                 value = decimalValue(raw.transactionRequest.value);
@@ -359,12 +411,13 @@ export function createLifi(options: {
                     receiving: null,
                 };
             }
-            if (!response.ok) throw new LifiError("unavailable", `LI.FI answered ${response.status} for a status`);
-            const raw = parse(rawStatus, await json(response));
+            if (!response.ok) throw await refusal("a status", response);
+            const raw = parse(rawStatus, await json(response, "/v1/status"), "/v1/status");
             const got = raw.receiving;
             return {
                 status: raw.status,
                 substatus: raw.substatus ?? null,
+                ...(raw.substatusMessage ? { substatusMessage: raw.substatusMessage } : {}),
                 sendingTxHash: raw.sending?.txHash ?? null,
                 fromAddress: raw.fromAddress ?? null,
                 toAddress: raw.toAddress ?? null,

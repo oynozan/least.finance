@@ -23,6 +23,12 @@ const KIND_OF = new Map(NETWORKS.map((network) => [network.chainId, network.kind
 const keyOf = (chainId: number, address: string) =>
     `${chainId}:${KIND_OF.get(chainId) === "evm" ? address.toLowerCase() : address}`;
 
+/** A coin's price as of the last read, or why there is none. */
+export type PriceStatus =
+    | { reason: null; price: number; ageMs: number }
+    | { reason: "never_read"; ageMs: null }
+    | { reason: "stale" | "no_price" | "not_listed"; ageMs: number };
+
 /** Keeps the swap coins' live USD prices from LI.FI's token list and serves the coins with them. */
 export class SwapCatalog {
     readonly #deps: Deps;
@@ -30,6 +36,7 @@ export class SwapCatalog {
     #prices = new Map<string, number | null>();
     #readAt: number | null = null;
     #failures = 0;
+    #stale = false;
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
@@ -80,21 +87,43 @@ export class SwapCatalog {
                 prices.set(coin.symbol, home ?? entries.find((entry) => entry.price !== null)?.price ?? null);
             }
             // A list without a single table coin is a changed schema, not a market with no prices
-            if (found === 0) throw new Error("LI.FI's token list holds none of the swap coins");
+            if (found === 0)
+                throw new Error(
+                    `LI.FI's token list holds none of the ${COINS.length} swap coins (it listed ${listed.size} tokens on ${CHAIN_IDS.length} chains)`,
+                );
 
             this.#prices = prices;
             this.#readAt = this.#now();
+            if (this.#failures > 0)
+                this.#deps.logger.info(
+                    { failures: this.#failures },
+                    "LI.FI's token list is being read again, swap prices are fresh",
+                );
             this.#failures = 0;
+            this.#stale = false;
         } catch (error) {
-            const staleForMs = this.#readAt === null ? null : this.#now() - this.#readAt;
             this.#failures += 1;
-            const tooOld = staleForMs !== null && staleForMs > this.#deps.syncMs * 3;
-            this.#deps.logger[tooOld ? "error" : "warn"](
-                { err: error, event: "swaps.catalog", staleForMs, consecutive: this.#failures },
-                tooOld
-                    ? "Swap prices are too old to use, so buying and selling coins is off until LI.FI's token list is read again"
-                    : "Couldn't read LI.FI's token list; the last prices stay in use",
-            );
+            const ageMs = this.#readAt === null ? null : this.#now() - this.#readAt;
+            const staleAfterMs = STALE_AFTER_SYNCS * this.#deps.syncMs;
+            const stale = ageMs === null || ageMs > staleAfterMs;
+            const context = {
+                event: "swap-catalog:sync",
+                err: error,
+                consecutiveFailures: this.#failures,
+                lastReadAt: this.#readAt === null ? null : new Date(this.#readAt).toISOString(),
+                ageMs,
+                staleInMs: ageMs === null ? null : Math.max(0, staleAfterMs - ageMs),
+            };
+            // Once the prices are too old to trade on, every trade is refused, so that is an error and says so once
+            if (stale && !this.#stale) {
+                this.#stale = true;
+                this.#deps.logger.error(
+                    context,
+                    ageMs === null
+                        ? "Swap prices have never been read: LI.FI's token list is failing, trades are refused"
+                        : "Swap prices are stale: LI.FI's token list is unread, trades are refused",
+                );
+            } else this.#deps.logger.warn(context, "Couldn't read LI.FI's token list");
         }
     }
 
@@ -117,8 +146,18 @@ export class SwapCatalog {
 
     /** The coin's last read price, or null when it has none, isn't a swap coin, or the list hasn't been read for three syncs. */
     priceOf(symbol: string): number | null {
+        const status = this.priceStatus(symbol);
+        return status.reason === null ? status.price : null;
+    }
+
+    /** Why a coin has no price, or the price: the list was never read, is too old, lists none for the coin, or the coin isn't a swap coin. */
+    priceStatus(symbol: string): PriceStatus {
         // Every price comes from the same read, so one time covers them all; an old price must not fill a trade
-        if (this.#readAt === null || this.#now() - this.#readAt > STALE_AFTER_SYNCS * this.#deps.syncMs) return null;
-        return this.#prices.get(symbol) ?? null;
+        if (this.#readAt === null) return { reason: "never_read", ageMs: null };
+        const ageMs = this.#now() - this.#readAt;
+        if (ageMs > STALE_AFTER_SYNCS * this.#deps.syncMs) return { reason: "stale", ageMs };
+        if (!this.#prices.has(symbol)) return { reason: "not_listed", ageMs };
+        const price = this.#prices.get(symbol) ?? null;
+        return price === null ? { reason: "no_price", ageMs } : { reason: null, price, ageMs };
     }
 }
