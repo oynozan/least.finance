@@ -1,6 +1,6 @@
 import { getAddress, type Address } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
-import { beforeAll, expect, inject, test } from "vitest";
+import { beforeAll, expect, inject, test, vi } from "vitest";
 import { createArcClient } from "../../src/chain/arc.ts";
 import { readBalances } from "../../src/crosschain/balances.ts";
 import { EVM_COINS, coinByKey } from "../../src/crosschain/catalog.ts";
@@ -123,8 +123,20 @@ test("a chain that fails to read comes back with null amounts and the rest still
     const owner = await holder();
     const broken = createSourceClients({ ethereum: [inject("ethereumUrl")], bnb: ["http://127.0.0.1:1"] });
 
-    const rows = await readBalances({ sources: broken, arc, prices }, owner);
+    const logger = { warn: vi.fn() };
+    const rows = await readBalances({ sources: broken, arc, prices, logger }, owner);
 
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+            op: "balances.read",
+            chain: "bnb",
+            wallet: owner,
+            coins: ["bnb:BNB", "bnb:USDC", "bnb:USDT"],
+            err: expect.any(Error),
+        }),
+        "Couldn't read a wallet's balances on bnb",
+    );
     expect(rows).toHaveLength(EVM_COINS.length);
     for (const row of rows.filter((r) => r.chain === "bnb")) {
         expect(row).toMatchObject({ amount: null, spendable: null, usd: null, wallet: getAddress(owner) });

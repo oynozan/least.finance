@@ -53,6 +53,19 @@ test("a failed lookup leaves the coin out, and the next read asks again", async 
     expect(fetch).toHaveBeenCalledTimes(3);
 });
 
+test("a lookup that fails is logged with the coin and the status, once a minute per coin", async () => {
+    const logger = { warn: vi.fn() };
+    const fetch = vi.fn(async (_input: FetchInput) => new Response("down", { status: 429 }));
+    const feed = lifiPrices({ fetch, logger });
+    await feed.usd([ETH]);
+    await feed.usd([ETH]);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+        { op: "prices.lifi", coin: "ethereum:ETH", status: 429 },
+        "Couldn't get a price from LI.FI",
+    );
+});
+
 test("a lookup that throws, or answers without a usable price, leaves the coin out", async () => {
     const answers = [
         () => Promise.reject(new Error("offline")),

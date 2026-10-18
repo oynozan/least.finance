@@ -91,7 +91,10 @@ export class WalletBalances {
                 linked = await this.#deps.identity.linkedWallets(identity, { fresh: true });
             } catch (error) {
                 // Privy can't answer: use the last list read.
-                this.#deps.logger.warn({ err: error }, "Couldn't check linked wallets afresh");
+                this.#deps.logger.warn(
+                    { err: error, accountId: account._id.toHexString() },
+                    "Couldn't check linked wallets afresh",
+                );
                 linked = state?.linked ?? (await this.#deps.identity.linkedWallets(identity));
             }
         } else {
@@ -115,7 +118,10 @@ export class WalletBalances {
                         evm ? await this.#deps.readEvm(address as Address) : await this.#deps.readSolana(address),
                     );
                 } catch (error) {
-                    this.#deps.logger.warn({ err: error, wallet: address }, "Couldn't read a wallet's balances");
+                    this.#deps.logger.warn(
+                        { err: error, accountId: account._id.toHexString(), wallet: address, evm },
+                        "Couldn't read a wallet's balances",
+                    );
                 }
             }),
         );

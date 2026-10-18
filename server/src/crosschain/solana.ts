@@ -1,8 +1,8 @@
 import { base58 } from "@scure/base";
-import type { Logger } from "pino";
-import { throttle } from "../log-throttle.ts";
+import { AppError, hostOf } from "../errors.ts";
 import type { CoinBalance } from "../protocol.ts";
 import { SOLANA_COINS, formatCoinAmount } from "./catalog.ts";
+import { throttle } from "./failures.ts";
 import type { PriceFeed } from "./prices.ts";
 
 export type SolanaRpc = {
@@ -25,16 +25,26 @@ export type SolanaRpc = {
 
 const LOOKUP_TABLE_HEADER_BYTES = 56;
 
+type RpcLog = { warn: (fields: object, message: string) => void };
+
+/** Balance reads that fail are told once a minute per wallet and coin. */
+const balanceDown = throttle(60_000);
+
 /** Plain JSON-RPC over fetch; each URL is tried in order until one answers. */
 export function createSolanaRpc(
     urls: readonly string[],
-    options: { fetch?: typeof fetch; timeoutMs?: number } = {},
+    options: { fetch?: typeof fetch; timeoutMs?: number; logger?: RpcLog } = {},
 ): SolanaRpc {
-    const { fetch: send = fetch, timeoutMs = 10_000 } = options;
+    const { fetch: send = fetch, timeoutMs = 10_000, logger } = options;
+    const failedRecently = throttle(60_000);
 
     async function call<T>(method: string, params: unknown[]): Promise<T> {
-        let failure: unknown = new Error("No Solana RPC URL is configured");
+        const failures: Error[] = [];
+        let busy = false;
         for (const url of urls) {
+            // Only the host is ever written: the URL can carry an API key
+            const host = hostOf(url);
+            let status: number | null = null;
             try {
                 const response = await send(url, {
                     method: "POST",
@@ -42,15 +52,31 @@ export function createSolanaRpc(
                     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
                     signal: AbortSignal.timeout(timeoutMs),
                 });
-                if (!response.ok) throw new Error(`Solana RPC answered ${response.status}`);
+                status = response.status;
+                if (!response.ok) throw new Error(`Solana RPC ${host} answered ${response.status} to ${method}`);
                 const body = (await response.json()) as { result?: T; error?: { message?: string } };
-                if (body.result === undefined) throw new Error(body.error?.message ?? "Solana RPC gave no result");
+                if (body.result === undefined) {
+                    throw new Error(`Solana RPC ${host} failed ${method}: ${body.error?.message ?? "no result"}`);
+                }
                 return body.result;
             } catch (error) {
-                failure = error;
+                busy ||= status === 429;
+                failures.push(error instanceof Error ? error : new Error(String(error)));
+                if (failedRecently(`${host} ${method}`)) {
+                    logger?.warn({ op: "solana.rpc", method, host, status, err: error }, "A Solana RPC call failed");
+                }
             }
         }
-        throw failure;
+        const cause =
+            failures.length === 1
+                ? failures[0]
+                : new AggregateError(failures, failures.map((f) => f.message).join("; "));
+        if (failures.length === 0) throw new Error("No Solana RPC URL is configured");
+        throw new AppError(
+            "unavailable",
+            busy ? "The Solana network is busy, try again." : "Couldn't reach Solana's network. Try again shortly.",
+            { cause },
+        );
     }
 
     return {
@@ -108,12 +134,9 @@ export function createSolanaRpc(
     };
 }
 
-/** A dead RPC fails every read; one line a minute per coin says which. */
-const unreadSolana = throttle(60_000);
-
 /** The wallet's SOL and USDC; a failed read gives null amounts, never an error. The owner is kept as given. */
 export async function readSolanaBalances(
-    { solana, prices, logger }: { solana: SolanaRpc; prices: PriceFeed; logger?: Logger },
+    { solana, prices, logger }: { solana: SolanaRpc; prices: PriceFeed; logger?: RpcLog },
     owner: string,
 ): Promise<CoinBalance[]> {
     const [held, usd] = await Promise.all([
@@ -122,10 +145,10 @@ export async function readSolanaBalances(
                 try {
                     return coin.mint ? await solana.getTokenBalance(owner, coin.mint) : await solana.getBalance(owner);
                 } catch (error) {
-                    if (unreadSolana(coin.key)) {
+                    if (balanceDown(`${owner} ${coin.key}`)) {
                         logger?.warn(
-                            { err: error, event: "balances.read", chain: "solana", owner: `${owner.slice(0, 6)}…` },
-                            `Couldn't read a wallet's ${coin.symbol} balance on Solana; it shows as unavailable`,
+                            { op: "balances.solana", wallet: owner, coin: coin.key, err: error },
+                            "Couldn't read a Solana wallet's balance",
                         );
                     }
                     return null;
@@ -133,8 +156,8 @@ export async function readSolanaBalances(
             }),
         ),
         prices.usd(SOLANA_COINS).catch((error: unknown) => {
-            if (unreadSolana("prices"))
-                logger?.warn({ err: error, event: "balances.prices" }, "Couldn't read coin prices");
+            if (balanceDown("prices"))
+                logger?.warn({ op: "balances.prices", err: error }, "Couldn't price a wallet's coins");
             return new Map<string, number>();
         }),
     ]);

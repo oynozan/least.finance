@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { SOLANA_COINS } from "../../src/crosschain/catalog.ts";
 import { fixedPrices } from "../../src/crosschain/prices.ts";
 import { createSolanaRpc, readSolanaBalances } from "../../src/crosschain/solana.ts";
@@ -38,6 +38,48 @@ test("a wallet with nothing still lists both coins at 0", async () => {
         ["solana:SOL", "0", "0"],
         ["solana:USDC", "0", "0"],
     ]);
+});
+
+test("every URL failing says which method, which hosts and why, and a throttle reads as a busy network", async () => {
+    const logger = { warn: vi.fn() };
+    const rpc = createSolanaRpc([fake.url, second.url], { logger });
+    fake.failNext(10, 429);
+    second.failNext(10, 429);
+    const busy = await rpc.getBalance("Busy1111").catch((error: unknown) => error);
+    expect(busy).toMatchObject({ code: "unavailable", message: "The Solana network is busy, try again." });
+    const cause = (busy as Error).cause as AggregateError;
+    expect(cause.errors.map((error: Error) => error.message)).toEqual([
+        `Solana RPC ${new URL(fake.url).host} answered 429 to getBalance`,
+        `Solana RPC ${new URL(second.url).host} answered 429 to getBalance`,
+    ]);
+    expect(logger.warn).toHaveBeenCalledWith(
+        { op: "solana.rpc", method: "getBalance", host: new URL(fake.url).host, status: 429, err: expect.any(Error) },
+        "A Solana RPC call failed",
+    );
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(`${fake.url}/`);
+
+    fake.failNext(10, 500);
+    second.failNext(10, 500);
+    await expect(rpc.getLatestBlockhash()).rejects.toMatchObject({
+        message: "Couldn't reach Solana's network. Try again shortly.",
+    });
+    fake.failNext(0);
+    second.failNext(0);
+});
+
+test("a balance that can't be read is null and logged once a minute with the wallet and coin", async () => {
+    const logger = { warn: vi.fn() };
+    const rpc = createSolanaRpc([fake.url], { logger });
+    fake.failNext(10, 500);
+    const rows = await readSolanaBalances({ solana: rpc, prices, logger }, "Unread4ble");
+    fake.failNext(0);
+    expect(rows.map((row) => row.amount)).toEqual([null, null]);
+    const reads = logger.warn.mock.calls.filter(([fields]) => fields.op === "balances.solana");
+    expect(reads.map(([fields]) => [fields.wallet, fields.coin])).toEqual([
+        ["Unread4ble", "solana:SOL"],
+        ["Unread4ble", "solana:USDC"],
+    ]);
+    expect(reads[0]![1]).toBe("Couldn't read a Solana wallet's balance");
 });
 
 test("a 429 from the first URL falls back to the second", async () => {

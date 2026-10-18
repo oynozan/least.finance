@@ -24,11 +24,11 @@ test("a dead RPC leaves null balances and one warning per chain naming the chain
     expect(rows.find((row) => row.chain === "ethereum")?.readError).toBe(
         "Ethereum didn't answer, so this balance isn't shown.",
     );
-    const chains = lines.filter((line) => line.event === "balances.read").map((line) => line.chain);
+    const chains = lines.filter((line) => line.op === "balances.read").map((line) => line.chain);
     expect(chains.sort()).toEqual(["arc", "bnb", "ethereum"]);
-    expect(lines.find((line) => line.event === "balances.read")).toMatchObject({
+    expect(lines.find((line) => line.op === "balances.read")).toMatchObject({
         level: 40,
         err: { message: "fetch failed" },
     });
-    expect(lines.filter((line) => line.event === "balances.prices")).toHaveLength(1);
+    expect(lines.filter((line) => line.op === "balances.prices")).toHaveLength(1);
 });

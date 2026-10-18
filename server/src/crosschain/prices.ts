@@ -1,7 +1,6 @@
-import type { Logger } from "pino";
 import { zeroAddress } from "viem";
-import { throttle } from "../log-throttle.ts";
 import type { Coin } from "./catalog.ts";
+import { throttle } from "./failures.ts";
 
 /** Dollar prices of coins, keyed by `coin.key`. A coin whose price isn't known is left out. */
 export interface PriceFeed {
@@ -13,10 +12,20 @@ const LIFI_SOLANA_CHAIN = "1151111081099710";
 const SOLANA_NATIVE_TOKEN = "11111111111111111111111111111111";
 
 /** LI.FI's token prices, one request per coin, each kept for `ttlMs`. */
-export function lifiPrices(options: { fetch?: typeof fetch; ttlMs?: number; logger?: Logger } = {}): PriceFeed {
+export function lifiPrices(
+    options: {
+        fetch?: typeof fetch;
+        ttlMs?: number;
+        logger?: { warn: (fields: object, message: string) => void };
+    } = {},
+): PriceFeed {
     const { fetch: fetchPrice = fetch, ttlMs = 60_000, logger } = options;
-    // Every coin fails alike while LI.FI is down, so one line a minute per reason
-    const quiet = throttle(60_000);
+    const failedRecently = throttle(60_000);
+    const failed = (coin: Coin, fields: object) => {
+        if (failedRecently(coin.key))
+            logger?.warn({ op: "prices.lifi", coin: coin.key, ...fields }, "Couldn't get a price from LI.FI");
+        return null;
+    };
     const cache = new Map<string, { price: number; expires: number }>();
 
     async function lookup(coin: Coin): Promise<number | null> {
@@ -30,27 +39,13 @@ export function lifiPrices(options: { fetch?: typeof fetch; ttlMs?: number; logg
             const response = await fetchPrice(`https://li.quest/v1/token?${query}`, {
                 signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
             });
-            if (!response.ok) {
-                if (quiet(`status:${response.status}`)) {
-                    logger?.warn(
-                        { event: "prices.lifi", status: response.status, coin: coin.key },
-                        `LI.FI answered ${response.status} for a coin price`,
-                    );
-                }
-                return null;
-            }
+            if (!response.ok) return failed(coin, { status: response.status });
             const price = Number(((await response.json()) as { priceUSD?: unknown }).priceUSD);
-            if (!Number.isFinite(price) || price <= 0) return null;
+            if (!Number.isFinite(price) || price <= 0) return failed(coin, { status: response.status, price });
             cache.set(coin.key, { price, expires: Date.now() + ttlMs });
             return price;
         } catch (error) {
-            if (quiet("error")) {
-                logger?.warn(
-                    { err: error, event: "prices.lifi", coin: coin.key },
-                    "Couldn't read a coin price from LI.FI",
-                );
-            }
-            return null;
+            return failed(coin, { err: error });
         }
     }
 

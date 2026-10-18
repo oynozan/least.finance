@@ -1,15 +1,19 @@
 import { erc20Abi, getAddress, type Address, type PublicClient } from "viem";
-import type { Logger } from "pino";
-import { throttle } from "../log-throttle.ts";
+import { throttle } from "./failures.ts";
 import type { CoinBalance } from "../protocol.ts";
 import { EVM_COINS, formatCoinAmount, type Coin } from "./catalog.ts";
 import type { SourceClients } from "./chains.ts";
 import type { PriceFeed } from "./prices.ts";
 
-type Deps = { sources: SourceClients; arc: PublicClient; prices: PriceFeed; logger?: Logger };
+type Deps = {
+    sources: SourceClients;
+    arc: PublicClient;
+    prices: PriceFeed;
+    logger?: { warn: (fields: object, message: string) => void };
+};
 
-/** A dead RPC fails every read; one line a minute per chain says which. */
-const unreadChain = throttle(60_000);
+/** Balances are re-read every 30 s per account, so a chain that is down is told once a minute. */
+const chainDown = throttle(60_000);
 
 /**
  * Every EVM catalog coin the wallet holds or could hold, richest first; coins with no known price go last in
@@ -31,10 +35,16 @@ export async function readBalances({ sources, arc, prices, logger }: Deps, owner
                 try {
                     return await Promise.all(coins.map(async (coin) => ({ coin, held: await read(coin) })));
                 } catch (error) {
-                    if (unreadChain(chain)) {
+                    if (chainDown(`${chain}`)) {
                         logger?.warn(
-                            { err: error, event: "balances.read", chain, owner: `${owner.slice(0, 8)}…` },
-                            `Couldn't read a wallet's balances on ${chain}; they show as unavailable`,
+                            {
+                                op: "balances.read",
+                                chain,
+                                wallet: owner,
+                                coins: coins.map((coin) => coin.key),
+                                err: error,
+                            },
+                            `Couldn't read a wallet's balances on ${chain}`,
                         );
                     }
                     return coins.map((coin) => ({ coin, held: null }));
@@ -42,8 +52,8 @@ export async function readBalances({ sources, arc, prices, logger }: Deps, owner
             }),
         ),
         prices.usd(EVM_COINS).catch((error: unknown) => {
-            if (unreadChain("prices"))
-                logger?.warn({ err: error, event: "balances.prices" }, "Couldn't read coin prices");
+            if (chainDown("prices"))
+                logger?.warn({ op: "balances.prices", err: error }, "Couldn't price a wallet's coins");
             return new Map<string, number>();
         }),
     ]);
