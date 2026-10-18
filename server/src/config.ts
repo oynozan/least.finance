@@ -254,12 +254,29 @@ const schema = fields.superRefine((config, context) => {
 
 export type Config = z.output<typeof schema>;
 
+/** The environment is wrong; its message says how, and has no values in it, so it is printed as it is. */
+export class ConfigError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "ConfigError";
+    }
+}
+
+/** One bad variable as a line: what is wrong with it, never the value it was given. */
+function problemLine(issue: z.core.$ZodIssue) {
+    const name = issue.path.join(".");
+    if (issue.code === "invalid_type" && issue.input === undefined) return `  ${name} is not set`;
+    if (/^must /.test(issue.message)) return `  ${name} ${issue.message}`;
+    if (/^required /.test(issue.message)) return `  ${name} is ${issue.message}`;
+    if (/^(a|an) /.test(issue.message)) return `  ${name} must be ${issue.message}`;
+    return `  ${name}: ${issue.message}`;
+}
+
 /** Reads and checks the environment, naming every bad variable at once. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const parsed = schema.safeParse(env);
     if (parsed.success) return parsed.data;
-    const problems = parsed.error.issues.map((issue) => `  ${issue.path.join(".")}: ${issue.message}`);
-    throw new Error(`Invalid environment:\n${problems.join("\n")}`);
+    throw new ConfigError(`Invalid environment:\n${parsed.error.issues.map(problemLine).join("\n")}`);
 }
 
 /** One line per chain whose RPC list is still only the built-in public defaults. */

@@ -38,7 +38,7 @@ export class Sweeper {
     start() {
         if (this.#loop) return;
         const { bus, keyring, logger } = this.#deps;
-        logger.info(`Treasury: ${keyring.operator().address}`);
+        logger.info({ treasury: keyring.operator().address }, "Treasury address");
         const onCredited = ({ account }: { account: { depositIndex: number } }) => {
             this.sweep(account.depositIndex).catch((error: unknown) => {
                 logger.warn({ err: error, index: account.depositIndex }, "Sweep failed");

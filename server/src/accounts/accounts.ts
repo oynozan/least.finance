@@ -1,6 +1,7 @@
 import { ObjectId } from "mongodb";
 import { isDuplicateKey, type AccountDoc, type Collections } from "../db/mongo.ts";
 import { toDecimal } from "../db/money.ts";
+import { AppError } from "../errors.ts";
 import type { DepositRegistry } from "../deposits/registry.ts";
 import type { Keyring } from "./keyring.ts";
 
@@ -73,7 +74,11 @@ export class AccountService {
             { $inc: { seq: 1 } },
             { upsert: true, returnDocument: "after" },
         );
-        if (!counter) throw new Error("Couldn't allocate a deposit index");
+        if (!counter) {
+            throw new AppError("internal", "We couldn't open your account", {
+                detail: `The ${DEPOSIT_INDEX} counter wasn't returned by MongoDB`,
+            });
+        }
         return counter.seq;
     }
 }

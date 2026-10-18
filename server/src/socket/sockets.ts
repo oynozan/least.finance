@@ -744,12 +744,13 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             if (!isAppError(error)) {
                 ref = newRef();
                 logger.error({ err: error, event, account, ref }, `Unexpected error in socket request ${event}`);
-            } else if (error.status >= 500)
+            } else if (error.status >= 500) {
+                if (error.code === "internal") ref = newRef();
                 logger.error(
-                    { err: error.cause ?? error, event, account, code: error.code, detail: error.detail },
+                    { err: error.cause ?? error, event, account, code: error.code, detail: error.detail, ref },
                     `${error.message} (${event})`,
                 );
-            else refused(ack, error);
+            } else refused(ack, error);
             ack(failure(toApiError(error, ref)));
         }
     }

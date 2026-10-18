@@ -65,6 +65,8 @@ import { Sweeper } from "./withdrawals/sweeper.ts";
 import { Withdrawals } from "./withdrawals/withdrawals.ts";
 
 const TRADER_RETRY_MS = 60_000;
+const TRADER_QUICK_RETRIES = 5;
+const TRADER_SLOW_RETRY_MS = 5 * 60_000;
 const REDEEM_MS = 60_000;
 const RECONCILE_MS = 600_000;
 
@@ -107,15 +109,22 @@ type Overrides = {
 /** Connects everything, starts listening and starts the deposit scan. */
 export async function startServer(config: Config, logger: Logger, overrides: Overrides = {}): Promise<RunningServer> {
     const database = await connectDatabase(config.MONGODB_URI, config.MONGODB_DB);
-    logger.info(database.migration, "Account migration done");
+    // Only a migration that changed something is news; on every other start it merged nothing
+    if (database.migration.rekeyed || database.migration.merged) {
+        logger.info(database.migration, "Account migration changed accounts");
+    }
+    // The stage the start is in, so a failure says where it stopped
+    let step = "checking the Arc network";
     try {
         const client = createArcClient(config.ARC_RPC_URLS);
         await assertArc(client);
+        step = "loading the deposit addresses";
 
         const { collections } = database;
         const bus = new Bus();
         const registry = new DepositRegistry(collections.accounts);
         await registry.load();
+        step = "connecting to Privy";
         const ledger = new Ledger({
             client: database.client,
             collections,
@@ -132,6 +141,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 apiUrl: config.PRIVY_API_URL,
                 logger,
             }));
+        step = "setting up the services";
         const keyring = createKeyring(config.DEPOSIT_MNEMONIC);
         const accounts = new AccountService({
             collections,
@@ -401,17 +411,31 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             needTrader: () => ensureTrader(),
         });
         // Orders a restart left placing never reached Polymarket; refund them before anyone can order
+        step = "recovering predictions a restart interrupted";
         await service.recover();
         let connecting: NodeJS.Timeout | null = null;
         let closed = false;
+        let connectAttempts = 0;
         const connectTrader = inFlight(async () => {
             connecting = null;
+            connectAttempts += 1;
             try {
                 trader = withTimeouts(await createPolymarketTrader(config, predictionLogger), TRADER_CALL_MS);
             } catch (error) {
-                predictionLogger.error({ err: error }, "Couldn't connect to Polymarket, retrying in a minute");
-                if (!closed) connecting = setTimeout(connectTrader, TRADER_RETRY_MS);
+                // A minute apart at first, then every five once it is clearly not a blip
+                const retryInMs = connectAttempts >= TRADER_QUICK_RETRIES ? TRADER_SLOW_RETRY_MS : TRADER_RETRY_MS;
+                predictionLogger.error(
+                    { err: error, event: "polymarket.connect", attempt: connectAttempts, retryInMs },
+                    `Couldn't connect to Polymarket (attempt ${connectAttempts}); predictions stay unavailable until it does. Retrying in ${retryInMs / 1000} seconds`,
+                );
+                if (!closed) connecting = setTimeout(connectTrader, retryInMs);
                 return;
+            }
+            if (connectAttempts > 1) {
+                predictionLogger.info(
+                    { event: "polymarket.connect", attempt: connectAttempts },
+                    `Connected to Polymarket after ${connectAttempts} attempts`,
+                );
             }
             void service.refreshFloat().catch((error: unknown) => {
                 predictionLogger.warn({ err: error }, "Couldn't read the pool's float");
@@ -467,6 +491,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         const httpServer = createServer(createApp(services));
         httpServer.headersTimeout = 20_000;
         const io = attachSockets(httpServer, services);
+        step = `listening on port ${config.PORT}`;
         await listen(httpServer, config.PORT, config.HOST);
         // Perp orders a restart interrupted are settled in the background; each step is guarded by its state change
         void perps
@@ -537,13 +562,22 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         };
     } catch (error) {
         await database.close();
+        logger.error({ err: error, step }, `The server stopped starting while ${step}`);
         throw error;
     }
 }
 
 function listen(server: HttpServer, port: number, host: string | undefined) {
     return new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
+        server.once("error", (error: NodeJS.ErrnoException) =>
+            reject(
+                error.code === "EADDRINUSE"
+                    ? new Error(`Port ${port} is already in use; stop the other server or change PORT`, {
+                          cause: error,
+                      })
+                    : error,
+            ),
+        );
         server.listen(port, host, () => {
             server.off("error", reject);
             resolve();

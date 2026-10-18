@@ -513,7 +513,14 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
         retryWrites: true,
         serverSelectionTimeoutMS: 10_000,
     });
-    await client.connect();
+    await client.connect().catch((error: unknown) => {
+        throw new Error(
+            `Couldn't connect to MongoDB at ${hostOf(uri)} (${error instanceof Error ? error.message : error})`,
+            {
+                cause: error,
+            },
+        );
+    });
     try {
         const db = client.db(dbName);
         await assertTransactions(db);
@@ -550,6 +557,13 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
         throw error;
     }
 }
+
+/** Where a MongoDB URI points, without the user and password in front of it. */
+export const hostOf = (uri: string) =>
+    uri
+        .replace(/^[a-z+]+:\/\//i, "")
+        .replace(/^[^@/]*@/, "")
+        .split(/[/?]/)[0] || "the configured host";
 
 /** Crediting a deposit writes three documents at once, which needs a replica set (a single node is enough). */
 async function assertTransactions(db: Db) {

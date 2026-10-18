@@ -95,7 +95,11 @@ async function mergeInto(
                 },
                 { session, returnDocument: "after" },
             );
-            if (!survivor) throw new Error(`Account ${into.toHexString()} vanished during a merge`);
+            if (!survivor) {
+                throw new Error(
+                    `Account ${into.toHexString()} vanished while merging ${from.toHexString()} into it (person ${gone.privyUserId.slice(0, 18)}…, step: adding the balance)`,
+                );
+            }
 
             const balance = fromDecimal(gone.balance);
             const entries: Omit<LedgerEntryDoc, "_id" | "createdAt">[] = [

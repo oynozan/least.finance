@@ -1,8 +1,19 @@
-import { loadConfig, publicRpcWarnings } from "./config.ts";
+import { ConfigError, loadConfig, publicRpcWarnings } from "./config.ts";
 import { createLogger } from "./logger.ts";
 import { startServer, type RunningServer } from "./server.ts";
 
-const config = loadConfig();
+const config = (() => {
+    try {
+        return loadConfig();
+    } catch (error) {
+        // A mistake in the environment needs the lines, not a stack
+        if (error instanceof ConfigError) {
+            console.error(error.message);
+            process.exit(1);
+        }
+        throw error;
+    }
+})();
 const logger = createLogger(config);
 for (const warning of publicRpcWarnings(config)) logger.warn(warning);
 
@@ -29,7 +40,8 @@ process.on("SIGTERM", () => void shutdown("SIGTERM"));
 // Every order, withdrawal and deposit is stored in MongoDB before work on it starts, and each loop picks up where it
 // stopped, so one stray rejection is logged for the owner to fix and does not stop everyone's trades.
 process.on("unhandledRejection", (reason) => {
-    const err = reason instanceof Error ? reason : new Error(`Rejected with ${JSON.stringify(reason) ?? String(reason)}`);
+    const err =
+        reason instanceof Error ? reason : new Error(`Rejected with ${JSON.stringify(reason) ?? String(reason)}`);
     logger.error({ err, event: "process.unhandled_rejection" }, "A promise was rejected and nothing handled it");
 });
 process.on("uncaughtException", (error) => {

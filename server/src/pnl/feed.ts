@@ -12,6 +12,8 @@ import { tradeView } from "../trading/views.ts";
 import { withdrawalView } from "../withdrawals/views.ts";
 import { BASIS_FIELDS, realizedByTrade, type BasisTrade } from "./basis.ts";
 
+/** A read slower than this is worth a warning; faster ones are only visible at debug level. */
+const SLOW_READ_MS = 1000;
 const DEFAULT_LIMIT = 50;
 const MAX_DATE_MS = 8.64e15;
 const CURSOR = /^(\d{1,16}):(\d):([0-9a-f]{24})$/;
@@ -264,8 +266,9 @@ export class ActivityFeed {
             items: merged.slice(0, limit).map((candidate) => candidate.item),
             next: last && merged.length > limit ? encodeCursor(last.key) : null,
         };
-        this.#logger.info(
-            { accountId: accountId.toHexString(), ms: Math.round(performance.now() - started), rows },
+        const ms = Math.round(performance.now() - started);
+        this.#logger[ms > SLOW_READ_MS ? "warn" : "debug"](
+            { accountId: accountId.toHexString(), ms, rows },
             "pnl.feed",
         );
         return page;

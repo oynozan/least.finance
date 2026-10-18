@@ -24,6 +24,9 @@ type PositionRow = Pick<PositionDoc, "state" | "cost" | "proceeds" | "payout" | 
 type PerpRow = Pick<PerpPositionDoc, "collateral" | "proceeds" | "settledAt" | "updatedAt">;
 
 // Async, so a find that throws before it returns a cursor rejects like one that fails later
+/** A read slower than this is worth a warning; faster ones are only visible at debug level. */
+const SLOW_READ_MS = 1000;
+
 const read = async <T extends object>(open: () => FindCursor<T>): Promise<T[]> => open().toArray();
 
 // A missing proceeds or payout is nothing paid
@@ -117,10 +120,11 @@ export class PnlService {
         for (const row of tradeRows) add(row.createdAt, 0n, realized.get(row._id.toHexString()) ?? 0n);
 
         const series: PnlSeries = { tz: zone.tz, ranges: buildRanges(days, zone.dateOf(now)) };
-        this.#logger.info(
+        const ms = Math.round(performance.now() - started);
+        this.#logger[ms > SLOW_READ_MS ? "warn" : "debug"](
             {
                 accountId: accountId.toHexString(),
-                ms: Math.round(performance.now() - started),
+                ms,
                 rows: {
                     deposits: depositRows.length,
                     withdrawals: withdrawalRows.length,

@@ -80,7 +80,7 @@ describe("loadConfig", () => {
         } catch (error) {
             message = (error as Error).message;
         }
-        for (const name of TRADING_SECRETS) expect(message).toContain(`${name}: required when PREDICTIONS_TRADING=on`);
+        for (const name of TRADING_SECRETS) expect(message).toContain(`${name} is required when PREDICTIONS_TRADING=on`);
         expect(message).not.toContain("POOL_REBALANCE=on");
     });
 
@@ -101,7 +101,7 @@ describe("loadConfig", () => {
         } catch (error) {
             message = (error as Error).message;
         }
-        for (const name of TRADING_SECRETS) expect(message).toContain(`${name}: required when POOL_REBALANCE=on`);
+        for (const name of TRADING_SECRETS) expect(message).toContain(`${name} is required when POOL_REBALANCE=on`);
         expect(message).not.toContain("PREDICTIONS_TRADING=on");
     });
 
@@ -114,7 +114,7 @@ describe("loadConfig", () => {
 
     it("both switches on name both in each missing secret's message", () => {
         expect(() => load({ POOL_REBALANCE: "on", PREDICTIONS_TRADING: "on" })).toThrow(
-            /POLYMARKET_POOL_KEY: required when PREDICTIONS_TRADING=on and POOL_REBALANCE=on/,
+            /POLYMARKET_POOL_KEY is required when PREDICTIONS_TRADING=on and POOL_REBALANCE=on/,
         );
     });
 

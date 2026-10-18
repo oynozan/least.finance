@@ -57,7 +57,11 @@ export const wentWrong = (ref: string) => `Something went wrong on our side (ref
 /** What the client sees for any error; anything unexpected becomes "internal", with `ref` when the caller logged it under one. */
 export function toApiError(error: unknown, ref?: string): ApiError {
     if (error instanceof AppError) {
-        return { code: error.code, message: error.code === "internal" && ref ? wentWrong(ref) : error.message };
+        // An internal error can say what it was doing ("We couldn't open your account"); the ref ends the sentence
+        if (error.code === "internal" && ref) {
+            return { code: error.code, message: `${error.message.replace(/[.\s]+$/, "")} (ref ${ref}).` };
+        }
+        return { code: error.code, message: error.message };
     }
     return { code: "internal", message: ref ? wentWrong(ref) : "Something went wrong on our side." };
 }

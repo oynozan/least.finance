@@ -117,9 +117,23 @@ export class DepositWatcher {
 
     #useProvider(index: number) {
         if (index === this.#provider) return;
+        const previous = this.#provider;
         this.#provider = index;
         this.#goodPasses = 0;
-        this.#deps.logger.info({ rpc: index }, "Deposit scan switched RPC");
+        this.#deps.logger.info(
+            { from: this.#hostOf(previous), to: this.#hostOf(index), rpc: index },
+            "Deposit scan switched RPC",
+        );
+    }
+
+    /** An RPC's host, since its path can carry the provider's key. */
+    #hostOf(index: number) {
+        const url = this.#deps.clients[index]?.transport?.url;
+        try {
+            return typeof url === "string" ? new URL(url).host : `#${index}`;
+        } catch {
+            return `#${index}`;
+        }
     }
 
     /** One pass: scans the next range of blocks. True once level with the head. */
