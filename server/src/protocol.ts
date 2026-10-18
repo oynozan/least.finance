@@ -87,6 +87,8 @@ export type DepositOrderView = {
     sourceTxHashes: string[];
     /** The credited deposit once delivered. */
     depositId: string | null;
+    /** Why a failed or refunded order ended, as a short phrase; null otherwise. */
+    reason?: string | null;
     /** ISO 8601. */
     createdAt: string;
     updatedAt: string;
@@ -148,6 +150,8 @@ export type WithdrawalView = {
     forwardTxHash: string | null;
     /** True once a Solana withdrawal has been forwarding for 15 minutes. */
     delayed: boolean;
+    /** Why a failed withdrawal failed, in a sentence for the person; null while it hasn't failed. */
+    reason?: string | null;
     createdAt: string;
     updatedAt: string;
 };

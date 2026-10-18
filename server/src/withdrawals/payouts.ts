@@ -6,7 +6,7 @@ import { MIN_BASE_FEE, type ArcClient } from "../chain/arc.ts";
 import { IrisError, ARC_DOMAIN, POLYGON_DOMAIN, type Iris } from "../crosschain/iris.ts";
 import { IrisLimiter } from "../crosschain/iris-limiter.ts";
 import type { Collections, PoolRebalanceDoc, WithdrawalDoc } from "../db/mongo.ts";
-import { fromDecimal } from "../db/money.ts";
+import { formatUsdc, fromDecimal } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
 import type { Bus } from "../events.ts";
 import { loopWatch } from "../loop-watch.ts";
@@ -730,7 +730,19 @@ export class Payouts {
             return { moved, account };
         });
         if (!result) return;
-        logger.warn({ withdrawalId: withdrawal._id.toHexString(), failure }, "Withdrawal failed and was refunded");
+        logger.warn(
+            {
+                event: "withdrawal.failed",
+                withdrawalId: withdrawal._id.toHexString(),
+                accountId: withdrawal.accountId.toHexString(),
+                amount: formatUsdc(fromDecimal(withdrawal.amount)),
+                to: withdrawal.to,
+                network: withdrawal.network ?? "arc",
+                txHash: withdrawal.txHash,
+                failure,
+            },
+            "A withdrawal failed on the network and its amount was refunded",
+        );
         bus.emit("withdrawal:updated", { withdrawal: result.moved, account: result.account });
     }
 }

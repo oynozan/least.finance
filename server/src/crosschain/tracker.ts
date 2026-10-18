@@ -122,10 +122,14 @@ export class OrderTracker {
         if (chain !== "ethereum" && chain !== "bnb") return;
         const client = this.#deps.sources[chain];
         const receipt = await this.#receipt(client, hash);
-        if (receipt) await this.#move(order, receipt.status === "success" ? "in_block" : "failed");
+        const where = coinByKey(order.coin).chainName;
+        if (receipt) {
+            if (receipt.status === "success") await this.#move(order, "in_block");
+            else await this.#move(order, "failed", { failure: `the transaction reverted on ${where}` });
+        }
         // A slow transaction can still be mined, so one with no receipt is followed until it is replaced or the order is given up on.
         else if (this.#now() - order.updatedAt.getTime() > GIVE_UP_MS || (await this.#replaced(client, hash))) {
-            await this.#move(order, "failed");
+            await this.#move(order, "failed", { failure: `the transaction was never mined on ${where}` });
         }
     }
 
@@ -153,9 +157,11 @@ export class OrderTracker {
     /** A confirmed or finalized signature is in a block; one that errored failed; an unknown one fails once it is old. */
     async #checkSolanaSource(order: DepositOrderDoc, signature: string) {
         const [status] = await this.#deps.solana.getSignatureStatuses([signature]);
-        if (status?.err) await this.#move(order, "failed");
+        if (status?.err) await this.#move(order, "failed", { failure: "the Solana transaction failed" });
         else if (status && status.confirmationStatus !== "processed") await this.#move(order, "in_block");
-        else if (!status && this.#now() - order.updatedAt.getTime() > this.#expiryMs) await this.#move(order, "failed");
+        else if (!status && this.#now() - order.updatedAt.getTime() > this.#expiryMs) {
+            await this.#move(order, "failed", { failure: "Solana never confirmed the transaction" });
+        }
     }
 
     async #checkBridge(order: DepositOrderDoc) {
@@ -172,7 +178,13 @@ export class OrderTracker {
         if (status.stage === "pending") {
             if (order.state === "in_block") await this.#move(order, "bridging");
         } else if (status.stage === "refunded" || status.stage === "failed") {
-            await this.#move(order, status.stage === "refunded" ? "refunded" : "failed");
+            await this.#move(
+                order,
+                status.stage === "refunded" ? "refunded" : "failed",
+                status.stage === "refunded"
+                    ? { failure: `${order.provider} couldn't deliver the bridge` }
+                    : { failure: `${order.provider} reported that the bridge failed` },
+            );
         } else if (status.stage === "filled") {
             const fill = (order.fillTxHash ?? status.fillTxHash)?.toLowerCase();
             if (fill) await this.#deliver(order, fill, hash);
@@ -209,6 +221,24 @@ export class OrderTracker {
             { returnDocument: "after" },
         );
         if (!moved) return;
+        if (state === "failed" || state === "refunded") {
+            this.#deps.logger.warn(
+                {
+                    event: "deposit_order.ended",
+                    orderId: order._id.toHexString(),
+                    accountId: order.accountId.toHexString(),
+                    coin: order.coin,
+                    amount: order.amount,
+                    provider: order.provider,
+                    ref: order.ref,
+                    sourceTxHashes: order.sourceTxHashes,
+                    was: order.state,
+                    state,
+                    reason: moved.failure,
+                },
+                `A deposit order ended as ${state}: ${moved.failure ?? "no reason recorded"}`,
+            );
+        }
         // A step the wallet's report started is announced first, whichever write returned first.
         await this.#deps.announced?.(order._id);
         this.#deps.bus.emit("order:updated", { order: moved });

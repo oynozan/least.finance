@@ -67,6 +67,8 @@ export type DepositOrderDoc = {
     sourceTxHashes: string[];
     fillTxHash: string | null;
     depositId: ObjectId | null;
+    /** Why a failed or refunded order ended, as a short phrase ("the bridge couldn't deliver"); unset on the rest. */
+    failure?: string | null;
     createdAt: Date;
     updatedAt: Date;
 };

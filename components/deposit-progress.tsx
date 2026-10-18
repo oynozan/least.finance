@@ -56,7 +56,7 @@ export function DepositProgress({ order }: { order: DepositOrderView }) {
         return (
             <span className={styles.outcome}>
                 <CloseIcon className={styles.stepMark} />
-                {outcome}
+                {order.reason ? `${outcome}: ${order.reason}` : outcome}
             </span>
         );
     }

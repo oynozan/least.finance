@@ -139,6 +139,7 @@ test("a refund ends refunded, and nothing is credited", async () => {
     await stack.bridge.advance(placed.ref, "refunded");
     await expect.poll(inState(placed, "refunded")).toBe(true);
     await expect.poll(() => placed.pushes.at(-1)).toBe("refunded");
+    expect((await placed.state()).failure).toContain("couldn't deliver the bridge");
     expect(await balanceOf(placed.accountId)).toBe("0");
     expect(await db().deposits.countDocuments({ accountId: placed.accountId })).toBe(0);
 });
@@ -156,6 +157,7 @@ test("a reverted source transaction fails the order", async () => {
         );
         await placed.report(hashes);
         await expect.poll(inState(placed, "failed")).toBe(true);
+        expect((await placed.state()).failure).toBe("the transaction reverted on BNB Chain");
     } finally {
         await bnb.client.setCode({ address: FAKE_BRIDGE_ADDRESS, bytecode: "0x" });
     }
@@ -545,6 +547,7 @@ describe("Solana orders", () => {
             err: { InstructionError: [0, "x"] },
         });
         await expect.poll(inState(placed, "failed")).toBe(true);
+        expect((await placed.state()).failure).toBe("the Solana transaction failed");
     });
 
     test("an unknown signature past expiryMs moves to failed", async () => {
