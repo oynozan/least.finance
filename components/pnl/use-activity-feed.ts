@@ -28,9 +28,12 @@ const RETRYABLE = new Set(["unavailable", "internal", "rate_limited"]);
 /** What a filter's newest page was answered at, being the bind and the pushes counted since, so a new one of either asks again */
 export const answerStamp = (pnl: { bound: number; changed: number }) => `${pnl.bound}:${pnl.changed}`;
 
+/** A failed withdrawal is a row of its own now, so no row is kept off the list */
+const NOTHING_HIDDEN: ReadonlySet<string> = new Set();
+
 /** The Activity card's rows under one filter: the server's history pages with the live rows over them, older pages on request */
 export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[]): ActivityFeed {
-    const { pnl, loadActivityPage, withdrawals } = useAccount();
+    const { pnl, loadActivityPage } = useAccount();
     const { catalog } = useTrade();
     const nowMs = useNow();
     const [feed, dispatch] = useReducer(feedReducer, NO_FEED);
@@ -103,10 +106,6 @@ export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[
         });
     }, [filter, next]);
 
-    const hidden = useMemo(
-        () => new Set(withdrawals.filter((w) => w.state === "failed").map((w) => `withdrawal:${w.requestId}`)),
-        [withdrawals],
-    );
     const pageRows = useMemo(() => {
         if (nowMs === null) return [];
         const ctx = { now: new Date(nowMs), priceOf: priceIn(catalog) };
@@ -118,9 +117,9 @@ export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[
                 pages: pageRows,
                 more: next !== null,
                 live: live.filter((a) => matchesFilter(filter, a)),
-                hidden,
+                hidden: NOTHING_HIDDEN,
             }),
-        [pageRows, next, live, filter, hidden],
+        [pageRows, next, live, filter],
     );
 
     return {

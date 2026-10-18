@@ -99,17 +99,16 @@ export function useActivity(): ActivityState {
                 pending: row.pending,
             }),
         );
-        const payouts = withdrawalEntries(withdrawals, pendingWithdrawals)
-            .filter((w) => w.state !== "failed")
-            .map((w) =>
-                withdrawalActivity({
-                    id: w.key,
-                    amountUSD: toUsdc(w.amount),
-                    at: w.at,
-                    pending: w.state === "sending",
-                    to: w.to,
-                }),
-            );
+        const payouts = withdrawalEntries(withdrawals, pendingWithdrawals).map((w) =>
+            withdrawalActivity({
+                id: w.key,
+                amountUSD: toUsdc(w.amount),
+                at: w.at,
+                pending: w.state === "sending",
+                to: w.to,
+                ...(w.state === "failed" && { failed: { message: w.message ?? null } }),
+            }),
+        );
         return [...deposits, ...payouts, ...realPredictions(predictions, optimisticTrades), ...realPerps(perps)].sort(
             byNewest,
         );

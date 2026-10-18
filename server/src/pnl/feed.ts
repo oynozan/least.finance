@@ -110,8 +110,7 @@ const SOURCES: Source[] = [
                 ask,
                 rank,
                 "createdAt",
-                (bound) =>
-                    ask.collections.withdrawals.find({ accountId: ask.accountId, state: { $ne: "failed" }, ...bound }),
+                (bound) => ask.collections.withdrawals.find({ accountId: ask.accountId, ...bound }),
                 (doc) => doc.createdAt,
                 (doc, at) => ({ kind: "withdrawal", at, withdrawal: withdrawalView(doc, ask.now) }),
             ),

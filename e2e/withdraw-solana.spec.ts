@@ -85,13 +85,16 @@ test("the balance drops at once and the row goes Sending, Sending to Solana, Sen
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $150.00, show deposits");
 });
 
-test("a failed burn puts the balance back with 'Didn't go through. Your balance is back.'", async ({ page }) => {
+test("a failed burn puts the balance back and says why", async ({ page }) => {
     await signIn(page);
     await failNextBurn();
     await openAndFill(page, "50");
     await expect(sidebar(page).locator("#withdraw-quote")).toContainText(FEE_LINE, { timeout: 15_000 });
     await withdrawButton(page).click();
-    await expect(status(page)).toHaveText("Didn't go through. Your balance is back.", { timeout: 30_000 });
+    await expect(status(page)).toHaveText(
+        "Our payout wallet can't cover the network fee right now, so the network refused it. Your balance is back.",
+        { timeout: 30_000 },
+    );
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $200.00, show deposits");
 });
 
@@ -158,7 +161,7 @@ test("a changed fee re-quotes, shows the new line and sends only when Withdraw i
     await expect(sidebar(page).locator("#withdraw-quote")).toContainText(FEE_LINE, { timeout: 15_000 });
     await withdrawButton(page).click();
     await expect(sidebar(page).locator("#withdraw-hint")).toHaveText(
-        "The fee changed. Check the new amount and press Withdraw again.",
+        "The fee is now 0.4 USDC. Nothing was taken. Check the new amount and press Withdraw again.",
     );
     await expect(sidebar(page).locator("#withdraw-quote")).toContainText("Fee 0.40 USDC · you receive 49.60 USDC", {
         timeout: 15_000,

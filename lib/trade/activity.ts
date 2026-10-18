@@ -48,23 +48,30 @@ export function depositActivity(deposit: { key: string; amountUSD: number; at: D
     };
 }
 
-/** A withdrawal to a linked wallet, which takes its amount off the balance; `pending` until the server has paid it. */
+/**
+ * A withdrawal to a linked wallet, which takes its amount off the balance; `pending` until the server has paid it.
+ * `failed` marks one that was refunded: it moves nothing and says why, in the server's words when it sent them.
+ */
 export function withdrawalActivity(withdrawal: {
     id: string;
     amountUSD: number;
     at: Date;
     pending: boolean;
     to: string;
+    failed?: { message: string | null };
 }): Activity {
+    const failed = withdrawal.failed;
     return {
         id: `withdrawal:${withdrawal.id}`,
         at: withdrawal.at,
         kind: "withdrawal",
-        title: "Withdrawal",
-        detail: `${QUOTE} to ${shortenAddress(withdrawal.to)}`,
+        title: failed ? "Withdrawal failed" : "Withdrawal",
+        detail: failed
+            ? (failed.message ?? `${QUOTE} to ${shortenAddress(withdrawal.to)} was refunded. No reason was recorded.`)
+            : `${QUOTE} to ${shortenAddress(withdrawal.to)}`,
         symbols: [QUOTE],
         amountUSD: withdrawal.amountUSD,
-        change: -withdrawal.amountUSD,
+        change: failed ? 0 : -withdrawal.amountUSD,
         pending: withdrawal.pending || undefined,
     };
 }
@@ -255,6 +262,7 @@ export function activityFromItem(
                 at: new Date(w.createdAt),
                 pending: w.state === "sending",
                 to: w.to,
+                ...(w.state === "failed" && { failed: { message: w.message ?? null } }),
             });
         }
         case "swap": {

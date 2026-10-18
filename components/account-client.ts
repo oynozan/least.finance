@@ -94,8 +94,15 @@ export const OFFLINE_COPY = "You're offline. Nothing was spent.";
 
 /** An order handed to the server: `answer` settles with the refusal's words, or null once accepted or left unanswered. */
 export type Placed = { requestId: string; sent: boolean; answer: Promise<string | null> };
-/** How a withdrawal request ended; all but "sent", "refused" and "changed" mean the server never answered. */
-export type WithdrawResult = "sent" | "refused" | "failed" | "changed" | "offline" | "timeout" | "not-ready";
+/** How a withdrawal request ended; all but "sent", "refused" and a changed fee mean the server never answered. */
+export type WithdrawResult =
+    | "sent"
+    | "refused"
+    | "failed"
+    | "offline"
+    | "timeout"
+    | "not-ready"
+    | { problem: "changed"; message: string };
 const SELL_FAILED_COPY = "Couldn't sell right now. Your position is back.";
 const WITHDRAW_FAILED_COPY = "The withdrawal failed. Your balance is back.";
 /** The price sent when none is known; the exchange takes the best bid anyway, within a cent of it. */
@@ -274,7 +281,7 @@ export class AccountClient {
             this.#dispatch({ type: "withdrawal", withdrawal, account });
             if (withdrawal.state === "failed") {
                 // The server says why; the generic line is for an older server that doesn't
-                const message = withdrawal.reason ? `${withdrawal.reason} Your balance is back.` : WITHDRAW_FAILED_COPY;
+                const message = withdrawal.message ?? WITHDRAW_FAILED_COPY;
                 this.#notify({ kind: "reverted", message, withdrawal: true });
             }
         });
@@ -508,7 +515,8 @@ export class AccountClient {
     /**
      * Withdraws `amount` USDC to `to` and counts it at once; `reviewedFee` is the fee the person saw for a Solana wallet.
      * A refusal rolls it back with the server's message; "changed" means the fee rose past what was shown, nothing was
-     * taken and the person is asked again; a missing answer leaves it counted, since the server may have taken it.
+     * taken and the person is asked again, with the server's words; a missing answer leaves it counted, since the server
+     * may have taken it, and says whether the server was slow or the connection dropped.
      */
     async withdraw(amount: string, to: string, reviewedFee?: string): Promise<WithdrawResult> {
         const socket = this.#socket;
@@ -531,7 +539,7 @@ export class AccountClient {
             return "sent";
         }
         this.#dispatch({ type: "withdraw-refused", requestId });
-        if (result.error.code === "quote_changed") return "changed";
+        if (result.error.code === "quote_changed") return { problem: "changed", message: result.error.message };
         this.#notify({ kind: "reverted", message: result.error.message });
         return "refused";
     }

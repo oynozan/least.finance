@@ -675,6 +675,7 @@ function WithdrawalEntryRow({ row }: { row: WithdrawalEntry }) {
             <EntryDetail>
                 {" to "}
                 {shortenAddress(row.to)}
+                {row.message ? `: ${row.message}` : ""}
             </EntryDetail>
             {progress ? (
                 <span className={`${styles.depositWhen} ${styles.depositPending}`}>
@@ -684,7 +685,7 @@ function WithdrawalEntryRow({ row }: { row: WithdrawalEntry }) {
             ) : row.state === "sent" ? (
                 <When at={row.at} />
             ) : (
-                <span className={styles.depositWhen}>Didn&apos;t go through</span>
+                <span className={styles.depositWhen}>Failed</span>
             )}
         </>
     );

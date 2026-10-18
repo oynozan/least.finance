@@ -231,6 +231,7 @@ test.describe("sending a held coin", () => {
         expect(sendIssue("", "2")).toBe("Enter an amount.");
         expect(sendIssue("0", "2")).toBe("Enter an amount.");
         expect(sendIssue("3", "2")).toBe("That's more than you hold.");
+        expect(sendIssue("3", "2", "ETH")).toBe("That's more than the 2 ETH you hold.");
         expect(sendIssue("2", "2")).toBeNull();
         expect(sendIssue("0.000001", "2")).toBeNull();
     });

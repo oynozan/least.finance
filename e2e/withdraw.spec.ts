@@ -23,6 +23,9 @@ const balanceButton = (page: Page) => sidebar(page).getByRole("button", { name: 
 const withdrawButton = (page: Page) => sidebar(page).getByRole("button", { name: "Withdraw", exact: true });
 const amountField = (page: Page) => sidebar(page).getByRole("textbox", { name: "Withdraw amount" });
 const LOSS = "rgb(255, 107, 91)";
+/** What the e2e payout error "insufficient funds for gas * price + value" reads as. */
+const PAYOUT_REFUSED =
+    "Our payout wallet can't cover the network fee right now, so the network refused it. Your balance is back.";
 const status = (page: Page) => sidebar(page).getByRole("status");
 const history = (page: Page) => sidebar(page).getByRole("list", { name: "History" });
 const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
@@ -247,7 +250,7 @@ test("a failed payout puts the balance back and says so", async ({ page }) => {
     await signIn(page);
     await failNextPayout(addressOf(page));
     await withdraw(page, "50");
-    await expect(status(page)).toHaveText("Didn't go through. Your balance is back.", { timeout: 20_000 });
+    await expect(status(page)).toHaveText(PAYOUT_REFUSED, { timeout: 20_000 });
     // The Deposit button isn't told a deposit failed.
     const depositButton = sidebar(page).getByRole("button", { name: "Deposit", exact: true });
     await expect(depositButton).toHaveAttribute("data-phase", "idle");
@@ -255,7 +258,8 @@ test("a failed payout puts the balance back and says so", async ({ page }) => {
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $200.00, show deposits");
     await showHistory(page);
     const failed = history(page).getByRole("listitem").filter({ hasText: "−$50.00" });
-    await expect(failed).toContainText("Didn't go through");
+    await expect(failed).toContainText("Failed");
+    await expect(failed).toContainText(PAYOUT_REFUSED);
     // The recipient reads whole: the status gives way, not the address.
     await expect(failed).toContainText(`to ${short(addressOf(page))}`);
     const amount = failed.locator("span").first();

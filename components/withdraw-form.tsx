@@ -28,13 +28,15 @@ const ARC = 5042;
 const ARROWS: Record<string, number> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
 
 const OVER_MAX = "That's more than you can withdraw right now.";
+/** Follows the server's own words about the new fee. */
+const CHANGED_NEXT = "Check the new amount and press Withdraw again.";
+
 /** How long after a failed limits read the form asks again. */
 const LIMITS_RETRY_MS = 3_000;
 
 const TIMED_OUT =
     "The server didn't answer in 45 seconds. Your withdrawal may still go through, so check your balance and history before trying again.";
 const CONNECTION_SWITCHED = "The connection changed while sending. Check your balance and history before trying again.";
-const CHANGED = "The fee changed. Check the new amount and press Withdraw again.";
 
 type WithdrawFormProps = {
     /** The linked wallets a withdrawal can go to. */
@@ -150,8 +152,8 @@ export function WithdrawForm({ wallets, defaultTo, limits, quote, onSubmit, onCo
         // Refused: the status line says why, and the amount stays to be changed.
         if (result === "refused") return;
         // The fee rose: the new figures are shown and nothing is sent until Withdraw is pressed again.
-        if (result === "changed") {
-            setProblem(CHANGED);
+        if (typeof result === "object" && result.problem === "changed") {
+            setProblem(`${result.message} ${CHANGED_NEXT}`);
             if (target) quoter.refresh(target);
             return;
         }

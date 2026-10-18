@@ -34,7 +34,6 @@ type HoldingsListProps = {
 /** Shown only when the account gave no reason for a send it didn't start. */
 const NOT_SENT = "The send wasn't started, so nothing was sent.";
 const SEND_STATE = { sending: "Sending", sent: "Sent", failed: "Couldn't send" } as const;
-
 const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 };
 const reveal: Transition = { type: "spring", visualDuration: 0.3, bounce: 0.2 };
 
@@ -176,7 +175,9 @@ function SendForm({
     const submit = (event: FormEvent) => {
         event.preventDefault();
         const units = normalizeAmount(amount) ?? "";
-        const issue = sendIssue(units, row.units) ?? (validAddress(row.network, to) ? null : "Enter a valid address.");
+        const issue =
+            sendIssue(units, row.units, row.symbol) ??
+            (validAddress(row.network, to) ? null : `Enter a valid ${networkName(network)} address.`);
         setProblem(issue);
         if (issue) return;
         const refused = onSend({ requestId: crypto.randomUUID(), symbol: row.symbol, units, to });

@@ -32,9 +32,10 @@ export function sendDecimals(symbol: string): number {
 }
 
 /** Why the units can't be sent from a holding, or null when they can. */
-export function sendIssue(text: string, held: string): string | null {
+export function sendIssue(text: string, held: string, symbol?: string): string | null {
     if (!/^\d+(\.\d+)?$/.test(text) || Number(text) <= 0) return "Enter an amount.";
-    return Number(text) > Number(held) ? "That's more than you hold." : null;
+    if (Number(text) <= Number(held)) return null;
+    return symbol ? `That's more than the ${held} ${symbol} you hold.` : "That's more than you hold.";
 }
 
 /** The sends still in view: those moving or failed lately, newest first, and the done ones for a short while. */

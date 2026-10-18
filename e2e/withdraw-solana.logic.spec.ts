@@ -20,6 +20,7 @@ import {
     WithdrawQuoter,
     type WithdrawWallet,
 } from "@/lib/account/withdraw-form";
+import { withdrawalActivity } from "@/lib/trade/activity";
 import type { WithdrawQuote } from "@/server/src/protocol";
 
 const EVM: WithdrawWallet = { kind: "evm", address: "0x00000000000000000000000000000000000000d4" };
@@ -153,6 +154,7 @@ async function fakeServer(create: (payload: Record<string, unknown>) => unknown)
     return {
         client,
         events,
+        io,
         stop: async () => {
             client.disconnect();
             await io.close();
@@ -192,7 +194,10 @@ test.describe("the client", () => {
                 : { ok: false, error: { code: "unavailable", message: "stop" } },
         );
         try {
-            expect(await stack.client.withdraw("10", SOLANA.address, "0.127")).toBe("changed");
+            expect(await stack.client.withdraw("10", SOLANA.address, "0.127")).toEqual({
+                problem: "changed",
+                message: "The fee is now 0.4 USDC and you'd receive 9.6 USDC. Nothing was taken.",
+            });
             // The refusal is not a notice, and the pending withdrawal is gone.
             expect(stack.client.getSnapshot().notice).toBeNull();
             const state = stack.client.getSnapshot().state;
@@ -219,6 +224,55 @@ test.describe("the client", () => {
         } finally {
             await stack.stop();
         }
+    });
+});
+
+const said = (client: AccountClient) => {
+    const notice = client.getSnapshot().notice;
+    return notice && "message" in notice ? notice.message : undefined;
+};
+
+test.describe("a failed withdrawal says why", () => {
+    const account = { depositAddress: "0x00000000000000000000000000000000000000b2", balance: "50", version: 3 };
+
+    test("the notice is the server's message, and the generic line only when it sent none", async () => {
+        const stack = await fakeServer(() => ({ ok: false, error: { code: "unavailable", message: "x" } }));
+        try {
+            const reason = "The network wanted a higher fee than we offered. Your balance is back.";
+            stack.io.emit("withdrawal:update", { withdrawal: view({ state: "failed", message: reason }), account });
+            await expect.poll(() => said(stack.client)).toBe(reason);
+
+            stack.io.emit("withdrawal:update", {
+                withdrawal: view({ requestId: "req-2", state: "failed" }),
+                account: { ...account, version: 4 },
+            });
+            await expect
+                .poll(() => said(stack.client))
+                .toBe("The withdrawal failed, and no reason was recorded. Your balance is back.");
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("its history line and its activity row carry the reason and move no money", () => {
+        const reason = "Circle's burn contract reverted the transfer to Solana (tx 0x12ab…cd34). Your balance is back.";
+        const entries = withdrawalEntries([view({ state: "failed", message: reason })], []);
+        expect(entries[0]).toMatchObject({ state: "failed", message: reason });
+        const row = withdrawalActivity({
+            id: "req-1",
+            amountUSD: 10,
+            at: new Date("2026-09-01T00:00:00.000Z"),
+            pending: false,
+            to: SOLANA.address,
+            failed: { message: reason },
+        });
+        expect(row).toMatchObject({ title: "Withdrawal failed", detail: reason, change: 0, amountUSD: 10 });
+        expect(
+            withdrawalActivity({
+                ...{ id: "r", amountUSD: 1, at: new Date(), pending: false, to: EVM.address },
+                failed: { message: null },
+            }).detail,
+        ).toContain("No reason was recorded");
     });
 });
 
@@ -278,7 +332,7 @@ test.describe("history", () => {
         state = accountReducer(state, push(view({ state: "sending", updatedAt: at(1) })));
         expect(label()).toBe("Sending to Solana");
         state = accountReducer(state, push(view({ state: "forwarding", delayed: true, updatedAt: at(3) })));
-        expect(label()).toBe("Taking longer than expected");
+        expect(label()).toBe("Waiting for Circle");
         state = accountReducer(state, push(view({ state: "sent", forwardTxHash: "sig", updatedAt: at(4) })));
         expect(label()).toBeNull();
         state = accountReducer(state, push(view({ state: "forwarding", updatedAt: at(2) })));

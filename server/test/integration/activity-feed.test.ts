@@ -200,9 +200,9 @@ test("a partial sale is one sale item with soldPart and no open", async () => {
     expect(item.order.soldPart).toEqual({ costUSD: "6", proceedsUSD: "5.76", at: at.toISOString() });
 });
 
-test("a swap that was never sent and a failed withdrawal are absent", async () => {
+test("a swap that was never sent is absent, and a failed withdrawal stays with its reason", async () => {
     const accountId = new ObjectId();
-    const [sent, , sending] = await seedRows(database.collections, accountId, [
+    const [sent, , sending, failed] = await seedRows(database.collections, accountId, [
         { kind: "swap", at: new Date(NOW - 5 * HOUR), state: "failed" },
         { kind: "swap", at: new Date(NOW - 4 * HOUR), sent: false },
         { kind: "withdrawal", usdc: "3", at: new Date(NOW - 3 * HOUR), state: "sending" },
@@ -212,6 +212,7 @@ test("a swap that was never sent and a failed withdrawal are absent", async () =
     const { items: list } = await feed.page(accountId, {});
 
     expect(list.map((item) => [item.kind, keyOf(item).id])).toEqual([
+        ["withdrawal", failed!.toHexString()],
         ["withdrawal", sending!.toHexString()],
         ["swap", sent!.toHexString()],
     ]);
