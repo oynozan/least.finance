@@ -97,7 +97,7 @@ test("confirm lowers the balance and adds the position at once while the fake ho
     // Nothing to close until it fills.
     const close = long(page).getByRole("button", { name: "Close Long BTC at 5x" });
     await expect(close).toHaveAttribute("aria-disabled", "true");
-    await expect(close).toHaveAccessibleDescription("Closing opens when the position is filled.");
+    await expect(close).toHaveAccessibleDescription("You can close this once it has filled.");
 });
 
 test("the review card keeps the position, entry and liquidation in view, and folds the rest away until pointed at", async ({
@@ -233,7 +233,7 @@ test("Review is blocked with trading off, and with a position already open on th
     await connect(page);
     await openPerp(page, { side: "Long" });
     await expect(reviewButton(page)).toHaveAttribute("aria-disabled", "true");
-    await expect(reviewButton(page)).toHaveAccessibleDescription("Long and short aren't available right now.");
+    await expect(reviewButton(page)).toHaveAccessibleDescription("Long and short are switched off for now.");
     await page.unroute("**/perps/markets");
 
     // The reload keeps the sign-in, and brings the real markets back.

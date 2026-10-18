@@ -145,7 +145,7 @@ test.describe("perp rows in the sidebar", () => {
     test("a pending position's close button is disabled", () => {
         const pending = only({ id: "pending:req1" });
         expect(pending.status).toBe("pending");
-        expect(perpCloseBlock(pending)).toBe("Closing opens when the position is filled.");
+        expect(perpCloseBlock(pending)).toBe("You can close this once it has filled.");
         expect(perpCloseBlock(only())).toBeNull();
         expect(perpCloseBlock(only({ state: "closing" }))).toBe("Closing now.");
     });

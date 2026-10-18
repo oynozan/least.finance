@@ -92,6 +92,10 @@ export function PositionRow({ position, entranceDelay, market, onSell, onClosePe
                     {positionDetail(position)}
                     {worth && `, ${formatPnl(worth.pnl)}`}
                 </span>
+                {/* Why a close was refused stays in sight until the next close, not only in the screen reader's description. */}
+                {position.kind === "perp-live" && position.status === "open" && reason && (
+                    <span className={styles.detail}>{reason}</span>
+                )}
             </span>
             <span className={styles.pnl}>{liveText(position, worth?.value ?? null)}</span>
             {/* Always mounted, only collapsed, so keyboard users can tab to it. */}

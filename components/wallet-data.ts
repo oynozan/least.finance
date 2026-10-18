@@ -92,7 +92,7 @@ export function liveValue(p: Position, sellPrice: number | null) {
     return { value, pnl: value - p.size };
 }
 
-export const PERP_OPEN_PENDING = "Closing opens when the position is filled.";
+export const PERP_OPEN_PENDING = "You can close this once it has filled.";
 export const PERP_CLOSING = "Closing now.";
 
 /** Why a perp can't be closed now, or null when it can. */

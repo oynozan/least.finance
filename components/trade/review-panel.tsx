@@ -472,7 +472,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                         <p className="text-[17px] leading-snug text-loss">{refusal}</p>
                     ) : accepted ? (
                         <p className="text-[17px] leading-snug">
-                            {spotIntent ? summary : perp ? "Position opened." : "Prediction placed."}
+                            {spotIntent ? summary : perp ? "Position sent. It shows in Positions once it has opened." : "Prediction placed."}
                         </p>
                     ) : (
                         <>
