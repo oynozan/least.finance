@@ -89,8 +89,10 @@ export const OFFLINE_COPY = "You're offline. Nothing was spent.";
 
 /** An order handed to the server: `answer` settles with the refusal's words, or null once accepted or left unanswered. */
 export type Placed = { requestId: string; sent: boolean; answer: Promise<string | null> };
+/** How a withdrawal request ended; all but "sent", "refused" and "changed" mean the server never answered. */
+export type WithdrawResult = "sent" | "refused" | "failed" | "changed" | "offline" | "timeout" | "not-ready";
 const SELL_FAILED_COPY = "Couldn't sell right now. Your position is back.";
-const WITHDRAW_FAILED_COPY = "Didn't go through. Your balance is back.";
+const WITHDRAW_FAILED_COPY = "The withdrawal failed. Your balance is back.";
 /** The price sent when none is known; the exchange takes the best bid anyway, within a cent of it. */
 const UNQUOTED_SELL_PRICE = 0.01;
 
@@ -112,7 +114,17 @@ const REJECTED_WORDING = /reject|declin|denied|cancel/i;
 /** Lamports a Solana wallet needs to pay the network fee (about 0.00001 SOL is quoted). */
 const MIN_FEE_LAMPORTS = BigInt(10_000);
 
-const UNREACHABLE: ApiError = { code: "unavailable", message: "Couldn't reach the server. Retrying…" };
+const OFFLINE: ApiError = { code: "unavailable", message: "You're offline." };
+const isOffline = () => typeof navigator !== "undefined" && navigator.onLine === false;
+const unanswered = (ms: number): ApiError => ({
+    code: "unavailable",
+    message: `The server didn't answer in ${Math.round(ms / 1000)} seconds.`,
+});
+/** Why a connection attempt failed, from the transport's own words ("websocket error"). */
+const connectFailed = (error: Error): ApiError =>
+    isOffline()
+        ? OFFLINE
+        : { code: "unavailable", message: `Couldn't connect to the server (${error.message}). Retrying…` };
 /** Failures worth asking again about; the rest (a wallet that isn't the user's, say) won't change by retrying. */
 const RETRYABLE = new Set<ApiError["code"]>(["unavailable", "internal", "rate_limited"]);
 /** Refusals of a deposit report that say nothing about the deposit, so it stays pending and is reported again */
@@ -141,6 +153,8 @@ export class AccountClient {
     #noticeTimer: ReturnType<typeof setTimeout> | undefined;
     #tradeTimer: ReturnType<typeof setTimeout> | undefined;
     #attempt = 0;
+    /** Whether the last try to get a sign-in token from Privy gave none, so a refusal for it can say so. */
+    #tokenFailed = false;
     /** Counts socket connections, so a trade can tell it was sent on an earlier one. */
     #connection = 0;
     /** Deposits being confirmed right now, so a reconnect doesn't report one twice. */
@@ -178,8 +192,14 @@ export class AccountClient {
             // Fetched again on each reconnect, so an expired token is replaced.
             auth: (done) => {
                 accessToken().then(
-                    (token) => done({ token: token ?? "" }),
-                    () => done({ token: "" }),
+                    (token) => {
+                        this.#tokenFailed = token === null;
+                        done({ token: token ?? "" });
+                    },
+                    () => {
+                        this.#tokenFailed = true;
+                        done({ token: "" });
+                    },
                 );
             },
             reconnectionDelayMax: 10_000,
@@ -222,8 +242,11 @@ export class AccountClient {
         });
         socket.on("withdrawal:update", ({ withdrawal, account }) => {
             this.#dispatch({ type: "withdrawal", withdrawal, account });
-            if (withdrawal.state === "failed")
-                this.#notify({ kind: "reverted", message: WITHDRAW_FAILED_COPY, withdrawal: true });
+            if (withdrawal.state === "failed") {
+                // The server says why; the generic line is for an older server that doesn't
+                const message = withdrawal.reason ? `${withdrawal.reason} Your balance is back.` : WITHDRAW_FAILED_COPY;
+                this.#notify({ kind: "reverted", message, withdrawal: true });
+            }
         });
         socket.on("holdings:update", ({ holdings }) => {
             this.#dispatch({ type: "holdings", holdings });
@@ -259,10 +282,36 @@ export class AccountClient {
             // A dropped transport retries by itself; a refusal from the server doesn't.
             if (socket.active) return;
             const refusal = (error as Error & { data?: ApiError }).data;
-            this.#dispatch({ type: "failed", error: refusal ?? UNREACHABLE });
+            const lacksToken = refusal?.code === "unauthorized" && this.#tokenFailed;
+            this.#dispatch({
+                type: "failed",
+                error: lacksToken
+                    ? {
+                          code: "unauthorized",
+                          message: "Couldn't get your sign-in token from Privy. Reload and sign in again.",
+                      }
+                    : (refusal ?? connectFailed(error)),
+            });
             clearTimeout(this.#retry);
             this.#retry = setTimeout(() => socket.connect(), Math.min(MAX_RETRY_MS, 1_000 * 2 ** this.#attempt++));
         });
+    }
+
+    /** What a request is answered with while the account isn't ready: why, not just that it isn't. */
+    #notReady(): ApiError {
+        if (isOffline()) return OFFLINE;
+        const { state } = this.#snapshot;
+        if (state.status === "failed") return state.error;
+        return { code: "unavailable", message: "Still connecting to your account." };
+    }
+
+    /** What a request is answered with when the server never replied: offline, a dropped connection, or the wait that ran out. */
+    #noAnswer(socket: AppSocket | null, waitedMs: number): ApiError {
+        if (isOffline()) return OFFLINE;
+        if (!socket?.connected) {
+            return { code: "unavailable", message: "The connection to the server dropped. Reconnecting…" };
+        }
+        return unanswered(waitedMs);
     }
 
     /** Binds the socket to the person's account, asking again while the server can't answer. */
@@ -287,7 +336,7 @@ export class AccountClient {
                 }
                 return;
             }
-            const error = result?.error ?? UNREACHABLE;
+            const error = result?.error ?? this.#noAnswer(socket, CONNECT_TIMEOUT_MS);
             this.#dispatch({ type: "failed", error });
             if (!RETRYABLE.has(error.code)) return;
             await pause(Math.min(MAX_RETRY_MS, 1_000 * 2 ** attempt));
@@ -366,60 +415,60 @@ export class AccountClient {
     /** What `amount` of `coin` in `wallet` would pay out in USDC on Arc. */
     async quote(coin: string, amount: string, wallet: string): Promise<DepositQuoteView | ApiError> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        if (this.#snapshot.state.status !== "ready" || !socket) return this.#notReady();
         const result = await socket
             .timeout(CONNECT_TIMEOUT_MS)
             .emitWithAck("deposit:quote", { coin, amount, wallet })
             .catch(() => null);
-        if (!result) return UNREACHABLE;
+        if (!result) return this.#noAnswer(socket, CONNECT_TIMEOUT_MS);
         return result.ok ? result.data : result.error;
     }
 
     /** The balance and PnL series, cut into days of the zone `tz`. */
     async loadPnlSeries(tz: string): Promise<PnlSeries | ApiError> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket || this.#bound !== socket) return UNREACHABLE;
+        if (this.#snapshot.state.status !== "ready" || !socket || this.#bound !== socket) return this.#notReady();
         const result = await socket
             .timeout(CONNECT_TIMEOUT_MS)
             .emitWithAck("pnl:series", { tz })
             .catch(() => null);
-        if (!result) return UNREACHABLE;
+        if (!result) return this.#noAnswer(socket, CONNECT_TIMEOUT_MS);
         return result.ok ? result.data : result.error;
     }
 
     /** One page of the account's history under `filter`, the one after the cursor `before` or the newest */
     async loadActivityPage(req: { before?: string; filter: ActivityFilter }): Promise<ActivityPage | ApiError> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket || this.#bound !== socket) return UNREACHABLE;
+        if (this.#snapshot.state.status !== "ready" || !socket || this.#bound !== socket) return this.#notReady();
         const result = await socket
             .timeout(CONNECT_TIMEOUT_MS)
             .emitWithAck("activity:list", { filter: req.filter, ...(req.before ? { before: req.before } : {}) })
             .catch(() => null);
-        if (!result) return UNREACHABLE;
+        if (!result) return this.#noAnswer(socket, CONNECT_TIMEOUT_MS);
         return result.ok ? result.data : result.error;
     }
 
     /** What a withdrawal may be right now. */
     async withdrawLimits(): Promise<WithdrawLimits | ApiError> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        if (this.#snapshot.state.status !== "ready" || !socket) return this.#notReady();
         const result = await socket
             .timeout(CONNECT_TIMEOUT_MS)
             .emitWithAck("withdraw:limits", {})
             .catch(() => null);
-        if (!result) return UNREACHABLE;
+        if (!result) return this.#noAnswer(socket, CONNECT_TIMEOUT_MS);
         return result.ok ? result.data : result.error;
     }
 
     /** What a withdrawal of `amount` to the Solana wallet `to` would cost and deliver; nothing is taken. */
     async withdrawQuote(amount: string, to: string): Promise<WithdrawQuote | ApiError> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        if (this.#snapshot.state.status !== "ready" || !socket) return this.#notReady();
         const result = await socket
             .timeout(CONNECT_TIMEOUT_MS)
             .emitWithAck("withdraw:quote", { amount, to })
             .catch(() => null);
-        if (!result) return UNREACHABLE;
+        if (!result) return this.#noAnswer(socket, CONNECT_TIMEOUT_MS);
         return result.ok ? result.data : result.error;
     }
 
@@ -428,13 +477,10 @@ export class AccountClient {
      * A refusal rolls it back with the server's message; "changed" means the fee rose past what was shown, nothing was
      * taken and the person is asked again; a missing answer leaves it counted, since the server may have taken it.
      */
-    async withdraw(
-        amount: string,
-        to: string,
-        reviewedFee?: string,
-    ): Promise<"sent" | "refused" | "failed" | "changed"> {
+    async withdraw(amount: string, to: string, reviewedFee?: string): Promise<WithdrawResult> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket?.connected) return "failed";
+        if (isOffline()) return "offline";
+        if (this.#snapshot.state.status !== "ready" || !socket?.connected) return "not-ready";
         const requestId = crypto.randomUUID();
         this.#dispatch({
             type: "withdraw",
@@ -444,7 +490,8 @@ export class AccountClient {
             .timeout(REPORT_TIMEOUT_MS)
             .emitWithAck("withdraw:create", { requestId, amount, to, ...(reviewedFee ? { reviewedFee } : {}) })
             .catch(() => null);
-        if (this.#socket !== socket || !result) return "failed";
+        if (this.#socket !== socket) return "failed";
+        if (!result) return isOffline() ? "offline" : "timeout";
         if (result.ok) {
             const { account, ...withdrawal } = result.data;
             this.#dispatch({ type: "withdrawal", withdrawal, account });
@@ -463,12 +510,12 @@ export class AccountClient {
         amountUSD: string;
     }): Promise<QuoteView | ApiError> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        if (this.#snapshot.state.status !== "ready" || !socket) return this.#notReady();
         const result = await socket
             .timeout(CONNECT_TIMEOUT_MS)
             .emitWithAck("prediction:quote", input)
             .catch(() => null);
-        if (!result) return UNREACHABLE;
+        if (!result) return this.#noAnswer(socket, CONNECT_TIMEOUT_MS);
         return result.ok ? result.data : result.error;
     }
 
@@ -568,12 +615,12 @@ export class AccountClient {
     /** What opening a perp position would cost right now. */
     async quotePerp(req: PerpQuoteRequest): Promise<PerpQuoteView | ApiError> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket) return UNREACHABLE;
+        if (this.#snapshot.state.status !== "ready" || !socket) return this.#notReady();
         const result = await socket
             .timeout(CONNECT_TIMEOUT_MS)
             .emitWithAck("perp:quote", req)
             .catch(() => null);
-        if (!result) return UNREACHABLE;
+        if (!result) return this.#noAnswer(socket, CONNECT_TIMEOUT_MS);
         return result.ok ? result.data : result.error;
     }
 
@@ -873,7 +920,13 @@ export class AccountClient {
                     .timeout(REPORT_TIMEOUT_MS)
                     .emitWithAck("deposit:submit", { txHash })
                     .catch(() => null);
-                if (this.#socket !== socket || result === null) return;
+                if (this.#socket !== socket) return;
+                if (result === null) {
+                    console.warn(
+                        "The server didn't answer a deposit report in 45 seconds; it is reported again on reconnect.",
+                    );
+                    return;
+                }
                 if (result.ok) {
                     this.#dispatch({ type: "settled", receipt: result.data });
                     this.#notify({ kind: "credited", amount: value }, CREDITED_NOTICE_MS);
@@ -923,7 +976,10 @@ export class AccountClient {
         const socket = this.#socket;
         if (!socket || this.#snapshot.state.status !== "ready") return;
         if (!needsRefresh(this.#snapshot.balances, wallets, Date.now())) return;
-        socket.emit("balances:refresh", {}, () => undefined);
+        socket.emit("balances:refresh", {}, (answer) => {
+            // A refusal (rate limited, not bound yet) leaves the balances as they were; the console says why
+            if (answer && !answer.ok) console.warn(`Balances weren't refreshed: ${answer.error.message}`);
+        });
     }
 
     /** Takes a sent amount out of the shown balance; the next read corrects it. */
@@ -945,6 +1001,12 @@ export class AccountClient {
             .emitWithAck("deposits:list", { before: state.next })
             .catch(() => null);
         if (result?.ok) this.#dispatch({ type: "older", deposits: result.data.items, next: result.data.next });
+        else {
+            const why = result?.error.message ?? this.#noAnswer(this.#socket, CONNECT_TIMEOUT_MS).message;
+            if (!this.#snapshot.notice) {
+                this.#notify({ kind: "reverted", message: `Couldn't load older deposits: ${why}` }, TRADE_NOTICE_MS);
+            }
+        }
     }
 
     dismissNotice() {

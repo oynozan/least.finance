@@ -52,6 +52,7 @@ import {
     type DepositNotice,
     type DepositResult,
     type Placed,
+    type WithdrawResult,
 } from "./account-client";
 import { arc } from "./arc";
 import { linkedWallets, solanaWalletAddress, useActiveWallet } from "./arc-wallet";
@@ -112,7 +113,7 @@ export type Account = {
     /** What a withdrawal of `amount` to the linked Solana wallet `to` would cost and deliver. */
     withdrawQuote: (amount: string, to: string) => Promise<WithdrawQuote | ApiError>;
     /** Withdraws `amount` USDC to the linked wallet `to` (with the fee shown for a Solana one); the amount is counted at once. */
-    withdraw: (amount: string, to: string, reviewedFee?: string) => Promise<"sent" | "refused" | "failed" | "changed">;
+    withdraw: (amount: string, to: string, reviewedFee?: string) => Promise<WithdrawResult>;
     /** The coins the account holds, with trades and sends still on their way counted. */
     holdings: HoldingView[];
     /** Buys, sells or swaps from the balance, counted at once; a refusal rolls it back and shows as the trade notice. */

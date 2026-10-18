@@ -12,6 +12,7 @@ import {
     type WithdrawWallet,
 } from "@/lib/account/withdraw-form";
 import type { WithdrawLimits, WithdrawQuote } from "@/server/src/protocol";
+import type { WithdrawResult } from "./account-client";
 import { MAX_DECIMALS, cleanAmount, normalizeAmount } from "./deposit-form";
 import { CloseIcon, PlusIcon } from "./icons";
 import { NetworkLogo } from "./network-icons";
@@ -30,6 +31,9 @@ const OVER_MAX = "That's more than you can withdraw right now.";
 /** How long after a failed limits read the form asks again. */
 const LIMITS_RETRY_MS = 3_000;
 
+const TIMED_OUT =
+    "The server didn't answer in 45 seconds. Your withdrawal may still go through, so check your balance and history before trying again.";
+const CONNECTION_SWITCHED = "The connection changed while sending. Check your balance and history before trying again.";
 const CHANGED = "The fee changed. Check the new amount and press Withdraw again.";
 
 type WithdrawFormProps = {
@@ -40,7 +44,7 @@ type WithdrawFormProps = {
     limits: () => Promise<WithdrawLimits | ApiError>;
     /** What a withdrawal to a Solana wallet would cost and deliver. */
     quote: (amount: string, to: string) => Promise<WithdrawQuote | ApiError>;
-    onSubmit: (amount: string, to: string, reviewedFee?: string) => Promise<"sent" | "refused" | "failed" | "changed">;
+    onSubmit: (amount: string, to: string, reviewedFee?: string) => Promise<WithdrawResult>;
     onConnect: () => void;
     onClose: () => void;
 };
@@ -151,8 +155,10 @@ export function WithdrawForm({ wallets, defaultTo, limits, quote, onSubmit, onCo
             if (target) quoter.refresh(target);
             return;
         }
-        if (result === "failed")
-            return setProblem("Couldn't reach the server. Check your balance before trying again.");
+        if (result === "offline") return setProblem("You're offline. Nothing was taken.");
+        if (result === "not-ready") return setProblem("Still connecting to your account. Try again in a moment.");
+        if (result === "timeout") return setProblem(TIMED_OUT);
+        if (result === "failed") return setProblem(CONNECTION_SWITCHED);
         onClose();
     };
 

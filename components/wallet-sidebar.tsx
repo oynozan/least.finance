@@ -24,7 +24,7 @@ import type {
     WithdrawQuote,
     WithdrawalView,
 } from "@/server/src/protocol";
-import type { DepositNotice, DepositResult } from "./account-client";
+import type { DepositNotice, DepositResult, WithdrawResult } from "./account-client";
 import { useAccount } from "./account-provider";
 import {
     depositWalletAddress,
@@ -369,11 +369,7 @@ type WalletSectionProps = {
     withdrawTo: string | undefined;
     withdrawLimits: () => Promise<WithdrawLimits | ApiError>;
     withdrawQuote: (amount: string, to: string) => Promise<WithdrawQuote | ApiError>;
-    onWithdraw: (
-        amount: string,
-        to: string,
-        reviewedFee?: string,
-    ) => Promise<"sent" | "refused" | "failed" | "changed">;
+    onWithdraw: (amount: string, to: string, reviewedFee?: string) => Promise<WithdrawResult>;
     onStartWithdraw: () => void;
 };
 

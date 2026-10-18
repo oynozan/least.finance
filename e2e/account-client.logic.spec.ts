@@ -161,7 +161,13 @@ test.describe("a sent deposit", () => {
                 ack(
                     link.bound
                         ? { ok: true, data: receipt(txHash) }
-                        : { ok: false, error: { code: "wallet_not_connected", message: "Your account isn't open yet. Reload the page to open it." } },
+                        : {
+                              ok: false,
+                              error: {
+                                  code: "wallet_not_connected",
+                                  message: "Your account isn't open yet. Reload the page to open it.",
+                              },
+                          },
                 );
             });
         });
@@ -283,6 +289,81 @@ test.describe("a prediction that failed on the server", () => {
             await expect
                 .poll(() => stack.client.getSnapshot().tradeNotice)
                 .toEqual({ message: "This market just closed. Nothing was spent." });
+        } finally {
+            await stack.stop();
+        }
+    });
+});
+
+test.describe("a failed withdrawal", () => {
+    const failed = {
+        id: "w1",
+        requestId: "r1",
+        amount: "10",
+        to: EVM,
+        network: "arc",
+        fee: null,
+        receive: null,
+        state: "failed",
+        txHash: null,
+        forwardTxHash: null,
+        delayed: false,
+        createdAt: "2026-10-16T00:00:00.000Z",
+        updatedAt: "2026-10-16T00:00:00.000Z",
+    };
+
+    test("says why it failed, with the balance reassurance last", async () => {
+        const stack = await fakeServer();
+        try {
+            for (const socket of stack.io.sockets.sockets.values()) {
+                socket.emit("withdrawal:update", {
+                    withdrawal: { ...failed, reason: "The network rejected the transfer." },
+                    account: account("50", 2),
+                });
+            }
+            await expect
+                .poll(() => stack.client.getSnapshot().notice)
+                .toMatchObject({ message: "The network rejected the transfer. Your balance is back." });
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("falls back to a plain line when an older server sends no reason", async () => {
+        const stack = await fakeServer();
+        try {
+            for (const socket of stack.io.sockets.sockets.values()) {
+                socket.emit("withdrawal:update", { withdrawal: failed, account: account("50", 2) });
+            }
+            await expect
+                .poll(() => stack.client.getSnapshot().notice)
+                .toMatchObject({ message: "The withdrawal failed. Your balance is back." });
+        } finally {
+            await stack.stop();
+        }
+    });
+});
+
+test.describe("a request nothing answers", () => {
+    test("before the account is ready says it is still connecting, and a withdrawal says not-ready", async () => {
+        const client = new AccountClient("http://127.0.0.1:9");
+        expect(await client.loadPnlSeries("UTC")).toEqual({
+            code: "unavailable",
+            message: "Still connecting to your account.",
+        });
+        expect(await client.withdraw("1", EVM)).toBe("not-ready");
+    });
+
+    test("that the server swallows says how long it waited", async () => {
+        test.setTimeout(40_000);
+        const stack = await fakeServer((socket) => {
+            socket.on("pnl:series", () => undefined);
+        });
+        try {
+            expect(await stack.client.loadPnlSeries("UTC")).toEqual({
+                code: "unavailable",
+                message: "The server didn't answer in 15 seconds.",
+            });
         } finally {
             await stack.stop();
         }
