@@ -527,6 +527,8 @@ export type PerpOrderView = {
     state: string;
     /** The message the person is shown when the order didn't go through or only partly did. */
     reason: string | null;
+    /** What Hyperliquid or we said behind that message; absent on an order from before it was kept. */
+    detail?: string | null;
     positionId: string | null;
     filledSizeCoin: string | null;
     requestedSizeCoin: string;

@@ -31,7 +31,7 @@ test("short float refuses before any money moves, with 'Long and short are limit
 
     expect(await failure(h.place(account))).toEqual({
         code: "float_short",
-        message: "Long and short are limited to $48 right now. Nothing was spent.",
+        message: "Long and short are limited to $48 right now. Try a smaller amount. Nothing was spent.",
     });
     expect((await h.state(account._id)).kinds).toEqual(["deposit"]);
     expect(await h.database.collections.perpOrders.countDocuments()).toBe(0);
@@ -68,9 +68,14 @@ test("a stale float read refuses", async () => {
     h.failing.add("state");
 
     expect(await failure(h.place(account))).toEqual({
-        code: "float_short",
-        message: "Long and short are limited to $0 right now. Nothing was spent.",
+        code: "unavailable",
+        message:
+            "Hyperliquid's balance can't be read right now, so no new positions can open. Try again in a minute. Nothing was spent.",
     });
+    // The refusal is logged once, with the numbers and the age of the last read
+    const logged = h.lines.filter((line) => line.event === "perp.float.short");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 40, stale: true, requestedE6: "101000000", maxOrderUSD: 0 });
     expect((await h.state(account._id)).kinds).toEqual(["deposit"]);
 });
 

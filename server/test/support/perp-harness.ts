@@ -28,7 +28,7 @@ const CALL_MS = 300;
 /** The service over a fake Hyperliquid and a throwaway database; `crash` freezes the service that makes a chosen client call. */
 export async function perpHarness(o: { trading?: "on" | "off" } = {}) {
     const database: Database = await connectDatabase(inject("mongoUri"), `test_${randomUUID().replaceAll("-", "")}`);
-    const lines: Array<{ level: number; msg: string }> = [];
+    const lines: Array<{ level: number; msg: string; [field: string]: unknown }> = [];
     const logger = pino({ level: "info" }, { write: (line: string) => void lines.push(JSON.parse(line)) });
     const bus = new Bus();
     const ledger = new Ledger({

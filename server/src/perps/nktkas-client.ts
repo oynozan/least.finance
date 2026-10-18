@@ -1,16 +1,17 @@
 import { ApiRequestError, ExchangeClient, HttpTransport, InfoClient, ValidationError } from "@nktkas/hyperliquid";
 import { formatUnits, parseUnits } from "viem";
 import type { HDAccount } from "viem/accounts";
-import type {
-    AccountState,
-    Candle,
-    Fill,
-    HyperliquidClient,
-    OrderResult,
-    OrderStatus,
-    PerpMeta,
-    Transfer,
-    UsdSendResult,
+import {
+    HyperliquidRefused,
+    type AccountState,
+    type Candle,
+    type Fill,
+    type HyperliquidClient,
+    type OrderResult,
+    type OrderStatus,
+    type PerpMeta,
+    type Transfer,
+    type UsdSendResult,
 } from "./client.ts";
 
 const stripZeros = (value: string) => (value.includes(".") ? value.replace(/\.?0+$/, "") : value);
@@ -62,6 +63,15 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
         );
         if (first) return first.error;
         return typeof response?.response === "string" ? response.response : error.message;
+    }
+
+    /** The whole response of a rejected call, cut short, so the caller's log carries the exchange's code and message as sent. */
+    function rawOf(error: ApiRequestError): string {
+        try {
+            return JSON.stringify(error.response).slice(0, 500);
+        } catch {
+            return error.message.slice(0, 500);
+        }
     }
 
     type RawFill = Awaited<ReturnType<InfoClient["userFills"]>>[number];
@@ -165,7 +175,7 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
             }
             if (status === "filled") return { kind: "filled", totalSz: order.origSz, avgPx: order.limitPx };
             if (status.endsWith("Rejected")) return { kind: "rejected", message: status };
-            return { kind: "canceled" };
+            return { kind: "canceled", status };
         },
 
         async candles(asset, interval, startMs, endMs): Promise<Candle[]> {
@@ -202,12 +212,19 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
             } catch (error) {
                 if (!(error instanceof ApiRequestError)) throw error;
                 const message = rejection(error);
-                return DUPLICATE_NONCE.test(message) ? { kind: "duplicate" } : { kind: "rejected", message };
+                return DUPLICATE_NONCE.test(message)
+                    ? { kind: "duplicate" }
+                    : { kind: "rejected", message, raw: rawOf(error) };
             }
         },
 
         async updateLeverage(signer, asset, leverage) {
-            await exchangeFor(signer).updateLeverage({ asset: await assetIndex(asset), isCross: false, leverage });
+            try {
+                await exchangeFor(signer).updateLeverage({ asset: await assetIndex(asset), isCross: false, leverage });
+            } catch (error) {
+                if (error instanceof ApiRequestError) throw new HyperliquidRefused(rejection(error), rawOf(error));
+                throw error;
+            }
         },
 
         async order(signer, o): Promise<OrderResult> {
@@ -237,11 +254,18 @@ export function createNktkasClient(o: { url: string; timeoutMs?: number }): Hype
                 if (typeof status === "object" && "resting" in status) {
                     return { kind: "resting", oid: status.resting.oid };
                 }
-                return { kind: "unknown" };
+                return {
+                    kind: "unknown",
+                    cause: `Hyperliquid answered with an order status we don't read: ${JSON.stringify(status)}`.slice(
+                        0,
+                        300,
+                    ),
+                };
             } catch (error) {
-                if (error instanceof ApiRequestError) return { kind: "rejected", message: rejection(error) };
+                if (error instanceof ApiRequestError)
+                    return { kind: "rejected", message: rejection(error), raw: rawOf(error) };
                 if (error instanceof ValidationError) throw error;
-                return { kind: "unknown" };
+                return { kind: "unknown", cause: error instanceof Error ? error.message : String(error) };
             }
         },
     };

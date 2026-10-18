@@ -12,6 +12,7 @@ export const perpOrderView = (order: PerpOrderDoc): PerpOrderView => ({
     leverage: order.leverage,
     state: order.state,
     reason: order.reason,
+    detail: order.detail ?? null,
     positionId: typeof order.steps.positionId === "string" ? order.steps.positionId : null,
     filledSizeCoin: order.fill?.sizeCoin ?? null,
     requestedSizeCoin: order.sizeCoin,

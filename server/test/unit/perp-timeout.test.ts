@@ -32,7 +32,11 @@ test("each call is bounded by ms", async () => {
 test("an order that does not answer in time is unknown", async () => {
     const client = withPerpTimeouts(stuck, 20);
     const order = { asset: "BTC", isBuy: true, px: "1", sz: "1", reduceOnly: false, cloid: "0x1" };
-    expect(await client.order({} as never, order)).toEqual({ kind: "unknown" });
+    expect(await client.order({} as never, order)).toEqual({
+        kind: "unknown",
+        cause: "order timed out after 20 ms",
+        timeoutMs: 20,
+    });
 });
 
 test("a failing call keeps its own error", async () => {

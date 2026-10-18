@@ -49,17 +49,21 @@ export type Fill = {
 export type OrderResult =
     | { kind: "filled"; totalSz: string; avgPx: string }
     | { kind: "resting"; oid: number }
-    | { kind: "rejected"; message: string }
-    | { kind: "unknown" };
+    /** `message` is the exchange's own words (or its status name); `raw` is the whole response it came in, for the log. */
+    | { kind: "rejected"; message: string; raw?: string }
+    /** No answer we can read: `cause` is what went wrong, `timeoutMs` is set when our own timeout ended the wait. */
+    | { kind: "unknown"; cause?: string; timeoutMs?: number };
 
 export type OrderStatus =
     | { kind: "filled"; totalSz: string; avgPx: string }
     | { kind: "open" }
-    | { kind: "canceled" }
+    /** `status` is the exchange's name for how it ended, such as `selfTradeCanceled`. */
+    | { kind: "canceled"; status?: string }
     | { kind: "rejected"; message: string }
     | { kind: "missing" };
 
-export type UsdSendResult = { kind: "ok" } | { kind: "duplicate" } | { kind: "rejected"; message: string };
+export type UsdSendResult =
+    { kind: "ok" } | { kind: "duplicate" } | { kind: "rejected"; message: string; raw?: string };
 
 /** A USDC transfer between two Hyperliquid accounts, from the ledger of either one. */
 export type Transfer = { from: string; to: string; amountE6: bigint; time: number };
@@ -100,17 +104,35 @@ export interface HyperliquidClient {
     order(signer: HDAccount, o: PerpOrder): Promise<OrderResult>;
 }
 
-class TimedOut extends Error {}
+/** A call that didn't answer within our limit; it may still complete. */
+export class TimedOut extends Error {
+    readonly ms: number;
+    constructor(what: string, ms: number) {
+        super(`${what} timed out after ${ms} ms`);
+        this.name = "TimedOut";
+        this.ms = ms;
+    }
+}
+
+/** Hyperliquid answered a call with a refusal; `message` is its own words, `raw` the whole response. */
+export class HyperliquidRefused extends Error {
+    readonly raw: string | undefined;
+    constructor(message: string, raw?: string) {
+        super(message);
+        this.name = "HyperliquidRefused";
+        this.raw = raw;
+    }
+}
 
 function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
     let timer: NodeJS.Timeout;
     const late = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new TimedOut(`${what} timed out after ${ms} ms`)), ms);
+        timer = setTimeout(() => reject(new TimedOut(what, ms)), ms);
     });
     return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
-/** The client with every call bounded (a timed-out call may still complete); an order that doesn't answer in time is `unknown`, which leaves it posted for the tracker. */
+/** The client with every call bounded (a timed-out call may still complete); an order that doesn't answer in time is `unknown` with the wait it gave up after, which leaves it posted for the tracker; the caller knows the account and the order, so it logs that. */
 export function withPerpTimeouts(client: HyperliquidClient, ms: number): HyperliquidClient {
     return {
         meta: () => bounded(client.meta(), ms, "meta"),
@@ -127,7 +149,7 @@ export function withPerpTimeouts(client: HyperliquidClient, ms: number): Hyperli
             bounded(client.updateLeverage(signer, asset, leverage), ms, "updateLeverage"),
         order: (signer, o) =>
             bounded(client.order(signer, o), ms, "order").catch((error: unknown): OrderResult => {
-                if (error instanceof TimedOut) return { kind: "unknown" };
+                if (error instanceof TimedOut) return { kind: "unknown", cause: error.message, timeoutMs: error.ms };
                 throw error;
             }),
     };

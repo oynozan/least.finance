@@ -30,7 +30,7 @@ type Side = "buy" | "sell";
 type Order = { _id: ObjectId; side: Side };
 
 /** One short quoted line of what an upstream said. */
-const quote = (text: string) => `"${text.replace(/\s+/g, " ").trim().replaceAll('"', "'").slice(0, 120)}"`;
+export const quote = (text: string) => `"${text.replace(/\s+/g, " ").trim().replaceAll('"', "'").slice(0, 120)}"`;
 
 const priceMovedText = (side: Side) =>
     side === "sell"

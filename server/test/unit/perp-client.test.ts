@@ -151,6 +151,7 @@ describe("order", () => {
         expect(await client.order(person, buy(CLOID))).toEqual({
             kind: "rejected",
             message: "Order has invalid size.",
+            raw: expect.stringContaining("Order has invalid size."),
         });
         expect(fake.requests.at(-1)).toBe("exchange order");
     });
@@ -170,14 +171,18 @@ describe("order", () => {
     it("a dropped reply from order is unknown through withPerpTimeouts", async () => {
         fake.nextOrder("drop");
         const bounded = withPerpTimeouts(client, 150);
-        expect(await bounded.order(person, buy(CLOID))).toEqual({ kind: "unknown" });
+        expect(await bounded.order(person, buy(CLOID))).toEqual({
+            kind: "unknown",
+            cause: "order timed out after 150 ms",
+            timeoutMs: 150,
+        });
         expect(fake.orders).toHaveLength(1);
     });
 
     it("a held order is unknown and never reaches the book", async () => {
         fake.nextOrder("hold");
         const bounded = withPerpTimeouts(client, 150);
-        expect(await bounded.order(person, buy(CLOID))).toEqual({ kind: "unknown" });
+        expect(await bounded.order(person, buy(CLOID))).toMatchObject({ kind: "unknown", timeoutMs: 150 });
         expect(fake.orders).toHaveLength(0);
     });
 

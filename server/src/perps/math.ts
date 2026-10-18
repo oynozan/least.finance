@@ -1,4 +1,5 @@
 import type { Level } from "../predictions/trader.ts";
+import { PERP_MIN_COLLATERAL_USD, PERP_MIN_POSITION_USD } from "./fee.ts";
 
 const SIG_FIGS = 5;
 const MAX_DECIMALS = 6;
@@ -224,7 +225,7 @@ export function meetsMinimum(
     leverage: number,
     feeUSD: number,
 ): "collateral" | "position" | null {
-    if (collateralUSD < 10) return "collateral";
-    if ((collateralUSD - feeUSD) * leverage < 11) return "position";
+    if (collateralUSD < PERP_MIN_COLLATERAL_USD) return "collateral";
+    if ((collateralUSD - feeUSD) * leverage < PERP_MIN_POSITION_USD) return "position";
     return null;
 }

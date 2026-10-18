@@ -216,6 +216,10 @@ export type PerpOrderDoc = {
     /** Wei put back on the balance. */
     credited: Decimal128 | null;
     reason: string | null;
+    /** Why it failed, in the upstream's own words or ours; `reason` is what the person is told. */
+    detail?: string;
+    /** A short name for the cause. */
+    code?: string;
     createdAt: Date;
     updatedAt: Date;
 };

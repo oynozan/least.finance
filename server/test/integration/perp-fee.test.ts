@@ -162,7 +162,7 @@ test("when the address is short and the first sweep is refused, the re-planned s
     expect(BigInt(filled.steps.sweepE6 as string) - credited).toBe(e6("0.5"));
     expect(h.fake.account(address)!.freeE6).toBe(0n);
     // The refused send was re-planned, and the second went through
-    expect(h.lines.some((line) => line.level === 50 && JSON.stringify(line).includes(posted._id.toHexString()))).toBe(
+    expect(h.lines.some((line) => line.level === 40 && JSON.stringify(line).includes(posted._id.toHexString()))).toBe(
         true,
     );
 });

@@ -123,7 +123,30 @@ test("an error status refunds in full", async () => {
     const done = await h.settled(order._id);
 
     expect(done.state).toBe("rejected");
-    expect(done.reason).toBe("This position couldn't be opened right now. Nothing was spent.");
+    expect(done.reason).toBe(
+        "Hyperliquid said the collateral doesn't cover this position at this leverage. Nothing was spent.",
+    );
+    // What Hyperliquid said is kept on the order, and one line in the log carries it with the account
+    expect(done).toMatchObject({
+        detail: expect.stringContaining("Insufficient margin to place order."),
+        code: "insufficient_margin",
+    });
+    const refused = h.lines.filter((line) => line.event === "perp.open.refused");
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({
+        level: 40,
+        msg: "Hyperliquid refused a perp open",
+        order: order._id.toHexString(),
+        accountId: account._id.toHexString(),
+        asset: "BTC",
+        side: "long",
+        leverage: 5,
+        upstreamMessage: expect.stringContaining("Insufficient margin to place order."),
+    });
+    // After a reload the snapshot still carries the refusal and its reason
+    expect((await h.service.positions(account)).orders).toMatchObject([
+        { id: order._id.toHexString(), state: "rejected", reason: done.reason, detail: done.detail },
+    ]);
     expect((await h.state(account._id)).balance).toBe(wei("1000"));
 });
 
@@ -242,7 +265,7 @@ test("a book that can't be read refuses the order before anything is recorded or
 
     expect(await refusal(h.place(account))).toEqual({
         code: "unavailable",
-        message: "Hyperliquid isn't answering. Nothing was spent.",
+        message: expect.stringMatching(/^Couldn't reach Hyperliquid \(book is failing\)\. Nothing was spent\.$/),
     });
     expect(await h.database.collections.perpOrders.countDocuments()).toBe(0);
     expect(h.fake.requests.filter((r) => r.startsWith("exchange"))).toEqual([]);
@@ -274,9 +297,9 @@ test("a book that can't be read once the order is funded still posts, at the wid
     // 300 bps over the mid of 65000
     expect(done.limitPx).toBe("66950");
     expect(h.fake.orders).toMatchObject([{ isBuy: true, px: "66950", sz: "0.00759" }]);
-    expect(h.lines.some((line) => line.level === 40 && line.msg === "Couldn't read a Hyperliquid book to open")).toBe(
-        true,
-    );
+    expect(
+        h.lines.some((line) => line.level === 40 && line.msg.startsWith("Couldn't read a Hyperliquid book to open")),
+    ).toBe(true);
     expect(await h.database.collections.perpPositions.countDocuments({ accountId: account._id })).toBe(1);
 });
 
@@ -482,13 +505,14 @@ test("the fake Hyperliquid refuses an open worth under $10 and takes a reduce-on
     });
 });
 
-test("trading off refuses with 'Long and short aren't available right now.' and moves nothing", async () => {
+test("trading off refuses with 'Long and short are switched off for now.' and moves nothing", async () => {
     const h = await fresh({ trading: "off" });
     const account = await h.seedAccount("1000");
     expect(await refusal(h.place(account))).toEqual({
         code: "trading_off",
-        message: "Long and short aren't available right now.",
+        message: "Long and short are switched off for now.",
     });
+    expect(h.lines.filter((line) => line.event === "perp:order" && line.reason === "trading_off")).toHaveLength(1);
     expect((await h.state(account._id)).kinds).toEqual(["deposit"]);
     expect(h.fake.requests.filter((r) => r.startsWith("exchange"))).toEqual([]);
 });

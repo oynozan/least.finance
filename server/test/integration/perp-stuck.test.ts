@@ -116,7 +116,7 @@ test("a sweep Hyperliquid refuses is re-planned with a fresh nonce and the credi
     const s = await h.state(account._id);
     expect(s.kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
     expect(fromDecimal(s.rows[2]!.amount)).toBe(swept * 10n ** 12n);
-    expect(h.lines.some((line) => line.level === 50 && JSON.stringify(line).includes(order._id.toHexString()))).toBe(
+    expect(h.lines.some((line) => line.level === 40 && JSON.stringify(line).includes(order._id.toHexString()))).toBe(
         true,
     );
 });

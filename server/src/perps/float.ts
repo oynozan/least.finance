@@ -6,6 +6,7 @@ import type { Collections, PerpFloatDoc } from "../db/mongo.ts";
 import { fromDecimal, toDecimal } from "../db/money.ts";
 import { AppError } from "../errors.ts";
 import { loopWatch } from "../loop-watch.ts";
+import { NOTHING_SPENT } from "../predictions/failures.ts";
 import { formatUsdShort } from "../predictions/views.ts";
 import type { HyperliquidClient } from "./client.ts";
 
@@ -22,8 +23,6 @@ const ONE_USDC_E6 = 1_000_000n;
 /** The activation and the slack an order leaves in the float besides its collateral. */
 export const ACTIVATION_E6 = ONE_USDC_E6;
 export const SLACK_E6 = ONE_USDC_E6;
-
-export const NOTHING_SPENT = "Nothing was spent.";
 
 type Deps = {
     collections: Collections;
@@ -128,21 +127,29 @@ export class PerpFloat {
             await this.#readOnce();
             doc = await perpFloat.findOne({ _id: FLOAT_ID });
         }
-        if (!doc || this.#stale(doc) || freeOf(doc) < amountE6 + SLACK_E6) throw this.short(doc);
+        if (!doc || this.#stale(doc) || freeOf(doc) < amountE6 + SLACK_E6) throw this.short(doc, amountE6);
     }
 
     async #readOnce(): Promise<void> {
         const abort = new AbortController();
         const timer = sleep(READ_WAIT_MS, undefined, { signal: abort.signal }).then(
             () => {
-                throw new Error("The balance read timed out");
+                throw new Error(`The balance read took over ${READ_WAIT_MS} ms`);
             },
             () => undefined,
         );
         try {
             await Promise.race([this.refresh(), timer]);
         } catch (error) {
-            this.#deps.logger.warn({ err: error }, "Couldn't read the Hyperliquid float");
+            this.#deps.logger.warn(
+                {
+                    event: "perp.float.read_failed",
+                    waitMs: READ_WAIT_MS,
+                    lastReadAt: this.#mirror?.balanceAt ?? null,
+                    err: error,
+                },
+                "Couldn't read the Hyperliquid float for a perp open",
+            );
         } finally {
             abort.abort();
         }
@@ -171,7 +178,7 @@ export class PerpFloat {
             { session, returnDocument: "after" },
         );
         if (doc) return doc;
-        throw this.short(await this.#deps.collections.perpFloat.findOne({ _id: FLOAT_ID }, { session }));
+        throw this.short(await this.#deps.collections.perpFloat.findOne({ _id: FLOAT_ID }, { session }), amountE6);
     }
 
     /** Gives back a reservation and counts what the order moved out until a balance read shows it. */
@@ -201,16 +208,35 @@ export class PerpFloat {
         return this.#mirror ? this.#deps.now() - this.#mirror.balanceAt.getTime() : null;
     }
 
-    short(doc: PerpFloatDoc | null): AppError {
+    /** The refusal for an order the float can't cover: a balance that can't be read says so, a short one says how much an order may be. Logged here with the numbers, once. */
+    short(doc: PerpFloatDoc | null, requestedE6: bigint): AppError {
         const stale = !doc || this.#stale(doc);
         const free = doc && !stale ? this.#wholeUSD(freeOf(doc) - ACTIVATION_E6 - SLACK_E6) : 0;
         this.#deps.logger.warn(
-            { event: "perp.float_short", freeUSD: free, stale, staleForMs: this.#staleMs() },
-            "Refused a long or short because the Hyperliquid float can't cover it",
+            {
+                event: "perp.float.short",
+                requestedE6: requestedE6.toString(),
+                balanceE6: doc ? fromDecimal(doc.balanceE6).toString() : null,
+                heldE6: doc ? fromDecimal(doc.heldE6).toString() : null,
+                unreadFillsE6: doc ? fromDecimal(doc.unreadFillsE6).toString() : null,
+                maxOrderUSD: free,
+                stale,
+                lastReadAt: doc?.balanceAt ?? null,
+            },
+            stale
+                ? "A perp open was refused: the Hyperliquid float can't be read"
+                : "A perp open was refused: the float is short",
         );
+        if (stale)
+            return new AppError(
+                "unavailable",
+                `Hyperliquid's balance can't be read right now, so no new positions can open. Try again in a minute. ${NOTHING_SPENT}`,
+                { logged: true },
+            );
         return new AppError(
             "float_short",
-            `Long and short are limited to ${formatUsdShort(free)} right now. ${NOTHING_SPENT}`,
+            `Long and short are limited to ${formatUsdShort(free)} right now. Try a smaller amount. ${NOTHING_SPENT}`,
+            { logged: true },
         );
     }
 

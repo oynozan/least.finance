@@ -151,9 +151,9 @@ test("a close whose book can't be read still posts, at the widest limit", async 
 
     expect(done.state).toBe("done");
     expect(order.limitPx).toBe("61750");
-    expect(h.lines.some((line) => line.level === 40 && line.msg === "Couldn't read a Hyperliquid book to close")).toBe(
-        true,
-    );
+    expect(
+        h.lines.some((line) => line.level === 40 && line.msg.startsWith("Couldn't read a Hyperliquid book to close")),
+    ).toBe(true);
 });
 
 test("a partial close leaves the position open and credits nothing", async () => {
@@ -185,8 +185,22 @@ test("a rejected close restores open", async () => {
     const done = await finished(h, order._id);
 
     expect(done.state).toBe("rejected");
-    expect(done.reason).toBe("Couldn't close right now. Your position is still open.");
+    expect(done.reason).toBe(
+        "Nobody on the book took your close at an acceptable price. Your position is still open. Try again in a moment.",
+    );
+    expect(done).toMatchObject({ code: "no_fill", detail: expect.stringContaining("immediately match") });
     expect(await positionOf(h, position._id)).toMatchObject({ state: "open", active: true });
+    // The reason stays on the position after the toast is gone
+    expect((await h.service.positions(account)).positions[0]!.notice).toBe(done.reason);
+    const refused = h.lines.filter((line) => line.event === "perp.close.refused");
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({
+        level: 40,
+        order: order._id.toHexString(),
+        accountId: account._id.toHexString(),
+        position: position._id.toHexString(),
+        upstreamMessage: expect.stringContaining("immediately match"),
+    });
     expect((await h.state(account._id)).kinds).toEqual(["deposit", "perp_open", "perp_refund"]);
     const retry = await closeOf(h, account, position);
     expect((await finished(h, retry.order._id)).state).toBe("done");
@@ -291,10 +305,13 @@ test("a position under $10 the fake refuses stays open with the too-small messag
     const done = await finished(h, order._id);
 
     expect(done.state).toBe("rejected");
-    expect(done.reason).toBe("Too small to close right now.");
+    const tooSmall =
+        "This position is under Hyperliquid's $10 minimum to close, so it can't be closed on its own. It stays open.";
+    expect(done.reason).toBe(tooSmall);
+    expect(done.detail).toBe("Order must have minimum value of $10.");
     expect(await positionOf(h, position._id)).toMatchObject({ state: "open", active: true });
-    expect((await h.service.positions(account)).positions[0]!.notice).toBe("Too small to close right now.");
-    await h.until(async () => h.lines.some((l) => l.level >= 50 && /too small/i.test(l.msg)));
+    expect((await h.service.positions(account)).positions[0]!.notice).toBe(tooSmall);
+    await h.until(async () => h.lines.some((l) => l.level >= 50 && l.code === "too_small"));
 });
 
 test("a close finds our fee already with the master and credits everything left on the person's account", async () => {

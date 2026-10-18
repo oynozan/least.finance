@@ -19,9 +19,22 @@ import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { PerpCloseRequest, PerpOrderRequest, PerpQuoteRequest, PerpQuoteView, PerpsView } from "../protocol.ts";
 import { formatUsdShort } from "../predictions/views.ts";
-import { nextNonce, type AccountState, type Fill, type HyperliquidClient } from "./client.ts";
+import { NOTHING_SPENT } from "../predictions/failures.ts";
+import { nextNonce, type AccountState, type Fill, type HyperliquidClient, type OrderResult } from "./client.ts";
+import {
+    OpenStepError,
+    PERP_MESSAGES,
+    STILL_OPEN,
+    bookUnreadable,
+    closeNeverSent,
+    closeRefused,
+    openFailed,
+    openRefused,
+    seconds,
+    type PerpWhy,
+} from "./failures.ts";
 import { PERP_FEE_E6, PERP_FEE_USD } from "./fee.ts";
-import { ACTIVATION_E6, NOTHING_SPENT, PerpFloat } from "./float.ts";
+import { ACTIVATION_E6, PerpFloat } from "./float.ts";
 import {
     CLOSE_MIN_SLIPPAGE_BPS,
     OPEN_MIN_SLIPPAGE_BPS,
@@ -41,6 +54,8 @@ const DEFAULT_TAKER_RATE = 0.00045;
 const FEE_READ_MS = 60_000;
 /** Covers the PnL page's 30-day chart; the sidebar trims its closed rows to a week itself. */
 const SETTLED_KEEP_MS = 35 * 24 * 3_600_000;
+/** How long a refused open or close stays in the snapshot, so its reason is still there after a reload. */
+const FAILED_KEEP_MS = 7 * 24 * 3_600_000;
 const AMOUNT = /^\d+(\.\d{1,6})?$/;
 const IN_FLIGHT: PerpOrderState[] = ["placing", "funding", "posted", "sweeping"];
 const CLOSING: PerpOrderState[] = ["placing", "posted", "sweeping"];
@@ -56,20 +71,9 @@ const GONE_AGAIN_MS = 5_000;
 /** A transfer nonce older than this may be past Hyperliquid's acceptance window. */
 const NONCE_LIFE_MS = 24 * 3_600_000;
 
-export const PERP_MESSAGES = {
-    off: "Long and short aren't available right now.",
-    silent: `Hyperliquid isn't answering. ${NOTHING_SPENT}`,
-    priceMoved: `The price moved, so your position didn't open. ${NOTHING_SPENT}`,
-    rejected: `This position couldn't be opened right now. ${NOTHING_SPENT}`,
-    minCollateral: "Positions start at $10.",
-    minPosition: "A position starts at $11. Raise the collateral or the leverage.",
-    thin: "This market is too thin for a position this size right now. Try a smaller amount.",
-    closeFailed: "Couldn't close right now. Your position is still open.",
-    tooSmall: "Too small to close right now.",
-};
-
 type Outcome =
-    { kind: "filled"; sizeCoin: string; avgPx: string; feeE6: string } | { kind: "rejected"; message: string };
+    | { kind: "filled"; sizeCoin: string; avgPx: string; feeE6: string }
+    | { kind: "rejected"; message: string; detail?: string; code?: string };
 
 type CloseOutcome =
     { kind: "closed"; sizeCoin: string; avgPx: string; feeE6: string } | { kind: "outside"; liquidation: boolean };
@@ -111,6 +115,36 @@ const expiryOf = (order: PerpOrderDoc) =>
 
 const retainedOf = (account: PerpAccountDoc | null) => (account?.retainedE6 ? fromDecimal(account.retainedE6) : 0n);
 
+/** A fill of nothing: the limit was out of reach by the time the order got there. */
+const ZERO_FILL: PerpWhy = {
+    code: "price_moved",
+    message: PERP_MESSAGES.priceMoved,
+    detail: "Hyperliquid answered with an order that filled nothing",
+    msg: "A perp open filled nothing",
+    level: "warn",
+};
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const outcomeOf = (why: PerpWhy): Outcome => ({
+    kind: "rejected",
+    message: why.message,
+    detail: why.detail,
+    code: why.code,
+});
+
+/** What every log line about an order carries: who, which order, and the numbers it was sized with. */
+const fieldsOf = (order: PerpOrderDoc) => ({
+    order: order._id.toHexString(),
+    accountId: order.accountId.toHexString(),
+    asset: order.asset,
+    side: order.side,
+    leverage: order.leverage,
+    collateralUSD: formatE6(weiToE6(fromDecimal(order.collateral))),
+    sizeCoin: order.sizeCoin,
+    limitPx: order.limitPx || null,
+});
+
 const busy = (asset: string) => new AppError("position_busy", `You already hold a ${asset} position. Close it first.`);
 
 /** Opens positions on Hyperliquid from each person's own account, funded from the master float, and settles each order exactly once; the person's balance holds the money meanwhile. */
@@ -125,6 +159,8 @@ export class PerpService {
     /** The tail of each perp index's queue of holders. */
     readonly #locks = new Map<number, Promise<void>>();
     #stopped = false;
+    /** How many tracker passes have found each funded open's collateral still missing, to log the wait without a line a pass. */
+    readonly #waiting = new Map<string, number>();
 
     constructor(deps: Deps) {
         this.#deps = deps;
@@ -188,7 +224,13 @@ export class PerpService {
                 const { takerRate } = await this.#deps.client.userFees(this.#master);
                 this.#taker = { rate: takerRate, at: this.#now() };
             } catch (error) {
-                this.#deps.logger.warn({ err: error }, "Couldn't read the Hyperliquid fee rate");
+                // The rate in hand (or the base rate) is used for a minute, so an outage logs once a minute and not once a quote
+                const rate = Math.max(this.#taker?.rate ?? DEFAULT_TAKER_RATE, DEFAULT_TAKER_RATE);
+                this.#taker = { rate, at: this.#now() };
+                this.#deps.logger.warn(
+                    { event: "perp.fee_rate.unread", usingRate: rate, err: error },
+                    `Couldn't read the Hyperliquid fee rate; using ${rate}`,
+                );
             }
         }
         return Math.max(this.#taker?.rate ?? DEFAULT_TAKER_RATE, DEFAULT_TAKER_RATE);
@@ -199,7 +241,7 @@ export class PerpService {
         const market = this.#deps.markets.byAsset(req.asset);
         if (!market) throw new AppError("unavailable", `${req.asset} isn't available right now.`);
         if (!AMOUNT.test(req.collateralUSD))
-            throw new AppError("bad_request", "Invalid collateralUSD: an amount such as 10.50");
+            throw new AppError("bad_request", "Enter the collateral as dollars, such as 10.50.");
         const collateralUSD = Number(req.collateralUSD);
         const minimum = meetsMinimum(collateralUSD, req.leverage, PERP_FEE_USD);
         if (minimum === "collateral") throw new AppError("below_minimum", PERP_MESSAGES.minCollateral);
@@ -234,8 +276,11 @@ export class PerpService {
         market: { markPx: number; szDecimals: number },
     ) {
         const book = await this.#deps.client.book(req.asset).catch((error: unknown) => {
-            this.#deps.logger.warn({ err: error, asset: req.asset }, "Couldn't read a Hyperliquid book");
-            throw new AppError("unavailable", PERP_MESSAGES.silent);
+            this.#deps.logger.warn(
+                { event: "perp.book.read_failed", asset: req.asset, side: req.side, err: error },
+                "Couldn't read a Hyperliquid book to price a position",
+            );
+            throw new AppError("unavailable", bookUnreadable(error), { logged: true });
         });
         const limit = dynamicLimit({
             ...book,
@@ -247,7 +292,22 @@ export class PerpService {
             minBps: OPEN_MIN_SLIPPAGE_BPS,
             maxBps: this.#deps.config.PERPS_OPEN_MAX_SLIPPAGE_BPS,
         });
-        if (!limit.fillable || limit.avgPx === null) throw new AppError("unavailable", PERP_MESSAGES.thin);
+        if (!limit.fillable || limit.avgPx === null) {
+            this.#deps.logger.warn(
+                {
+                    event: "perp.quote.thin",
+                    asset: req.asset,
+                    side: req.side,
+                    sizeCoin: sizing.sizeCoin,
+                    capBps: this.#deps.config.PERPS_OPEN_MAX_SLIPPAGE_BPS,
+                    bestBid: book.bids[0]?.price ?? null,
+                    bestAsk: book.asks[0]?.price ?? null,
+                    levels: { bids: book.bids.length, asks: book.asks.length },
+                },
+                "A perp book is too thin for a position this size",
+            );
+            throw new AppError("unavailable", PERP_MESSAGES.thin, { logged: true });
+        }
         // Which price Hyperliquid measures its minimum at isn't known, so the size has to clear it at both
         if (!worthMinimum(sizing.sizeCoin, limit.limitPx) || !worthMinimum(sizing.sizeCoin, market.markPx))
             throw new AppError("below_minimum", PERP_MESSAGES.minPosition);
@@ -289,20 +349,19 @@ export class PerpService {
         // A retry is the same order whatever the checks below would say now
         const known = await perpOrders.findOne({ accountId: account._id, requestId: req.requestId });
         if (known) return { order: known, account: (await accounts.findOne({ _id: account._id })) ?? account };
-        if (this.#deps.config.PERPS_TRADING !== "on" || this.#stopped)
-            throw new AppError("trading_off", PERP_MESSAGES.off);
-        const { market, sizing, collateralE6 } = await this.#prepare(req);
-        await this.#checkBook(req, sizing, market);
-        if (
-            await this.#deps.collections.perpPositions.countDocuments(
-                { accountId: account._id, asset: req.asset, active: true },
-                { limit: 1 },
-            )
-        )
-            throw busy(req.asset);
-        const perp = await this.#perpAccount(account._id);
-        const hold = collateralE6 + (perp.activatedAt === null ? ACTIVATION_E6 : 0n);
-        await this.#float.check(hold);
+        if (this.#deps.config.PERPS_TRADING !== "on" || this.#stopped) {
+            const reason = this.#stopped ? "stopped" : "trading_off";
+            this.#deps.logger.warn(
+                { event: "perp:order", reason, accountId: account._id.toHexString(), asset: req.asset, side: req.side },
+                `A perp open was refused: ${reason === "stopped" ? "the server is shutting down" : "perp trading is off"}`,
+            );
+            throw new AppError("trading_off", this.#stopped ? PERP_MESSAGES.restarting : PERP_MESSAGES.off, {
+                logged: true,
+            });
+        }
+        const { perp, hold, sizing, collateralE6 } = await this.#checked(account, req).catch((error: unknown) => {
+            throw this.#refusal(account, req, error);
+        });
 
         const now = new Date(this.#now());
         const _id = new ObjectId();
@@ -333,9 +392,56 @@ export class PerpService {
             return { order: held.order, account: (await accounts.findOne({ _id: account._id })) ?? account };
         this.#float.remember(held.float);
         void this.#drive(order).catch((error: unknown) =>
-            this.#deps.logger.error({ err: error, order: _id.toHexString() }, "Couldn't open a perp position"),
+            this.#deps.logger.error(
+                { event: "perp.open.drive", ...fieldsOf(order), err: error },
+                "Sending a perp open threw past its handler; the tracker will settle it",
+            ),
         );
         return { order, account: held.account };
+    }
+
+    /** Everything an open must pass before anything is recorded: the market, the minimums, the book, a free slot and the float. */
+    async #checked(account: AccountDoc, req: PerpOrderRequest) {
+        const { market, sizing, collateralE6 } = await this.#prepare(req);
+        await this.#checkBook(req, sizing, market);
+        if (
+            await this.#deps.collections.perpPositions.countDocuments(
+                { accountId: account._id, asset: req.asset, active: true },
+                { limit: 1 },
+            )
+        )
+            throw busy(req.asset);
+        const perp = await this.#perpAccount(account._id);
+        const hold = collateralE6 + (perp.activatedAt === null ? ACTIVATION_E6 : 0n);
+        await this.#float.check(hold);
+        return { perp, hold, sizing, collateralE6 };
+    }
+
+    /** An open refused before anything moved is logged once with its numbers, and the socket layer is told so; anything else goes up as it is. */
+    #refusal(account: AccountDoc, req: PerpOrderRequest, error: unknown): unknown {
+        if (!(error instanceof AppError) || error.logged) return error;
+        this.#deps.logger.warn(
+            {
+                event: "perp:order",
+                code: error.code,
+                accountId: account._id.toHexString(),
+                asset: req.asset,
+                side: req.side,
+                leverage: req.leverage,
+                collateralUSD: req.collateralUSD,
+                message: error.message,
+            },
+            "A perp open was refused before anything moved",
+        );
+        return new AppError(error.code, error.message, { cause: error, logged: true });
+    }
+
+    /** One line for a failure with a reason: the level says whether it is an expected refusal or a bug, and the fields carry the upstream's words. */
+    #log(event: string, why: PerpWhy, fields: Record<string, unknown>) {
+        this.#deps.logger[why.level](
+            { event, ...fields, ...why.fields, code: why.code, detail: why.detail, err: why.err },
+            why.msg,
+        );
     }
 
     /** The person's lowest-index Hyperliquid account, created with the next perp index when they have none. */
@@ -411,8 +517,9 @@ export class PerpService {
                 await this.#fund(order, () => (sent = "no"));
                 await this.#post(order);
             } catch (error) {
-                this.#deps.logger.warn({ err: error, order: id }, "Couldn't open a perp position, refunding");
-                await this.#unwind(order, PERP_MESSAGES.silent, sent);
+                const why = openFailed(order, error);
+                this.#log("perp.open.failed", why, fieldsOf(order));
+                await this.#unwind(order, why, sent);
             }
         } finally {
             this.#submitting.delete(id);
@@ -438,25 +545,35 @@ export class PerpService {
             },
             { returnDocument: "after" },
         );
-        if (!moved) throw new Error("The order moved on");
+        if (!moved) throw new OpenStepError("moved", "The order moved on before it was funded");
         void this.#emit(moved);
         const sent = await this.#deps.client.usdSend(master, address, amount, nonce);
         if (sent.kind === "rejected") {
             rejected();
-            throw new Error(`The transfer was refused: ${sent.message}`);
+            throw new OpenStepError("transfer", `The transfer was refused: ${sent.message}`, {
+                upstream: sent.message,
+                raw: sent.raw,
+            });
         }
         await perpOrders.updateOne({ _id: order._id, state: "funding" }, { $set: { "steps.funded": true } });
         const state = await this.#deps.client.state(address);
         const short = amount - (state?.withdrawableE6 ?? 0n);
         if (short > 0n) {
-            if (short > ACTIVATION_E6) throw new Error(`The account is short by ${short} after funding`);
+            if (short > ACTIVATION_E6)
+                throw new OpenStepError("short", `The account is short by ${short} (e6) after funding`, {
+                    shortE6: short,
+                });
             const topUp = nextNonce(master.address);
             await perpOrders.updateOne(
                 { _id: order._id },
                 { $set: { "steps.topUpNonce": topUp, "steps.topUpE6": short.toString() } },
             );
             const again = await this.#deps.client.usdSend(master, address, short, topUp);
-            if (again.kind === "rejected") throw new Error(`The top-up was refused: ${again.message}`);
+            if (again.kind === "rejected")
+                throw new OpenStepError("top_up", `The top-up was refused: ${again.message}`, {
+                    upstream: again.message,
+                    raw: again.raw,
+                });
         }
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const at = new Date(this.#now());
@@ -473,14 +590,16 @@ export class PerpService {
             );
             return this.#releaseHold(session, funded, reservedOf(funded));
         });
-        if (!done) throw new Error("The order moved on");
+        if (!done) throw new OpenStepError("moved", "The order moved on while it was being funded");
         this.#float.remember(done.float);
-        this.#float.refresh().catch((error: unknown) => {
-            this.#deps.logger.warn(
-                { err: error, event: "perp.float_read", order: order._id.toHexString() },
-                "Couldn't re-read the Hyperliquid float after funding an order; the float loop retries",
+        void this.#float
+            .refresh()
+            .catch((error: unknown) =>
+                this.#deps.logger.warn(
+                    { event: "perp.float.read_failed", ...fieldsOf(order), err: error },
+                    "Couldn't read the Hyperliquid float after funding a perp open",
+                ),
             );
-        });
     }
 
     /** Sets the leverage, saves the price, and posts the order; an answer that doesn't settle it leaves it posted for the tracker. */
@@ -492,7 +611,10 @@ export class PerpService {
         await this.#deps.client.updateLeverage(signer, order.asset, order.leverage);
         // A book that has thinned since the person's review is posted at the widest limit, and fills as much as it can
         const book = await this.#deps.client.book(order.asset).catch((error: unknown) => {
-            this.#deps.logger.warn({ err: error, asset: order.asset }, "Couldn't read a Hyperliquid book to open");
+            this.#deps.logger.warn(
+                { event: "perp.book.read_failed", ...fieldsOf(order), err: error },
+                "Couldn't read a Hyperliquid book to open; posting at the widest limit with no book",
+            );
             return { bids: [], asks: [] };
         });
         const dynamic = dynamicLimit({
@@ -528,6 +650,7 @@ export class PerpService {
         if (!posted) return;
         void this.#emit(posted);
 
+        let threw: unknown;
         const result = await this.#deps.client
             .order(signer, {
                 asset: order.asset,
@@ -538,16 +661,41 @@ export class PerpService {
                 cloid: order.cloid,
                 expiresAfter: expiresAt.getTime(),
             })
-            .catch((error: unknown) => {
-                this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "The order post failed");
-                return { kind: "unknown" } as const;
+            .catch((error: unknown): OrderResult => {
+                threw = error;
+                return { kind: "unknown", cause: errorText(error) };
             });
+        if (result.kind === "unknown")
+            this.#deps.logger[threw ? "error" : "warn"](
+                {
+                    event: "perp.order.unanswered",
+                    ...fieldsOf(posted),
+                    cause: result.cause,
+                    timeoutMs: result.timeoutMs,
+                    err: threw,
+                },
+                result.timeoutMs
+                    ? `Hyperliquid didn't answer a perp open in ${seconds(result.timeoutMs)}; the tracker will settle it`
+                    : "A perp open got no usable answer from Hyperliquid; the tracker will settle it",
+            );
         try {
             if (result.kind === "filled" && Number(result.totalSz) > 0) await this.#onFill(posted, result);
-            else if (result.kind === "filled") await this.#onNoFill(posted, PERP_MESSAGES.priceMoved);
-            else if (result.kind === "rejected") await this.#onNoFill(posted, rejectionMessage(result.message));
+            else if (result.kind === "filled") await this.#onNoFill(posted, ZERO_FILL);
+            else if (result.kind === "rejected")
+                await this.#onNoFill(
+                    posted,
+                    openRefused(result.message, order.asset, {
+                        via: "post",
+                        upstreamRaw: result.raw,
+                        limitPx,
+                        markPx: market.markPx,
+                    }),
+                );
         } catch (error) {
-            this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "Couldn't settle a posted order");
+            this.#deps.logger.error(
+                { event: "perp.open.settle", ...fieldsOf(posted), err: error },
+                "Couldn't settle a posted perp open",
+            );
         }
     }
 
@@ -565,13 +713,23 @@ export class PerpService {
             const found = await this.#filledBy(fresh);
             if (found) return this.#onFill(fresh, found);
         }
-        const message =
+        const why: PerpWhy =
             status.kind === "rejected"
-                ? rejectionMessage(status.message)
+                ? openRefused(status.message, fresh.asset, { via: "status" })
                 : status.kind === "missing"
-                  ? PERP_MESSAGES.silent
-                  : PERP_MESSAGES.priceMoved;
-        await this.#onNoFill(fresh, message);
+                  ? {
+                        code: "unconfirmed",
+                        message: PERP_MESSAGES.unconfirmedOpen,
+                        detail: "Hyperliquid has no record of the order after its expiry",
+                        msg: "Hyperliquid has no record of a posted perp order after its expiry",
+                        level: "warn",
+                    }
+                  : {
+                        ...ZERO_FILL,
+                        detail: `Hyperliquid ended the order without a fill: ${status.status ?? "canceled"}`,
+                        fields: { via: "status", hyperliquidStatus: status.status ?? null },
+                    };
+        await this.#onNoFill(fresh, why);
     }
 
     /** What an order's fills add up to, from Hyperliquid's record by cloid; null when none filled. */
@@ -613,38 +771,54 @@ export class PerpService {
     }
 
     /** Nothing filled: everything on the person's address goes back to the master, and what it received is credited. */
-    #onNoFill(order: PerpOrderDoc, message: string): Promise<void> {
-        return this.withIndexLock(order.index, () => this.#sweepNoFill(order, message));
+    #onNoFill(order: PerpOrderDoc, why: PerpWhy): Promise<void> {
+        return this.withIndexLock(order.index, () => this.#sweepNoFill(order, why));
     }
 
-    async #sweepNoFill(order: PerpOrderDoc, message: string): Promise<void> {
+    async #sweepNoFill(order: PerpOrderDoc, why: PerpWhy): Promise<void> {
         const address = this.#deps.keyring.perpAddressAt(order.index);
         const state = await this.#deps.client.state(address);
         const sweep = minE6(state?.withdrawableE6 ?? 0n, weiToE6(fromDecimal(order.collateral)));
-        const moved = await this.#startSweep(order, ["posted"], { kind: "rejected", message }, sweep, sweep);
-        if (moved) await this.#finishSweep(moved);
+        const moved = await this.#startSweep(order, ["posted"], outcomeOf(why), sweep, sweep);
+        if (!moved) return;
+        // Logged where the order is claimed, so a refusal seen twice is still one line
+        this.#log("perp.open.refused", why, fieldsOf(order));
+        await this.#finishSweep(moved);
     }
 
     /** The taker fee Hyperliquid charged for the order's fills, or the base rate's estimate when it can't be read. */
     async #feeOf(order: PerpOrderDoc, address: string, notionalUSD: number): Promise<bigint> {
+        let failure: unknown;
         try {
             const fills = await this.#deps.client.fills(address, order.createdAt.getTime());
             const fee = fills.filter((f) => f.cloid === order.cloid).reduce((sum, f) => sum + f.feeE6, 0n);
             if (fee > 0n) return fee;
         } catch (error) {
-            this.#deps.logger.warn({ err: error, order: order._id.toHexString() }, "Couldn't read the order's fills");
+            failure = error;
         }
-        return BigInt(Math.ceil(notionalUSD * DEFAULT_TAKER_RATE * 1e6));
+        const estimate = BigInt(Math.ceil(notionalUSD * DEFAULT_TAKER_RATE * 1e6));
+        this.#deps.logger.warn(
+            {
+                event: "perp.fee.estimated",
+                ...fieldsOf(order),
+                notionalUSD,
+                estimatedFeeE6: estimate.toString(),
+                cause: failure ? undefined : "no fill with this order's id carried a fee",
+                err: failure,
+            },
+            "Couldn't read the fills to price the fee; used the base-rate estimate",
+        );
+        return estimate;
     }
 
     /** Refunds an order that never posted: the funding transfer is made certain first, then what it moved is swept back and credited; an order whose transfer can't be judged now stays for the tracker. */
-    async #unwind(order: PerpOrderDoc, message: string, sent: "no" | "maybe"): Promise<void> {
+    async #unwind(order: PerpOrderDoc, why: PerpWhy, sent: "no" | "maybe"): Promise<void> {
         await this.withIndexLock(order.index, async () => {
             const { perpOrders, perpAccounts } = this.#deps.collections;
             const fresh = await perpOrders.findOne({ _id: order._id });
             if (!fresh || (fresh.state !== "placing" && fresh.state !== "funding")) return;
             const collateral = weiToE6(fromDecimal(fresh.collateral));
-            const outcome = { kind: "rejected", message } as const;
+            const outcome = outcomeOf(why);
             const from: PerpOrderState[] = ["placing", "funding"];
             const refund = async () => {
                 const moved = await this.#startSweep(fresh, from, outcome, 0n, collateral);
@@ -662,9 +836,24 @@ export class PerpService {
             const allowance = account?.activatedAt === null ? ACTIVATION_E6 : 0n;
             const have = state?.withdrawableE6 ?? 0n;
             if (have < collateral - allowance) {
-                this.#deps.logger.warn({ order: fresh._id.toHexString() }, "A funded order isn't on its address yet");
+                // The tracker asks again every pass: the first and every tenth are logged
+                const passes = (this.#waiting.get(fresh._id.toHexString()) ?? 0) + 1;
+                this.#waiting.set(fresh._id.toHexString(), passes);
+                if (passes % 10 === 1)
+                    this.#deps.logger.warn(
+                        {
+                            event: "perp.open.waiting_for_funds",
+                            ...fieldsOf(fresh),
+                            haveE6: have.toString(),
+                            collateralE6: collateral.toString(),
+                            allowanceE6: allowance.toString(),
+                            passes,
+                        },
+                        "A funded perp open's collateral isn't on its address yet",
+                    );
                 return;
             }
+            this.#waiting.delete(fresh._id.toHexString());
             // The funding landed, so the address is activated; the platform absorbs that fee and credits the whole collateral
             const sweep = minE6(have, collateral);
             const moved = await this.#startSweep(fresh, from, outcome, sweep, collateral, 0n, true);
@@ -776,6 +965,25 @@ export class PerpService {
                 const sent = await this.#deps.client.usdSend(signer, this.#master, sweepE6, nonce);
                 // A repeat of a send that landed is answered duplicate or plainly refused, so any other answer is checked on the ledger
                 landed = sent.kind === "ok" || (await this.#landed(signer.address, this.#master, sweepE6, since));
+                if (!landed && sent.kind !== "ok") {
+                    const said = sent.kind === "rejected" ? sent.message : "Hyperliquid saw the nonce twice";
+                    this.#deps.logger.warn(
+                        {
+                            event: "perp.sweep.refused",
+                            ...fieldsOf(order),
+                            index: order.index,
+                            sweepE6: sweepE6.toString(),
+                            nonce,
+                            kind: sent.kind,
+                            upstreamMessage: said,
+                            upstreamRaw: sent.kind === "rejected" ? sent.raw : undefined,
+                        },
+                        "Hyperliquid refused a sweep to the master",
+                    );
+                    await this.#deps.collections.perpOrders
+                        .updateOne({ _id: order._id }, { $set: { "steps.lastSweepError": said } })
+                        .catch(() => undefined);
+                }
             }
             if (landed) return order;
             // A re-planned sweep is sent once now; if it is refused too, the tracker plans it again
@@ -783,7 +991,17 @@ export class PerpService {
             const next = await this.#replan(order);
             return next ? await this.#pay(next, true) : null;
         } catch (error) {
-            this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "A sweep to the master failed");
+            this.#deps.logger.error(
+                {
+                    event: "perp.sweep.failed",
+                    ...fieldsOf(order),
+                    index: order.index,
+                    sweepE6: sweepE6.toString(),
+                    nonce,
+                    err: error,
+                },
+                "A sweep to the master threw; it is repeated by the tracker",
+            );
             return null;
         }
     }
@@ -826,8 +1044,13 @@ export class PerpService {
             },
             { returnDocument: "after" },
         );
-        this.#deps.logger.error(
-            { order: order._id.toHexString(), plannedE6: stored.toString(), nowE6: amount.toString() },
+        this.#deps.logger.warn(
+            {
+                event: "perp.sweep.replanned",
+                ...fieldsOf(order),
+                plannedE6: stored.toString(),
+                nowE6: amount.toString(),
+            },
             "A sweep to the master was refused and is re-planned",
         );
         return next;
@@ -867,6 +1090,8 @@ export class PerpService {
                                   state: "rejected",
                                   credited: toDecimal(creditWei),
                                   reason: outcome.message,
+                                  ...(outcome.detail !== undefined && { detail: outcome.detail }),
+                                  ...(outcome.code !== undefined && { code: outcome.code }),
                                   updatedAt: at,
                               },
                 },
@@ -914,11 +1139,28 @@ export class PerpService {
         });
         if (!done) return;
         this.#float.remember(done.float);
-        this.#deps.logger.info({ order: order._id.toHexString(), state: done.order.state }, "Perp order settled");
+        this.#deps.logger.info(
+            {
+                event: "perp.open.settled",
+                ...fieldsOf(done.order),
+                state: done.order.state,
+                reason: done.order.reason,
+                code: done.order.code,
+                detail: done.order.detail,
+                creditedUSD: formatE6(weiToE6(creditWei)),
+                fill: done.order.fill && { sizeCoin: done.order.fill.sizeCoin, avgPx: done.order.fill.avgPx },
+            },
+            done.order.state === "rejected" ? "A perp open was refunded" : "Perp order settled",
+        );
         this.#deps.bus.emit("perp:updated", { order: done.order, position: done.position, account: done.account });
         void this.#float
             .refresh()
-            .catch((error: unknown) => this.#deps.logger.warn({ err: error }, "Couldn't read the Hyperliquid float"));
+            .catch((error: unknown) =>
+                this.#deps.logger.warn(
+                    { event: "perp.float.read_failed", ...fieldsOf(order), err: error },
+                    "Couldn't read the Hyperliquid float after settling a perp open",
+                ),
+            );
     }
 
     async #emit(order: PerpOrderDoc, position: PerpPositionDoc | null = null): Promise<void> {
@@ -926,7 +1168,10 @@ export class PerpService {
             const account = await this.#deps.collections.accounts.findOne({ _id: order.accountId });
             if (account) this.#deps.bus.emit("perp:updated", { order, position, account });
         } catch (error) {
-            this.#deps.logger.warn({ err: error }, "Couldn't announce a perp order");
+            this.#deps.logger.warn(
+                { event: "perp.announce_failed", ...fieldsOf(order), err: error },
+                "Couldn't announce a perp order",
+            );
         }
     }
 
@@ -943,8 +1188,8 @@ export class PerpService {
                 else await this.retrySweep(order);
             } catch (error) {
                 this.#deps.logger.error(
-                    { err: error, order: order._id.toHexString() },
-                    "Couldn't recover a perp order",
+                    { event: "perp.recover", ...fieldsOf(order), state: order.state, err: error },
+                    "Couldn't recover a perp order after a restart",
                 );
             }
         }
@@ -954,8 +1199,8 @@ export class PerpService {
         for (const order of closing) {
             await this.settleClose(order).catch((error: unknown) =>
                 this.#deps.logger.error(
-                    { err: error, order: order._id.toHexString() },
-                    "Couldn't recover a perp close",
+                    { event: "perp.recover", ...fieldsOf(order), state: order.state, err: error },
+                    "Couldn't recover a perp close after a restart",
                 ),
             );
         }
@@ -964,8 +1209,15 @@ export class PerpService {
     /** Settles an open order that never posted and that nothing in this process is still driving: it is refunded once its funding is certain. */
     async settleStuck(order: PerpOrderDoc): Promise<void> {
         if (order.kind !== "open" || this.submitting(order._id)) return;
-        if (order.state === "placing") await this.#unwind(order, PERP_MESSAGES.silent, "no");
-        else if (order.state === "funding") await this.#unwind(order, PERP_MESSAGES.silent, "maybe");
+        const why: PerpWhy = {
+            code: "interrupted",
+            message: PERP_MESSAGES.restartedOpen,
+            detail: `The order was left ${order.state} with nothing sending it`,
+            msg: "A perp open was left unfinished and is being refunded",
+            level: "warn",
+        };
+        if (order.state === "placing") await this.#unwind(order, why, "no");
+        else if (order.state === "funding") await this.#unwind(order, why, "maybe");
     }
 
     /** Finishes an open order's stored sweep; a repeat, or an order that moved on, does nothing. */
@@ -986,18 +1238,46 @@ export class PerpService {
         const { perpOrders, perpPositions } = this.#deps.collections;
         const known = await perpOrders.findOne({ accountId: account._id, requestId: req.requestId });
         if (known) return { order: known };
-        if (this.#stopped) throw new AppError("unavailable", PERP_MESSAGES.closeFailed);
+        const accountId = account._id.toHexString();
+        if (this.#stopped)
+            throw this.#closeRefusal("stopped", "unavailable", PERP_MESSAGES.closeRestarting, { accountId }, "warn");
         const position = await perpPositions.findOne({ _id: new ObjectId(req.positionId), accountId: account._id });
         if (!position) throw new AppError("not_found", "That position wasn't found.");
         const live = await this.#closeInFlight(position);
         if (live) return { order: live };
-        if (position.state !== "open") throw new AppError("position_busy", "That position is already closed.");
+        const held = { accountId, position: position._id.toHexString(), asset: position.asset, state: position.state };
+        if (position.state !== "open")
+            throw this.#closeRefusal(
+                position.state === "closing" ? "closing" : "closed",
+                "position_busy",
+                position.state === "closing"
+                    ? "That position is already being closed."
+                    : "That position was already closed.",
+                held,
+                "warn",
+            );
         const market = this.#deps.markets.byAsset(position.asset);
-        if (!market) throw new AppError("unavailable", PERP_MESSAGES.closeFailed);
+        if (!market)
+            throw this.#closeRefusal(
+                "market_missing",
+                "unavailable",
+                `${position.asset} isn't listed on Hyperliquid right now, so it can't be closed. ${STILL_OPEN} Try again in a minute.`,
+                held,
+                "error",
+            );
 
         // A close is never refused for a thin book: it goes out at the widest limit and fills what it can
         const book = await this.#deps.client.book(position.asset).catch((error: unknown) => {
-            this.#deps.logger.warn({ err: error, asset: position.asset }, "Couldn't read a Hyperliquid book to close");
+            this.#deps.logger.warn(
+                {
+                    event: "perp.book.read_failed",
+                    accountId: account._id.toHexString(),
+                    position: position._id.toHexString(),
+                    asset: position.asset,
+                    err: error,
+                },
+                "Couldn't read a Hyperliquid book to close; posting at the widest limit with no book",
+            );
             return { bids: [], asks: [] };
         });
         const { limitPx } = dynamicLimit({
@@ -1058,9 +1338,27 @@ export class PerpService {
             return { order: again };
         }
         void this.#driveClose(order).catch((error: unknown) =>
-            this.#deps.logger.error({ err: error, order: _id.toHexString() }, "Couldn't close a perp position"),
+            this.#deps.logger.error(
+                { event: "perp.close.drive", ...fieldsOf(order), err: error },
+                "Sending a perp close threw past its handler; the tracker will settle it",
+            ),
         );
         return { order };
+    }
+
+    /** A close turned away before anything was recorded, logged once with the account and the position. */
+    #closeRefusal(
+        reason: string,
+        code: "unavailable" | "position_busy",
+        message: string,
+        fields: Record<string, unknown>,
+        level: "warn" | "error",
+    ): AppError {
+        this.#deps.logger[level](
+            { event: "perp.close.refused", reason, code, ...fields },
+            `A perp close was refused: ${reason}`,
+        );
+        return new AppError(code, message, { logged: true });
     }
 
     /** The close of ours that is still moving for a position, if any. */
@@ -1094,6 +1392,7 @@ export class PerpService {
             );
             if (!posted) return;
             void this.#emitClose(posted);
+            let threw: unknown;
             const result = await this.#deps.client
                 .order(this.#deps.keyring.perpSignerAt(order.index), {
                     asset: order.asset,
@@ -1104,16 +1403,42 @@ export class PerpService {
                     cloid: order.cloid,
                     expiresAfter: expiresAt.getTime(),
                 })
-                .catch((error: unknown) => {
-                    this.#deps.logger.error({ err: error, order: id }, "The close post failed");
-                    return { kind: "unknown" } as const;
+                .catch((error: unknown): OrderResult => {
+                    threw = error;
+                    return { kind: "unknown", cause: errorText(error) };
                 });
+            if (result.kind === "unknown")
+                this.#deps.logger[threw ? "error" : "warn"](
+                    {
+                        event: "perp.order.unanswered",
+                        ...fieldsOf(posted),
+                        cause: result.cause,
+                        timeoutMs: result.timeoutMs,
+                        err: threw,
+                    },
+                    result.timeoutMs
+                        ? `Hyperliquid didn't answer a perp close in ${seconds(result.timeoutMs)}; the tracker will settle it`
+                        : "A perp close got no usable answer from Hyperliquid; the tracker will settle it",
+                );
             try {
+                const fields = { via: "post", limitPx: order.limitPx };
                 if (result.kind === "filled" && Number(result.totalSz) > 0) await this.#onCloseFill(posted, result);
-                else if (result.kind === "filled") await this.#onCloseRejected(posted, ["posted"], "no fill");
-                else if (result.kind === "rejected") await this.#onCloseRejected(posted, ["posted"], result.message);
+                else if (result.kind === "filled")
+                    await this.#onCloseRejected(posted, ["posted"], {
+                        ...closeRefused("no fill", fields),
+                        detail: "Hyperliquid answered with a close that filled nothing",
+                    });
+                else if (result.kind === "rejected")
+                    await this.#onCloseRejected(
+                        posted,
+                        ["posted"],
+                        closeRefused(result.message, { ...fields, upstreamRaw: result.raw }),
+                    );
             } catch (error) {
-                this.#deps.logger.error({ err: error, order: id }, "Couldn't settle a posted close");
+                this.#deps.logger.error(
+                    { event: "perp.close.settle", ...fieldsOf(posted), err: error },
+                    "Couldn't settle a posted perp close",
+                );
             }
         } finally {
             this.#submitting.delete(id);
@@ -1126,7 +1451,8 @@ export class PerpService {
         if (!fresh || fresh.kind !== "close") return;
         if (fresh.state === "sweeping") return this.withIndexLock(fresh.index, () => this.#finishCloseSweep(fresh));
         if (fresh.state === "placing") {
-            if (!this.submitting(fresh._id)) await this.#onCloseRejected(fresh, ["placing"], "never sent");
+            if (!this.submitting(fresh._id))
+                await this.#onCloseRejected(fresh, ["placing"], closeNeverSent({ state: "placing" }));
             return;
         }
         if (fresh.state !== "posted") return;
@@ -1137,7 +1463,19 @@ export class PerpService {
         if (status.kind === "missing" && this.#now() < expiryOf(fresh) + MISSING_GRACE_MS) return;
         const found = await this.#filledBy(fresh);
         if (found) return this.#onCloseFill(fresh, found);
-        await this.#onCloseRejected(fresh, ["posted"], status.kind === "rejected" ? status.message : "no fill");
+        await this.#onCloseRejected(
+            fresh,
+            ["posted"],
+            status.kind === "rejected"
+                ? closeRefused(status.message, { via: "status" })
+                : {
+                      ...closeRefused("no fill", { via: "status", hyperliquidStatus: status.kind }),
+                      detail:
+                          status.kind === "canceled"
+                              ? `Hyperliquid ended the close without a fill: ${status.status ?? "canceled"}`
+                              : "Hyperliquid has no record of the close after its expiry",
+                  },
+        );
     }
 
     /** A close that filled: a partial one shrinks the position, a whole one sweeps the account back to the master first. */
@@ -1182,7 +1520,9 @@ export class PerpService {
                     $set: {
                         state: "done",
                         fill: { sizeCoin: fill.sizeCoin, avgPx: fill.avgPx, feeE6: toDecimal(fill.feeE6) },
-                        reason: `Closed part of your ${order.asset} position. Press Close again for the rest.`,
+                        reason: `Closed ${fill.sizeCoin} of ${order.sizeCoin} ${order.asset}; the book was too thin for the rest. Press Close again for the rest.`,
+                        detail: `Hyperliquid filled ${fill.sizeCoin} of ${order.sizeCoin} at a limit of ${order.limitPx}`,
+                        code: "partial_close",
                         updatedAt: at,
                     },
                 },
@@ -1197,34 +1537,45 @@ export class PerpService {
             );
             return { order: moved, position: reopened };
         });
-        if (done) void this.#emit(done.order, done.position);
+        if (!done) return;
+        this.#deps.logger.warn(
+            {
+                event: "perp.close.partial",
+                ...fieldsOf(order),
+                position: position._id.toHexString(),
+                closedSizeCoin: fill.sizeCoin,
+                avgPx: fill.avgPx,
+            },
+            "A perp close filled only part of the position",
+        );
+        void this.#emit(done.order, done.position);
     }
 
-    /** Puts a position back to open after a close that didn't happen; a venue refusal for being too small is kept on the position. */
-    async #onCloseRejected(order: PerpOrderDoc, from: PerpOrderState[], message: string): Promise<void> {
+    /** Puts a position back to open after a close that didn't happen; the reason is kept on the order and on the position, so it shows after the toast is gone. */
+    async #onCloseRejected(order: PerpOrderDoc, from: PerpOrderState[], why: PerpWhy): Promise<void> {
         const { perpOrders, perpPositions } = this.#deps.collections;
-        const tooSmall = /minimum value|too small/i.test(message);
-        const reason = tooSmall ? PERP_MESSAGES.tooSmall : PERP_MESSAGES.closeFailed;
+        const reason = why.message;
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const at = new Date(this.#now());
             const moved = await perpOrders.findOneAndUpdate(
                 { _id: order._id, state: { $in: from } },
-                { $set: { state: "rejected", reason, updatedAt: at } },
+                { $set: { state: "rejected", reason, detail: why.detail, code: why.code, updatedAt: at } },
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
             const reopened = await perpPositions.findOneAndUpdate(
                 { _id: new ObjectId(order.steps.positionId as string), state: "closing" },
-                { $set: { state: "open", closeReason: tooSmall ? reason : null, updatedAt: at } },
+                { $set: { state: "open", closeReason: reason, updatedAt: at } },
                 { session, returnDocument: "after" },
             );
             return { order: moved, position: reopened };
         });
         if (!done) return;
-        this.#deps.logger[tooSmall ? "error" : "warn"](
-            { order: order._id.toHexString(), message },
-            tooSmall ? "Hyperliquid refused to close a position as too small" : "A perp close didn't go through",
-        );
+        this.#log("perp.close.refused", why, {
+            ...fieldsOf(order),
+            position: order.steps.positionId,
+            sizeCoin: order.sizeCoin,
+        });
         void this.#emit(done.order, done.position);
     }
 
@@ -1235,7 +1586,10 @@ export class PerpService {
             });
             await this.#emit(order, position);
         } catch (error) {
-            this.#deps.logger.warn({ err: error }, "Couldn't announce a perp close");
+            this.#deps.logger.warn(
+                { event: "perp.announce_failed", ...fieldsOf(order), err: error },
+                "Couldn't announce a perp close",
+            );
         }
     }
 
@@ -1359,13 +1713,24 @@ export class PerpService {
         });
         if (!done) return;
         this.#deps.logger.info(
-            { order: order._id.toHexString(), position: positionId.toHexString() },
+            {
+                event: "perp.close.settled",
+                ...fieldsOf(order),
+                position: positionId.toHexString(),
+                creditedUSD: formatE6(weiToE6(creditWei)),
+                liquidated,
+            },
             "Perp close settled",
         );
         this.#deps.bus.emit("perp:updated", done);
         void this.#float
             .refresh()
-            .catch((error: unknown) => this.#deps.logger.warn({ err: error }, "Couldn't read the Hyperliquid float"));
+            .catch((error: unknown) =>
+                this.#deps.logger.warn(
+                    { event: "perp.float.read_failed", ...fieldsOf(order), err: error },
+                    "Couldn't read the Hyperliquid float after settling a perp close",
+                ),
+            );
     }
 
     /** Settles a position that is gone or smaller on Hyperliquid with no close of ours in flight, from the fills and the account state read for it. */
@@ -1389,7 +1754,16 @@ export class PerpService {
                 { returnDocument: "after" },
             );
             this.#deps.logger.warn(
-                { position: fresh._id.toHexString(), liquidation },
+                {
+                    event: "perp.position.shrank",
+                    position: fresh._id.toHexString(),
+                    accountId: fresh.accountId.toHexString(),
+                    asset: fresh.asset,
+                    side: fresh.side,
+                    sizeCoin: fresh.sizeCoin,
+                    realSizeCoin: real.sizeCoin,
+                    liquidation,
+                },
                 "A position shrank outside the app",
             );
             const opened = await perpOrders.findOne({
@@ -1410,7 +1784,17 @@ export class PerpService {
                     { _id: fresh._id, state: "open" },
                     { $set: { missingSince: new Date(this.#now()) } },
                 );
-                this.#deps.logger.warn({ position: fresh._id.toHexString() }, "A position is missing on Hyperliquid");
+                this.#deps.logger.warn(
+                    {
+                        event: "perp.position.missing",
+                        position: fresh._id.toHexString(),
+                        accountId: fresh.accountId.toHexString(),
+                        asset: fresh.asset,
+                        side: fresh.side,
+                        sizeCoin: fresh.sizeCoin,
+                    },
+                    "A position is missing on Hyperliquid; it is settled if the next read agrees",
+                );
                 return;
             }
             if (this.#now() - since < GONE_AGAIN_MS) return;
@@ -1471,13 +1855,17 @@ export class PerpService {
     async positions(account: AccountDoc): Promise<PerpsView> {
         const { perpPositions, perpOrders } = this.#deps.collections;
         const since = new Date(this.#now() - SETTLED_KEEP_MS);
+        const failedSince = new Date(this.#now() - FAILED_KEEP_MS);
         const [positions, orders] = await Promise.all([
             perpPositions
                 .find({ accountId: account._id, $or: [{ active: true }, { settledAt: { $gte: since } }] })
                 .sort({ _id: -1 })
                 .toArray(),
             perpOrders
-                .find({ accountId: account._id, state: { $in: IN_FLIGHT } })
+                .find({
+                    accountId: account._id,
+                    $or: [{ state: { $in: IN_FLIGHT } }, { state: "rejected", updatedAt: { $gte: failedSince } }],
+                })
                 .sort({ _id: -1 })
                 .toArray(),
         ]);
@@ -1490,9 +1878,6 @@ const stepMessage = (asset: string, market: { szDecimals: number; markPx: number
     const step = 10 ** -market.szDecimals;
     return `${asset} trades in steps of ${step.toFixed(market.szDecimals)} (about ${formatUsdShort(step * market.markPx)}). Raise the collateral or the leverage.`;
 };
-
-const rejectionMessage = (message: string) =>
-    /immediately match/i.test(message) ? PERP_MESSAGES.priceMoved : PERP_MESSAGES.rejected;
 
 const partialMessage = (order: PerpOrderDoc, outcome: Extract<Outcome, { kind: "filled" }>) =>
     `Opened ${formatUsdShort(Number(outcome.sizeCoin) * Number(outcome.avgPx))} of your ${formatUsdShort(Number(fromDecimal(order.notionalE6)) / 1e6)}. The rest is back in your balance.`;

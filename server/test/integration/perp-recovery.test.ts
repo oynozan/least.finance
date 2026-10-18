@@ -102,7 +102,7 @@ test("during the sweep", async () => {
     expect(await h.database.collections.perpPositions.countDocuments({ accountId: account._id })).toBe(1);
 });
 
-test("Hyperliquid not answering to the transfer refunds with 'Hyperliquid isn't answering. Nothing was spent.'", async () => {
+test("a transfer Hyperliquid refuses refunds with what Hyperliquid said, kept and logged", async () => {
     const h = await fresh();
     const account = await h.seedAccount("1000");
     h.fake.failUsdSend(true);
@@ -110,7 +110,16 @@ test("Hyperliquid not answering to the transfer refunds with 'Hyperliquid isn't 
     const done = await h.settled(order._id);
 
     expect(done.state).toBe("rejected");
-    expect(done.reason).toBe("Hyperliquid isn't answering. Nothing was spent.");
+    expect(done.reason).toBe('Hyperliquid refused to fund your position: "usdSend is failing.". Nothing was spent.');
+    expect(done).toMatchObject({ detail: "usdSend is failing.", code: "transfer_refused" });
+    const failed = h.lines.filter((line) => line.event === "perp.open.failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({
+        level: 50,
+        order: order._id.toHexString(),
+        accountId: account._id.toHexString(),
+        upstreamMessage: "usdSend is failing.",
+    });
     const s = await expectSettledOnce(h, account._id);
     expect(s.balance).toBe(wei("1000"));
     expect(h.fake.orders).toHaveLength(0);
