@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { loopWatch } from "../loop-watch.ts";
 import type { ObjectId } from "mongodb";
 import type { Logger } from "pino";
 import type { Config } from "../config.ts";
@@ -86,13 +87,16 @@ export class PerpTracker {
         this.#stop = new AbortController();
         const signal = this.#stop.signal;
         this.#loop = (async () => {
+            const watch = loopWatch(this.#deps.logger, "perp tracking");
             while (!signal.aborted) {
+                let waitMs = PASS_MS;
                 try {
                     await this.pass(this.#now(), signal);
+                    watch.ok();
                 } catch (error) {
-                    if (!signal.aborted) this.#deps.logger.warn({ err: error }, "Perp tracking pass failed");
+                    if (!signal.aborted) waitMs = watch.failed(error, PASS_MS);
                 }
-                await sleep(PASS_MS, undefined, { signal }).catch(() => undefined);
+                await sleep(waitMs, undefined, { signal }).catch(() => undefined);
             }
         })();
     }

@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { loopWatch } from "../loop-watch.ts";
 import type { Logger } from "pino";
 import { HourlyLog } from "../predictions/rebalance-log.ts";
 import type { MarketOutcomeView, MarketSearchView, MarketView, TrendingView } from "../protocol.ts";
@@ -77,14 +78,17 @@ export class MarketService {
     }
 
     async #run(signal: AbortSignal) {
+        const watch = loopWatch(this.#deps.logger, "market sync");
         while (!signal.aborted) {
+            let waitMs = this.#deps.syncMs;
             try {
                 await this.tick(signal);
+                watch.ok();
             } catch (error) {
                 // tick catches every read itself, so reaching this is a bug in the sync
-                this.#deps.logger.error({ err: error }, "Market sync failed");
+                waitMs = watch.failed(error, this.#deps.syncMs);
             }
-            await sleep(this.#deps.syncMs, undefined, { signal }).catch(() => undefined);
+            await sleep(waitMs, undefined, { signal }).catch(() => undefined);
         }
     }
 

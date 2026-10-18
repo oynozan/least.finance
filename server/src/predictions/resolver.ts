@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { loopWatch } from "../loop-watch.ts";
 import { ObjectId } from "mongodb";
 import type { Logger } from "pino";
 import type { Collections, PositionDoc } from "../db/mongo.ts";
@@ -76,13 +77,16 @@ export class PredictionResolver {
     }
 
     async #run(signal: AbortSignal) {
+        const watch = loopWatch(this.#deps.logger, "prediction resolution");
         while (!signal.aborted) {
+            let waitMs = this.#deps.resolveMs;
             try {
                 await this.tick();
+                watch.ok();
             } catch (error) {
-                this.#deps.logger.warn({ err: error }, "Prediction resolution pass failed");
+                waitMs = watch.failed(error, this.#deps.resolveMs);
             }
-            await sleep(this.#deps.resolveMs, undefined, { signal }).catch(() => undefined);
+            await sleep(waitMs, undefined, { signal }).catch(() => undefined);
         }
     }
 

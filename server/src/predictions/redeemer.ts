@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { loopWatch } from "../loop-watch.ts";
 import type { Logger } from "pino";
 import type { Collections, PredictionRedemptionDoc } from "../db/mongo.ts";
 import type { PredictionService } from "./predictions.ts";
@@ -59,13 +60,16 @@ export class PredictionRedeemer {
     }
 
     async #run(signal: AbortSignal) {
+        const watch = loopWatch(this.#deps.logger, "prediction redemption");
         while (!signal.aborted) {
+            let waitMs = this.#deps.intervalMs;
             try {
                 await this.tick();
+                watch.ok();
             } catch (error) {
-                this.#deps.logger.warn({ err: error }, "Prediction redemption pass failed");
+                waitMs = watch.failed(error, this.#deps.intervalMs);
             }
-            await sleep(this.#deps.intervalMs, undefined, { signal }).catch(() => undefined);
+            await sleep(waitMs, undefined, { signal }).catch(() => undefined);
         }
     }
 

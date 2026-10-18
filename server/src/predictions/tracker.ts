@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { loopWatch } from "../loop-watch.ts";
 import type { Logger } from "pino";
 import type { Collections, PredictionOrderDoc } from "../db/mongo.ts";
 import { cancelled, isUpstreamFailure, unconfirmed } from "./failures.ts";
@@ -71,13 +72,16 @@ export class PredictionTracker {
                 await sleep(Math.max(this.#deps.pollMs, 1000), undefined, { signal }).catch(() => undefined);
             }
         })();
+        const watch = loopWatch(this.#deps.logger, "prediction tracking");
         while (!signal.aborted) {
+            let waitMs = this.#deps.pollMs;
             try {
                 await this.tick(signal);
+                watch.ok();
             } catch (error) {
-                this.#deps.logger.warn({ err: error }, "Prediction tracking pass failed");
+                waitMs = watch.failed(error, this.#deps.pollMs);
             }
-            await sleep(this.#deps.pollMs, undefined, { signal }).catch(() => undefined);
+            await sleep(waitMs, undefined, { signal }).catch(() => undefined);
         }
         await float;
     }
