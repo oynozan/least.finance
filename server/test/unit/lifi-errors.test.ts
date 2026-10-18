@@ -64,7 +64,9 @@ test("a timeout and a refused connection read differently", async () => {
         url: "http://lifi.test",
         timeoutMs: 20,
         fetch: (_input, init) =>
-            new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason))),
+            new Promise((_resolve, reject) =>
+                init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+            ),
     });
     await expect(slow.tokens([1])).rejects.toThrow("LI.FI didn't answer /v1/tokens in 0 seconds");
 
@@ -78,7 +80,11 @@ test("a timeout and a refused connection read differently", async () => {
 });
 
 test("a status keeps LI.FI's own sentence for the substatus", async () => {
-    const lifi = answering(200, { status: "FAILED", substatus: "SLIPPAGE_EXCEEDED", substatusMessage: "Too much slippage" });
+    const lifi = answering(200, {
+        status: "FAILED",
+        substatus: "SLIPPAGE_EXCEEDED",
+        substatusMessage: "Too much slippage",
+    });
 
     expect(await lifi.status({ txHash: "0xa", fromChain: 1, toChain: 8453 })).toMatchObject({
         status: "FAILED",

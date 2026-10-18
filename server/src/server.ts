@@ -446,6 +446,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             collections,
             ledger,
             catalog: swapCatalog,
+            logger: logger.child({ component: "trades" }),
             coinWithdrawals: config.COIN_WITHDRAWALS === "on",
         });
         const execution = createTradingExecution({

@@ -91,6 +91,7 @@ export type TradingErrorCode =
     | "insufficient_holdings"
     | "price_moved"
     | "below_minimum"
+    | "rate_limited"
     | "unavailable";
 
 export type TradingAck<T> = ({ ok: true } & T) | { ok: false; code: TradingErrorCode; message: string };

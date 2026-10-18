@@ -725,7 +725,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
     /** An expected refusal, logged once as a warning with the event and account, unless the thrower already logged it with its numbers. */
     function refused(ack: object, error: AppError | TradeError) {
-        if (error instanceof AppError && error.logged) return;
+        if (error.logged) return;
         const { event, account } = describe(ack);
         logger.warn(
             { event, account, code: error.code, detail: error instanceof AppError ? error.detail : undefined },
@@ -794,6 +794,7 @@ const TRADING_CODES: Partial<Record<ApiError["code"], TradingErrorCode>> = {
     forbidden: "bad_request",
     wallet_not_connected: "unauthenticated",
     unauthorized: "unauthenticated",
+    rate_limited: "rate_limited",
 };
 
 const failure = (error: ApiError): Ack<never> => ({ ok: false, error });

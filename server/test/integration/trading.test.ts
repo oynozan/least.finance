@@ -336,7 +336,7 @@ describe("account trading", () => {
         const { socket } = await person(stack);
         expect(await trade(socket, { verb: "sell", symbol: "BNB", units: "0.0001" })).toMatchObject({
             ok: false,
-            code: "below_minimum",
+            code: "insufficient_holdings",
         });
     });
 
@@ -433,7 +433,11 @@ describe("account trading", () => {
         ok(await trade(socket, { verb: "buy", symbol: "BNB", amountUSD: TENTH_BNB }));
         // $0.60 of BNB at $600
         const small = await withdraw(socket, { symbol: "BNB", units: "0.001", to: user.wallet });
-        expect(small).toMatchObject({ ok: false, code: "bad_request", message: "The smallest send is $1." });
+        expect(small).toMatchObject({
+            ok: false,
+            code: "bad_request",
+            message: expect.stringContaining("the smallest send is $1"),
+        });
         const { holdings, coinWithdrawals } = open.server.services.database.collections;
         expect(fromUnitsDecimal((await holdings.findOne({ accountId, symbol: "BNB" }))!.units)).toBe(toBig("0.1"));
         expect(await coinWithdrawals.countDocuments({ accountId })).toBe(0);

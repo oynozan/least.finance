@@ -1,11 +1,13 @@
 import { ObjectId, type ClientSession } from "mongodb";
-import { AppError } from "../errors.ts";
+import type { Logger } from "pino";
+import { AppError, newRef, wentWrong } from "../errors.ts";
 import { isDuplicateKey, type AccountDoc, type Collections } from "../db/mongo.ts";
 import { formatUsdc, fromDecimal, toDecimal } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
 import type { SwapCatalog } from "../swaps/catalog.ts";
 import { COINS, NETWORKS, type SwapCoin } from "../swaps/coins.ts";
 import type { CoinWithdrawalDoc, TradeDoc } from "./docs.ts";
+import { KEPT, ago, amountOf, dollars, echoed, type Action } from "./failures.ts";
 import { listHoldings } from "./holdings.ts";
 import { TRADE_SPREAD_BPS } from "./spread.ts";
 import type {
@@ -16,17 +18,44 @@ import type {
     TradeResult,
     TradingErrorCode,
 } from "./types.ts";
-import { UNIT_DECIMALS, floorToDecimals, formatUnits18, parseUnits18, toUnitsDecimal } from "./units.ts";
+import {
+    UNIT_DECIMALS,
+    floorToDecimals,
+    formatUnits18,
+    fromUnitsDecimal,
+    parseUnits18,
+    toUnitsDecimal,
+} from "./units.ts";
 import { coinWithdrawalView, tradeView } from "./views.ts";
 
-/** An error with the code the trading acks carry. */
+/** An error with the code the trading acks carry; `message` is what the person reads. */
 export class TradeError extends Error {
     readonly code: TradingErrorCode;
+    /** Our explanation with the numbers, for the log. */
+    readonly detail: string | undefined;
+    /** More for the log line: the prices, amounts and limits the refusal was made on. */
+    readonly fields: Record<string, unknown>;
+    /** `error` for a bug on our side, `warn` for a refusal. */
+    readonly level: "warn" | "error";
+    /** Set once the trade service has logged it, so the socket layer doesn't log it again. */
+    logged = false;
 
-    constructor(code: TradingErrorCode, message: string) {
-        super(message);
+    constructor(
+        code: TradingErrorCode,
+        message: string,
+        options: {
+            detail?: string;
+            fields?: Record<string, unknown>;
+            level?: "warn" | "error";
+            cause?: unknown;
+        } = {},
+    ) {
+        super(message, { cause: options.cause });
         this.name = "TradeError";
         this.code = code;
+        this.detail = options.detail;
+        this.fields = options.fields ?? {};
+        this.level = options.level ?? "warn";
     }
 }
 
@@ -52,7 +81,8 @@ const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 type Deps = {
     collections: Collections;
     ledger: Ledger;
-    catalog: Pick<SwapCatalog, "priceOf">;
+    catalog: Pick<SwapCatalog, "priceStatus">;
+    logger: Logger;
     /** Whether held coins may be sent out. */
     coinWithdrawals: boolean;
     now?: () => number;
@@ -73,6 +103,53 @@ export class TradeService {
 
     /** Fills a trade in one transaction at the server's own price; a repeat of the request answers the first fill. */
     async order(account: AccountDoc, request: TradeOrderRequest): Promise<TradeResult> {
+        try {
+            return await this.#order(account, request);
+        } catch (error) {
+            throw this.#report(
+                "trade:order",
+                `Refused a ${request.verb}`,
+                {
+                    account: account._id.toHexString(),
+                    requestId: request.requestId,
+                    verb: request.verb,
+                    symbol: request.symbol,
+                    toSymbol: request.toSymbol,
+                },
+                error,
+            );
+        }
+    }
+
+    /** Logs a refusal once, with the numbers it was made on, and marks it so the socket layer leaves it alone. Anything else is the caller's to log. */
+    #report(event: string, label: string, context: Record<string, unknown>, error: unknown): unknown {
+        if (!(error instanceof TradeError)) return error;
+        error.logged = true;
+        this.#deps.logger[error.level](
+            {
+                event,
+                ...context,
+                code: error.code,
+                detail: error.detail,
+                ...error.fields,
+                ...(error.cause !== undefined && { err: error.cause }),
+            },
+            `${label}: ${error.message}`,
+        );
+        return error;
+    }
+
+    /** A duplicate key on the request id is a repeat of the request; any other is a clash that was swallowed, so it is logged. */
+    #duplicate(error: unknown, context: Record<string, unknown>) {
+        const pattern = (error as { keyPattern?: Record<string, unknown> }).keyPattern;
+        if (pattern && "requestId" in pattern) return;
+        this.#deps.logger.warn(
+            { ...context, keyPattern: pattern, err: error },
+            "A duplicate key other than the request id stopped a write",
+        );
+    }
+
+    async #order(account: AccountDoc, request: TradeOrderRequest): Promise<TradeResult> {
         const known = await this.#known(account, request.requestId);
         if (known) return this.#result(account, known);
 
@@ -96,6 +173,7 @@ export class TradeService {
             createdAt: new Date(this.#now()),
         };
 
+        let duplicate: unknown;
         try {
             await this.#deps.ledger.runInTransaction(async (session) => {
                 if (
@@ -109,9 +187,21 @@ export class TradeService {
             });
         } catch (error) {
             if (!isDuplicateKey(error)) throw error;
+            duplicate = error;
+            this.#duplicate(error, {
+                event: "trade:order",
+                account: account._id.toHexString(),
+                requestId: request.requestId,
+            });
         }
         const stored = await this.#known(account, request.requestId);
-        if (!stored) throw new Error("A trade vanished after it filled");
+        if (!stored)
+            throw new Error(
+                `Trade ${request.requestId} for account ${account._id.toHexString()} vanished after it filled`,
+                {
+                    cause: duplicate,
+                },
+            );
         return this.#result(account, stored);
     }
 
@@ -125,6 +215,28 @@ export class TradeService {
         account: AccountDoc,
         request: CoinWithdrawRequest,
     ): Promise<{ withdrawal: CoinWithdrawalView; holdings: HoldingView[] }> {
+        try {
+            return await this.#withdraw(account, request);
+        } catch (error) {
+            throw this.#report(
+                "holding:withdraw",
+                "Refused a coin send",
+                {
+                    account: account._id.toHexString(),
+                    requestId: request.requestId,
+                    symbol: request.symbol,
+                    units: request.units,
+                    to: request.to,
+                },
+                error,
+            );
+        }
+    }
+
+    async #withdraw(
+        account: AccountDoc,
+        request: CoinWithdrawRequest,
+    ): Promise<{ withdrawal: CoinWithdrawalView; holdings: HoldingView[] }> {
         const { collections } = this.#deps;
         const key = { accountId: account._id, requestId: request.requestId };
         const known = await collections.coinWithdrawals.findOne(key);
@@ -132,18 +244,41 @@ export class TradeService {
         this.assertWithdrawalsOpen();
 
         const coin = COINS.find((candidate) => candidate.symbol === request.symbol);
-        if (!coin || coin.symbol === CASH) throw new TradeError("unknown_coin", "That coin can't be sent.");
+        if (coin?.symbol === CASH)
+            throw new TradeError("unknown_coin", "USDC is sent from Withdraw, not from your coins.");
+        if (!coin) throw new TradeError("unknown_coin", `${request.symbol} isn't a coin we can send.`);
         const network = NETWORKS.find((candidate) => candidate.id === coin.home);
         const entry = coin.entries.find((candidate) => candidate.network === coin.home);
-        if (!network || !entry) throw new TradeError("unknown_coin", "That coin can't be sent.");
+        if (!network || !entry) throw this.#brokenCoin(coin.symbol, "Coin has no home network entry");
         const valid = network.kind === "evm" ? EVM_ADDRESS.test(request.to) : SOLANA_ADDRESS.test(request.to);
-        if (!valid) throw new TradeError("bad_request", "That isn't a wallet address on the coin's network.");
+        if (!valid)
+            throw new TradeError(
+                "bad_request",
+                `That isn't a valid ${network.name} address (${
+                    network.kind === "evm" ? "0x followed by 40 hex characters" : "32 to 44 letters and numbers"
+                }).`,
+                { fields: { network: network.id } },
+            );
         const parsed = parseUnits18(request.units);
-        const units = parsed === null ? 0n : floorToDecimals(parsed, entry.decimals);
-        if (units <= 0n) throw new TradeError("bad_request", "Enter an amount to send.");
+        if (parsed === null)
+            throw new TradeError("bad_request", `${echoed(request.units)} isn't an amount of ${coin.symbol} to send.`);
+        const units = floorToDecimals(parsed, entry.decimals);
+        if (units <= 0n)
+            throw new TradeError(
+                "bad_request",
+                parsed === 0n
+                    ? "Enter an amount to send."
+                    : `${amountOf(parsed)} ${coin.symbol} rounds to nothing at ${coin.symbol}'s ${entry.decimals} decimals. Send more.`,
+                { fields: { decimals: entry.decimals } },
+            );
         // Each send costs us network fees, so a dust send isn't worth making
-        if ((units * this.#priced(coin.symbol).price) / SCALE < MIN_SEND)
-            throw new TradeError("bad_request", "The smallest send is $1.");
+        const worth = (units * this.#priced(coin.symbol).price) / SCALE;
+        if (worth < MIN_SEND)
+            throw new TradeError(
+                "bad_request",
+                `This send is worth ${dollars(worth)}; the smallest send is $1 because each one costs us network fees.`,
+                { fields: { usd: formatUnits18(worth), units: formatUnits18(units), network: network.id } },
+            );
 
         const now = new Date(this.#now());
         const doc: CoinWithdrawalDoc = {
@@ -160,17 +295,28 @@ export class TradeService {
             createdAt: now,
             updatedAt: now,
         };
+        let duplicate: unknown;
         try {
             await this.#deps.ledger.runInTransaction(async (session) => {
                 if (await collections.coinWithdrawals.findOne(key, { session })) return;
-                await this.#subtract(session, account._id, coin.symbol, units);
+                await this.#subtract(session, account._id, coin.symbol, units, "send");
                 await collections.coinWithdrawals.insertOne(doc, { session });
             });
         } catch (error) {
             if (!isDuplicateKey(error)) throw error;
+            duplicate = error;
+            this.#duplicate(error, {
+                event: "holding:withdraw",
+                account: account._id.toHexString(),
+                requestId: request.requestId,
+            });
         }
         const stored = await collections.coinWithdrawals.findOne(key);
-        if (!stored) throw new Error("A coin withdrawal vanished after it was created");
+        if (!stored)
+            throw new Error(
+                `Coin withdrawal ${request.requestId} for account ${account._id.toHexString()} vanished after it was created`,
+                { cause: duplicate },
+            );
         return this.#withdrawn(stored);
     }
 
@@ -198,32 +344,92 @@ export class TradeService {
     /** The coin as traded now, or the refusal; `quoted` is the price the app showed. */
     #priced(symbol: string): Priced {
         const coin = COINS.find((candidate) => candidate.symbol === symbol);
-        if (!coin || coin.symbol === CASH) throw new TradeError("unknown_coin", "That coin isn't available to trade.");
+        if (coin?.symbol === CASH)
+            throw new TradeError(
+                "unknown_coin",
+                "USDC is your cash balance, so it can't be bought or sold. Pick another coin.",
+            );
+        if (!coin) throw new TradeError("unknown_coin", `${symbol} isn't a coin we trade.`);
         const entry = coin.entries.find((candidate) => candidate.network === coin.home);
-        const price = this.#deps.catalog.priceOf(symbol);
-        if (!entry || price === null || !(price > 0) || !Number.isFinite(price))
-            throw new TradeError("unavailable", `${symbol} has no price right now. Try again shortly.`);
-        const scaled = parseUnits18(price.toFixed(12));
-        if (scaled === null || scaled <= 0n) throw new TradeError("unavailable", `${symbol} has no price right now.`);
+        if (!entry) throw this.#brokenCoin(symbol, "Coin has no home network entry");
+        const status = this.#deps.catalog.priceStatus(symbol);
+        if (status.reason !== null) throw noPrice(symbol, status);
+        const price = status.price;
+        const scaled = !(price > 0) || !Number.isFinite(price) ? null : parseUnits18(price.toFixed(12));
+        if (scaled === null || scaled <= 0n)
+            throw new TradeError(
+                "unavailable",
+                `LI.FI lists no usable price for ${symbol} right now. Try again shortly.`,
+                {
+                    fields: { reason: "no_price", priceUSD: price },
+                },
+            );
         return { coin, network: coin.home, decimals: entry.decimals, price: scaled };
+    }
+
+    /** A coin the table lists wrongly is our bug: the person gets a reference and the log carries it. */
+    #brokenCoin(symbol: string, what: string) {
+        const ref = newRef();
+        return new TradeError("unavailable", `${wentWrong(ref)}`, {
+            detail: what,
+            fields: { symbol, ref },
+            level: "error",
+        });
     }
 
     /** Everything a fill needs, worked out from the request and the server's prices before any write. */
     #plan(request: TradeOrderRequest): Plan {
         const quoted = parseUnits18(request.quotedPriceUSD);
-        if (quoted === null || quoted <= 0n) throw new TradeError("bad_request", "The quoted price isn't a number.");
+        if (quoted === null || quoted <= 0n)
+            throw new TradeError(
+                "bad_request",
+                `The quoted price ${echoed(request.quotedPriceUSD)} isn't a usable price.`,
+                {
+                    fields: { field: "quotedPriceUSD" },
+                },
+            );
         const from = this.#priced(request.symbol);
 
         if (request.verb === "buy") {
             const amount = parseUnits18(request.amountUSD ?? "");
-            if (amount === null || amount <= 0n) throw new TradeError("bad_request", "Enter an amount to spend.");
+            if (amount === null || amount <= 0n)
+                throw new TradeError(
+                    "bad_request",
+                    request.amountUSD
+                        ? `${echoed(request.amountUSD)} isn't an amount to spend.`
+                        : "Enter an amount to spend.",
+                );
             // Dearer than the app showed by more than the tolerance
-            if (from.price * 10_000n > quoted * (10_000n + PRICE_TOLERANCE_BPS)) throw movedError();
+            if (from.price * 10_000n > quoted * (10_000n + PRICE_TOLERANCE_BPS))
+                throw movedError("buy", request.symbol, quoted, from.price);
             // The person spends their amount at the ask and gets the fewer coins it buys
             const ask = askOf(from.price);
             const units = floorToDecimals((amount * SCALE) / ask, from.decimals);
             const cost = ceilDiv(units * ask, SCALE);
-            if (units <= 0n || cost < MIN_FILL) throw belowMinimum();
+            if (units <= 0n)
+                throw new TradeError(
+                    "below_minimum",
+                    `${dollars(amount)} buys less than the smallest ${request.symbol} amount we can fill (${request.symbol} has ${from.decimals} decimals and sells at ${dollars(ask)}). Try a larger amount.`,
+                    {
+                        fields: {
+                            amountUSD: formatUnits18(amount),
+                            askUSD: formatUnits18(ask),
+                            decimals: from.decimals,
+                        },
+                    },
+                );
+            if (cost < MIN_FILL)
+                throw new TradeError(
+                    "below_minimum",
+                    `${dollars(amount)} buys ${amountOf(units)} ${request.symbol}, worth ${dollars(cost)}, which is under the smallest trade of $0.10. Try a larger amount.`,
+                    {
+                        fields: {
+                            amountUSD: formatUnits18(amount),
+                            costUSD: formatUnits18(cost),
+                            units: formatUnits18(units),
+                        },
+                    },
+                );
             return {
                 verb: "buy",
                 from,
@@ -242,14 +448,28 @@ export class TradeService {
 
         const sold = parseUnits18(request.units ?? "");
         const units = sold === null ? 0n : floorToDecimals(sold, from.decimals);
-        if (units <= 0n) throw new TradeError("bad_request", "Enter an amount to sell.");
+        if (units <= 0n)
+            throw new TradeError(
+                "bad_request",
+                sold === null && request.units
+                    ? `${echoed(request.units)} isn't an amount of ${request.symbol}.`
+                    : sold
+                      ? `${amountOf(sold)} ${request.symbol} rounds to nothing at ${request.symbol}'s ${from.decimals} decimals. Use more.`
+                      : `Enter an amount of ${request.symbol} to ${request.verb === "sell" ? "sell" : "swap"}.`,
+            );
 
         if (request.verb === "sell") {
             // Cheaper than the app showed by more than the tolerance
-            if (from.price * 10_000n < quoted * (10_000n - PRICE_TOLERANCE_BPS)) throw movedError();
+            if (from.price * 10_000n < quoted * (10_000n - PRICE_TOLERANCE_BPS))
+                throw movedError("sell", request.symbol, quoted, from.price);
             const bid = bidOf(from.price);
             const usd = (units * bid) / SCALE;
-            if (usd <= 0n) throw belowMinimum();
+            if (usd <= 0n)
+                throw new TradeError(
+                    "below_minimum",
+                    `${amountOf(units)} ${request.symbol} comes to $0 at ${dollars(bid)} each, under the smallest trade of $0.10. Sell more.`,
+                    { fields: { units: formatUnits18(units), bidUSD: formatUnits18(bid) } },
+                );
             return {
                 verb: "sell",
                 from,
@@ -266,19 +486,36 @@ export class TradeService {
             };
         }
 
-        if (!request.toSymbol || request.toSymbol === request.symbol)
-            throw new TradeError("bad_request", "Pick a different coin to swap into.");
+        if (!request.toSymbol) throw new TradeError("bad_request", "Pick a coin to swap into.");
+        if (request.toSymbol === request.symbol)
+            throw new TradeError("bad_request", `You can't swap ${request.symbol} into itself. Pick a different coin.`);
         const quotedTo = parseUnits18(request.quotedToPriceUSD ?? "");
         if (quotedTo === null || quotedTo <= 0n)
-            throw new TradeError("bad_request", "The quoted price isn't a number.");
+            throw new TradeError(
+                "bad_request",
+                `The quoted price ${echoed(request.quotedToPriceUSD)} isn't a usable price.`,
+                {
+                    fields: { field: "quotedToPriceUSD" },
+                },
+            );
         const to = this.#priced(request.toSymbol);
         // The rate (from price over to price) is worse than the app's by more than the tolerance
-        if (from.price * quotedTo * 10_000n < quoted * to.price * (10_000n - PRICE_TOLERANCE_BPS)) throw movedError();
+        if (from.price * quotedTo * 10_000n < quoted * to.price * (10_000n - PRICE_TOLERANCE_BPS))
+            throw movedError("swap", request.symbol, quoted, from.price, {
+                symbol: request.toSymbol,
+                quoted: quotedTo,
+                now: to.price,
+            });
         // The one spread of a swap comes off the coin given up, which is valued at its bid; the coin got is bought at its market price
         const bid = bidOf(from.price);
         const usd = (units * bid) / SCALE;
         const got = floorToDecimals((usd * SCALE) / to.price, to.decimals);
-        if (got <= 0n) throw belowMinimum();
+        if (got <= 0n)
+            throw new TradeError(
+                "below_minimum",
+                `${amountOf(units)} ${request.symbol} (${dollars(usd)}) comes to less than the smallest ${request.toSymbol} amount we can credit. Swap more.`,
+                { fields: { units: formatUnits18(units), usd: formatUnits18(usd), toDecimals: to.decimals } },
+            );
         return {
             verb: "swap",
             from,
@@ -303,19 +540,26 @@ export class TradeService {
             try {
                 await ledger.debitInSession(session, trade.accountId, plan.paid, "trade_buy", trade._id);
             } catch (error) {
-                if (error instanceof AppError && error.code === "insufficient_funds")
+                if (error instanceof AppError && error.code === "insufficient_funds") {
+                    const current = await collections.accounts.findOne({ _id: trade.accountId }, { session });
+                    const balance = current ? fromDecimal(current.balance) : 0n;
                     throw new TradeError(
                         "insufficient_balance",
-                        "You don't have enough USDC for this. Nothing was spent.",
+                        `You have ${dollars(balance)} and this costs ${dollars(plan.paid)}. ${KEPT.buy}`,
+                        {
+                            fields: { balanceUSD: formatUnits18(balance), costUSD: formatUnits18(plan.paid) },
+                            cause: error,
+                        },
                     );
+                }
                 throw error;
             }
             await this.#add(session, trade.accountId, plan.from, plan.got);
         } else if (plan.verb === "sell") {
-            await this.#subtract(session, trade.accountId, plan.from.coin.symbol, plan.paid, plan.wholeOnly);
+            await this.#subtract(session, trade.accountId, plan.from.coin.symbol, plan.paid, "sell", plan.wholeOnly);
             await ledger.creditInSession(session, trade.accountId, plan.got, "trade_sell", trade._id);
         } else {
-            await this.#subtract(session, trade.accountId, plan.from.coin.symbol, plan.paid, plan.wholeOnly);
+            await this.#subtract(session, trade.accountId, plan.from.coin.symbol, plan.paid, "swap", plan.wholeOnly);
             await this.#add(session, trade.accountId, plan.to!, plan.got);
             const account = await collections.accounts.findOne({ _id: trade.accountId }, { session });
             if (!account) throw new Error("The account vanished");
@@ -347,18 +591,38 @@ export class TradeService {
     }
 
     /** Takes units off a holding if it has them; with `whole`, only if they are all it has. */
-    async #subtract(session: ClientSession, accountId: ObjectId, symbol: string, units: bigint, whole = false) {
+    async #subtract(
+        session: ClientSession,
+        accountId: ObjectId,
+        symbol: string,
+        units: bigint,
+        action: Exclude<Action, "buy">,
+        whole = false,
+    ) {
         const { matchedCount } = await this.#deps.collections.holdings.updateOne(
             { accountId, symbol, units: whole ? toUnitsDecimal(units) : { $gte: toUnitsDecimal(units) } },
             { $inc: { units: toUnitsDecimal(-units) }, $set: { updatedAt: new Date(this.#now()) } },
             { session },
         );
-        if (matchedCount === 0 && whole) throw belowMinimum();
-        if (matchedCount === 0)
+        if (matchedCount > 0) return;
+        // The real holding, so the refusal says what the person has against what this asks of it
+        const row = await this.#deps.collections.holdings.findOne({ accountId, symbol }, { session });
+        const held = row ? fromUnitsDecimal(row.units) : 0n;
+        const fields = { units: formatUnits18(units), held: formatUnits18(held) };
+        if (whole && held >= units)
             throw new TradeError(
-                "insufficient_holdings",
-                `You don't hold enough ${symbol} for this. Nothing was sold.`,
+                "below_minimum",
+                `A sale under $0.10 has to be all of your ${symbol} (you hold ${amountOf(held)}). Sell everything or at least $0.10.`,
+                { fields },
             );
+        const verb = { sell: "sells", swap: "swaps", send: "sends" }[action];
+        throw new TradeError(
+            "insufficient_holdings",
+            `${
+                held === 0n ? `You don't hold any ${symbol}` : `You hold ${amountOf(held)} ${symbol}`
+            } but this ${verb} ${amountOf(units)}. ${KEPT[action]}`,
+            { fields },
+        );
     }
 }
 
@@ -388,5 +652,71 @@ const askOf = (price: bigint) => ceilDiv(price * (10_000n + SPREAD_BPS), 10_000n
 const bidOf = (price: bigint) => (price * (10_000n - SPREAD_BPS)) / 10_000n;
 /** The dollars a sale of `units` at this market price gave up, given what it fetched. */
 const spreadOf = (units: bigint, price: bigint, fetched: bigint) => (units * price) / SCALE - fetched;
-const movedError = () => new TradeError("price_moved", "The price moved. Review it and try again.");
-const belowMinimum = () => new TradeError("below_minimum", "The smallest trade is $0.10.");
+
+/** The price (or, for a swap, the rate) moved past the tolerance between what the app showed and what the server has now. */
+function movedError(
+    verb: "buy" | "sell" | "swap",
+    symbol: string,
+    quoted: bigint,
+    now: bigint,
+    to?: { symbol: string; quoted: bigint; now: bigint },
+) {
+    const percent = Number(PRICE_TOLERANCE_BPS) / 100;
+    if (to) {
+        // The rate is how many of the second coin one of the first buys
+        const rate = (price: bigint, toPrice: bigint) => amountOf((price * SCALE) / toPrice);
+        const was = rate(quoted, to.quoted);
+        const is = rate(now, to.now);
+        return new TradeError(
+            "price_moved",
+            `The ${symbol} to ${to.symbol} rate moved from ${was} to ${is} ${to.symbol} per ${symbol}, more than the ${percent}% allowed. Review the new rate and try again. ${KEPT.swap}`,
+            {
+                detail: `${symbol} quoted ${formatUnits18(quoted)}, now ${formatUnits18(now)}; ${to.symbol} quoted ${formatUnits18(to.quoted)}, now ${formatUnits18(to.now)}`,
+                fields: {
+                    quotedPriceUSD: formatUnits18(quoted),
+                    serverPriceUSD: formatUnits18(now),
+                    toQuotedPriceUSD: formatUnits18(to.quoted),
+                    toServerPriceUSD: formatUnits18(to.now),
+                    rateWas: was,
+                    rateIs: is,
+                    toleranceBps: Number(PRICE_TOLERANCE_BPS),
+                },
+            },
+        );
+    }
+    const bps = ((now - quoted) * 10_000n) / quoted;
+    return new TradeError(
+        "price_moved",
+        `${symbol} moved from ${dollars(quoted)} to ${dollars(now)}, more than the ${percent}% allowed. Review the new price and try again. ${KEPT[verb]}`,
+        {
+            detail: `quoted ${formatUnits18(quoted)}, now ${formatUnits18(now)}, ${bps} bps`,
+            fields: {
+                quotedPriceUSD: formatUnits18(quoted),
+                serverPriceUSD: formatUnits18(now),
+                movedBps: Number(bps),
+                toleranceBps: Number(PRICE_TOLERANCE_BPS),
+            },
+        },
+    );
+}
+
+/** Why a coin can't be priced, in words the person can act on. */
+function noPrice(
+    symbol: string,
+    status: Exclude<ReturnType<Pick<SwapCatalog, "priceStatus">["priceStatus"]>, { reason: null }>,
+) {
+    const fields = { reason: status.reason, ageMs: status.ageMs };
+    if (status.reason === "never_read")
+        return new TradeError("unavailable", "Prices are still loading. Try again in a moment.", { fields });
+    if (status.reason === "stale")
+        return new TradeError(
+            "unavailable",
+            `Prices for ${symbol} are out of date (last updated ${ago(status.ageMs)} ago, LI.FI isn't answering). Try again shortly.`,
+            { fields },
+        );
+    if (status.reason === "not_listed")
+        return new TradeError("unavailable", `${symbol} isn't a coin we trade.`, { fields });
+    return new TradeError("unavailable", `LI.FI lists no price for ${symbol} right now. Try again shortly.`, {
+        fields,
+    });
+}

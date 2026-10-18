@@ -277,8 +277,7 @@ export function createLifi(options: {
         const code = Number(body?.code);
         const errors = Array.isArray(body?.errors) ? body.errors : [];
         const upstream = [errors[0]?.message, body?.message].find((text) => typeof text === "string" && text !== "") as
-            | string
-            | undefined;
+            string | undefined;
         const said: LifiSaid = {
             status: response.status,
             ...(body?.code !== undefined && Number.isFinite(code) && { code }),
