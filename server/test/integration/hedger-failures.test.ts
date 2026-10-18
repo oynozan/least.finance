@@ -232,7 +232,7 @@ describe("a hedge that can't move yet", () => {
         expect(waits[0]).toMatchObject({ symbol: "ETH", units: "1", usd: "2000", limit: 0.02, toAmountMin: "1" });
     });
 
-    test("a pass that fails every time is logged once as an error, not on every pass", async () => {
+    test("a pass that fails every time is logged once, not on every pass", async () => {
         const worker = hedger({}, 5);
         let fails = 0;
         const original = trades.find.bind(trades);
@@ -248,9 +248,9 @@ describe("a hedge that can't move yet", () => {
             trades.find = original;
         }
 
-        const passes = logged("hedge:pass");
+        const passes = logged("loop.failed");
         expect(passes).toHaveLength(1);
-        expect(passes[0]).toMatchObject({ level: 50, msg: "Hedge pass failed, hedges are not being moved" });
+        expect(passes[0]).toMatchObject({ level: 40, loop: "hedge" });
         expect(passes[0]!.err.message).toBe("Mongo is down");
     });
 });
