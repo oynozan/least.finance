@@ -1,3 +1,4 @@
+import "../polymarket-proxy.ts";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { HourlyLog } from "../predictions/rebalance-log.ts";
