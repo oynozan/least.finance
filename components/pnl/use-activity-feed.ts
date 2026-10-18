@@ -16,7 +16,14 @@ export type ActivityFeed = {
     more: boolean;
     loadingMore: boolean;
     loadMore: () => void;
+    /** Why the first page isn't loading, once it has failed twice or for a reason asking again won't change. */
+    error: string | null;
+    /** Why the last "Show older" didn't load. */
+    moreError: string | null;
 };
+
+/** Failures that may pass by themselves; any other is the same on every try. */
+const RETRYABLE = new Set(["unavailable", "internal", "rate_limited"]);
 
 /** What a filter's newest page was answered at, being the bind and the pushes counted since, so a new one of either asks again */
 export const answerStamp = (pnl: { bound: number; changed: number }) => `${pnl.bound}:${pnl.changed}`;
@@ -30,6 +37,9 @@ export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[
     const [loadingMore, setLoadingMore] = useState<readonly ActivityFilter[]>([]);
     // Bumped by the retry timer, so the effect asks again
     const [attempt, setAttempt] = useState(0);
+    const [error, setError] = useState<string | null>(null);
+    const [moreError, setMoreError] = useState<string | null>(null);
+    const failures = useRef(0);
 
     // The latest loader, without asking again whenever its identity changes
     const load = useRef(loadActivityPage);
@@ -58,9 +68,15 @@ export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[
         void load.current({ filter }).then((answer) => {
             if (!current) return;
             if ("code" in answer) {
-                timer = setTimeout(() => setAttempt((n) => n + 1), RETRY_MS);
+                failures.current += 1;
+                console.warn(`The history didn't load (${answer.code}): ${answer.message}`);
+                const retry = RETRYABLE.has(answer.code);
+                if (failures.current >= 2 || !retry) setError(answer.message);
+                if (retry) timer = setTimeout(() => setAttempt((n) => n + 1), RETRY_MS);
                 return;
             }
+            failures.current = 0;
+            setError(null);
             answeredAt.current[filter] = stamp;
             dispatch({ type: "first", filter, page: answer });
         });
@@ -76,12 +92,14 @@ export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[
     const loadMore = useCallback(() => {
         if (next === null || asking.current.has(filter)) return;
         asking.current.add(filter);
+        setMoreError(null);
         setLoadingMore((list) => [...list, filter]);
         void load.current({ before: next, filter }).then((answer) => {
             asking.current.delete(filter);
             setLoadingMore((list) => list.filter((f) => f !== filter));
             // A failed page changes nothing, so `more` stays and the button asks again
-            if (!("code" in answer)) dispatch({ type: "older", filter, before: next, page: answer });
+            if ("code" in answer) setMoreError(answer.message);
+            else dispatch({ type: "older", filter, before: next, page: answer });
         });
     }, [filter, next]);
 
@@ -105,5 +123,13 @@ export function useActivityFeed(filter: ActivityFilter, live: readonly Activity[
         [pageRows, next, live, filter, hidden],
     );
 
-    return { rows, loaded: pages.loaded, more: next !== null, loadingMore: loadingMore.includes(filter), loadMore };
+    return {
+        rows,
+        loaded: pages.loaded,
+        more: next !== null,
+        loadingMore: loadingMore.includes(filter),
+        loadMore,
+        error: pages.loaded ? null : error,
+        moreError,
+    };
 }

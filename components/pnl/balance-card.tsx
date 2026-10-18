@@ -34,7 +34,7 @@ function heightOf({ high, low }: Chart, balance: number) {
  * (or arrowing through them) rolls the figures to that bar.
  */
 export function BalanceCard() {
-    const { series, failed } = usePnlSeries();
+    const { series, failed, error, retry } = usePnlSeries();
     const [range, setRange] = useState<Range>("30D");
     const [pointed, setPointed] = useState<number | null>(null);
     const track = useRef<HTMLDivElement>(null);
@@ -179,9 +179,14 @@ export function BalanceCard() {
                     })}
                 </div>
             ) : (
-                <p className="mt-8 grid h-[clamp(160px,28vh,260px)] place-items-center text-[15px] text-muted">
-                    {"Couldn't load your history."}
-                </p>
+                <div className="mt-8 grid h-[clamp(160px,28vh,260px)] place-items-center text-center text-[15px] text-muted">
+                    <p>
+                        {"Couldn't load your history."} {error?.message}
+                        <button type="button" className="ml-2 underline" onClick={retry}>
+                            Try again
+                        </button>
+                    </p>
+                </div>
             )}
         </section>
     );

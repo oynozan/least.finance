@@ -79,7 +79,9 @@ export function HoldingsList({ holdings, priceOf, wallets, withdrawals, onSend }
                         >
                             {SEND_STATE[send.state]} {formatUnits(Number(send.units), send.symbol)} to{" "}
                             {shortenAddress(send.to)}
-                            {send.state === "failed" ? ". It's back in your holdings." : ""}
+                            {send.state === "failed"
+                                ? `${send.reason ? `: ${send.reason.replace(/[.\s]+$/, "")}` : ""}. It's back in your holdings.`
+                                : ""}
                         </li>
                     ))}
                 </ul>

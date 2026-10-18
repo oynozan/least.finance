@@ -146,7 +146,23 @@ const UNAVAILABLE_PERP: ApiError = { code: "unavailable", message: "Long and sho
 
 const UNAVAILABLE_WITHDRAW: ApiError = { code: "unavailable", message: "Withdrawals aren't available right now." };
 
-const UNAVAILABLE_PNL: ApiError = { code: "unavailable", message: "Your history isn't available right now." };
+const UNAVAILABLE_PNL: ApiError = { code: "unavailable", message: "Sign in to see your history." };
+
+/** A wallet's own refusal as the person is told it; turning the request down is not a failure. */
+function walletRefusal(error: unknown): "cancelled" | { refused: string } {
+    console.warn("A wallet refused a deposit", error);
+    const { code, shortMessage, message } = (error ?? {}) as {
+        code?: unknown;
+        shortMessage?: unknown;
+        message?: unknown;
+    };
+    if (code === 4001) return "cancelled";
+    if (code === -32002) return { refused: "Your wallet already has a request open. Answer it first." };
+    const said = [shortMessage, message].find((text): text is string => typeof text === "string" && text !== "");
+    if (!said) return { refused: "Your wallet couldn't send the deposit and gave no reason. Try again." };
+    const line = said.split("\n")[0]!.replace(/\s+/g, " ").trim().replaceAll('"', "'").slice(0, 120);
+    return { refused: `Your wallet refused the deposit: "${line}".` };
+}
 
 const AccountContext = createContext<Account | null>(null);
 
@@ -210,7 +226,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
             const provider = await wallet.getEthereumProvider();
             return await client.deposit(amount, { provider, from: wallet.address });
         } catch (error) {
-            return (error as { code?: unknown }).code === 4001 ? "cancelled" : "failed";
+            return walletRefusal(error);
         }
     };
 
@@ -225,12 +241,12 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
                     signer: solanaSigner,
                     solBalance: sol == null ? null : parseUnits(sol, 9),
                 });
-            } catch {
-                return "failed";
+            } catch (error) {
+                return walletRefusal(error);
             }
         }
         const wallet = wallets.find((w) => w.address.toLowerCase() === from.toLowerCase());
-        if (!wallet) return "failed";
+        if (!wallet) return { refused: "That wallet isn't connected any more. Connect it again and try once more." };
         try {
             const provider = await wallet.getEthereumProvider();
             return await client.bridgeDeposit(coin, amount, {
@@ -239,7 +255,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
                 ensure: (id) => ensureNetwork(wallet, id),
             });
         } catch (error) {
-            return (error as { code?: unknown }).code === 4001 ? "cancelled" : "failed";
+            return walletRefusal(error);
         }
     };
 

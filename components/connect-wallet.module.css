@@ -48,3 +48,17 @@
     border-radius: 50%;
     background: #68d670;
 }
+
+/* Why signing in didn't work, under the button, in the page's own muted tone. */
+.problem {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-top: 8px;
+    width: max-content;
+    max-width: min(320px, calc(100vw - 32px));
+    text-align: center;
+    font-size: 14px;
+    color: var(--muted);
+}

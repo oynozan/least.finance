@@ -1,7 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useLogin, usePrivy } from "@privy-io/react-auth";
 import { motion, type Transition } from "motion/react";
+import { loginProblem, PRIVY_NOT_LOADING, PRIVY_READY_MS } from "@/lib/wallet/login-errors";
 import { useActiveWallet } from "./arc-wallet";
 import { Magnet } from "./magnet";
 import { SIDEBAR_ID, useSidebar } from "./sidebar";
@@ -35,12 +37,26 @@ function PrivyWalletButton() {
     const { ready, authenticated } = usePrivy();
     const { open, setOpen, toggle } = useSidebar();
     // A fresh connection opens the sidebar straight away.
+    const [problem, setProblem] = useState<string | null>(null);
     const { login } = useLogin({
         onComplete: ({ wasAlreadyAuthenticated }) => {
+            setProblem(null);
             if (!wasAlreadyAuthenticated) setOpen(true);
+        },
+        onError: (code) => {
+            console.warn("Privy sign-in failed:", code);
+            setProblem(loginProblem(String(code)));
         },
     });
     const address = useActiveWallet().address;
+    // A sign-in service that never becomes ready leaves the button disabled; say why after a while
+    const [slow, setSlow] = useState(false);
+    useEffect(() => {
+        if (ready) return;
+        const timer = setTimeout(() => setSlow(true), PRIVY_READY_MS);
+        return () => clearTimeout(timer);
+    }, [ready]);
+    const shownProblem = problem ?? (!ready && slow ? PRIVY_NOT_LOADING : null);
 
     if (ready && authenticated) {
         return (
@@ -56,7 +72,21 @@ function PrivyWalletButton() {
     }
 
     return (
-        <WalletButton label="Connect wallet" disabled={!ready} onClick={() => login({ loginMethods: ["wallet"] })} />
+        <>
+            <WalletButton
+                label="Connect wallet"
+                disabled={!ready}
+                onClick={() => {
+                    setProblem(null);
+                    login({ loginMethods: ["wallet"] });
+                }}
+            />
+            {shownProblem && (
+                <p role="status" className={styles.problem}>
+                    {shownProblem}
+                </p>
+            )}
+        </>
     );
 }
 

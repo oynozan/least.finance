@@ -28,7 +28,7 @@ const RESULT_TONE = { gain: "text-gain", loss: "text-loss", flat: "text-muted" }
 /** Every operation, newest first, with what it did to the balance: the live rows over the server's pages, older ones on request. */
 export function ActivityCard({ live }: { live: readonly Activity[] }) {
     const [filter, setFilter] = useState<ActivityFilter>("all");
-    const { rows, loaded, more, loadingMore, loadMore } = useActivityFeed(filter, live);
+    const { rows, loaded, more, loadingMore, loadMore, error, moreError } = useActivityFeed(filter, live);
     const body = bodyState({ filter, loaded, more, rows: rows.length });
 
     return (
@@ -97,8 +97,11 @@ export function ActivityCard({ live }: { live: readonly Activity[] }) {
             </table>
             {/* The message's own height with no text, while history may still come */}
             {body === "busy" && (
-                <p aria-busy="true" className="px-[18px] py-10 text-center text-[15px] text-muted">
-                    {"\u00a0"}
+                <p
+                    aria-busy={error ? undefined : "true"}
+                    className="px-[18px] py-10 text-center text-[15px] text-muted"
+                >
+                    {error ? `Couldn't load your history. ${error}` : "\u00a0"}
                 </p>
             )}
             {/* Gone at once when rows come, so it never sits under them while they rise in */}
@@ -120,6 +123,11 @@ export function ActivityCard({ live }: { live: readonly Activity[] }) {
                 >
                     Show older
                 </button>
+            )}
+            {moreError && (
+                <p role="status" className="px-[18px] pb-3 text-center text-[14px] text-muted">
+                    {`Couldn't load older history. ${moreError}`}
+                </p>
             )}
         </section>
     );

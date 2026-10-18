@@ -72,10 +72,19 @@ const subscribe = (notify: () => void) => {
     };
 };
 
+const warned = new Set<string>();
+/** Says once in the console why the chosen wallet isn't remembered, so a reset to the first wallet has an explanation. */
+const warnOnce = (message: string) => {
+    if (warned.has(message)) return;
+    warned.add(message);
+    console.warn(message);
+};
+
 const readStored = (userId: string) => {
     try {
         return localStorage.getItem(storageKey(userId));
     } catch {
+        warnOnce("arc-wallet: browser storage is blocked, so the wallet choice isn't kept and the first wallet is used");
         return null;
     }
 };
@@ -134,6 +143,7 @@ export function useActiveWallet(): Partial<Wallet> & { setActive: (wallet: Walle
                 localStorage.setItem(storageKey(userId), JSON.stringify(wallet));
             } catch {
                 // No storage: the choice isn't kept.
+                warnOnce("arc-wallet: browser storage is blocked, so the wallet choice isn't kept");
             }
             watchers.forEach((notify) => notify());
         },
@@ -146,6 +156,7 @@ export function useActiveWallet(): Partial<Wallet> & { setActive: (wallet: Walle
         choice = stored ? (JSON.parse(stored) as Wallet) : undefined;
     } catch {
         // A value that isn't ours: fall back to the first wallet.
+        warnOnce("arc-wallet: the stored wallet choice is unreadable, using the first wallet");
     }
     const match = choice && linkedWallets(user).find((wallet) => sameWallet(wallet, choice));
     if (match) return { ...match, setActive };
