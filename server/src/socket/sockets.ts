@@ -220,7 +220,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     } catch (error) {
                         logger.warn(
                             { err: error, event: "account:open", accountId: account._id.toHexString() },
-                            "Couldn't read perp positions for an account at sign-in",
+                            "Couldn't read perp positions at sign-in",
                         );
                     }
                 });
@@ -398,7 +398,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             reply(ack, async () => {
                 const input = parse(perpOrder, payload);
                 await perpOrders.consume(socket.data.identity.userId).catch((limit: unknown) => {
-                    throw tooMany(limit, "Too many orders.");
+                    throw tooMany(limit, "Too many Long and Short orders.");
                 });
                 const placed = await services.perps.place(await boundAccount(socket), input);
                 return { order: perpOrderView(placed.order), account: accountView(placed.account) };
@@ -409,7 +409,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             reply(ack, async () => {
                 const input = parse(perpClose, payload);
                 await perpOrders.consume(socket.data.identity.userId).catch((limit: unknown) => {
-                    throw tooMany(limit, "Too many orders.");
+                    throw tooMany(limit, "Too many Long and Short orders.");
                 });
                 const closed = await services.perps.close(await boundAccount(socket), input);
                 return { order: perpOrderView(closed.order) };
@@ -612,7 +612,13 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 }
             } catch (error) {
                 logger.warn(
-                    { err: error, event: "perp:updated", accountId: update.account._id.toHexString() },
+                    {
+                        err: error,
+                        event: "perp:updated",
+                        accountId: update.account._id.toHexString(),
+                        order: update.order._id.toHexString(),
+                        state: update.order.state,
+                    },
                     "Couldn't push a perp update",
                 );
             }

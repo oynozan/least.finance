@@ -114,6 +114,10 @@ describe("perp events", () => {
             results.push((await socket.timeout(5000).emitWithAck("perp:order", payload())) as Ack<unknown>);
 
         expect(results[10]).toMatchObject({ ok: false, error: { code: "rate_limited" } });
+        // It says whose orders and how long to wait
+        expect(!results[10]!.ok && results[10]!.error.message).toMatch(
+            /^You've sent too many Long and Short orders\. Try again in \d+ seconds?\.$/,
+        );
         expect(results.slice(0, 10).filter((r) => !r.ok && r.error.code === "rate_limited")).toHaveLength(0);
     });
 
