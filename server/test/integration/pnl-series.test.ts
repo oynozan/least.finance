@@ -19,7 +19,7 @@ const lines: Array<{ msg: string; accountId?: string; ms?: number; rows?: Record
 
 beforeAll(async () => {
     database = await connectDatabase(inject("mongoUri"), `test_${randomUUID().replaceAll("-", "")}`);
-    const logger = pino({ level: "info" }, { write: (line: string) => void lines.push(JSON.parse(line)) });
+    const logger = pino({ level: "debug" }, { write: (line: string) => void lines.push(JSON.parse(line)) });
     service = new PnlService({ collections: database.collections, logger, now: () => NOW });
 });
 afterAll(() => database.close());

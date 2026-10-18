@@ -40,7 +40,8 @@ describe("parse", () => {
         expect(error).toBeInstanceOf(AppError);
         expect(error.code).toBe("bad_request");
         expect(error.status).toBe(400);
-        expect(error.message).toContain("txHash");
+        expect(error.message).toBe("The transaction hash should be a transaction hash.");
+        expect(error.detail).toContain("txHash");
     });
 
     it("accepts an empty deposit page request", () => {
@@ -61,7 +62,7 @@ describe("parse", () => {
         for (const bad of ["123", "g".repeat(24), `${before}0`]) {
             const error = catchError(() => parse(depositPage, { before: bad })) as AppError;
             expect(error.code).toBe("bad_request");
-            expect(error.message).toContain("before");
+            expect(error.message).toContain("page position");
         }
     });
 });
@@ -87,17 +88,17 @@ describe("activity page input", () => {
     it("activityPage rejects limit 0, 101 and 1.5, an unknown filter and a malformed before, naming the field", () => {
         const id = "a1".repeat(12);
         const bad: Array<[string, Record<string, unknown>]> = [
-            ["limit", { limit: 0 }],
-            ["limit", { limit: 101 }],
-            ["limit", { limit: 1.5 }],
+            ["page size", { limit: 0 }],
+            ["page size", { limit: 101 }],
+            ["page size", { limit: 1.5 }],
             ["filter", { filter: "swaps" }],
-            ["before", { before: "x" }],
-            ["before", { before: `1:0:${id.slice(2)}` }],
-            ["before", { before: `12345678901234567:0:${id}` }],
-            ["before", { before: `1:10:${id}` }],
-            ["before", { before: `1:0:${id.toUpperCase()}` }],
-            ["before", { before: `-1:0:${id}` }],
-            ["before", { before: `${before}0` }],
+            ["page position", { before: "x" }],
+            ["page position", { before: `1:0:${id.slice(2)}` }],
+            ["page position", { before: `12345678901234567:0:${id}` }],
+            ["page position", { before: `1:10:${id}` }],
+            ["page position", { before: `1:0:${id.toUpperCase()}` }],
+            ["page position", { before: `-1:0:${id}` }],
+            ["page position", { before: `${before}0` }],
         ];
         for (const [field, input] of bad) {
             const error = catchError(() => parse(activityPage, input)) as AppError;

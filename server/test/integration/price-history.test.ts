@@ -224,7 +224,10 @@ describe("price history while DefiLlama can't be reached", () => {
         expect(response.status).toBe(503);
         expect(response.headers.get("cache-control")).toBe("no-store");
         expect(await response.json()).toEqual({
-            error: { code: "unavailable", message: "Prices are unavailable right now. Try again shortly." },
+            error: {
+                code: "unavailable",
+                message: "The price source hasn't answered yet, so this chart isn't ready. It retries on its own.",
+            },
         });
     });
 });

@@ -294,7 +294,7 @@ test("a garbled before is bad_request", async () => {
         const error = await feed.page(new ObjectId(), { before }).catch((caught: unknown) => caught);
         expect(error).toBeInstanceOf(AppError);
         expect((error as AppError).code).toBe("bad_request");
-        expect((error as AppError).message).toBe("The page position should be a cursor from a previous page.");
+        expect((error as AppError).message).toBe("Invalid before: a cursor from a previous page");
     }
 });
 

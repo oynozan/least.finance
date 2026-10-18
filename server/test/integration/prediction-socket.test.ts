@@ -133,18 +133,18 @@ describe("prediction events", () => {
     test("bad payloads answer bad_request naming the field", async () => {
         const { socket } = await person(stack);
         const good = { requestId: randomUUID(), eventId: "123", tokenId: "456", amountUSD: "10", quotedPrice: 0.5 };
-        for (const [field, value] of [
-            ["requestId", "nope"],
-            ["eventId", "evt-1"],
-            ["tokenId", "x1"],
-            ["amountUSD", "1.234"],
-            ["amountUSD", "0"],
-            ["quotedPrice", 1],
-            ["quotedPrice", 0],
+        for (const [field, value, phrase] of [
+            ["requestId", "nope", "request id"],
+            ["eventId", "evt-1", "market"],
+            ["tokenId", "x1", "outcome"],
+            ["amountUSD", "1.234", "amount"],
+            ["amountUSD", "0", "amount"],
+            ["quotedPrice", 1, "price"],
+            ["quotedPrice", 0, "price"],
         ] as const) {
             const result = await socket.timeout(5000).emitWithAck("prediction:order", { ...good, [field]: value });
             expect(result).toMatchObject({ ok: false, error: { code: "bad_request" } });
-            if (!result.ok) expect(result.error.message).toContain(field);
+            if (!result.ok) expect(result.error.message.toLowerCase()).toContain(phrase);
         }
         const quote = await socket
             .timeout(5000)

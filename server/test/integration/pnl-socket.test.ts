@@ -100,7 +100,7 @@ describe("pnl:series", () => {
         for (const payload of [undefined, {}, { tz: 5 }, { tz: "x".repeat(65) }]) {
             const result = await series(socket, payload);
             expect(result).toMatchObject({ ok: false, error: { code: "bad_request" } });
-            if (!result.ok) expect(result.error.message).toContain("tz");
+            if (!result.ok) expect(result.error.message).toContain("time zone");
         }
     });
 
@@ -120,7 +120,10 @@ describe("pnl:series", () => {
         expect(results.slice(0, 30).every((result) => result.ok)).toBe(true);
         expect(results[30]).toMatchObject({
             ok: false,
-            error: { code: "rate_limited", message: "Too many requests. Try again shortly." },
+            error: {
+                code: "rate_limited",
+                message: expect.stringMatching(/^Too many requests. Try again in \d+ seconds?.$/),
+            },
         });
     });
 

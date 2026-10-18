@@ -108,17 +108,17 @@ describe("activity:list", () => {
         expect(a.ok && JSON.stringify(a.data)).not.toContain(secondId!.toHexString());
     });
 
-    test("bad payloads answer bad_request naming the field", async () => {
+    test("bad payloads answer bad_request naming the field in words", async () => {
         const { socket } = await person();
         const id = "a".repeat(24);
         const cases: [unknown, string][] = [
-            [{ limit: 0 }, "limit"],
-            [{ limit: 101 }, "limit"],
-            [{ limit: 1.5 }, "limit"],
+            [{ limit: 0 }, "page size"],
+            [{ limit: 101 }, "page size"],
+            [{ limit: 1.5 }, "page size"],
             [{ filter: "x" }, "filter"],
-            [{ before: "garbage" }, "before"],
+            [{ before: "garbage" }, "page position"],
             [{ before: `1:9:${id}` }, "before"],
-            [{ before: `99999999999999999:0:${id}` }, "before"],
+            [{ before: `99999999999999999:0:${id}` }, "page position"],
             [{ before: `9000000000000000:0:${id}` }, "before"],
         ];
 
@@ -144,7 +144,10 @@ describe("activity:list", () => {
         expect(results.every((result) => result.ok)).toBe(true);
         expect(last).toMatchObject({
             ok: false,
-            error: { code: "rate_limited", message: expect.stringMatching(/^Too many requests. Try again in \d+ seconds?.$/) },
+            error: {
+                code: "rate_limited",
+                message: expect.stringMatching(/^Too many requests. Try again in \d+ seconds?.$/),
+            },
         });
         expect(unaffected.ok).toBe(true);
     });

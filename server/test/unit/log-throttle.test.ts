@@ -19,8 +19,8 @@ test("an upstream's words are quoted on one short line", () => {
 });
 
 test("an internal AppError shows the ref it was logged under, other errors keep their message", () => {
-    expect(toApiError(new AppError("internal", "x"), "abc123").message).toBe(
-        "Something went wrong on our side (ref abc123).",
+    expect(toApiError(new AppError("internal", "We couldn't open your account."), "abc123").message).toBe(
+        "We couldn't open your account (ref abc123).",
     );
     expect(toApiError(new AppError("unavailable", "Down."), "abc123").message).toBe("Down.");
     expect(new AppError("unauthorized", "x", { detail: "no_token" }).detail).toBe("no_token");
