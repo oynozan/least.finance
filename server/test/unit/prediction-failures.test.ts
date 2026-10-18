@@ -1,6 +1,12 @@
 import { ObjectId } from "mongodb";
 import { expect, test } from "vitest";
-import { couldntPrepare, polymarketRefused, priceMoved } from "../../src/predictions/failures.ts";
+import {
+    cancelled,
+    couldntPrepare,
+    isUpstreamFailure,
+    polymarketRefused,
+    priceMoved,
+} from "../../src/predictions/failures.ts";
 
 const buy = { _id: new ObjectId("66f000000000000000abcdef"), side: "buy" } as const;
 const sell = { ...buy, side: "sell" } as const;
@@ -91,4 +97,34 @@ test("an exception while preparing is Polymarket's slowness, a missing connectio
         message: "Something went wrong on our side (ref abcdef). Nothing was spent.",
         fields: { ref: "abcdef" },
     });
+});
+
+test("a cancelled order says why by Polymarket's status instead of always blaming the price", () => {
+    const resolved = cancelled(buy, "CANCELED_MARKET_RESOLVED");
+    expect(resolved).toMatchObject({
+        reason: "market_closed",
+        level: "warn",
+        detail: "Polymarket cancelled the order (CANCELED_MARKET_RESOLVED)",
+        message: "The market resolved before the order filled. Nothing was spent.",
+    });
+    expect(cancelled(sell, "INVALID")).toMatchObject({
+        reason: "rejected",
+        level: "error",
+        message: "Polymarket marked the order invalid. That's on our side. Your position is back.",
+    });
+    expect(cancelled(buy, "CANCELED_BY_USER")).toMatchObject({ level: "error", reason: "unavailable" });
+    expect(cancelled(buy, "CANCELED")).toMatchObject({
+        reason: "price_moved",
+        detail: "Polymarket cancelled the order unfilled (CANCELED)",
+        fields: { polymarketStatus: "CANCELED" },
+    });
+    expect(cancelled(buy, undefined).detail).toBe("Polymarket cancelled the order unfilled (CANCELED)");
+});
+
+test("only Polymarket not answering counts as an outage, a bug of ours does not", () => {
+    expect(isUpstreamFailure(Object.assign(new Error("x"), { name: "RequestRejectedError" }))).toBe(true);
+    expect(isUpstreamFailure(new Error("lookup timed out after 5000 ms"))).toBe(true);
+    expect(isUpstreamFailure(new Error("The order abc or its account def vanished while booking its fill"))).toBe(
+        false,
+    );
 });

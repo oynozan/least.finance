@@ -196,10 +196,11 @@ describe("the Polymarket trader", () => {
         expect(await ask()).toEqual({ kind: "open" });
         fake.setOrder(HASH, order("MATCHED", ""));
         expect(await ask()).toEqual({ kind: "open" });
+        // The exchange's own status is kept, since each means something different to the person
         fake.setOrder(HASH, order("CANCELED_MARKET_RESOLVED", "0"));
-        expect(await ask()).toEqual({ kind: "cancelled" });
+        expect(await ask()).toEqual({ kind: "cancelled", status: "CANCELED_MARKET_RESOLVED" });
         fake.setOrder(HASH, order("INVALID", "0"));
-        expect(await ask()).toEqual({ kind: "cancelled" });
+        expect(await ask()).toEqual({ kind: "cancelled", status: "INVALID" });
         fake.setOrder(HASH, null);
         expect(await ask()).toEqual({ kind: "missing" });
         // Without a CLOB id it looks the order up by the hash it signed
@@ -346,7 +347,7 @@ describe("the Polymarket trader", () => {
             fake.setTradesPageSize(1);
             fake.setTrade("t0", tradeOf("t0", FILL, "BUY", [makerOrder("0.50", "6")]));
             for (let i = 1; i <= 6; i++) fake.setTrade(`t${i}`, tradeOf(`t${i}`, `0x${"e".repeat(64)}`, "BUY", []));
-            await expect(find()).rejects.toThrow("too long");
+            await expect(find()).rejects.toThrow(/has more than 5 pages, so the fill of order 0x\w+ can't be read/);
         });
 
         it("answers from a history that ends exactly at the page limit", async () => {

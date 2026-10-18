@@ -1,6 +1,7 @@
 import type { AccountDoc, PositionDoc, PredictionOrderDoc } from "../db/mongo.ts";
 import { formatE6, formatUsdc, fromDecimal } from "../db/money.ts";
 import { accountView } from "../deposits/views.ts";
+import { orderRef } from "./failures.ts";
 import type { PositionView, PredictionOrderView, PredictionUpdate } from "../protocol.ts";
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
@@ -11,6 +12,9 @@ export const formatUsdShort = (value: number) => (Number.isInteger(value) ? usdW
 
 const optionalUsdc = (wei: PositionDoc["proceeds"]) => (wei ? formatUsdc(fromDecimal(wei)) : null);
 
+const reviewMessage = (order: PredictionOrderDoc) =>
+    `We're checking this order with Polymarket (ref ${orderRef(order._id)}). ${order.side === "sell" ? "Your position" : "Your balance"} is held until it is confirmed.`;
+
 export const orderView = (order: PredictionOrderDoc): PredictionOrderView => ({
     id: order._id.toHexString(),
     requestId: order.requestId,
@@ -18,6 +22,8 @@ export const orderView = (order: PredictionOrderDoc): PredictionOrderView => ({
     state: order.state,
     reason: order.reason,
     ...(order.state === "failed" && order.message && { message: order.message }),
+    // A post nobody could confirm is held, not failed; the person is told so instead of left to wait
+    ...(order.state === "posted" && order.needsReviewAt && { message: reviewMessage(order) }),
     eventId: order.eventId,
     tokenId: order.tokenId,
     question: order.question,

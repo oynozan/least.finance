@@ -699,13 +699,16 @@ export class PredictionService {
                           order._id,
                       )
                     : await accounts.findOne({ _id: moved.accountId }, { session });
-            if (!account || !linked) throw new Error("The order or its account vanished");
+            if (!account || !linked)
+                throw new Error(
+                    `The order ${order._id.toHexString()} or its account ${order.accountId.toHexString()} vanished while booking its fill`,
+                );
             const float = await this.#release(session, reservedOf(moved), weiToE6(cost));
             return { order: linked, position, account, float, cost };
         });
         if (!done) return;
         this.#deps.logger.info(
-            { order: order._id.toHexString(), shares: formatE6(takingE6), cost: formatUsdc(done.cost) },
+            { ...this.context(order), shares: formatE6(takingE6), cost: formatUsdc(done.cost) },
             "Prediction filled",
         );
         this.#afterSettle(done);
@@ -741,7 +744,10 @@ export class PredictionService {
             },
             { session, upsert: true, returnDocument: "after" },
         );
-        if (!position) throw new Error("The position wasn't written");
+        if (!position)
+            throw new Error(
+                `The position for token ${moved.tokenId} wasn't written while booking order ${moved._id.toHexString()}`,
+            );
         const linked = await predictionOrders.findOneAndUpdate(
             { _id: moved._id },
             { $set: { positionId: position._id, cost: toDecimal(cost) } },
@@ -768,7 +774,7 @@ export class PredictionService {
         });
         if (!done) return;
         this.#deps.logger.info(
-            { order: order._id.toHexString(), shares: formatE6(makingE6), proceeds: formatUsdc(proceeds) },
+            { ...this.context(order), shares: formatE6(makingE6), proceeds: formatUsdc(proceeds) },
             "Prediction sold",
         );
         this.#afterSettle(done);
@@ -822,7 +828,7 @@ export class PredictionService {
                   { session, returnDocument: "after" },
               )
             : moved;
-        if (!order) throw new Error("The order vanished");
+        if (!order) throw new Error(`The order ${moved._id.toHexString()} vanished while booking its sale`);
         const account =
             proceeds > 0n
                 ? await this.#deps.ledger.creditInSession(
@@ -833,7 +839,10 @@ export class PredictionService {
                       moved._id,
                   )
                 : await accounts.findOne({ _id: moved.accountId }, { session });
-        if (!account) throw new Error("The account vanished");
+        if (!account)
+            throw new Error(
+                `The account ${moved.accountId.toHexString()} vanished while booking order ${moved._id.toHexString()}`,
+            );
         return { order, position, account };
     }
 
@@ -884,7 +893,10 @@ export class PredictionService {
                     { session, returnDocument: "after" },
                 );
                 const account = await accounts.findOne({ _id: moved.accountId }, { session });
-                if (!account) throw new Error("The account vanished");
+                if (!account)
+                    throw new Error(
+                        `The account ${moved.accountId.toHexString()} vanished while booking order ${moved._id.toHexString()}`,
+                    );
                 return { order: moved, position, account, float: null };
             }
             const held = fromDecimal(moved.amount);
@@ -970,16 +982,24 @@ export class PredictionService {
                               lateRefId,
                           )
                         : await accounts.findOne({ _id: moved.accountId }, { session });
-                if (!account) throw new Error("The account vanished");
+                if (!account)
+                    throw new Error(
+                        `The account ${moved.accountId.toHexString()} vanished while booking order ${moved._id.toHexString()}`,
+                    );
                 const { position, linked } = await this.#bookBuyFill(session, moved, takingE6, cost, now);
-                if (!linked) throw new Error("The order vanished");
+                if (!linked)
+                    throw new Error(`The order ${moved._id.toHexString()} vanished while booking its late fill`);
                 return { order: linked, position, account, float: null };
             });
         } catch (error) {
             if (!(error instanceof Unbookable) && !(isAppError(error) && error.code === "insufficient_funds"))
                 throw error;
+            const cause =
+                error instanceof Unbookable
+                    ? "the position was gone or smaller"
+                    : "the person's balance can't cover the cost";
             const orphaned = await predictionOrders.updateOne(refunded, {
-                $set: { lateFill: "orphaned", updatedAt: new Date() },
+                $set: { lateFill: "orphaned", lateFillReason: cause, updatedAt: new Date() },
             });
             if (orphaned.modifiedCount)
                 this.#deps.logger.error(
@@ -987,6 +1007,7 @@ export class PredictionService {
                         ...this.context(order),
                         makingE6: makingE6.toString(),
                         takingE6: takingE6.toString(),
+                        cause,
                         err: error,
                     },
                     "A refunded prediction filled late and can't be booked; the pool holds the shares",
@@ -994,7 +1015,7 @@ export class PredictionService {
             return;
         }
         if (!done) return;
-        this.#deps.logger.info({ order: order._id.toHexString() }, "A refunded prediction filled late and was booked");
+        this.#deps.logger.info(this.context(order), "A refunded prediction filled late and was booked");
         this.#afterSettle(done);
     }
 

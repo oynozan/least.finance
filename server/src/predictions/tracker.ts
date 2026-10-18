@@ -1,7 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
 import type { Collections, PredictionOrderDoc } from "../db/mongo.ts";
-import { priceMoved, unconfirmed } from "./failures.ts";
+import { cancelled, isUpstreamFailure, unconfirmed } from "./failures.ts";
+import { HourlyLog } from "./rebalance-log.ts";
 import type { PredictionService } from "./predictions.ts";
 import type { PoolTrader } from "./trader.ts";
 
@@ -38,12 +39,15 @@ export class PredictionTracker {
     /** When each refunded order was last checked for a late fill. */
     readonly #watched = new Map<string, number>();
     #floatAt = -Infinity;
+    /** A follow that keeps failing repeats every poll, so each order's line is logged once an hour. */
+    readonly #hourly: HourlyLog;
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#hourly = new HourlyLog(deps.logger, this.#now);
     }
 
     start() {
@@ -99,6 +103,23 @@ export class PredictionTracker {
         const ids = new Set(orders.map((order) => order._id.toHexString()));
         for (const id of this.#polled.keys()) if (!ids.has(id)) this.#polled.delete(id);
 
+        for (const order of orders) {
+            const ageMs = now - order.createdAt.getTime();
+            if (ageMs > SLOW_AGE_MS)
+                this.#hourly.once(
+                    `slow:${order._id.toHexString()}`,
+                    "error",
+                    {
+                        ...this.#deps.service.context(order),
+                        state: order.state,
+                        clobOrderId: order.clobOrderId,
+                        orderHash: order.orderHash,
+                        ageSec: Math.round(ageMs / 1000),
+                        needsReview: Boolean(order.needsReviewAt),
+                    },
+                    "A posted prediction is still unanswered",
+                );
+        }
         const due = orders.filter((order) => {
             const id = order._id.toHexString();
             if (this.#deps.service.submitting(order._id)) return false;
@@ -138,9 +159,25 @@ export class PredictionTracker {
         const queue = [...orders];
         const worker = async () => {
             for (let order = queue.shift(); order && !signal?.aborted; order = queue.shift()) {
-                await work(order).catch((error: unknown) =>
-                    this.#deps.logger.warn({ ...this.#deps.service.context(order), err: error }, failure),
-                );
+                await work(order).catch((error: unknown) => {
+                    const now = this.#now();
+                    // An outage at Polymarket is expected; anything else is a bug that may be holding someone's money
+                    const level = isUpstreamFailure(error) ? "warn" : "error";
+                    this.#hourly.once(
+                        `${failure}:${order._id.toHexString()}`,
+                        level,
+                        {
+                            ...this.#deps.service.context(order),
+                            event: "prediction:follow",
+                            state: order.state,
+                            clobOrderId: order.clobOrderId,
+                            orderHash: order.orderHash,
+                            ageSec: Math.round((now - order.createdAt.getTime()) / 1000),
+                            err: error,
+                        },
+                        failure,
+                    );
+                });
             }
         };
         await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
@@ -174,6 +211,10 @@ export class PredictionTracker {
         }
     }
 
+    #fail(order: PredictionOrderDoc, why: ReturnType<typeof cancelled>) {
+        return this.#deps.service.fail(order, why.reason, "posted", undefined, why);
+    }
+
     async #step(trader: PoolTrader, order: PredictionOrderDoc) {
         const found = await trader.lookup({
             orderHash: order.orderHash!,
@@ -182,18 +223,7 @@ export class PredictionTracker {
         });
         if (found.kind === "filled") await this.#deps.service.settle(order, found.makingE6, found.takingE6);
         else if (found.kind === "cancelled")
-            await this.#deps.service.fail(
-                order,
-                "price_moved",
-                "posted",
-                undefined,
-                priceMoved(
-                    order,
-                    "Polymarket cancelled a prediction's order without filling it",
-                    "Polymarket cancelled the order unfilled",
-                    { limitPrice: order.limitPrice },
-                ),
-            );
+            await this.#fail(order, cancelled(order, found.status, { limitPrice: order.limitPrice }));
         else if (found.kind === "missing") {
             if (order.postUnknownAt) await this.#unknown(trader, order, order.postUnknownAt);
             else if (this.#now() - (order.postedAt?.getTime() ?? 0) > MISSING_GIVE_UP_MS)
@@ -206,6 +236,7 @@ export class PredictionTracker {
                         order,
                         "Refunded a prediction Polymarket has no record of",
                         `Polymarket had no record of the order ${Math.round(MISSING_GIVE_UP_MS / 1000)} s after it was posted`,
+                        { ageSec: Math.round((this.#now() - (order.postedAt?.getTime() ?? 0)) / 1000) },
                     ),
                 );
         }
@@ -224,11 +255,22 @@ export class PredictionTracker {
         if (found === "unlinked") {
             const flagged = await this.#deps.collections.predictionOrders.updateOne(
                 { _id: order._id, state: "posted", needsReviewAt: null },
-                { $set: { needsReviewAt: new Date(now), updatedAt: new Date(now) } },
+                {
+                    $set: {
+                        needsReviewAt: new Date(now),
+                        needsReviewReason: `the post got no answer for ${Math.round((now - unknownAt.getTime()) / 60_000)} minutes and the pool has trades that can't be linked to any order`,
+                        updatedAt: new Date(now),
+                    },
+                },
             );
             if (flagged.modifiedCount)
                 this.#deps.logger.error(
-                    this.#deps.service.context(order),
+                    {
+                        ...this.#deps.service.context(order),
+                        orderHash: order.orderHash,
+                        postedAt: order.postedAt,
+                        quarantineSec: Math.round((now - unknownAt.getTime()) / 1000),
+                    },
                     "A prediction's post got no answer and a trade can't be linked to it; it needs review and was not refunded",
                 );
         } else if (found) await this.#deps.service.settle(order, found.makingE6, found.takingE6);
@@ -242,6 +284,7 @@ export class PredictionTracker {
                     order,
                     "Refunded a prediction whose post got no answer and shows no trade",
                     "the post got no answer and the pool's trades show no fill for it",
+                    { quarantineSec: Math.round((now - unknownAt.getTime()) / 1000) },
                 ),
             );
     }

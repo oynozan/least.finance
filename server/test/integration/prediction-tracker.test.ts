@@ -5,6 +5,7 @@ import type { PredictionOrderDoc } from "../../src/db/mongo.ts";
 import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { PredictionTracker } from "../../src/predictions/tracker.ts";
 import { withTimeouts } from "../../src/predictions/trader.ts";
+import { orderView } from "../../src/predictions/views.ts";
 import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
 
 let clock = 1_000_000;
@@ -70,6 +71,29 @@ test("a delayed order the exchange cancels is refunded as price_moved", async ()
     const s = await h.state(account._id);
     expect(s.balance).toBe(wei("100"));
     expect(s.sum).toBe(s.balance);
+});
+
+test("an order cancelled because its market resolved is market_closed, said so, and logged with the status", async () => {
+    const account = await h.seedAccount("100");
+    h.trader.onNext(TOKEN, "delay");
+    const view = await h.service.place(account, input("10"));
+    const order = await posted(view.requestId);
+    await sent(order);
+    h.trader.setLookup(order.orderHash!, { kind: "cancelled", status: "CANCELED_MARKET_RESOLVED" });
+    const warn = vi.spyOn(h.logger, "warn");
+    await tracker.tick();
+    const failed = (await orderOf(view.requestId))!;
+    expect(failed).toMatchObject({
+        state: "failed",
+        reason: "market_closed",
+        detail: "Polymarket cancelled the order (CANCELED_MARKET_RESOLVED)",
+        message: "The market resolved before the order filled. Nothing was spent.",
+    });
+    expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ polymarketStatus: "CANCELED_MARKET_RESOLVED", account: account._id.toHexString() }),
+        expect.stringContaining("Polymarket cancelled a prediction because its market resolved"),
+    );
+    warn.mockRestore();
 });
 
 const MIN = 60_000;
@@ -144,13 +168,26 @@ test("a trade that can't be linked to the order needs review and is never refund
     const flagged = (await orderOf(view.requestId))!;
     expect(flagged.state).toBe("posted");
     expect(flagged.needsReviewAt).toBeInstanceOf(Date);
-    expect(error).toHaveBeenCalledTimes(1);
-    expect(error.mock.calls[0]![0]).toMatchObject({
+    expect(flagged.needsReviewReason).toContain("can't be linked to any order");
+    // The review line carries the order's hash and how long the quarantine ran; the order has also been unanswered long enough to be said so
+    const review = error.mock.calls.filter(([, message]) =>
+        String(message).startsWith("A prediction's post got no answer"),
+    );
+    expect(review).toHaveLength(1);
+    expect(review[0]![0]).toMatchObject({
         order: order._id.toHexString(),
         account: account._id.toHexString(),
         side: "buy",
         tokenId: TOKEN,
+        orderHash: order.orderHash,
+        quarantineSec: 15 * 60,
     });
+    expect(
+        error.mock.calls.filter(([, message]) => message === "A posted prediction is still unanswered"),
+    ).toHaveLength(1);
+    expect(orderView(flagged).message).toMatch(
+        /^We're checking this order with Polymarket \(ref [0-9a-f]{6}\)\. Your balance is held until it is confirmed\.$/,
+    );
 
     clock += HOUR;
     await tracker.tick();
@@ -222,7 +259,11 @@ test("a late fill the person can't cover is orphaned, not booked", async () => {
     clock += 61_000;
     await tracker.tick();
 
-    expect(await orderOf(view.requestId)).toMatchObject({ state: "failed", lateFill: "orphaned" });
+    expect(await orderOf(view.requestId)).toMatchObject({
+        state: "failed",
+        lateFill: "orphaned",
+        lateFillReason: "the person's balance can't cover the cost",
+    });
     expect(error).toHaveBeenCalledTimes(1);
     expect(error.mock.calls[0]![0]).toMatchObject({
         order: order._id.toHexString(),
@@ -391,7 +432,11 @@ test("a late sell fill with the shares gone is orphaned", async () => {
     clock += 61_000;
     await tracker.tick();
 
-    expect(await orderOf(view.requestId)).toMatchObject({ state: "failed", lateFill: "orphaned" });
+    expect(await orderOf(view.requestId)).toMatchObject({
+        state: "failed",
+        lateFill: "orphaned",
+        lateFillReason: "the position was gone or smaller",
+    });
     expect(error).toHaveBeenCalledTimes(1);
     expect((await h.state(account._id)).balance).toBe(0n);
     error.mockRestore();

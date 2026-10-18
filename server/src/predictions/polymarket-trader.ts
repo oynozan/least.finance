@@ -353,6 +353,19 @@ export async function createPolymarketTrader(
                 order = await client.fetchOrder({ orderId: clobOrderId ?? orderHash });
             } catch (error) {
                 if (error instanceof RequestRejectedError && (error.status === 404 || error.status === 400)) {
+                    // A 400 is how the exchange can answer for an id it doesn't know, but it is also what a systemic
+                    // fault would look like, so the words are kept where they can be seen
+                    if (error.status === 400)
+                        logger.warn(
+                            {
+                                orderHash,
+                                clobOrderId,
+                                status: error.status,
+                                code: error.code ?? null,
+                                polymarketMessage: error.message,
+                            },
+                            "Polymarket answered an order lookup with 400, so the order is taken as unknown to it",
+                        );
                     return { kind: "missing" };
                 }
                 throw error;
@@ -371,7 +384,7 @@ export async function createPolymarketTrader(
                 // The spend rounds up and the proceeds round down, so the pool never loses to rounding
                 return { kind: "filled", makingE6: (dollars + E6 - 1n) / E6, takingE6: matchedE6 };
             }
-            if (status.startsWith("CANCELED") || status === "INVALID") return { kind: "cancelled" };
+            if (status.startsWith("CANCELED") || status === "INVALID") return { kind: "cancelled", status };
             return { kind: "open" };
         },
 
@@ -400,7 +413,10 @@ export async function createPolymarketTrader(
                 }
                 // An unread page could hold more of the fill, so no answer comes from a partial read
                 if (read + 1 === FIND_FILL_PAGES) {
-                    if (!(await pages.next()).done) throw new Error("the trade history is too long to read");
+                    if (!(await pages.next()).done)
+                        throw new Error(
+                            `The trade history for token ${tokenId} has more than ${FIND_FILL_PAGES} pages, so the fill of order ${orderHash} can't be read`,
+                        );
                     break;
                 }
             }

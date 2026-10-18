@@ -154,10 +154,14 @@ export type PredictionOrderDoc = {
     watchUntil?: Date | null;
     /** What became of a fill that landed after the refund: booked, or left with the pool for an operator. */
     lateFill?: "settled" | "orphaned";
+    /** Why a late fill couldn't be booked, in words. */
+    lateFillReason?: string;
     /** The ledger reference of the debit that took the cost back for a late fill. */
     lateRefId?: ObjectId;
     /** When a trade that can't be linked to the order was found; an operator decides, nothing is refunded. */
     needsReviewAt?: Date | null;
+    /** Why it needs review, in words. */
+    needsReviewReason?: string;
     createdAt: Date;
     updatedAt: Date;
 };

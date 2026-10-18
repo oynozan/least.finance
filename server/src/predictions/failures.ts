@@ -133,6 +133,11 @@ export function polymarketRefused(
     };
 }
 
+const UPSTREAM = /timed out after|TimeoutError|TransportError|ConnectionLostError|RequestRejectedError|RateLimitError/;
+
+/** An error that means Polymarket (or the network to it) didn't answer, as opposed to a bug of ours. */
+export const isUpstreamFailure = (error: unknown) => UPSTREAM.test(`${errorName(error)} ${errorText(error)}`);
+
 const errorName = (error: unknown) => (error instanceof Error ? error.name : "");
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -204,6 +209,47 @@ export function unconfirmed(order: Order, msg: string, detail: string, fields?: 
         detail,
         message: `Polymarket didn't confirm the order, so it was cancelled. ${kept(order.side)}`,
         fields,
+    };
+}
+
+/** Polymarket's status for an order it cancelled or marked invalid, in plain words and with the reason it is stored under. */
+export function cancelled(order: Order, status: string | undefined, fields?: Record<string, unknown>): Why {
+    const said = status ?? "CANCELED";
+    const base = { fields: { ...fields, polymarketStatus: said } };
+    if (said === "CANCELED_MARKET_RESOLVED")
+        return {
+            ...base,
+            reason: "market_closed",
+            msg: "Polymarket cancelled a prediction because its market resolved",
+            level: "warn",
+            detail: `Polymarket cancelled the order (${said})`,
+            message: `The market resolved before the order filled. ${kept(order.side)}`,
+        };
+    if (said === "INVALID")
+        return {
+            ...base,
+            reason: "rejected",
+            msg: "Polymarket marked a prediction's order invalid",
+            level: "error",
+            detail: `Polymarket marked the order invalid (${said})`,
+            message: `Polymarket marked the order invalid. That's on our side. ${kept(order.side)}`,
+        };
+    if (said === "CANCELED_BY_USER")
+        return {
+            ...base,
+            reason: "unavailable",
+            msg: "Polymarket shows a prediction's order cancelled by the account, which we never do",
+            level: "error",
+            detail: `Polymarket shows the order cancelled by the account (${said})`,
+            message: `Polymarket cancelled the order. That's on our side (ref ${orderRef(order._id)}). ${kept(order.side)}`,
+        };
+    return {
+        ...priceMoved(
+            order,
+            "Polymarket cancelled a prediction's order without filling it",
+            `Polymarket cancelled the order unfilled (${said})`,
+            base.fields,
+        ),
     };
 }
 

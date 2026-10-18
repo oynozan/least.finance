@@ -29,7 +29,8 @@ export type PostResult =
 export type LookupResult =
     | { kind: "filled"; makingE6: bigint; takingE6: bigint }
     | { kind: "open" }
-    | { kind: "cancelled" }
+    /** `status` is the exchange's own word for why, such as CANCELED_MARKET_RESOLVED. */
+    | { kind: "cancelled"; status?: string }
     | { kind: "missing" };
 
 /** What the pool's trade records show for an order: its fill, or a trade that can't be linked to any order. */
