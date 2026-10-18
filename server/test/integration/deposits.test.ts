@@ -531,3 +531,25 @@ test("a failing scan says what it was doing and where, and /ready's status says 
     await expect.poll(() => stack.server.services.watcher.status().lastError, { timeout: 8_000 }).toBeNull();
     expect(stack.server.services.watcher.status().lastErrorKind).toBeNull();
 });
+
+test("a credited deposit whose account can't be read back shows one ref, and that ref is in the log", async () => {
+    const user = await openUser();
+    const hash = await send(user.wallet, user.depositAddress, "0.5");
+    const accounts = collections().accounts;
+    const real = accounts.findOne.bind(accounts);
+    const spy = vi.spyOn(accounts, "findOne").mockImplementation(((filter: any, ...rest: any[]) =>
+        Object.keys(filter ?? {}).join() === "_id" && String(filter._id) === String(user.accountId)
+            ? Promise.resolve(null)
+            : (real as any)(filter, ...rest)) as any);
+    let result;
+    try {
+        result = await report(user, hash);
+    } finally {
+        spy.mockRestore();
+    }
+    const refs = [...String(result.body.error.message).matchAll(/ref ([0-9a-f]{6})/g)].map((m) => m[1]);
+    expect(refs).toHaveLength(1);
+    const line = logged("deposit.report").find((l) => l.txHash === hash && l.outcome === "account_vanished");
+    expect(line?.ref).toBe(refs[0]);
+    expect(result.body.error.code).toBe("unavailable");
+});

@@ -171,8 +171,9 @@ export class DepositService {
                 { op: "deposit.report", accountId, txHash, ref, outcome: "account_vanished", credited: credits.length },
                 "A reported deposit was credited but its account can't be read",
             );
+            // Not "internal": the transport would add a second ref that the log never carries
             throw new AppError(
-                "internal",
+                "unavailable",
                 `Your deposit ${shortOf(txHash)} was credited, but your account couldn't be read back. Reload to see it, and quote ref ${ref} if it's missing.`,
                 { logged: true },
             );
