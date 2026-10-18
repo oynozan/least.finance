@@ -1,8 +1,8 @@
 import { isAddress, isHex, zeroAddress, type Address, type Hex } from "viem";
 import { z } from "zod";
 import { ARC_CHAIN_ID } from "../../chain/arc.ts";
-import { AppError } from "../../errors.ts";
 import { COINS, toArcWei, type Coin } from "../catalog.ts";
+import { badAnswer, UpstreamRefusal } from "../failures.ts";
 import type { BridgeProvider, BridgeStage, BridgeStatus, Quote, QuoteRequest, SourceTx } from "./types.ts";
 
 const ARC_USDC_ERC20 = "0x3600000000000000000000000000000000000000";
@@ -49,7 +49,11 @@ const quoteResponse = z.object({
     }),
 });
 
-const statusResponse = z.object({ status: z.string(), txHashes: z.array(hex).optional() });
+const statusResponse = z.object({
+    status: z.string(),
+    txHashes: z.array(hex).optional(),
+    details: z.string().nullish(),
+});
 
 // Relay's own words for how far a request has got
 const STAGES = new Map<string, BridgeStage>([
@@ -63,9 +67,21 @@ const STAGES = new Map<string, BridgeStage>([
     ["failure", "failed"],
 ]);
 
+const safeJson = (text: string): unknown => {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return null;
+    }
+};
+
 const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-const errorBody = z.object({ errorCode: z.string().optional() });
+const errorBody = z.object({
+    errorCode: z.string().optional(),
+    message: z.string().optional(),
+    errorData: z.unknown().optional(),
+});
 
 export function createRelay(options: { apiKey?: string; fetch?: typeof fetch; baseUrl?: string } = {}): BridgeProvider {
     const { apiKey, fetch: call = fetch, baseUrl = "https://api.relay.link" } = options;
@@ -97,14 +113,18 @@ export function createRelay(options: { apiKey?: string; fetch?: typeof fetch; ba
                 signal,
             });
             if (!response.ok) {
-                const failure = errorBody.safeParse(await response.json().catch(() => null));
-                if (failure.success && failure.data.errorCode === "SOLANA_TX_TOO_LARGE") {
-                    throw new AppError(
-                        "unavailable",
-                        "This deposit can't be sent from Solana right now. Try a smaller route.",
-                    );
-                }
-                throw new Error(`Relay answered ${response.status} to a quote`);
+                // A 4xx is Relay saying no to this deposit; anything else is an outage or a throttle
+                if (response.status >= 500 || response.status === 429)
+                    throw await badAnswer("relay", "quote", response);
+                const raw = await response.text().catch(() => "");
+                const failure = errorBody.safeParse(safeJson(raw));
+                throw new UpstreamRefusal({
+                    provider: "relay",
+                    status: response.status,
+                    code: failure.success ? failure.data.errorCode : null,
+                    message: failure.success && failure.data.message ? failure.data.message : raw,
+                    data: failure.success ? failure.data.errorData : undefined,
+                });
             }
             const { steps, details } = quoteResponse.parse(await response.json());
 
@@ -151,13 +171,16 @@ export function createRelay(options: { apiKey?: string; fetch?: typeof fetch; ba
                 headers: keyHeader,
                 signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
             });
-            if (!response.ok) throw new Error(`Relay answered ${response.status} to a status`);
-            const { status, txHashes } = statusResponse.parse(await response.json());
+            if (!response.ok) throw await badAnswer("relay", `status request for ${ref}`, response);
+            const { status, txHashes, details } = statusResponse.parse(await response.json());
 
             const stage = STAGES.get(status);
-            if (!stage) throw new Error(`Relay gave a status the app doesn't know: ${status}`);
+            if (!stage) {
+                throw new Error(`Relay gave a status the app doesn't know: ${status}${details ? ` (${details})` : ""}`);
+            }
             const fillTxHash = txHashes?.[0];
-            return stage === "filled" && fillTxHash ? { stage, fillTxHash } : { stage };
+            const detail = details ? { detail: details } : {};
+            return stage === "filled" && fillTxHash ? { stage, fillTxHash, ...detail } : { stage, ...detail };
         },
     };
 }

@@ -2,6 +2,7 @@ import { isAddress, isHex, zeroAddress, type Address, type Hex } from "viem";
 import { z } from "zod";
 import { ARC_CHAIN_ID } from "../../chain/arc.ts";
 import { COINS, toArcWei, type Coin } from "../catalog.ts";
+import { badAnswer, UpstreamRefusal } from "../failures.ts";
 import type { BridgeProvider, BridgeStage, BridgeStatus, Quote, QuoteRequest, SourceTx } from "./types.ts";
 
 const ARC_USDC_ERC20 = "0x3600000000000000000000000000000000000000";
@@ -26,6 +27,12 @@ const quoteResponse = z.object({
 });
 
 const statusResponse = z.object({ status: z.string(), fillTx: hex.nullish() });
+
+const errorBody = z.object({
+    code: z.string().optional(),
+    message: z.string().optional(),
+    param: z.string().optional(),
+});
 
 // Across's own words for how far a deposit has got
 const STAGES = new Map<string, BridgeStage>([
@@ -64,7 +71,20 @@ export function createAcross(
             });
             if (integratorId) query.set("integratorId", integratorId);
             const response = await call(`${baseUrl}/api/swap/approval?${query}`, { headers, signal });
-            if (!response.ok) throw new Error(`Across answered ${response.status} to a quote`);
+            if (!response.ok) {
+                // A 4xx is Across saying no to this deposit; anything else is an outage or a throttle
+                if (response.status >= 500 || response.status === 429)
+                    throw await badAnswer("across", "quote", response);
+                const raw = await response.text().catch(() => "");
+                const failure = errorBody.safeParse(safeJson(raw));
+                throw new UpstreamRefusal({
+                    provider: "across",
+                    status: response.status,
+                    code: failure.success ? failure.data.code : null,
+                    message: failure.success && failure.data.message ? failure.data.message : raw,
+                    data: failure.success ? failure.data.param : undefined,
+                });
+            }
             const quote = quoteResponse.parse(await response.json());
             const { inputToken, outputToken, swapTx } = quote;
 
@@ -109,15 +129,30 @@ export function createAcross(
             });
             // Its indexer takes a few seconds to see a new deposit
             if (response.status === 404 && (await notYetIndexed(response))) return { stage: "waiting" };
-            if (!response.ok) throw new Error(`Across answered ${response.status} to a status`);
+            if (!response.ok) {
+                const what = `status request for deposit ${sourceTxHash} on chain ${coin.chainId}`;
+                throw await badAnswer("across", what, response);
+            }
             const { status, fillTx } = statusResponse.parse(await response.json());
 
             const stage = STAGES.get(status);
-            if (!stage) throw new Error(`Across gave a status the app doesn't know: ${status}`);
+            if (!stage)
+                throw new Error(`Across gave a status the app doesn't know: ${status} (deposit ${sourceTxHash})`);
+            if (status === "expired") {
+                return { stage, detail: "Across let the deposit expire; it is refunded to your wallet" };
+            }
             return stage === "filled" && fillTx ? { stage, fillTxHash: fillTx } : { stage };
         },
     };
 }
+
+const safeJson = (text: string): unknown => {
+    try {
+        return JSON.parse(text);
+    } catch {
+        return null;
+    }
+};
 
 async function notYetIndexed(response: Response): Promise<boolean> {
     const body: unknown = await response.json().catch(() => null);

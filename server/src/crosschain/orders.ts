@@ -3,7 +3,8 @@ import { formatUnits, getAddress, isAddress } from "viem";
 import type { Config } from "../config.ts";
 import type { AccountDoc, Collections, DepositOrderDoc } from "../db/mongo.ts";
 import { formatUsdc, toDecimal } from "../db/money.ts";
-import { AppError } from "../errors.ts";
+import type { Logger } from "pino";
+import { AppError, refOf, shortOf } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { DepositQuoteView } from "../protocol.ts";
 import { coinByKey, parseCoinAmount, type Coin } from "./catalog.ts";
@@ -24,7 +25,7 @@ type Deps = {
     minSolanaUsd: number;
     /** Program ids a Solana quote's instructions may call. */
     allowedPrograms: readonly string[];
-    logger?: { error: (fields: object, message: string) => void };
+    logger?: Pick<Logger, "error" | "warn" | "info">;
 };
 
 /** Tried in this order for Solana coins: Relay, then CCTP only when Relay gave nothing usable. */
@@ -72,9 +73,14 @@ export class DepositOrders {
             state: { $in: ["created", "sent"] },
         });
         if (unsettled >= UNSETTLED_LIMIT) {
+            this.#deps.logger?.warn(
+                { op: "deposit.order.limit", accountId: account._id.toHexString(), unsettled, limit: UNSETTLED_LIMIT },
+                "Refused a deposit order: too many are still waiting to be sent",
+            );
             throw new AppError(
                 "rate_limited",
-                "Too many deposits are still waiting to be sent. Try again in a few minutes.",
+                `You already have ${unsettled} deposits waiting for your wallet to send them. Send those first, or wait about 10 minutes for them to expire.`,
+                { logged: true },
             );
         }
         const { quote, source } = await this.#quote(account, wallet, coin, amount);
@@ -83,6 +89,24 @@ export class DepositOrders {
         if (names.length > 0) {
             for (const { address, addresses } of await this.#deps.solana.getAddressLookupTables(names)) {
                 tables.set(address, addresses);
+            }
+            const missing = names.filter((name) => !tables.has(name));
+            if (missing.length > 0) {
+                this.#deps.logger?.error(
+                    {
+                        op: "deposit.order.tables",
+                        missing,
+                        quote: quote.ref,
+                        provider: quote.provider,
+                        accountId: account._id.toHexString(),
+                    },
+                    "Refused a Solana deposit: a lookup table in the quote couldn't be loaded",
+                );
+                throw new AppError(
+                    "unavailable",
+                    "Relay's Solana route uses an address table we couldn't load. Try again in a minute.",
+                    { logged: true },
+                );
             }
         }
         const now = new Date();
@@ -117,13 +141,35 @@ export class DepositOrders {
     async reportSource(account: AccountDoc, orderId: string, txHashes: string[]): Promise<DepositOrderDoc> {
         const { depositOrders } = this.#deps.collections;
         const _id = new ObjectId(orderId);
+        const accountId = account._id.toHexString();
         const order = await depositOrders.findOne({ _id, accountId: account._id });
-        if (!order) throw new AppError("not_found", "No such order.");
+        if (!order) {
+            this.#deps.logger?.warn(
+                { op: "deposit.source.refused", accountId, orderId, reason: "not_found", txHashes },
+                "Refused a deposit's transaction report: no such order for this account",
+            );
+            throw new AppError("not_found", `Order ${refOf(orderId)} isn't one of yours or has been cleared.`, {
+                logged: true,
+            });
+        }
         const solana = coinByKey(order.coin).chain === "solana";
-        if (txHashes.some((hash) => hash.startsWith("0x") === solana)) {
+        const wrong = txHashes.find((hash) => hash.startsWith("0x") === solana);
+        if (wrong !== undefined) {
+            this.#deps.logger?.warn(
+                {
+                    op: "deposit.source.refused",
+                    accountId,
+                    orderId,
+                    reason: "wrong_hash_kind",
+                    coin: order.coin,
+                    txHashes,
+                },
+                "Refused a deposit's transaction report: the hash is the wrong kind for the coin",
+            );
             throw new AppError(
                 "bad_request",
-                solana ? "That isn't a Solana signature." : "That isn't a transaction hash.",
+                `The hash your wallet returned (${shortOf(wrong)}) isn't a ${solana ? "Solana signature" : "transaction hash"}.`,
+                { logged: true },
             );
         }
         // From before the write, so the tracker, which can see the order the moment it is written, announces after.
@@ -158,7 +204,29 @@ export class DepositOrders {
                 return moved;
             }
             const existing = await depositOrders.findOne({ _id, accountId: account._id });
-            if (!existing) throw new AppError("not_found", "No such order.");
+            if (!existing) {
+                this.#deps.logger?.warn(
+                    { op: "deposit.source.refused", accountId, orderId, reason: "not_found", txHashes },
+                    "Refused a deposit's transaction report: no such order for this account",
+                );
+                throw new AppError("not_found", `Order ${refOf(orderId)} isn't one of yours or has been cleared.`, {
+                    logged: true,
+                });
+            }
+            // A repeat of what is recorded is harmless; anything else is a report the order could not take
+            if (existing.sourceTxHashes.join() !== [...new Set(txHashes)].join()) {
+                this.#deps.logger?.warn(
+                    {
+                        op: "deposit.source.ignored",
+                        accountId,
+                        orderId,
+                        state: existing.state,
+                        recorded: existing.sourceTxHashes,
+                        reported: txHashes,
+                    },
+                    "Ignored a deposit's transaction report: the order had moved on or already had hashes",
+                );
+            }
             return existing;
         } finally {
             this.#announcing.delete(orderId);
@@ -200,10 +268,13 @@ export class DepositOrders {
         const solana = source.chain === "solana";
         if (solana) solanaOpen(this.#deps.switches, "deposits");
         if (solana === isAddress(wallet, { strict: false })) {
-            throw new AppError("bad_request", "That wallet can't send this coin.");
+            throw new AppError(
+                "bad_request",
+                `${source.symbol} on ${source.chainName} needs a${solana ? " Solana" : "n Ethereum-style"} wallet; ${shortOf(wallet)} is a${solana ? "n Ethereum-style" : " Solana"} wallet.`,
+            );
         }
         const units = parseCoinAmount(source, amount);
-        if (solana) await this.#checkMinimum(source, units);
+        if (solana) await this.#checkMinimum(account, source, units);
         const quote = await bestQuote(
             this.#deps.providers,
             {
@@ -219,18 +290,50 @@ export class DepositOrders {
                       allowedPrograms: this.#deps.allowedPrograms,
                       logger: this.#deps.logger,
                   }
-                : { allowedPrograms: [] },
+                : { allowedPrograms: [], logger: this.#deps.logger },
         );
         return { quote, source };
     }
 
     /** Refuses a Solana deposit worth less than the minimum, and one that can't be priced. */
-    async #checkMinimum(coin: Coin, units: bigint) {
-        const price =
-            coin.mint === null ? (await this.#deps.prices.usd([coin]).catch(() => new Map())).get(coin.key) : 1;
-        if (price === undefined) throw new AppError("unavailable", "Couldn't price this right now. Nothing was taken.");
-        if (Number(formatUnits(units, coin.decimals)) * price < this.#deps.minSolanaUsd) {
-            throw new AppError("bad_request", `The smallest deposit from Solana is $${this.#deps.minSolanaUsd}.`);
+    async #checkMinimum(account: AccountDoc, coin: Coin, units: bigint) {
+        const accountId = account._id.toHexString();
+        let price: number | undefined = 1;
+        if (coin.mint === null) {
+            try {
+                price = (await this.#deps.prices.usd([coin])).get(coin.key);
+            } catch (error) {
+                this.#deps.logger?.warn(
+                    { op: "deposit.price", accountId, coin: coin.key, err: error },
+                    "Couldn't price a Solana deposit",
+                );
+                price = undefined;
+            }
+        }
+        const min = this.#deps.minSolanaUsd;
+        if (price === undefined) {
+            this.#deps.logger?.warn(
+                { op: "deposit.price", accountId, coin: coin.key, minimumUsd: min },
+                "Refused a Solana deposit: no price to check the minimum against",
+            );
+            throw new AppError(
+                "unavailable",
+                `Couldn't get a price for ${coin.symbol} from LI.FI right now, so the $${min} minimum can't be checked. Try again in a minute. Nothing was taken.`,
+                { logged: true },
+            );
+        }
+        const held = formatUnits(units, coin.decimals);
+        const usd = Number(held) * price;
+        if (usd < min) {
+            this.#deps.logger?.info(
+                { op: "deposit.minimum", accountId, coin: coin.key, amount: held, usd, minimumUsd: min },
+                "Refused a Solana deposit under the minimum",
+            );
+            throw new AppError(
+                "bad_request",
+                `The smallest deposit from Solana is $${min}; ${held} ${coin.symbol} is about $${usd.toFixed(2)}.`,
+                { logged: true },
+            );
         }
     }
 }

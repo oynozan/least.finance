@@ -37,6 +37,27 @@ test("a 429 is rate_limited", async () => {
     fake.failWith(null);
 });
 
+test("an Iris error names the path and keeps the status, the body and the retry-after Iris gave", async () => {
+    const iris = createIris({ baseUrl: fake.url });
+    fake.failWith(500);
+    const down = await iris.message({ domain: 26, burnTxHash: BURN }).catch((e: unknown) => e);
+    expect(down).toMatchObject({ kind: "unavailable", status: 500, path: `/v2/messages/26?transactionHash=${BURN}` });
+    expect((down as Error).message).toContain(`Iris answered 500 to /v2/messages/26`);
+
+    fake.failWith(429);
+    const limited = await iris.forwardFee({ from: 26, to: 5, setup: false }).catch((e: unknown) => e);
+    expect(limited).toMatchObject({ kind: "rate_limited", status: 429, path: "/v2/burn/USDC/fees/26/5?forward=true" });
+    fake.failWith(null);
+
+    const odd = createIris({
+        baseUrl: fake.url,
+        fetch: async () => new Response(JSON.stringify([{ finalityThreshold: 2000 }]), { status: 200 }),
+    });
+    await expect(odd.forwardFee({ from: 26, to: 5, setup: false })).rejects.toThrow(
+        /Iris gave no forward fee for \/v2\/burn\/USDC\/fees\/26\/5\?forward=true: \[\{"finalityThreshold":2000\}\]/,
+    );
+});
+
 test("a request that outlives the timeout is a timeout", async () => {
     const hanging = createIris({
         baseUrl: fake.url,

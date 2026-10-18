@@ -1,6 +1,6 @@
 import { formatUnits, parseUnits, type Address } from "viem";
 import { ARC_CHAIN_ID, NATIVE_DECIMALS } from "../chain/arc.ts";
-import { AppError } from "../errors.ts";
+import { AppError, brief } from "../errors.ts";
 
 export type ChainKey = "ethereum" | "bnb" | "arc" | "solana";
 
@@ -74,15 +74,19 @@ export const ARC_USDC_TOKENS: readonly Address[] = [
 
 export function coinByKey(key: string): Coin {
     const found = BY_KEY.get(key);
-    if (!found) throw new AppError("bad_request", `Invalid coin: ${key}`);
+    if (!found) throw new AppError("bad_request", `${brief(key, 30)} isn't a coin you can deposit from here.`);
     return found;
 }
 
 /** A positive decimal string in the coin's smallest unit; it never rounds, which viem's parseUnits would. */
 export function parseCoinAmount(coin: Coin, amount: string): bigint {
     const match = /^\d+(?:\.(\d+))?$/.exec(amount);
-    const units = match && (match[1]?.length ?? 0) <= coin.decimals ? parseUnits(amount, coin.decimals) : 0n;
-    if (units <= 0n) throw new AppError("bad_request", `Invalid amount: ${amount}`);
+    if (!match) throw new AppError("bad_request", `"${brief(amount, 30)}" isn't an amount of ${coin.symbol}.`);
+    if ((match[1]?.length ?? 0) > coin.decimals) {
+        throw new AppError("bad_request", `That's more precision than ${coin.symbol} has (${coin.decimals} decimals).`);
+    }
+    const units = parseUnits(amount, coin.decimals);
+    if (units <= 0n) throw new AppError("bad_request", "The amount must be above zero.");
     return units;
 }
 

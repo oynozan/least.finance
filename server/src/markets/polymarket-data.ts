@@ -1,3 +1,4 @@
+import "../polymarket-proxy.ts";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { gammaEvent, gammaMarket, type GammaEvent, type GammaMarket } from "./gamma.ts";

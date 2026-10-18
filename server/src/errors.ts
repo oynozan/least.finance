@@ -67,3 +67,28 @@ export function toApiError(error: unknown, ref?: string): ApiError {
 }
 
 export const isAppError = (error: unknown): error is AppError => error instanceof AppError;
+
+/** A one-line, trimmed copy of an upstream's words, for a log field or a quoted sentence. */
+export function brief(text: unknown, max = 160): string {
+    const line = String(text ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+    return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/** The last six hex digits of an id (the counter part of an ObjectId, so two orders rarely share one): a reference the person can quote and the log carries. */
+export const refOf = (id: string | { toHexString(): string }): string =>
+    (typeof id === "string" ? id : id.toHexString()).slice(-6);
+
+/** A wallet address or hash shortened for a sentence: 0x12ab…9f3c. */
+export const shortOf = (value: string): string =>
+    value.length > 14 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value;
+
+/** The host of an RPC URL, never the URL itself, which can carry an API key. */
+export function hostOf(url: string): string {
+    try {
+        return new URL(url).host;
+    } catch {
+        return "unknown host";
+    }
+}

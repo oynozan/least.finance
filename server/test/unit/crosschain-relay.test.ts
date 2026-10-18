@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { zeroAddress } from "viem";
 import { expect, test } from "vitest";
 import { coinByKey } from "../../src/crosschain/catalog.ts";
+import { UpstreamRefusal } from "../../src/crosschain/failures.ts";
 import { createRelay } from "../../src/crosschain/providers/relay.ts";
 import type { QuoteRequest, SourceTx } from "../../src/crosschain/providers/types.ts";
 import { checkQuote } from "../../src/crosschain/quotes.ts";
@@ -274,15 +275,48 @@ test("supports accepts solana:SOL and solana:USDC", () => {
     expect(relay.supports(SOL_USDC)).toBe(true);
 });
 
-test("SOLANA_TX_TOO_LARGE becomes unavailable with the 'Try a smaller route' message", async () => {
+test("SOLANA_TX_TOO_LARGE is a refusal that keeps Relay's code and words", async () => {
     const body = { message: "Transaction too large", errorCode: "SOLANA_TX_TOO_LARGE" };
 
     await expect(
         createRelay({ fetch: serving(body, 400).fetch }).quote(SOLANA_USDC_REQUEST, signal()),
     ).rejects.toMatchObject({
-        code: "unavailable",
-        message: "This deposit can't be sent from Solana right now. Try a smaller route.",
+        provider: "relay",
+        status: 400,
+        code: "SOLANA_TX_TOO_LARGE",
+        upstream: "Transaction too large",
     });
+});
+
+test("a refused quote keeps Relay's code, message and data", async () => {
+    const body = { message: "Amount is too low", errorCode: "AMOUNT_TOO_LOW", errorData: { minimum: "1000" } };
+    const refused = createRelay({ fetch: serving(body, 400).fetch }).quote(ETH_REQUEST, signal());
+    await expect(refused).rejects.toBeInstanceOf(UpstreamRefusal);
+    await expect(refused).rejects.toMatchObject({
+        status: 400,
+        code: "AMOUNT_TOO_LOW",
+        upstream: "Amount is too low",
+        data: { minimum: "1000" },
+    });
+});
+
+test("a Relay outage is not a refusal, and its body is kept", async () => {
+    const failing = createRelay({ fetch: serving({ message: "bad gateway" }, 502).fetch }).quote(ETH_REQUEST, signal());
+    await expect(failing).rejects.toThrow(/Relay answered 502 to a quote: .*bad gateway/);
+    await expect(failing).rejects.not.toBeInstanceOf(UpstreamRefusal);
+});
+
+test("a status keeps the details Relay gives for a refund or a failure", async () => {
+    const status = await createRelay({
+        fetch: serving({ status: "refund", details: "Destination call reverted" }).fetch,
+    }).status({ ref: "0xab" }, null, ETH);
+    expect(status).toEqual({ stage: "refunded", detail: "Destination call reverted" });
+});
+
+test("a status Relay won't give names the request and keeps its words", async () => {
+    await expect(
+        createRelay({ fetch: serving({ message: "not found" }, 404).fetch }).status({ ref: "0xab" }, null, ETH),
+    ).rejects.toThrow(/Relay answered 404 to a status request for 0xab: .*not found/);
 });
 
 test("status needs only the requestId for a Solana order", async () => {

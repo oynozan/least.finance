@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { zeroAddress } from "viem";
 import { expect, test } from "vitest";
 import { coinByKey } from "../../src/crosschain/catalog.ts";
+import { UpstreamRefusal } from "../../src/crosschain/failures.ts";
 import { createAcross } from "../../src/crosschain/providers/across.ts";
 import type { QuoteRequest, SourceTx } from "../../src/crosschain/providers/types.ts";
 import { checkQuote } from "../../src/crosschain/quotes.ts";
@@ -166,10 +167,38 @@ test("a quote whose transaction doesn't carry the account's address as the recip
     );
 });
 
+test("a quote Across refuses keeps Across's code and words", async () => {
+    const body = {
+        type: "AcrossApiError",
+        code: "AMOUNT_TOO_LOW",
+        status: 400,
+        message: "Amount too low",
+        param: "amount",
+    };
+    const refused = createAcross({ fetch: serving(body, 400).fetch }).quote(ETH_REQUEST, signal());
+    await expect(refused).rejects.toBeInstanceOf(UpstreamRefusal);
+    await expect(refused).rejects.toMatchObject({
+        provider: "across",
+        status: 400,
+        code: "AMOUNT_TOO_LOW",
+        upstream: "Amount too low",
+        data: "amount",
+    });
+});
+
 test("a quote Across can't give is an error", async () => {
     await expect(
         createAcross({ fetch: serving({ message: "no route" }, 400).fetch }).quote(ETH_REQUEST, signal()),
     ).rejects.toThrow(/400/);
+});
+
+test("an Across outage is not a refusal, and its words are kept", async () => {
+    const failing = createAcross({ fetch: serving({ message: "upstream down" }, 502).fetch }).quote(
+        ETH_REQUEST,
+        signal(),
+    );
+    await expect(failing).rejects.toThrow(/Across answered 502 to a quote: .*upstream down/);
+    await expect(failing).rejects.not.toBeInstanceOf(UpstreamRefusal);
 });
 
 test("it supports the Ethereum and BNB Chain coins only", () => {
@@ -199,7 +228,10 @@ test("each status maps to a stage", async () => {
         fillTxHash: fixture("status-filled").fillTx,
     });
     expect(await stage({ status: "refunded" })).toEqual({ stage: "refunded" });
-    expect(await stage({ status: "expired" })).toEqual({ stage: "failed" });
+    expect(await stage({ status: "expired" })).toEqual({
+        stage: "failed",
+        detail: "Across let the deposit expire; it is refunded to your wallet",
+    });
 });
 
 test("a deposit that hasn't been reported, or that Across hasn't seen yet, is waiting", async () => {

@@ -1,3 +1,4 @@
+import "../polymarket-proxy.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
     AssetType,

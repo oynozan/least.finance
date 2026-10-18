@@ -32,8 +32,11 @@ test("the catalog holds the spec's coins, and no USDT on Arc", () => {
 test("amounts parse with the coin's own decimals", () => {
     expect(parseCoinAmount(coinByKey("bnb:USDT"), "1.5")).toBe(1_500_000_000_000_000_000n);
     expect(parseCoinAmount(coinByKey("ethereum:USDC"), "1.5")).toBe(1_500_000n);
-    expect(() => parseCoinAmount(coinByKey("ethereum:USDT"), "1.1234567")).toThrow(/amount/);
-    expect(() => parseCoinAmount(coinByKey("ethereum:ETH"), "0")).toThrow(/amount/);
+    expect(() => parseCoinAmount(coinByKey("ethereum:USDT"), "1.1234567")).toThrow(
+        "That's more precision than USDT has (6 decimals).",
+    );
+    expect(() => parseCoinAmount(coinByKey("ethereum:ETH"), "0")).toThrow("The amount must be above zero.");
+    expect(() => parseCoinAmount(coinByKey("ethereum:ETH"), "ten")).toThrow(`"ten" isn't an amount of ETH.`);
     expect(formatCoinAmount(coinByKey("ethereum:ETH"), 500_000_000_000_000_000n)).toBe("0.5");
 });
 

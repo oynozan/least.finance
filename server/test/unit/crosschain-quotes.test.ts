@@ -1,7 +1,9 @@
 import { expect, test, vi } from "vitest";
 import { coinByKey } from "../../src/crosschain/catalog.ts";
 import type { BridgeProvider, Quote, QuoteRequest, SourceTx } from "../../src/crosschain/providers/types.ts";
-import { bestQuote, checkQuote } from "../../src/crosschain/quotes.ts";
+import { AppError } from "../../src/errors.ts";
+import { QuoteTimeout, UpstreamRefusal } from "../../src/crosschain/failures.ts";
+import { bestQuote, checkQuote, quoteMismatch } from "../../src/crosschain/quotes.ts";
 
 const ETH = coinByKey("ethereum:ETH");
 const ARC_USDC_VIEW = "0x3600000000000000000000000000000000000000";
@@ -126,18 +128,111 @@ test("a quote for another amount or another coin is dropped", async () => {
     expect((await bestQuote(providers, request, OPTIONS)).provider).toBe("honest");
 });
 
-test("no usable quote is an unavailable error", async () => {
+const logs = () => ({ error: vi.fn(), warn: vi.fn() });
+
+test("no usable quote says what each bridge did, and logs it once with the ref the person is shown", async () => {
+    const logger = logs();
     const providers = [
         quoting("pays-nothing", { usdcOut: 0n }),
         stub("down", () => Promise.reject(new Error("boom"))),
         { ...quoting("unsupported"), supports: () => false },
     ];
 
-    await expect(bestQuote(providers, request, OPTIONS)).rejects.toMatchObject({
-        code: "unavailable",
-        message: "No route for this deposit right now.",
+    const failure = await bestQuote(providers, request, { ...OPTIONS, logger }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "no_route", logged: true });
+    const ref = /ref ([0-9a-f]{6})/.exec((failure as Error).message)?.[1];
+    expect((failure as Error).message).toBe(
+        `pays-nothing's quote didn't match your request, so nothing was sent (ref ${ref}).`,
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ op: "deposit.quote.rejected", provider: "pays-nothing", check: "usdcOut", ref }),
+        "Refused a bridge quote that does not match the request",
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+            op: "deposit.quote",
+            provider: "down",
+            err: expect.any(Error),
+            coin: "ethereum:ETH",
+        }),
+        "down failed to give a deposit quote",
+    );
+
+    const none = await bestQuote([], request, OPTIONS).catch((error: unknown) => error);
+    expect(none).toMatchObject({ code: "no_route", message: "No bridge carries ETH from Ethereum to Arc." });
+});
+
+test("a bridge's refusal reaches the person as its plain sentence and the log as its verbatim code and words", async () => {
+    const logger = logs();
+    const refusal = new UpstreamRefusal({
+        provider: "relay",
+        status: 400,
+        code: "AMOUNT_TOO_LOW",
+        message: "Amount is below Relay's minimum of 0.01",
     });
-    await expect(bestQuote([], request, OPTIONS)).rejects.toMatchObject({ code: "unavailable" });
+    const providers = [
+        stub("relay", () => Promise.reject(refusal)),
+        stub("across", () => Promise.reject(new Error("boom"))),
+    ];
+
+    await expect(bestQuote(providers, request, { ...OPTIONS, logger })).rejects.toMatchObject({
+        code: "no_route",
+        message: "Relay's minimum for this route is higher than that. Try a larger amount.",
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+            op: "deposit.quote",
+            provider: "relay",
+            upstreamStatus: 400,
+            upstreamCode: "AMOUNT_TOO_LOW",
+            upstreamMessage: "Amount is below Relay's minimum of 0.01",
+            amount: String(request.amount),
+            sender: WALLET,
+        }),
+        "Relay refused a deposit quote",
+    );
+});
+
+test("a refusal nobody recognises is shown in the bridge's own words, quoted", async () => {
+    const refusal = new UpstreamRefusal({ provider: "across", status: 400, code: "WEIRD", message: "Something odd." });
+    await expect(bestQuote([stub("across", () => Promise.reject(refusal))], request, OPTIONS)).rejects.toMatchObject({
+        message: 'Across refused the deposit: "Something odd".',
+    });
+});
+
+test("bridges that were too slow are told apart from ones that failed", async () => {
+    const logger = logs();
+    const slow = [stub("relay", () => Promise.reject(new QuoteTimeout("relay", 3000)))];
+    await expect(bestQuote(slow, request, { ...OPTIONS, logger })).rejects.toMatchObject({
+        code: "unavailable",
+        message: "No bridge answered within 3 seconds. Try again.",
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ op: "deposit.quote", provider: "relay", timeoutMs: 3000 }),
+        "Relay didn't answer a deposit quote in time",
+    );
+});
+
+test("a provider's own refusal, such as a deposit too small for Circle's fee, survives with its words", async () => {
+    const small = new AppError("bad_request", "That's too small to cover Circle's fee of 0.2 USDC.");
+    await expect(bestQuote([stub("cctp", () => Promise.reject(small))], request, OPTIONS)).rejects.toMatchObject({
+        code: "bad_request",
+        message: "That's too small to cover Circle's fee of 0.2 USDC.",
+        logged: true,
+    });
+});
+
+test("quoteMismatch names the first thing a quote gets wrong, with what was wanted and what came", () => {
+    expect(quoteMismatch(quote(), request, [])).toBeNull();
+    expect(quoteMismatch(quote({ recipient: SOMEONE_ELSE }), request, [])).toEqual({
+        check: "recipient",
+        expected: DEPOSIT_ADDRESS,
+        got: SOMEONE_ELSE,
+    });
+    expect(quoteMismatch(quote({ destinationToken: LOOKALIKE_USDC }), request, [])).toMatchObject({
+        check: "destinationToken",
+        got: LOOKALIKE_USDC,
+    });
 });
 
 const SOL_USDC = coinByKey("solana:USDC");

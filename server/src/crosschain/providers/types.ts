@@ -41,7 +41,12 @@ export type Quote = {
 
 export type BridgeStage = "waiting" | "pending" | "filled" | "refunded" | "failed";
 
-export type BridgeStatus = { stage: BridgeStage; fillTxHash?: Hex };
+export type BridgeStatus = {
+    stage: BridgeStage;
+    fillTxHash?: Hex;
+    /** The bridge's own explanation of a failure, a refund or a hold, verbatim. */
+    detail?: string;
+};
 
 export interface BridgeProvider {
     readonly name: string;

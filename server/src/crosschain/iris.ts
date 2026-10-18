@@ -1,4 +1,5 @@
 import type { Hex } from "viem";
+import { brief } from "../errors.ts";
 
 /** Circle's CCTP domain numbers. */
 const ARC_DOMAIN = 26;
@@ -34,11 +35,25 @@ export type Iris = {
 /** Iris couldn't be asked or answered badly; `rate_limited` and `timeout` mean back off. */
 export class IrisError extends Error {
     readonly kind: "rate_limited" | "timeout" | "unavailable";
+    /** What Iris was asked and said: the path, its HTTP status and the start of its body, when it answered. */
+    readonly path: string | null;
+    readonly status: number | null;
+    readonly body: string | null;
+    /** The seconds Iris asked to wait, when it said. */
+    readonly retryAfter: string | null;
 
-    constructor(kind: IrisError["kind"], message: string, options?: { cause?: unknown }) {
+    constructor(
+        kind: IrisError["kind"],
+        message: string,
+        options?: { cause?: unknown; path?: string; status?: number; body?: string; retryAfter?: string | null },
+    ) {
         super(message, options);
         this.name = "IrisError";
         this.kind = kind;
+        this.path = options?.path ?? null;
+        this.status = options?.status ?? null;
+        this.body = options?.body ?? null;
+        this.retryAfter = options?.retryAfter ?? null;
     }
 }
 
@@ -66,15 +81,35 @@ export function createIris(options: { baseUrl: string; fetch?: typeof fetch; tim
             response = await send(`${base}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
         } catch (error) {
             const timedOut = error instanceof Error && error.name === "TimeoutError";
-            throw new IrisError(timedOut ? "timeout" : "unavailable", "Iris couldn't be reached", { cause: error });
+            throw new IrisError(timedOut ? "timeout" : "unavailable", `Iris couldn't be reached for ${path}`, {
+                cause: error,
+                path,
+            });
         }
-        if (response.status === 429) throw new IrisError("rate_limited", "Iris is rate limiting");
-        if (response.status === 404) return { status: 404, body: null };
-        if (!response.ok) throw new IrisError("unavailable", `Iris answered ${response.status}`);
+        const status = response.status;
+        if (status === 429) {
+            const retryAfter = response.headers.get("retry-after");
+            throw new IrisError("rate_limited", `Iris is rate limiting (${path})`, { path, status, retryAfter });
+        }
+        if (status === 404) return { status: 404, body: null };
+        if (!response.ok) {
+            const body = brief(await response.text().catch(() => ""), 300);
+            throw new IrisError("unavailable", `Iris answered ${status} to ${path}${body ? `: ${body}` : ""}`, {
+                path,
+                status,
+                body,
+            });
+        }
+        const text = await response.text().catch(() => "");
         try {
-            return { status: response.status, body: await response.json() };
+            return { status, body: JSON.parse(text) };
         } catch (error) {
-            throw new IrisError("unavailable", "Iris gave an unreadable answer", { cause: error });
+            throw new IrisError("unavailable", `Iris gave an unreadable answer to ${path}: ${brief(text, 300)}`, {
+                cause: error,
+                path,
+                status,
+                body: brief(text, 300),
+            });
         }
     }
 
@@ -83,20 +118,25 @@ export function createIris(options: { baseUrl: string; fetch?: typeof fetch; tim
             if (value === undefined) throw new Error("No fee");
             return feeUnits(value) * WEI_PER_UNIT;
         } catch (error) {
-            throw new IrisError("unavailable", "Iris gave no forward fee", { cause: error });
+            throw new IrisError("unavailable", `Iris gave no forward fee: ${String(error)}`, { cause: error });
         }
     };
 
     async function fees(path: string) {
         const { body } = await get(path);
+        const seen = brief(JSON.stringify(body), 300);
         const rows = (Array.isArray(body) ? body : ((body as { data?: unknown } | null)?.data ?? [])) as FeeRow[];
         const row = Array.isArray(rows)
             ? (rows.find((r) => r.finalityThreshold === STANDARD_FINALITY) ?? rows[0])
             : undefined;
-        if (!row?.forwardFee) throw new IrisError("unavailable", "Iris gave no forward fee");
+        if (!row?.forwardFee)
+            throw new IrisError("unavailable", `Iris gave no forward fee for ${path}: ${seen}`, { path, body: seen });
         const bps = row.minimumFee ?? 0;
         if (typeof bps !== "number" || !Number.isFinite(bps) || bps < 0) {
-            throw new IrisError("unavailable", "Iris gave an unreadable protocol fee");
+            throw new IrisError("unavailable", `Iris gave an unreadable protocol fee for ${path}: ${seen}`, {
+                path,
+                body: seen,
+            });
         }
         return { med: toWei(row.forwardFee.med), high: toWei(row.forwardFee.high), minimumFeeBps: bps };
     }

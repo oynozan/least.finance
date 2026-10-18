@@ -7,5 +7,5 @@ export function solanaOpen(
     direction: "deposits" | "withdrawals",
 ): void {
     const on = direction === "deposits" ? config.SOLANA_DEPOSITS : config.SOLANA_WITHDRAWALS;
-    if (on !== "on") throw new AppError("unavailable", "Solana isn't open yet.");
+    if (on !== "on") throw new AppError("unavailable", `Solana ${direction} aren't open yet.`);
 }

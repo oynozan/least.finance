@@ -409,7 +409,7 @@ describe("publicRpcWarnings", () => {
 describe("solanaOpen", () => {
     it("throws unavailable while the switch is off and passes when it is on", async () => {
         const { solanaOpen } = await import("../../src/crosschain/solana-switch.ts");
-        expect(() => solanaOpen(load(), "deposits")).toThrow("Solana isn't open yet.");
+        expect(() => solanaOpen(load(), "deposits")).toThrow("Solana deposits aren't open yet.");
         expect(() => solanaOpen(load({ SOLANA_DEPOSITS: "on" }), "withdrawals")).toThrow(/open yet/);
         expect(() => solanaOpen(load({ SOLANA_DEPOSITS: "on" }), "deposits")).not.toThrow();
     });

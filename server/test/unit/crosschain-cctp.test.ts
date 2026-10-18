@@ -29,7 +29,7 @@ beforeAll(async () => {
 });
 afterAll(() => fake.stop());
 
-const logger = { error: vi.fn() };
+const logger = { error: vi.fn(), warn: vi.fn() };
 const rentCalls: number[] = [];
 const rpc = {
     getMinimumBalanceForRentExemption: async (bytes: number) => {
@@ -68,7 +68,10 @@ test("quote usdcOut is the amount less the Iris fee, ref is the order id until a
 
 test("an amount the high fee tier eats is refused", async () => {
     fake.setDepositFee({ med: 15_638, high: 15_763 });
-    await expect(cctp().quote({ ...REQUEST, amount: 15_763n }, signal)).rejects.toMatchObject({ code: "bad_request" });
+    await expect(cctp().quote({ ...REQUEST, amount: 15_763n }, signal)).rejects.toMatchObject({
+        code: "bad_request",
+        message: "That's too small to cover Circle's fee of 0.015763 USDC. Deposit at least 0.015764 USDC.",
+    });
     await expect(cctp().quote({ ...REQUEST, amount: 15_764n }, signal)).resolves.toBeTruthy();
 });
 
@@ -138,15 +141,49 @@ test("status: no message is waiting; complete with forwardTxHash is filled; the 
     expect(fake.requests().length).toBe(before + 3);
 });
 
-test("a burned message that never mints is logged at error with the signature and the order expires", async () => {
+test("a fee service that doesn't answer is Circle's, and the person is told to try in a minute", async () => {
+    fake.failWith(500);
+    try {
+        await expect(cctp().quote(REQUEST, signal)).rejects.toMatchObject({
+            code: "unavailable",
+            message: "Circle's fee service isn't answering. Try again in a minute.",
+        });
+    } finally {
+        fake.failWith(null);
+    }
+});
+
+test("a burned message that never mints fails the order with Circle's raw message, and is logged once at error", async () => {
     const provider = cctp();
     const failed = base58.encode(new Uint8Array(64).fill(9));
     fake.setForwardFailed(failed);
     logger.error.mockClear();
-    expect(await provider.status({ ref: "cctp-y" }, failed, USDC)).toEqual({ stage: "pending" });
-    expect(await provider.status({ ref: "cctp-y" }, failed, USDC)).toEqual({ stage: "pending" });
+    const status = await provider.status({ ref: "cctp-y" }, failed, USDC);
+    expect(status).toMatchObject({ stage: "failed", detail: expect.stringMatching(/^forward failed: .*FAILED/) });
+    expect(await provider.status({ ref: "cctp-y" }, failed, USDC)).toMatchObject({ stage: "failed" });
     expect(logger.error).toHaveBeenCalledTimes(1);
-    expect(logger.error).toHaveBeenCalledWith({ signature: failed }, expect.stringContaining("never minted"));
+    expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ op: "cctp.forward_failed", signature: failed, raw: expect.anything() }),
+        expect.stringContaining("never minted"),
+    );
+});
+
+test("a message Circle holds back stays pending with Circle's reason in plain words, and is logged once", async () => {
+    const provider = cctp();
+    const held = base58.encode(new Uint8Array(64).fill(8));
+    fake.setDelayed(held, "insufficient_fee");
+    logger.warn.mockClear();
+    const expected = {
+        stage: "pending",
+        detail: "Circle is holding the transfer because its fee changed; it will mint when the fee is covered.",
+    };
+    expect(await provider.status({ ref: "cctp-z" }, held, USDC)).toEqual(expected);
+    expect(await provider.status({ ref: "cctp-z" }, held, USDC)).toEqual(expected);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ op: "cctp.delayed", signature: held, delayReason: "insufficient_fee" }),
+        expect.any(String),
+    );
 });
 
 test("checkQuote lets a CCTP quote call only the CCTP program, whatever the allowlist says", async () => {

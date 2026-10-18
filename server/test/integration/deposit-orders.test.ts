@@ -3,6 +3,7 @@ import { getAddress } from "viem";
 import { base58 } from "@scure/base";
 import { afterAll, beforeAll, describe, expect, inject, test, vi } from "vitest";
 import type { Ack, DepositOrderView, EvmSourceTxView, SourceTxView, WalletSession } from "../../src/protocol.ts";
+import { UpstreamRefusal } from "../../src/crosschain/failures.ts";
 import { startStack, type AppSocket, type Stack, type User } from "../support/stack.ts";
 import { FAKE_BRIDGE_ADDRESS, FAKE_SOLANA_PROGRAM } from "../support/fake-bridge.ts";
 
@@ -103,11 +104,11 @@ test("a Solana quote is refused while SOLANA_DEPOSITS is off", async () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     const lookups = stack.privy.userLookups;
     const order = await ask(socket, "solana:SOL", "1", SOLANA);
-    expect(order).toEqual({ ok: false, error: { code: "unavailable", message: "Solana isn't open yet." } });
+    expect(order).toEqual({ ok: false, error: { code: "unavailable", message: "Solana deposits aren't open yet." } });
     const quote = await socket
         .timeout(5000)
         .emitWithAck("deposit:quote", { coin: "solana:SOL", amount: "1", wallet: SOLANA });
-    expect(quote).toEqual({ ok: false, error: { code: "unavailable", message: "Solana isn't open yet." } });
+    expect(quote).toEqual({ ok: false, error: { code: "unavailable", message: "Solana deposits aren't open yet." } });
     expect(stack.privy.userLookups).toBe(lookups);
 });
 
@@ -153,7 +154,10 @@ describe("Solana deposits", () => {
         const result = await order(socket, "solana:USDC", "1.99");
         expect(result).toEqual({
             ok: false,
-            error: { code: "bad_request", message: "The smallest deposit from Solana is $2." },
+            error: {
+                code: "bad_request",
+                message: "The smallest deposit from Solana is $2; 1.99 USDC is about $1.99.",
+            },
         });
         expect((await order(socket, "solana:USDC", "2")).ok).toBe(true);
     });
@@ -163,20 +167,36 @@ describe("Solana deposits", () => {
         const result = await order(socket, "solana:SOL", "0.01");
         expect(result).toEqual({
             ok: false,
-            error: { code: "bad_request", message: "The smallest deposit from Solana is $2." },
+            error: { code: "bad_request", message: "The smallest deposit from Solana is $2; 0.01 SOL is about $1.50." },
         });
         const { depositOrders } = open.server.services.database.collections;
         expect(await depositOrders.countDocuments({ recipient: session.account.depositAddress.toLowerCase() })).toBe(0);
         expect((await order(socket, "solana:SOL", "0.02")).ok).toBe(true);
     });
 
-    test("no route from Relay or CCTP is 'No route for this deposit right now.'", async () => {
+    test("a Relay outage carries a reference the log has, and a Relay refusal says why", async () => {
         const { socket } = await solanaUser();
         const spy = vi.spyOn(open.solanaBridge, "quote").mockRejectedValue(new Error("no route"));
         try {
+            expect(await quote(socket, "solana:USDC", "10")).toMatchObject({
+                ok: false,
+                error: {
+                    code: "unavailable",
+                    message: expect.stringMatching(
+                        /^Couldn't get a quote from Relay \(ref [0-9a-f]{6}\)\. Try again in a minute\.$/,
+                    ),
+                },
+            });
+
+            spy.mockRejectedValue(
+                new UpstreamRefusal({ provider: "relay", status: 400, code: "AMOUNT_TOO_LOW", message: "too low" }),
+            );
             expect(await quote(socket, "solana:USDC", "10")).toEqual({
                 ok: false,
-                error: { code: "unavailable", message: "No route for this deposit right now." },
+                error: {
+                    code: "no_route",
+                    message: "Relay's minimum for this route is higher than that. Try a larger amount.",
+                },
             });
         } finally {
             spy.mockRestore();
@@ -188,7 +208,7 @@ describe("Solana deposits", () => {
         const table = "AddressLookupTab1e1111111111111111111111111";
         const entries = ["So11111111111111111111111111111111111111112", "SysvarC1ock11111111111111111111111111111111"];
         open.solanaRpc.setLookupTable(table, entries);
-        open.solanaBridge.lookupTables = [table, "MissingTab1e1111111111111111111111111111111"];
+        open.solanaBridge.lookupTables = [table];
         try {
             const result = await order(socket, "solana:USDC", "10");
             if (!result.ok) throw new Error(result.error.code);
@@ -204,6 +224,22 @@ describe("Solana deposits", () => {
                 lookupTables: [{ address: table, addresses: entries }],
             });
             expect(result.data.order).toMatchObject({ coin: "solana:USDC", wallet: SOLANA, state: "created" });
+        } finally {
+            open.solanaBridge.lookupTables = [];
+        }
+    });
+
+    test("a lookup table the network doesn't have refuses the order, not a transaction the wallet can't compile", async () => {
+        const { socket } = await solanaUser();
+        open.solanaBridge.lookupTables = ["MissingTab1e1111111111111111111111111111111"];
+        try {
+            expect(await order(socket, "solana:USDC", "10")).toEqual({
+                ok: false,
+                error: {
+                    code: "unavailable",
+                    message: "Relay's Solana route uses an address table we couldn't load. Try again in a minute.",
+                },
+            });
         } finally {
             open.solanaBridge.lookupTables = [];
         }

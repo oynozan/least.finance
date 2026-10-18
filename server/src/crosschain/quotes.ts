@@ -1,5 +1,6 @@
-import { AppError } from "../errors.ts";
+import { AppError, newRef } from "../errors.ts";
 import { ARC_USDC_TOKENS } from "./catalog.ts";
+import { bridgeName, QuoteTimeout, refusalMessage, UpstreamRefusal } from "./failures.ts";
 import { BURN_DISCRIMINATOR_HEX, TOKEN_MESSENGER_MINTER_V2 } from "./providers/cctp.ts";
 import type { BridgeProvider, Quote, QuoteRequest, SourceTx } from "./providers/types.ts";
 
@@ -28,6 +29,15 @@ const CCTP_ARC_DOMAIN = 26;
 type SolanaTx = Extract<SourceTx, { kind: "solana" }>;
 type SolanaIx = SolanaTx["instructions"][number];
 type ErrorLog = { error: (fields: object, message: string) => void };
+type QuoteLog = ErrorLog & { warn: (fields: object, message: string) => void };
+
+/** Who asked for what, on every line a refused quote leaves in the log. */
+const describe = (provider: string, request: QuoteRequest) => ({
+    provider,
+    coin: request.coin.key,
+    amount: String(request.amount),
+    sender: request.sender,
+});
 
 // A little-endian unsigned integer of `bytes` bytes at a byte offset of hex instruction data, or null when too short
 function uintAt(data: string, offset: number, bytes: number): bigint | null {
@@ -94,19 +104,21 @@ function solanaTxsHold(
     request: QuoteRequest,
     allowedPrograms: readonly string[],
     cctp: boolean,
+    provider: string,
     logger?: ErrorLog,
 ) {
+    const who = describe(provider, request);
     const instructions = txs.flatMap((tx) => tx.instructions);
-    const unlisted = instructions.find((ix) => !allowedPrograms.includes(ix.programId));
-    if (unlisted) {
+    const unlistedAt = instructions.findIndex((ix) => !allowedPrograms.includes(ix.programId));
+    if (unlistedAt >= 0) {
         logger?.error(
-            { programId: unlisted.programId },
-            "Refused a Solana quote with an instruction from an unlisted program",
+            { ...who, instructionIndex: unlistedAt, programId: instructions[unlistedAt]!.programId, allowedPrograms },
+            "Refused a Solana deposit quote: instruction from a program not on the allowlist",
         );
         return false;
     }
     let total = 0n;
-    for (const ix of instructions) {
+    for (const [index, ix] of instructions.entries()) {
         let amount: bigint | null = 0n;
         if (cctp) {
             amount = burnOk(ix, request) ? request.amount : null;
@@ -121,54 +133,81 @@ function solanaTxsHold(
         }
         if (amount === null) {
             logger?.error(
-                { programId: ix.programId },
-                "Refused a Solana quote with an instruction a deposit never needs",
+                { ...who, instructionIndex: index, programId: ix.programId },
+                "Refused a Solana deposit quote: an instruction a deposit never needs",
             );
             return false;
         }
         total += amount;
     }
     const ceiling = request.coin.mint === null ? request.amount + SOL_ALLOWANCE : request.amount;
-    if (total > ceiling) logger?.error({ total }, "Refused a Solana quote that moves more than the deposit");
+    if (total > ceiling) {
+        logger?.error(
+            { ...who, total: String(total), ceiling: String(ceiling) },
+            "Refused a Solana deposit quote: it moves more than the deposit",
+        );
+    }
     return total <= ceiling;
 }
 
 /**
- * Whether a provider's quote does what was asked: it takes the requested coin and amount, pays native USDC on Arc
- * (by address, never by symbol) to the requested recipient, refunds the requested wallet, and has the user sign
- * at least one transaction, all on the coin's chain. A Solana quote also keeps to the allowed programs and, within them, to the
- * instructions a deposit needs, with deposits no larger than the amount (CCTP's is one exact burn); Solana addresses compare exactly.
+ * The first thing a provider's quote gets wrong, or null when it does what was asked: it takes the requested coin and
+ * amount, pays native USDC on Arc (by address, never by symbol) to the requested recipient, refunds the requested
+ * wallet, and has the user sign at least one transaction, all on the coin's chain. A Solana quote also keeps to the
+ * allowed programs and, within them, to the instructions a deposit needs, with deposits no larger than the amount
+ * (CCTP's is one exact burn); Solana addresses compare exactly.
  */
-export function checkQuote(
+export function quoteMismatch(
     quote: Quote,
     request: QuoteRequest,
     allowedPrograms: readonly string[],
     logger?: ErrorLog,
-): boolean {
+): { check: string; expected: string; got: string } | null {
     const { coin } = request;
     const solana = coin.chain === "solana";
     const sameWallet = solana ? quote.refundTo === request.refundTo : sameAddress(quote.refundTo, request.refundTo);
-    const txsHold = solana
-        ? quote.txs.every((tx): tx is SolanaTx => tx.kind === "solana") &&
-          solanaTxsHold(
-              quote.txs as SolanaTx[],
-              request,
-              quote.provider === "cctp" ? [TOKEN_MESSENGER_MINTER_V2] : allowedPrograms,
-              quote.provider === "cctp",
-              logger,
-          )
-        : quote.txs.every((tx) => tx.kind === "evm" && tx.chainId === coin.chainId);
-    return (
-        quote.coin === coin.key &&
-        quote.amountIn === request.amount &&
-        ARC_USDC_TOKENS.some((token) => sameAddress(token, quote.destinationToken)) &&
-        sameAddress(quote.recipient, request.recipient) &&
-        sameWallet &&
-        quote.txs.length > 0 &&
-        txsHold &&
-        quote.usdcOut > 0n
-    );
+    const checks: [string, () => boolean, string, string][] = [
+        ["coin", () => quote.coin === coin.key, coin.key, quote.coin],
+        ["amountIn", () => quote.amountIn === request.amount, String(request.amount), String(quote.amountIn)],
+        [
+            "destinationToken",
+            () => ARC_USDC_TOKENS.some((token) => sameAddress(token, quote.destinationToken)),
+            ARC_USDC_TOKENS.join(" or "),
+            quote.destinationToken,
+        ],
+        ["recipient", () => sameAddress(quote.recipient, request.recipient), request.recipient, quote.recipient],
+        ["refundTo", () => sameWallet, request.refundTo, quote.refundTo],
+        ["txs", () => quote.txs.length > 0, "at least one transaction", `${quote.txs.length} transactions`],
+        [
+            "txs",
+            () =>
+                solana
+                    ? quote.txs.every((tx): tx is SolanaTx => tx.kind === "solana") &&
+                      solanaTxsHold(
+                          quote.txs as SolanaTx[],
+                          request,
+                          quote.provider === "cctp" ? [TOKEN_MESSENGER_MINTER_V2] : allowedPrograms,
+                          quote.provider === "cctp",
+                          quote.provider,
+                          logger,
+                      )
+                    : quote.txs.every((tx) => tx.kind === "evm" && tx.chainId === coin.chainId),
+            solana ? "Solana instructions that only deposit" : `EVM transactions on chain ${coin.chainId}`,
+            quote.txs.map((tx) => (tx.kind === "evm" ? `evm ${tx.chainId}` : "solana")).join(", "),
+        ],
+        ["usdcOut", () => quote.usdcOut > 0n, "over zero", String(quote.usdcOut)],
+    ];
+    const failed = checks.find(([, holds]) => !holds());
+    return failed ? { check: failed[0], expected: failed[2], got: failed[3] } : null;
 }
+
+/** Whether a provider's quote does what was asked (see quoteMismatch). */
+export const checkQuote = (
+    quote: Quote,
+    request: QuoteRequest,
+    allowedPrograms: readonly string[],
+    logger?: ErrorLog,
+): boolean => quoteMismatch(quote, request, allowedPrograms, logger) === null;
 
 /** Aborts the provider's request when time runs out, and stops waiting even if the provider ignores that. */
 async function quoteWithin(provider: BridgeProvider, request: QuoteRequest, timeoutMs: number): Promise<Quote> {
@@ -177,7 +216,7 @@ async function quoteWithin(provider: BridgeProvider, request: QuoteRequest, time
     const timedOut = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
             controller.abort();
-            reject(new Error(`${provider.name} gave no quote within ${timeoutMs} ms`));
+            reject(new QuoteTimeout(provider.name, timeoutMs));
         }, timeoutMs);
     });
     try {
@@ -187,10 +226,93 @@ async function quoteWithin(provider: BridgeProvider, request: QuoteRequest, time
     }
 }
 
+type QuoteIssue =
+    | { provider: string; kind: "refused"; message: string }
+    | { provider: string; kind: "app"; error: AppError }
+    | { provider: string; kind: "timeout" }
+    | { provider: string; kind: "mismatch"; ref: string }
+    | { provider: string; kind: "error"; ref: string };
+
+/** Logs one provider's failure to quote, once, with what it said, and says what kind it was. */
+function explain(
+    provider: string,
+    reason: unknown,
+    request: QuoteRequest,
+    timeoutMs: number,
+    logger?: QuoteLog,
+): QuoteIssue {
+    const who = describe(provider, request);
+    const name = bridgeName(provider);
+    if (reason instanceof QuoteTimeout) {
+        logger?.warn({ op: "deposit.quote", ...who, timeoutMs }, `${name} didn't answer a deposit quote in time`);
+        return { provider, kind: "timeout" };
+    }
+    if (reason instanceof UpstreamRefusal) {
+        const { message, known } = refusalMessage(reason, request.coin);
+        logger?.warn(
+            {
+                op: "deposit.quote",
+                ...who,
+                upstreamStatus: reason.status,
+                upstreamCode: reason.code,
+                upstreamMessage: reason.upstream,
+                upstreamData: reason.data,
+                known,
+            },
+            `${name} refused a deposit quote`,
+        );
+        return { provider, kind: "refused", message };
+    }
+    if (reason instanceof AppError) {
+        logger?.warn(
+            { op: "deposit.quote", ...who, code: reason.code },
+            `${name} can't quote this deposit: ${reason.message}`,
+        );
+        return { provider, kind: "app", error: reason };
+    }
+    const ref = newRef();
+    logger?.error({ op: "deposit.quote", ...who, err: reason, ref }, `${name} failed to give a deposit quote`);
+    return { provider, kind: "error", ref };
+}
+
+/** The refusal the person sees when no bridge gave a usable quote: the most specific reason any of them gave. */
+function noQuote(issues: QuoteIssue[], request: QuoteRequest, timeoutMs: number): AppError {
+    const { coin } = request;
+    const app = issues.find((issue): issue is Extract<QuoteIssue, { kind: "app" }> => issue.kind === "app");
+    if (app) return new AppError(app.error.code, app.error.message, { logged: true, cause: app.error });
+    const refused = [...new Set(issues.flatMap((issue) => (issue.kind === "refused" ? [issue.message] : [])))];
+    if (refused.length > 0) return new AppError("no_route", refused.slice(0, 2).join(" "), { logged: true });
+    const mismatch = issues.find(
+        (issue): issue is Extract<QuoteIssue, { kind: "mismatch" }> => issue.kind === "mismatch",
+    );
+    if (mismatch) {
+        return new AppError(
+            "no_route",
+            `${bridgeName(mismatch.provider)}'s quote didn't match your request, so nothing was sent (ref ${mismatch.ref}).`,
+            { logged: true },
+        );
+    }
+    const broken = issues.find((issue): issue is Extract<QuoteIssue, { kind: "error" }> => issue.kind === "error");
+    if (broken) {
+        return new AppError(
+            "unavailable",
+            `Couldn't get a quote from ${bridgeName(broken.provider)} (ref ${broken.ref}). Try again in a minute.`,
+            { logged: true },
+        );
+    }
+    if (issues.length > 0) {
+        return new AppError("unavailable", `No bridge answered within ${timeoutMs / 1000} seconds. Try again.`, {
+            logged: true,
+        });
+    }
+    return new AppError("no_route", `No bridge carries ${coin.symbol} from ${coin.chainName} to Arc.`);
+}
+
 /**
  * The usable quote paying the most USDC, tier by tier: a tier's providers are asked in parallel, and a later tier
  * only when the earlier ones gave nothing usable. Without tiers everyone is one tier. A tie goes to the shorter ETA.
- * A provider that fails or is too slow, or whose quote doesn't check out, is left out.
+ * A provider that fails or is too slow, or whose quote doesn't check out, is left out and logged once with why;
+ * when none is usable, the person is told the most specific reason any of them gave.
  */
 export async function bestQuote(
     providers: readonly BridgeProvider[],
@@ -204,18 +326,38 @@ export async function bestQuote(
         timeoutMs?: number;
         tiers?: readonly (readonly string[])[];
         allowedPrograms: readonly string[];
-        logger?: ErrorLog;
+        logger?: QuoteLog;
     },
 ): Promise<Quote> {
+    const issues: QuoteIssue[] = [];
     for (const tier of tiers) {
-        const settled = await Promise.allSettled(
-            providers
-                .filter((provider) => tier.includes(provider.name) && provider.supports(request.coin))
-                .map((provider) => quoteWithin(provider, request, timeoutMs)),
-        );
-        const usable = settled
-            .flatMap((result) => (result.status === "fulfilled" ? [result.value] : []))
-            .filter((quote) => checkQuote(quote, request, allowedPrograms, logger));
+        const asked = providers.filter((provider) => tier.includes(provider.name) && provider.supports(request.coin));
+        const settled = await Promise.allSettled(asked.map((provider) => quoteWithin(provider, request, timeoutMs)));
+        const usable: Quote[] = [];
+        settled.forEach((result, i) => {
+            const provider = asked[i]!.name;
+            if (result.status === "rejected") {
+                issues.push(explain(provider, result.reason, request, timeoutMs, logger));
+                return;
+            }
+            const mismatch = quoteMismatch(result.value, request, allowedPrograms, logger);
+            if (!mismatch) {
+                usable.push(result.value);
+                return;
+            }
+            const ref = newRef();
+            issues.push({ provider, kind: "mismatch", ref });
+            logger?.error(
+                {
+                    op: "deposit.quote.rejected",
+                    ...describe(provider, request),
+                    ...mismatch,
+                    quote: result.value.ref,
+                    ref,
+                },
+                "Refused a bridge quote that does not match the request",
+            );
+        });
 
         const best = usable.reduce<Quote | undefined>(
             (top, quote) =>
@@ -228,5 +370,5 @@ export async function bestQuote(
         );
         if (best) return best;
     }
-    throw new AppError("unavailable", "No route for this deposit right now.");
+    throw noQuote(issues, request, timeoutMs);
 }

@@ -2,11 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { findAssociatedTokenPda } from "@solana-program/token";
 import { address, getAddressEncoder, getProgramDerivedAddress } from "@solana/kit";
 import { bytesToHex, concatHex, pad, toHex, type Address, type Hex } from "viem";
-import { AppError } from "../../errors.ts";
+import { formatUnits } from "viem";
+import { AppError, brief } from "../../errors.ts";
 import { FORWARD_HOOK_DATA } from "../../withdrawals/cctp-burn.ts";
 import { SOLANA_USDC_MINT } from "../../withdrawals/solana-recipient.ts";
 import { toArcWei, type Coin } from "../catalog.ts";
-import type { Iris } from "../iris.ts";
+import { delayMessage, FORWARD_FAILED } from "../failures.ts";
+import { IrisError, type Iris } from "../iris.ts";
 import type { SolanaRpc } from "../solana.ts";
 import type { BridgeProvider, BridgeStatus, Quote, QuoteRequest } from "./types.ts";
 
@@ -35,7 +37,10 @@ const MESSAGE_HEADER_BYTES = 148;
 const BURN_BODY_BYTES = 228;
 
 type Key = { pubkey: string; isSigner: boolean; isWritable: boolean };
-type Logger = { error: (fields: object, message: string) => void };
+type Logger = {
+    error: (fields: object, message: string) => void;
+    warn: (fields: object, message: string) => void;
+};
 
 const u32 = (n: number) => toHex(n, { size: 4 }).slice(2).match(/../g)!.reverse().join("");
 const u64 = (n: bigint) => toHex(n, { size: 8 }).slice(2).match(/../g)!.reverse().join("");
@@ -105,6 +110,7 @@ export function createCctp(options: {
 }): BridgeProvider {
     const { iris, rpc, arcDomain, solanaDomain, logger } = options;
     const reported = new Set<string>();
+    const delayed = new Set<string>();
     // The burn's message account is the same size every time, so its rent is asked of the network once.
     const messageRent = (bytes: number) => {
         let rent = rents.get(bytes);
@@ -125,9 +131,21 @@ export function createCctp(options: {
         supports: (coin: Coin) => coin.key === "solana:USDC",
 
         async quote({ coin, amount, sender, recipient, refundTo }: QuoteRequest): Promise<Quote> {
-            const { med, high } = await iris.depositFee();
+            const { med, high } = await iris.depositFee().catch((error: unknown) => {
+                if (!(error instanceof IrisError)) throw error;
+                throw new AppError("unavailable", "Circle's fee service isn't answering. Try again in a minute.", {
+                    cause: error,
+                });
+            });
             const maxFee = high / WEI_PER_UNIT;
-            if (amount <= maxFee) throw new AppError("bad_request", "That's too small to cover the fee.");
+            if (amount <= maxFee) {
+                const fee = formatUnits(maxFee, coin.decimals);
+                const least = formatUnits(maxFee + 1n, coin.decimals);
+                throw new AppError(
+                    "bad_request",
+                    `That's too small to cover Circle's fee of ${fee} USDC. Deposit at least ${least} USDC.`,
+                );
+            }
             const hookBytes = (FORWARD_HOOK_DATA.length - 2) / 2;
             const held = await messageRent(MESSAGE_SENT_OVERHEAD + MESSAGE_HEADER_BYTES + BURN_BODY_BYTES + hookBytes);
             return {
@@ -163,9 +181,32 @@ export function createCctp(options: {
             if (message?.status === "complete" && message.forwardTxHash) {
                 return { stage: "filled", fillTxHash: message.forwardTxHash as Hex };
             }
-            if (message?.status === "failed" && !reported.has(signature)) {
-                reported.add(signature);
-                logger?.error({ signature }, "A CCTP deposit burned on Solana but never minted on Arc");
+            if (message?.status === "failed") {
+                const detail = `${FORWARD_FAILED}: ${brief(JSON.stringify(message.raw), 300)}`;
+                if (!reported.has(signature)) {
+                    reported.add(signature);
+                    logger?.error(
+                        {
+                            op: "cctp.forward_failed",
+                            signature,
+                            delayReason: message.delayReason,
+                            feeExecutedE6: message.feeExecutedE6 === null ? null : String(message.feeExecutedE6),
+                            raw: message.raw,
+                        },
+                        "A CCTP deposit burned on Solana but never minted on Arc",
+                    );
+                }
+                return { stage: "failed", detail };
+            }
+            if (message?.delayReason) {
+                if (!delayed.has(signature)) {
+                    delayed.add(signature);
+                    logger?.warn(
+                        { op: "cctp.delayed", signature, delayReason: message.delayReason, raw: message.raw },
+                        "Circle is holding a CCTP deposit back",
+                    );
+                }
+                return { stage: "pending", detail: delayMessage(message.delayReason) };
             }
             return { stage: "pending" };
         },

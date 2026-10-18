@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { IrisLimiter } from "../../src/crosschain/iris-limiter.ts";
 
 const MINUTE = 60_000;
@@ -61,4 +61,22 @@ test("the budget and the pause can be set", () => {
     expect(limiter.blockedUntil()).toBe(6_000);
     expect(limiter.take(5_999)).toBe(false);
     expect(limiter.take(6_000)).toBe(true);
+});
+
+test("a pause is announced once when it starts and once when it ends, so a 5 minute stall of CCTP checks is visible", () => {
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    const limiter = new IrisLimiter({ logger });
+    limiter.backoff(10_000);
+    limiter.backoff(11_000);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ op: "iris.rate_limited", backoffMs: 5 * MINUTE }),
+        expect.stringContaining("slow down"),
+    );
+
+    expect(limiter.take(12_000)).toBe(false);
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(limiter.take(11_000 + 5 * MINUTE)).toBe(true);
+    expect(limiter.take(11_000 + 5 * MINUTE)).toBe(true);
+    expect(logger.info).toHaveBeenCalledTimes(1);
 });
