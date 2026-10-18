@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { createWalletClient, custom, parseGwei, type Hex } from "viem";
+import { createWalletClient, custom, formatUnits, parseGwei, type Hex } from "viem";
 import type { Logger } from "pino";
 import type { Keyring } from "../accounts/keyring.ts";
 import { MIN_BASE_FEE, type ArcClient } from "../chain/arc.ts";
@@ -41,7 +41,16 @@ export class Sweeper {
         logger.info({ treasury: keyring.operator().address }, "Treasury address");
         const onCredited = ({ account }: { account: { depositIndex: number } }) => {
             this.sweep(account.depositIndex).catch((error: unknown) => {
-                logger.warn({ err: error, index: account.depositIndex }, "Sweep failed");
+                if (this.#stop?.signal.aborted) return;
+                logger.warn(
+                    {
+                        event: "sweep.failed",
+                        depositIndex: account.depositIndex,
+                        address: keyring.signerAt(account.depositIndex).address,
+                        err: error,
+                    },
+                    "Moving a deposit address's balance to the treasury failed",
+                );
             });
         };
         bus.on("deposit:credited", onCredited);
@@ -76,13 +85,31 @@ export class Sweeper {
     async sweepAll(signal?: AbortSignal): Promise<void> {
         const { collections, logger } = this.#deps;
         const counter = await collections.counters.findOne({ _id: DEPOSIT_INDEX });
-        for (let index = 1; index <= (counter?.seq ?? 0); index++) {
+        const total = counter?.seq ?? 0;
+        const failed: number[] = [];
+        let first: unknown;
+        for (let index = 1; index <= total; index++) {
             if (signal?.aborted) return;
             try {
                 await this.sweep(index);
             } catch (error) {
-                logger.warn({ err: error, index }, "Sweep failed");
+                if (signal?.aborted) return;
+                if (failed.length === 0) first = error;
+                failed.push(index);
             }
+        }
+        // One line for the pass, not one per address, so an RPC outage doesn't write thousands
+        if (failed.length > 0) {
+            logger.warn(
+                {
+                    event: "sweep.failed",
+                    failed: failed.length,
+                    total,
+                    depositIndexes: failed.slice(0, 20),
+                    err: first,
+                },
+                `${failed.length} of ${total} deposit sweeps failed`,
+            );
         }
     }
 
@@ -118,7 +145,11 @@ export class Sweeper {
             maxPriorityFeePerGas: PRIORITY_FEE,
         });
         const receipt = await this.#abortable(client.waitForTransactionReceipt({ hash }));
-        if (receipt.status !== "success") throw new Error(`Sweep ${hash} reverted`);
+        if (receipt.status !== "success") {
+            throw new Error(
+                `Sweep ${hash} of deposit address ${signer.address} (index ${index}, ${formatUnits(balance - gasCost, 18)} USDC) reverted`,
+            );
+        }
         return hash;
     }
 
@@ -127,7 +158,11 @@ export class Sweeper {
             try {
                 await this.sweepAll(signal);
             } catch (error) {
-                this.#deps.logger.warn({ err: error }, "Sweep pass failed");
+                if (signal.aborted) break;
+                this.#deps.logger.warn(
+                    { event: "sweep.pass_failed", err: error },
+                    "Looking for deposit addresses to sweep failed",
+                );
             }
             await sleep(this.#deps.intervalMs ?? SWEEP_INTERVAL_MS, undefined, { signal }).catch(() => undefined);
         }
