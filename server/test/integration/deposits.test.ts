@@ -361,6 +361,8 @@ test("a reverted transaction that forwarded value is rejected and never credited
         accountId: user.accountId.toHexString(),
         msg: "Deposit report refused: transaction reverted",
     });
+    // The HTTP layer doesn't log the refusal a second time
+    expect(lines.filter((line) => line.level >= 40 && JSON.stringify(line).includes(hash))).toHaveLength(1);
     await scanned();
     await new Promise((resolve) => setTimeout(resolve, 300));
     await scanned();
