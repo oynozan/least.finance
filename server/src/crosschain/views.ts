@@ -14,7 +14,7 @@ export const orderView = (order: DepositOrderDoc): DepositOrderView => ({
     state: order.state,
     sourceTxHashes: order.sourceTxHashes,
     depositId: order.depositId?.toHexString() ?? null,
-    reason: order.state === "failed" || order.state === "refunded" ? (order.failure ?? null) : null,
+    ...((order.failure?.message ?? order.note) && { message: order.failure?.message ?? order.note }),
     createdAt: order.createdAt.toISOString(),
     updatedAt: order.updatedAt.toISOString(),
 });

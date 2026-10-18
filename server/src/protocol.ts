@@ -87,8 +87,8 @@ export type DepositOrderView = {
     sourceTxHashes: string[];
     /** The credited deposit once delivered. */
     depositId: string | null;
-    /** Why a failed or refunded order ended, as a short phrase; null otherwise. */
-    reason?: string | null;
+    /** Why the order failed, was refunded or expired, or what is holding it up, in plain words; absent when there is nothing to say. */
+    message?: string;
     /** ISO 8601. */
     createdAt: string;
     updatedAt: string;

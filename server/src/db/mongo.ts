@@ -67,8 +67,10 @@ export type DepositOrderDoc = {
     sourceTxHashes: string[];
     fillTxHash: string | null;
     depositId: ObjectId | null;
-    /** Why a failed or refunded order ended, as a short phrase ("the bridge couldn't deliver"); unset on the rest. */
-    failure?: string | null;
+    /** Why the order ended without delivering: the reason code, the upstream's words or ours, and what the person is told. */
+    failure?: { code: string; detail: string; message: string; at: Date };
+    /** What the person is told while the order is still open, such as a bridge holding the transfer back. */
+    note?: string;
     createdAt: Date;
     updatedAt: Date;
 };
@@ -475,6 +477,27 @@ export type SwapOrderDoc = {
     updatedAt: Date;
 };
 
+/** A transfer to a deposit address that was left uncredited, with why, so support can find and return it. */
+export type SkippedDepositDoc = {
+    _id: ObjectId;
+    accountId: ObjectId;
+    chainId: number;
+    txHash: string;
+    logIndex: number;
+    blockNumber: number;
+    from: string;
+    to: string;
+    /** Wei. */
+    amount: Decimal128;
+    /** Wei: the least a deposit must be to be credited. */
+    minimum: Decimal128;
+    reason: "below_minimum";
+    /** What the person is told about it. */
+    message: string;
+    source: "report" | "scan";
+    seenAt: Date;
+};
+
 /** How far a chain scan has got. */
 export type CursorDoc = { _id: string; block: number; updatedAt: Date };
 
@@ -501,6 +524,7 @@ export type Collections = {
     trades: Collection<TradeDoc>;
     hedges: Collection<HedgeDoc>;
     coinWithdrawals: Collection<CoinWithdrawalDoc>;
+    skippedDeposits: Collection<SkippedDepositDoc>;
     cursors: Collection<CursorDoc>;
     counters: Collection<CounterDoc>;
 };
@@ -551,6 +575,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             trades: db.collection("trades"),
             hedges: db.collection("hedges"),
             coinWithdrawals: db.collection("coin_withdrawals"),
+            skippedDeposits: db.collection("skipped_deposits"),
             cursors: db.collection("cursors"),
             counters: db.collection("counters"),
         };
@@ -598,6 +623,7 @@ async function ensureIndexes({
     trades,
     hedges,
     coinWithdrawals,
+    skippedDeposits,
 }: Collections) {
     await Promise.all([
         accounts.createIndexes([
@@ -619,6 +645,10 @@ async function ensureIndexes({
         ]),
         deposits.createIndexes([
             // A log is credited once, however many paths report it.
+            { key: { chainId: 1, txHash: 1, logIndex: 1 }, name: "log_unique", unique: true },
+            { key: { accountId: 1, _id: -1 }, name: "account_history" },
+        ]),
+        skippedDeposits.createIndexes([
             { key: { chainId: 1, txHash: 1, logIndex: 1 }, name: "log_unique", unique: true },
             { key: { accountId: 1, _id: -1 }, name: "account_history" },
         ]),

@@ -3,10 +3,12 @@ import type { ObjectId } from "mongodb";
 import type { Logger } from "pino";
 import { TransactionNotFoundError, TransactionReceiptNotFoundError, type Hex, type PublicClient } from "viem";
 import type { Collections, DepositOrderDoc } from "../db/mongo.ts";
+import { brief, refOf } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { OrderState } from "../protocol.ts";
 import { coinByKey } from "./catalog.ts";
 import type { SourceClients } from "./chains.ts";
+import { orderFailureMessage, type OrderFailureInput } from "./failures.ts";
 import { GIVE_UP_MS } from "./orders.ts";
 import type { BridgeProvider } from "./providers/types.ts";
 import type { SolanaRpc } from "./solana.ts";
@@ -20,6 +22,8 @@ const SLOW_POLL_MS = 15_000;
 const SLOWEST_POLL_MS = 60_000;
 /** Status requests in flight at once. */
 const CONCURRENCY = 8;
+/** A stuck order's failed status check is logged at most this often. */
+const REPEAT_LOG_MS = 600_000;
 
 type Deps = {
     collections: Collections;
@@ -47,6 +51,11 @@ export class OrderTracker {
     readonly #now: () => number;
     /** When each open order was last followed. */
     readonly #polled = new Map<string, number>();
+    /** When each order whose status check is failing was last logged. */
+    readonly #failing = new Map<string, number>();
+    /** Orders already logged as ones this tracker can't follow. */
+    readonly #unfollowed = new Set<string>();
+    #failedPasses = 0;
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
@@ -73,8 +82,21 @@ export class OrderTracker {
         while (!signal.aborted) {
             try {
                 await this.tick();
+                this.#failedPasses = 0;
             } catch (error) {
-                this.#deps.logger.warn({ err: error }, "Order tracking pass failed");
+                // Logged on the 1st, 2nd, 4th, 8th... failed pass in a row, so a database that is down doesn't fill the log
+                this.#failedPasses += 1;
+                if ((this.#failedPasses & (this.#failedPasses - 1)) === 0) {
+                    this.#deps.logger.warn(
+                        {
+                            op: "deposit.order.list",
+                            err: error,
+                            pollMs: this.#deps.pollMs,
+                            consecutiveFailures: this.#failedPasses,
+                        },
+                        "Couldn't list open deposit orders",
+                    );
+                }
             }
             await sleep(this.#deps.pollMs, undefined, { signal }).catch(() => undefined);
         }
@@ -91,6 +113,7 @@ export class OrderTracker {
             .toArray();
         const ids = new Set(orders.map((order) => order._id.toHexString()));
         for (const id of this.#polled.keys()) if (!ids.has(id)) this.#polled.delete(id);
+        for (const id of this.#failing.keys()) if (!ids.has(id)) this.#failing.delete(id);
 
         const due = orders.filter((order) => {
             const id = order._id.toHexString();
@@ -101,12 +124,68 @@ export class OrderTracker {
         let next = 0;
         const worker = async () => {
             for (let order = due[next++]; order; order = due[next++]) {
-                await this.#step(order).catch((error: unknown) =>
-                    this.#deps.logger.warn({ err: error, order: order._id.toHexString() }, "Couldn't follow an order"),
+                await this.#step(order).then(
+                    () => this.#recovered(order),
+                    (error: unknown) => this.#couldntFollow(order, error, now),
                 );
             }
         };
         await Promise.all(Array.from({ length: Math.min(CONCURRENCY, due.length) }, worker));
+    }
+
+    /** Says once per 10 minutes that an order's status can't be read, with what it is and why. */
+    #couldntFollow(order: DepositOrderDoc, error: unknown, now: number) {
+        const id = order._id.toHexString();
+        const last = this.#failing.get(id);
+        if (last !== undefined && now - last < REPEAT_LOG_MS) return;
+        this.#failing.set(id, now);
+        this.#deps.logger.warn(
+            {
+                op: "deposit.order.follow",
+                orderId: id,
+                accountId: order.accountId.toHexString(),
+                provider: order.provider,
+                coin: order.coin,
+                state: order.state,
+                sourceTx: order.sourceTxHashes.at(-1) ?? null,
+                ageMs: now - order.createdAt.getTime(),
+                err: error,
+            },
+            "Couldn't check a deposit order's status",
+        );
+    }
+
+    #recovered(order: DepositOrderDoc) {
+        const id = order._id.toHexString();
+        if (!this.#failing.delete(id)) return;
+        this.#deps.logger.info(
+            {
+                op: "deposit.order.follow",
+                orderId: id,
+                accountId: order.accountId.toHexString(),
+                provider: order.provider,
+            },
+            "A deposit order's status can be read again",
+        );
+    }
+
+    /** Says once that an order is one this tracker can't follow, and why. */
+    #cantFollow(order: DepositOrderDoc, why: string, fields: object) {
+        const id = order._id.toHexString();
+        if (this.#unfollowed.has(id)) return;
+        this.#unfollowed.add(id);
+        this.#deps.logger.error(
+            {
+                op: "deposit.order.unfollowed",
+                orderId: id,
+                accountId: order.accountId.toHexString(),
+                provider: order.provider,
+                coin: order.coin,
+                state: order.state,
+                ...fields,
+            },
+            why,
+        );
     }
 
     async #step(order: DepositOrderDoc) {
@@ -119,17 +198,27 @@ export class OrderTracker {
         const hash = order.sourceTxHashes.at(-1) as Hex;
         const chain = coinByKey(order.coin).chain;
         if (chain === "solana") return this.#checkSolanaSource(order, hash);
-        if (chain !== "ethereum" && chain !== "bnb") return;
+        if (chain !== "ethereum" && chain !== "bnb") {
+            return this.#cantFollow(order, "Deposit order is on a chain the tracker does not follow", { chain });
+        }
         const client = this.#deps.sources[chain];
         const receipt = await this.#receipt(client, hash);
-        const where = coinByKey(order.coin).chainName;
-        if (receipt) {
-            if (receipt.status === "success") await this.#move(order, "in_block");
-            else await this.#move(order, "failed", { failure: `the transaction reverted on ${where}` });
+        if (receipt?.status === "success") await this.#move(order, "in_block");
+        else if (receipt) {
+            const detail = `reverted in block ${receipt.blockNumber} (${hash})`;
+            await this.#move(order, "failed", {}, { code: "source_reverted", detail });
         }
         // A slow transaction can still be mined, so one with no receipt is followed until it is replaced or the order is given up on.
-        else if (this.#now() - order.updatedAt.getTime() > GIVE_UP_MS || (await this.#replaced(client, hash))) {
-            await this.#move(order, "failed", { failure: `the transaction was never mined on ${where}` });
+        else if (this.#now() - order.updatedAt.getTime() > GIVE_UP_MS) {
+            await this.#move(
+                order,
+                "failed",
+                {},
+                { code: "given_up", detail: `no receipt for ${hash} after 24 hours` },
+            );
+        } else if (await this.#replaced(client, hash)) {
+            const detail = `${hash} was replaced by another transaction with the same nonce`;
+            await this.#move(order, "failed", {}, { code: "source_replaced", detail });
         }
     }
 
@@ -157,33 +246,43 @@ export class OrderTracker {
     /** A confirmed or finalized signature is in a block; one that errored failed; an unknown one fails once it is old. */
     async #checkSolanaSource(order: DepositOrderDoc, signature: string) {
         const [status] = await this.#deps.solana.getSignatureStatuses([signature]);
-        if (status?.err) await this.#move(order, "failed", { failure: "the Solana transaction failed" });
-        else if (status && status.confirmationStatus !== "processed") await this.#move(order, "in_block");
+        if (status?.err) {
+            const detail = brief(JSON.stringify(status.err), 200);
+            await this.#move(order, "failed", {}, { code: "source_failed", detail });
+        } else if (status && status.confirmationStatus !== "processed") await this.#move(order, "in_block");
         else if (!status && this.#now() - order.updatedAt.getTime() > this.#expiryMs) {
-            await this.#move(order, "failed", { failure: "Solana never confirmed the transaction" });
+            const detail = `signature ${signature} unknown to the cluster for ${Math.round(this.#expiryMs / 60_000)} minutes`;
+            await this.#move(order, "failed", {}, { code: "source_not_found", detail });
         }
     }
 
     async #checkBridge(order: DepositOrderDoc) {
         const provider = this.#deps.providers.find((p) => p.name === order.provider);
-        if (!provider) return;
+        if (!provider) {
+            const configured = this.#deps.providers.map((p) => p.name);
+            return this.#cantFollow(order, "Deposit order uses a bridge that is not configured", { configured });
+        }
         const hash = order.sourceTxHashes.at(-1) ?? null;
         const status = await provider.status({ ref: order.ref }, hash, coinByKey(order.coin));
 
         if (order.state === "created") {
             if (status.stage !== "waiting") await this.#move(order, "bridging");
-            else if (this.#now() - order.createdAt.getTime() > this.#expiryMs) await this.#move(order, "expired");
+            else if (this.#now() - order.createdAt.getTime() > this.#expiryMs) {
+                const detail = `no transaction reported within ${Math.round(this.#expiryMs / 60_000)} minutes`;
+                await this.#move(order, "expired", {}, { code: "expired", detail });
+            }
             return;
         }
         if (status.stage === "pending") {
             if (order.state === "in_block") await this.#move(order, "bridging");
+            await this.#note(order, status.detail);
         } else if (status.stage === "refunded" || status.stage === "failed") {
+            const refunded = status.stage === "refunded";
             await this.#move(
                 order,
-                status.stage === "refunded" ? "refunded" : "failed",
-                status.stage === "refunded"
-                    ? { failure: `${order.provider} couldn't deliver the bridge` }
-                    : { failure: `${order.provider} reported that the bridge failed` },
+                refunded ? "refunded" : "failed",
+                {},
+                { code: refunded ? "bridge_refunded" : "bridge_failed", detail: status.detail ?? "" },
             );
         } else if (status.stage === "filled") {
             const fill = (order.fillTxHash ?? status.fillTxHash)?.toLowerCase();
@@ -213,32 +312,63 @@ export class OrderTracker {
         await this.#move(order, "delivered", { fillTxHash: fill, depositId: deposit._id });
     }
 
-    /** A conditional update on the state the order was read in; only one that lands is announced. */
-    async #move(order: DepositOrderDoc, state: OrderState, set: Partial<DepositOrderDoc> = {}) {
+    /** Keeps what a bridge says about an order that is still open, such as a hold, so the person can read it. */
+    async #note(order: DepositOrderDoc, note: string | undefined) {
+        if (!note || note === order.note) return;
         const moved = await this.#deps.collections.depositOrders.findOneAndUpdate(
             { _id: order._id, state: order.state },
-            { $set: { ...set, state, updatedAt: new Date() } },
+            { $set: { note } },
             { returnDocument: "after" },
         );
         if (!moved) return;
-        if (state === "failed" || state === "refunded") {
-            this.#deps.logger.warn(
-                {
-                    event: "deposit_order.ended",
-                    orderId: order._id.toHexString(),
-                    accountId: order.accountId.toHexString(),
-                    coin: order.coin,
-                    amount: order.amount,
-                    provider: order.provider,
-                    ref: order.ref,
-                    sourceTxHashes: order.sourceTxHashes,
-                    was: order.state,
-                    state,
-                    reason: moved.failure,
-                },
-                `A deposit order ended as ${state}: ${moved.failure ?? "no reason recorded"}`,
-            );
-        }
+        await this.#deps.announced?.(order._id);
+        this.#deps.bus.emit("order:updated", { order: moved });
+    }
+
+    /** A conditional update on the state the order was read in; only one that lands is announced and logged. */
+    async #move(
+        order: DepositOrderDoc,
+        state: OrderState,
+        set: Partial<DepositOrderDoc> = {},
+        failure?: OrderFailureInput,
+    ) {
+        const reason = failure && {
+            ...failure,
+            message: orderFailureMessage(
+                { provider: order.provider, coin: coinByKey(order.coin), ref: refOf(order._id) },
+                failure,
+                Math.round(this.#expiryMs / 60_000),
+            ),
+            at: new Date(),
+        };
+        const moved = await this.#deps.collections.depositOrders.findOneAndUpdate(
+            { _id: order._id, state: order.state },
+            {
+                $set: { ...set, ...(reason && { failure: reason }), state, updatedAt: new Date() },
+                ...(order.note !== undefined && { $unset: { note: "" as const } }),
+            },
+            { returnDocument: "after" },
+        );
+        if (!moved) return;
+        const problem = state === "failed" || state === "refunded" || state === "expired";
+        this.#deps.logger[problem ? "warn" : "info"](
+            {
+                op: "deposit.order.moved",
+                orderId: order._id.toHexString(),
+                accountId: order.accountId.toHexString(),
+                provider: order.provider,
+                coin: order.coin,
+                amount: order.amount,
+                from: order.state,
+                to: state,
+                sourceTxHashes: order.sourceTxHashes,
+                fillTxHash: moved.fillTxHash,
+                reason: failure?.code,
+                detail: failure?.detail,
+                ref: problem ? refOf(order._id) : undefined,
+            },
+            `Deposit order moved to ${state}`,
+        );
         // A step the wallet's report started is announced first, whichever write returned first.
         await this.#deps.announced?.(order._id);
         this.#deps.bus.emit("order:updated", { order: moved });

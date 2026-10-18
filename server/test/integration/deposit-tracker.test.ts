@@ -6,6 +6,7 @@ import { TransactionNotFoundError, TransactionReceiptNotFoundError } from "viem"
 import { afterAll, beforeAll, describe, expect, inject, test, vi } from "vitest";
 import { createSourceClients, type SourceClients } from "../../src/crosschain/chains.ts";
 import { OrderTracker } from "../../src/crosschain/tracker.ts";
+import { orderView } from "../../src/crosschain/views.ts";
 import { formatUsdc, fromDecimal } from "../../src/db/money.ts";
 import type { Ack, DepositOrderView, OrderState, SourceTxView, WalletSession } from "../../src/protocol.ts";
 import { FAKE_BRIDGE_ADDRESS } from "../support/fake-bridge.ts";
@@ -139,7 +140,10 @@ test("a refund ends refunded, and nothing is credited", async () => {
     await stack.bridge.advance(placed.ref, "refunded");
     await expect.poll(inState(placed, "refunded")).toBe(true);
     await expect.poll(() => placed.pushes.at(-1)).toBe("refunded");
-    expect((await placed.state()).failure).toContain("couldn't deliver the bridge");
+    expect((await placed.state()).failure).toMatchObject({
+        code: "bridge_refunded",
+        message: expect.stringContaining("refunded this deposit to your wallet"),
+    });
     expect(await balanceOf(placed.accountId)).toBe("0");
     expect(await db().deposits.countDocuments({ accountId: placed.accountId })).toBe(0);
 });
@@ -157,7 +161,11 @@ test("a reverted source transaction fails the order", async () => {
         );
         await placed.report(hashes);
         await expect.poll(inState(placed, "failed")).toBe(true);
-        expect((await placed.state()).failure).toBe("the transaction reverted on BNB Chain");
+        const { failure } = await placed.state();
+        expect(failure).toMatchObject({ code: "source_reverted", detail: expect.stringContaining(hashes[0]!) });
+        expect(failure!.message).toBe(
+            "The transaction reverted on BNB Chain, so nothing was bridged. Your BNB stays in your wallet; only the network fee was spent.",
+        );
     } finally {
         await bnb.client.setCode({ address: FAKE_BRIDGE_ADDRESS, bytecode: "0x" });
     }
@@ -184,6 +192,10 @@ test("an unreported order expires", async () => {
         await tracker.tick();
         expect((await placed.state()).state).toBe("expired");
         await expect.poll(() => placed.pushes.at(-1)).toBe("expired");
+        expect((await placed.state()).failure).toMatchObject({
+            code: "expired",
+            message: "Your wallet never sent this deposit, so the order expired. Nothing was taken.",
+        });
     } finally {
         await slow.stop();
     }
@@ -199,6 +211,7 @@ test("a source transaction that never lands fails the order once the give-up hor
         { $set: { updatedAt: new Date(Date.now() - DAY_MS - 60_000) } },
     );
     await expect.poll(inState(placed, "failed")).toBe(true);
+    expect((await placed.state()).failure).toMatchObject({ code: "given_up", detail: expect.stringContaining(HASH) });
 });
 
 describe("an EVM source transaction with no receipt yet", () => {
@@ -547,7 +560,12 @@ describe("Solana orders", () => {
             err: { InstructionError: [0, "x"] },
         });
         await expect.poll(inState(placed, "failed")).toBe(true);
-        expect((await placed.state()).failure).toBe("the Solana transaction failed");
+        expect((await placed.state()).failure).toMatchObject({
+            code: "source_failed",
+            detail: '{"InstructionError":[0,"x"]}',
+            message:
+                'Solana rejected the transaction ({"InstructionError":[0,"x"]}). Nothing left your wallet except the network fee.',
+        });
     });
 
     test("an unknown signature past expiryMs moves to failed", async () => {
@@ -559,6 +577,11 @@ describe("Solana orders", () => {
             { $set: { updatedAt: new Date(Date.now() - DAY_MS) } },
         );
         await expect.poll(inState(placed, "failed")).toBe(true);
+        expect((await placed.state()).failure).toMatchObject({
+            code: "source_not_found",
+            message:
+                "Solana never confirmed the transaction within 10 minutes; it was probably dropped. Nothing was sent.",
+        });
     });
 
     test("Relay filled with no USDC at the deposit address leaves the order bridging and credits nothing", async () => {
@@ -595,4 +618,153 @@ describe("Solana orders", () => {
         await expect.poll(inState(placed, "refunded")).toBe(true);
         expect(await dbOpen().deposits.countDocuments({ accountId: placed.accountId })).toBe(0);
     });
+});
+
+/** A tracker of ours, stepped by hand, over a logger that remembers its lines. */
+async function loggedTracker(options: { providers?: "none" } = {}) {
+    const lines: { level: string; fields: Record<string, unknown>; message: string }[] = [];
+    const record = (level: string) => (fields: object, message: string) =>
+        void lines.push({ level, fields: fields as Record<string, unknown>, message });
+    const logger = {
+        warn: record("warn"),
+        info: record("info"),
+        error: record("error"),
+    } as unknown as ConstructorParameters<typeof OrderTracker>[0]["logger"];
+    const slow = await startStack({
+        mongoUri: inject("mongoUri"),
+        anvilUrl: inject("anvilUrl"),
+        env: { ORDER_POLL_MS: "600000" },
+    });
+    const base = Date.now();
+    let offset = 0;
+    const tracker = new OrderTracker({
+        collections: slow.server.services.database.collections,
+        providers: options.providers === "none" ? [] : [slow.bridge],
+        sources: createSourceClients({ ethereum: [inject("ethereumUrl")], bnb: [inject("bnbUrl")] }),
+        solana: slow.server.services.solana,
+        bus: slow.server.services.bus,
+        logger,
+        pollMs: 100,
+        now: () => base + offset,
+    });
+    return { slow, tracker, lines, at: (ms: number) => void (offset = ms) };
+}
+
+test("every move of an order is logged once with the order, account, coin, amount, and the reason for a failure", async () => {
+    const { slow, tracker, lines, at } = await loggedTracker();
+    try {
+        const user = await slow.user();
+        const placed = await place(user, slow, "ethereum:ETH", "0.1");
+        at(DAY_MS);
+        await tracker.tick();
+
+        const moved = lines.filter((line) => line.fields.op === "deposit.order.moved");
+        expect(moved).toHaveLength(1);
+        expect(moved[0]).toMatchObject({
+            level: "warn",
+            message: "Deposit order moved to expired",
+            fields: {
+                orderId: placed.order.id,
+                accountId: placed.accountId.toHexString(),
+                provider: "fake",
+                coin: "ethereum:ETH",
+                amount: "0.1",
+                from: "created",
+                to: "expired",
+                reason: "expired",
+                ref: placed.order.id.slice(-6),
+            },
+        });
+        const view = await slow.server.services.database.collections.depositOrders.findOne({
+            _id: new ObjectId(placed.order.id),
+        });
+        expect(orderView(view!).message).toBe(
+            "Your wallet never sent this deposit, so the order expired. Nothing was taken.",
+        );
+    } finally {
+        await slow.stop();
+    }
+});
+
+test("an order whose status can't be read is logged with what it is and why, then only every ten minutes, then once when it recovers", async () => {
+    const { slow, tracker, lines, at } = await loggedTracker();
+    try {
+        const user = await slow.user();
+        const placed = await place(user, slow, "ethereum:ETH", "0.1");
+        await slow.bridge.advance(placed.ref, "pending");
+        const failing = vi.spyOn(slow.bridge, "status").mockRejectedValue(new Error("Relay answered 500 to a status"));
+        const follow = () => lines.filter((line) => line.fields.op === "deposit.order.follow" && line.level === "warn");
+
+        await tracker.tick();
+        expect(follow()).toHaveLength(1);
+        expect(follow()[0]).toMatchObject({
+            message: "Couldn't check a deposit order's status",
+            fields: {
+                orderId: placed.order.id,
+                accountId: placed.accountId.toHexString(),
+                provider: "fake",
+                coin: "ethereum:ETH",
+                state: "created",
+                err: expect.any(Error),
+            },
+        });
+
+        at(5 * 60_000);
+        await tracker.tick();
+        expect(follow()).toHaveLength(1);
+
+        at(11 * 60_000);
+        await tracker.tick();
+        expect(follow()).toHaveLength(2);
+
+        failing.mockRestore();
+        at(12 * 60_000);
+        await tracker.tick();
+        expect(lines.filter((line) => line.message === "A deposit order's status can be read again")).toHaveLength(1);
+    } finally {
+        await slow.stop();
+    }
+});
+
+test("an order on a bridge that isn't configured is logged once as an error, with the bridges that are", async () => {
+    const { slow, tracker, lines, at } = await loggedTracker({ providers: "none" });
+    try {
+        const user = await slow.user();
+        const placed = await place(user, slow, "ethereum:ETH", "0.1");
+        await placed.report([HASH]);
+        await slow.server.services.database.collections.depositOrders.updateOne(
+            { _id: new ObjectId(placed.order.id) },
+            { $set: { state: "bridging" } },
+        );
+        await tracker.tick();
+        at(60_000);
+        await tracker.tick();
+        const unfollowed = lines.filter((line) => line.fields.op === "deposit.order.unfollowed");
+        expect(unfollowed).toHaveLength(1);
+        expect(unfollowed[0]).toMatchObject({
+            level: "error",
+            message: "Deposit order uses a bridge that is not configured",
+            fields: { orderId: placed.order.id, provider: "fake", configured: [] },
+        });
+    } finally {
+        await slow.stop();
+    }
+});
+
+test("a hold the bridge reports is kept on the order and shown in its view until it moves on", async () => {
+    const user = await stack.user();
+    const placed = await place(user, stack, "ethereum:ETH", "0.1");
+    await sendAndReport(user, placed);
+    await expect.poll(inState(placed, "in_block")).toBe(true);
+    const hold = vi
+        .spyOn(stack.bridge, "status")
+        .mockResolvedValue({ stage: "pending", detail: 'Circle is holding the transfer: "x".' });
+    try {
+        await expect.poll(async () => (await placed.state()).note).toBe('Circle is holding the transfer: "x".');
+    } finally {
+        hold.mockRestore();
+    }
+    await stack.bridge.advance(placed.ref, "filled");
+    await expect.poll(inState(placed, "delivered")).toBe(true);
+    expect((await placed.state()).note).toBeUndefined();
 });
