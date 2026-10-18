@@ -29,8 +29,7 @@ export async function GET(_request: Request, ctx: { params: Promise<{ symbol: st
             headers: { "Content-Type": "image/webp", "Cache-Control": FOUND, "X-Content-Type-Options": "nosniff" },
         });
     }
-    if (logo.status !== "missing") {
-        console.warn(`coin-logo ${symbol}: the logo could not be drawn (${logo.status}); the cause is in the line above`);
-    }
+    // source.ts logs a failed draw once when it happens; a busy queue and a cached failure have no line of their own
+    if (logo.status === "busy") console.warn(`coin-logo ${symbol}: the render queue is full, so the logo was not drawn this time`);
     return notFound(logo.status === "missing" ? MISSING : FAILED);
 }

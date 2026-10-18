@@ -315,6 +315,35 @@ test.describe("GET /coin-logo/<symbol>", () => {
         expect(calls.every((url) => url.startsWith("https://app.hyperliquid.xyz/coins/"))).toBe(true);
     });
 
+    test("logs a failed logo's cause once and not again in the route, and names a full queue without blaming a line above", async () => {
+        const said: string[] = [];
+        const realWarn = console.warn;
+        console.warn = (...args: unknown[]) => void said.push(args.join(" "));
+        try {
+            answer = () => new Response("", { status: 503 });
+            await get("DOWN");
+            await get("DOWN");
+            // The cause is logged once, by the source; the route adds nothing for either ask
+            expect(said).toEqual(["coin-logo DOWN: https://app.hyperliquid.xyz/coins/DOWN.svg answered 503"]);
+            said.length = 0;
+
+            let release: () => void = () => {};
+            const gate = new Promise<void>((resolve) => (release = resolve));
+            answer = async () => {
+                await gate;
+                return new Response("", { status: 404 });
+            };
+            const asks = Array.from({ length: 210 }, (_, n) => get(`C${n}`));
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            release();
+            await Promise.all(asks);
+            expect(said).toHaveLength(4);
+            expect(said.every((line) => /render queue is full/.test(line) && !/line above/.test(line))).toBe(true);
+        } finally {
+            console.warn = realWarn;
+        }
+    });
+
     test("is a 404 for a file that is not an image type it accepts", async () => {
         answer = () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
         expect((await get("JSONY")).status).toBe(404);
