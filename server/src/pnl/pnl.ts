@@ -99,7 +99,9 @@ export class PnlService {
             read(() => trades.find({ accountId }).project<BasisTrade>(BASIS_FIELDS)),
         ]);
 
-        const zone = zoneOf(tz);
+        const zone = zoneOf(tz, (unknown) =>
+            this.#logger.warn({ accountId: accountId.toHexString(), tz: unknown }, "Unknown time zone, using UTC"),
+        );
         const days = new Map<string, DayTotals>();
         // Every event gets a key, even one that sums to nothing, because the earliest key starts All
         const add = (at: Date, net: bigint, pnl: bigint) => {

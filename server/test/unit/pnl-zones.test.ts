@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { zoneOf } from "../../src/pnl/zones.ts";
 
 const at = (iso: string) => Date.parse(iso);
@@ -69,5 +69,15 @@ describe("zoneOf", () => {
         expect(again).not.toBe(first);
         expect(again.tz).toBe(name);
         expect(again.dateOf(at("2026-10-14T02:30:00Z"))).toBe(first.dateOf(at("2026-10-14T02:30:00Z")));
+    });
+});
+
+describe("an unknown time zone", () => {
+    it("falls back to UTC and is reported once, whoever asks", () => {
+        const heard = vi.fn();
+        expect(zoneOf("Mars/Olympus", heard).tz).toBe("UTC");
+        expect(zoneOf("Mars/Olympus", heard).tz).toBe("UTC");
+        expect(heard).toHaveBeenCalledTimes(1);
+        expect(heard).toHaveBeenCalledWith("Mars/Olympus");
     });
 });

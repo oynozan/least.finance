@@ -27,7 +27,7 @@ afterAll(() => database.close());
 const total = (points: PnlPoint[], key: "pnl" | "net") =>
     formatUsdc(points.reduce((sum, point) => sum + parseUnits(point[key], 18), 0n));
 const logged = (id: ObjectId) =>
-    lines.filter((line) => line.msg === "pnl.series" && line.accountId === id.toHexString());
+    lines.filter((line) => line.msg === "PnL series built" && line.accountId === id.toHexString());
 
 test("the regression: old history is in the 7D and 30D starting balance and in All", async () => {
     const id = new ObjectId();

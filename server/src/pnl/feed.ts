@@ -36,7 +36,8 @@ type Deps = {
     now?: () => number;
 };
 
-const badCursor = () => new AppError("bad_request", "Invalid before: a cursor from a previous page");
+const badCursor = () =>
+    new AppError("bad_request", "That page of your history is out of date. Reload to see the newest.");
 
 export const encodeCursor = (key: FeedKey) => `${key.atMs}:${key.rank}:${key.id}`;
 

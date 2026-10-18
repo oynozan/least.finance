@@ -8,6 +8,8 @@ export type Zone = {
 const MAX_ZONES = 256;
 
 const zones = new Map<string, Zone>();
+// Names Intl rejected, so each is reported once however often it is asked for
+const rejected = new Set<string>();
 
 function build(tz: string): Zone | null {
     let format: Intl.DateTimeFormat;
@@ -33,12 +35,19 @@ function build(tz: string): Zone | null {
     };
 }
 
-/** The zone for an IANA name, built once, and UTC for a name Intl rejects */
-export function zoneOf(tz: string): Zone {
+/** The zone for an IANA name, built once, and UTC for a name Intl rejects; `onUnknown` hears each rejected name once */
+export function zoneOf(tz: string, onUnknown?: (tz: string) => void): Zone {
     const known = zones.get(tz);
     if (known) return known;
     const zone = build(tz);
-    if (!zone) return zoneOf("UTC");
+    if (!zone) {
+        if (!rejected.has(tz)) {
+            if (rejected.size >= MAX_ZONES) rejected.clear();
+            rejected.add(tz);
+            onUnknown?.(tz);
+        }
+        return zoneOf("UTC");
+    }
     if (zones.size >= MAX_ZONES) {
         const oldest = zones.keys().next();
         if (!oldest.done) zones.delete(oldest.value);

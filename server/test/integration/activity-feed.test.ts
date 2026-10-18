@@ -14,7 +14,8 @@ const slot = (index: number) => new Date(NOW - (index % 10) * HOUR);
 
 let database: Database;
 let feed: ActivityFeed;
-const lines: Array<{ msg: string; accountId?: string; ms?: number; rows?: Record<string, number> }> = [];
+const lines: Array<{ msg: string; level?: number; accountId?: string; ms?: number; rows?: Record<string, number> }> =
+    [];
 
 beforeAll(async () => {
     database = await connectDatabase(inject("mongoUri"), `test_${randomUUID().replaceAll("-", "")}`);
@@ -295,11 +296,11 @@ test("a garbled before is bad_request", async () => {
         const error = await feed.page(new ObjectId(), { before }).catch((caught: unknown) => caught);
         expect(error).toBeInstanceOf(AppError);
         expect((error as AppError).code).toBe("bad_request");
-        expect((error as AppError).message).toBe("Invalid before: a cursor from a previous page");
+        expect((error as AppError).message).toBe("That page of your history is out of date. Reload to see the newest.");
     }
 });
 
-test("a run logs pnl.feed with ms and a count per source", async () => {
+test("a run logs a debug line with ms and a count per source, and nothing louder", async () => {
     const accountId = new ObjectId();
     await seedRows(database.collections, accountId, [
         { kind: "deposit", usdc: "5", at: slot(0) },
@@ -314,8 +315,12 @@ test("a run logs pnl.feed with ms and a count per source", async () => {
     await feed.page(accountId, {});
     await feed.page(accountId, { filter: "deposits" });
 
-    const mine = lines.filter((line) => line.msg === "pnl.feed" && line.accountId === accountId.toHexString());
+    const mine = lines.filter(
+        (line) => line.msg === "Activity page built" && line.accountId === accountId.toHexString(),
+    );
     expect(mine).toHaveLength(2);
+    // 20 is debug: a page that came back quickly is not worth an info line
+    expect(mine.every((line) => line.level === 20)).toBe(true);
     expect(mine[0]!.ms).toBeGreaterThanOrEqual(0);
     expect(mine[0]!.rows).toEqual({
         deposits: 2,
