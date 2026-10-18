@@ -5,6 +5,7 @@ import type { Config } from "../config.ts";
 import type { Collections, PerpFloatDoc } from "../db/mongo.ts";
 import { fromDecimal, toDecimal } from "../db/money.ts";
 import { AppError } from "../errors.ts";
+import { loopWatch } from "../loop-watch.ts";
 import { formatUsdShort } from "../predictions/views.ts";
 import type { HyperliquidClient } from "./client.ts";
 
@@ -54,9 +55,19 @@ export class PerpFloat {
         this.#stop = new AbortController();
         const signal = this.#stop.signal;
         this.#loop = (async () => {
+            const watch = loopWatch(this.#deps.logger, "Hyperliquid float read");
             while (!signal.aborted) {
-                if (this.#deps.config.PERPS_TRADING === "on") await this.refresh().catch(() => undefined);
-                await sleep(READ_EVERY_MS, undefined, { signal }).catch(() => undefined);
+                let waitMs = READ_EVERY_MS;
+                if (this.#deps.config.PERPS_TRADING === "on") {
+                    try {
+                        await this.refresh();
+                        watch.ok();
+                    } catch (error) {
+                        // Long and short stay limited while the balance can't be read, and this is why
+                        waitMs = watch.failed(error, READ_EVERY_MS, { staleForMs: this.#staleMs() });
+                    }
+                }
+                await sleep(waitMs, undefined, { signal }).catch(() => undefined);
             }
         })();
     }
@@ -185,8 +196,18 @@ export class PerpFloat {
         this.#mirror = doc;
     }
 
+    /** How long ago the balance was last read, null before the first read. */
+    #staleMs(): number | null {
+        return this.#mirror ? this.#deps.now() - this.#mirror.balanceAt.getTime() : null;
+    }
+
     short(doc: PerpFloatDoc | null): AppError {
-        const free = doc && !this.#stale(doc) ? this.#wholeUSD(freeOf(doc) - ACTIVATION_E6 - SLACK_E6) : 0;
+        const stale = !doc || this.#stale(doc);
+        const free = doc && !stale ? this.#wholeUSD(freeOf(doc) - ACTIVATION_E6 - SLACK_E6) : 0;
+        this.#deps.logger.warn(
+            { event: "perp.float_short", freeUSD: free, stale, staleForMs: this.#staleMs() },
+            "Refused a long or short because the Hyperliquid float can't cover it",
+        );
         return new AppError(
             "float_short",
             `Long and short are limited to ${formatUsdShort(free)} right now. ${NOTHING_SPENT}`,

@@ -229,7 +229,7 @@ export function DepositCoins({ rows, solanaOpen, wallets, onPick, onConnect, onC
                                             ? `Deposits from ${row.chainName} aren't open yet.`
                                             : zero
                                               ? "Nothing to deposit"
-                                              : undefined
+                                              : row.readError
                                     }
                                     {...track(key)}
                                     onClick={() => !blocked && onPick(row)}

@@ -4,6 +4,7 @@ import { encodeFunctionData, erc20Abi, type Address, type Hex } from "viem";
 import type { Collections } from "../db/mongo.ts";
 import { COINS, NETWORKS, type CoinEntry } from "../swaps/coins.ts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
+import { loopWatch } from "../loop-watch.ts";
 import type { CoinWithdrawalDoc } from "./docs.ts";
 import {
     MAX_ATTEMPTS,
@@ -66,12 +67,18 @@ export class CoinSender {
         this.#stop = new AbortController();
         const signal = this.#stop.signal;
         this.#loop = (async () => {
+            const watch = loopWatch(this.#deps.logger, "coin send");
+            const usualMs = this.#deps.intervalMs ?? 2_000;
             while (!signal.aborted) {
-                await this.tick().catch((error: unknown) =>
-                    this.#deps.logger.warn({ err: error }, "Coin send pass failed"),
-                );
+                let waitMs = usualMs;
+                try {
+                    await this.tick();
+                    watch.ok();
+                } catch (error) {
+                    waitMs = watch.failed(error, usualMs);
+                }
                 await new Promise<void>((resolve) => {
-                    const timer = setTimeout(done, this.#deps.intervalMs ?? 2_000);
+                    const timer = setTimeout(done, waitMs);
                     function done() {
                         clearTimeout(timer);
                         signal.removeEventListener("abort", done);

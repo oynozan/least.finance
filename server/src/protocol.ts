@@ -119,6 +119,8 @@ export type CoinBalance = {
     spendable: string | null;
     /** Null when the price or the amount is unknown. */
     usd: number | null;
+    /** Why `amount` is null when a read failed, e.g. "Ethereum didn't answer, so this balance isn't shown." */
+    readError?: string;
 };
 
 /** Every coin in every wallet linked to the person, as of `readAt`. */

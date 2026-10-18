@@ -475,7 +475,12 @@ export class PerpService {
         });
         if (!done) throw new Error("The order moved on");
         this.#float.remember(done.float);
-        void this.#float.refresh().catch(() => undefined);
+        this.#float.refresh().catch((error: unknown) => {
+            this.#deps.logger.warn(
+                { err: error, event: "perp.float_read", order: order._id.toHexString() },
+                "Couldn't re-read the Hyperliquid float after funding an order; the float loop retries",
+            );
+        });
     }
 
     /** Sets the leverage, saves the price, and posts the order; an answer that doesn't settle it leaves it posted for the tracker. */

@@ -1,4 +1,6 @@
+import type { Logger } from "pino";
 import { zeroAddress } from "viem";
+import { throttle } from "../log-throttle.ts";
 import type { Coin } from "./catalog.ts";
 
 /** Dollar prices of coins, keyed by `coin.key`. A coin whose price isn't known is left out. */
@@ -11,8 +13,10 @@ const LIFI_SOLANA_CHAIN = "1151111081099710";
 const SOLANA_NATIVE_TOKEN = "11111111111111111111111111111111";
 
 /** LI.FI's token prices, one request per coin, each kept for `ttlMs`. */
-export function lifiPrices(options: { fetch?: typeof fetch; ttlMs?: number } = {}): PriceFeed {
-    const { fetch: fetchPrice = fetch, ttlMs = 60_000 } = options;
+export function lifiPrices(options: { fetch?: typeof fetch; ttlMs?: number; logger?: Logger } = {}): PriceFeed {
+    const { fetch: fetchPrice = fetch, ttlMs = 60_000, logger } = options;
+    // Every coin fails alike while LI.FI is down, so one line a minute per reason
+    const quiet = throttle(60_000);
     const cache = new Map<string, { price: number; expires: number }>();
 
     async function lookup(coin: Coin): Promise<number | null> {
@@ -26,12 +30,26 @@ export function lifiPrices(options: { fetch?: typeof fetch; ttlMs?: number } = {
             const response = await fetchPrice(`https://li.quest/v1/token?${query}`, {
                 signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
             });
-            if (!response.ok) return null;
+            if (!response.ok) {
+                if (quiet(`status:${response.status}`)) {
+                    logger?.warn(
+                        { event: "prices.lifi", status: response.status, coin: coin.key },
+                        `LI.FI answered ${response.status} for a coin price`,
+                    );
+                }
+                return null;
+            }
             const price = Number(((await response.json()) as { priceUSD?: unknown }).priceUSD);
             if (!Number.isFinite(price) || price <= 0) return null;
             cache.set(coin.key, { price, expires: Date.now() + ttlMs });
             return price;
-        } catch {
+        } catch (error) {
+            if (quiet("error")) {
+                logger?.warn(
+                    { err: error, event: "prices.lifi", coin: coin.key },
+                    "Couldn't read a coin price from LI.FI",
+                );
+            }
             return null;
         }
     }

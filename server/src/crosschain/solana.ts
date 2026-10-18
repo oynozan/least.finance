@@ -1,4 +1,6 @@
 import { base58 } from "@scure/base";
+import type { Logger } from "pino";
+import { throttle } from "../log-throttle.ts";
 import type { CoinBalance } from "../protocol.ts";
 import { SOLANA_COINS, formatCoinAmount } from "./catalog.ts";
 import type { PriceFeed } from "./prices.ts";
@@ -106,9 +108,12 @@ export function createSolanaRpc(
     };
 }
 
+/** A dead RPC fails every read; one line a minute per coin says which. */
+const unreadSolana = throttle(60_000);
+
 /** The wallet's SOL and USDC; a failed read gives null amounts, never an error. The owner is kept as given. */
 export async function readSolanaBalances(
-    { solana, prices }: { solana: SolanaRpc; prices: PriceFeed },
+    { solana, prices, logger }: { solana: SolanaRpc; prices: PriceFeed; logger?: Logger },
     owner: string,
 ): Promise<CoinBalance[]> {
     const [held, usd] = await Promise.all([
@@ -116,12 +121,22 @@ export async function readSolanaBalances(
             SOLANA_COINS.map(async (coin) => {
                 try {
                     return coin.mint ? await solana.getTokenBalance(owner, coin.mint) : await solana.getBalance(owner);
-                } catch {
+                } catch (error) {
+                    if (unreadSolana(coin.key)) {
+                        logger?.warn(
+                            { err: error, event: "balances.read", chain: "solana", owner: `${owner.slice(0, 6)}…` },
+                            `Couldn't read a wallet's ${coin.symbol} balance on Solana; it shows as unavailable`,
+                        );
+                    }
                     return null;
                 }
             }),
         ),
-        prices.usd(SOLANA_COINS).catch(() => new Map<string, number>()),
+        prices.usd(SOLANA_COINS).catch((error: unknown) => {
+            if (unreadSolana("prices"))
+                logger?.warn({ err: error, event: "balances.prices" }, "Couldn't read coin prices");
+            return new Map<string, number>();
+        }),
     ]);
 
     return SOLANA_COINS.map((coin, i): CoinBalance => {
@@ -135,7 +150,10 @@ export async function readSolanaBalances(
             wallet: owner,
         };
         const units = held[i]!;
-        if (units === null) return { ...base, amount: null, spendable: null, usd: null };
+        if (units === null) {
+            const readError = `${coin.chainName} didn't answer, so this balance isn't shown.`;
+            return { ...base, amount: null, spendable: null, usd: null, readError };
+        }
         const price = usd.get(coin.key);
         const amount = formatCoinAmount(coin, units);
         return {

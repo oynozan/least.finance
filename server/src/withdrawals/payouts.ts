@@ -9,6 +9,7 @@ import type { Collections, PoolRebalanceDoc, WithdrawalDoc } from "../db/mongo.t
 import { fromDecimal } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
 import type { Bus } from "../events.ts";
+import { loopWatch } from "../loop-watch.ts";
 import {
     ARC_USDC_ERC20,
     TOKEN_MESSENGER_V2,
@@ -110,11 +111,19 @@ export class Payouts {
         this.#stop = new AbortController();
         const signal = this.#stop.signal;
         this.#loop = (async () => {
+            const watch = loopWatch(logger, "payout");
+            const usualMs = this.#deps.pollMs ?? 1_000;
             while (!signal.aborted) {
-                await this.tick().catch((error: unknown) => logger.warn({ err: error }, "Payout pass failed"));
+                let waitMs = usualMs;
+                try {
+                    await this.tick();
+                    watch.ok();
+                } catch (error) {
+                    waitMs = watch.failed(error, usualMs);
+                }
                 if (signal.aborted) return;
                 await new Promise<void>((resolve) => {
-                    const timer = setTimeout(done, this.#deps.pollMs ?? 1_000);
+                    const timer = setTimeout(done, waitMs);
                     function done() {
                         clearTimeout(timer);
                         signal.removeEventListener("abort", done);

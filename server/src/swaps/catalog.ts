@@ -29,6 +29,7 @@ export class SwapCatalog {
     readonly #now: () => number;
     #prices = new Map<string, number | null>();
     #readAt: number | null = null;
+    #failures = 0;
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
@@ -83,8 +84,17 @@ export class SwapCatalog {
 
             this.#prices = prices;
             this.#readAt = this.#now();
+            this.#failures = 0;
         } catch (error) {
-            this.#deps.logger.warn({ err: error }, "Couldn't read LI.FI's token list");
+            const staleForMs = this.#readAt === null ? null : this.#now() - this.#readAt;
+            this.#failures += 1;
+            const tooOld = staleForMs !== null && staleForMs > this.#deps.syncMs * 3;
+            this.#deps.logger[tooOld ? "error" : "warn"](
+                { err: error, event: "swaps.catalog", staleForMs, consecutive: this.#failures },
+                tooOld
+                    ? "Swap prices are too old to use, so buying and selling coins is off until LI.FI's token list is read again"
+                    : "Couldn't read LI.FI's token list; the last prices stay in use",
+            );
         }
     }
 

@@ -170,7 +170,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             }),
             createAcross({ apiKey: config.ACROSS_API_KEY, integratorId: config.ACROSS_INTEGRATOR_ID }),
         ];
-        const prices = overrides.prices ?? lifiPrices();
+        const prices = overrides.prices ?? lifiPrices({ logger: logger.child({ component: "prices" }) });
         const orders = new DepositOrders({
             collections,
             bus,
@@ -245,12 +245,13 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             pollMs: config.ORDER_POLL_MS,
             announced: (orderId) => orders.announced(orderId),
         });
+        const balancesLogger = logger.child({ component: "balances" });
         const balances = new WalletBalances({
             identity,
             bus,
-            logger: logger.child({ component: "balances" }),
-            readEvm: (owner) => readBalances({ sources, arc: client, prices }, owner),
-            readSolana: (owner) => readSolanaBalances({ solana, prices }, owner),
+            logger: balancesLogger,
+            readEvm: (owner) => readBalances({ sources, arc: client, prices, logger: balancesLogger }, owner),
+            readSolana: (owner) => readSolanaBalances({ solana, prices, logger: balancesLogger }, owner),
             now: overrides.now,
         });
         const marketLogger = logger.child({ component: "markets" });

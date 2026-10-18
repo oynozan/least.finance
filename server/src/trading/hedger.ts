@@ -7,6 +7,7 @@ import type { EvmNetworkId } from "../swaps/clients.ts";
 import { COINS, NETWORKS, type CoinEntry } from "../swaps/coins.ts";
 import { checkQuote } from "../swaps/check.ts";
 import { LifiError, tooFarUnder, type Lifi, type LifiQuote } from "../swaps/lifi.ts";
+import { loopWatch } from "../loop-watch.ts";
 import type { HedgeDoc, SendAttempt, TradeDoc } from "./docs.ts";
 import {
     MAX_ATTEMPTS,
@@ -103,12 +104,18 @@ export class TradeHedger {
         this.#stop = new AbortController();
         const signal = this.#stop.signal;
         this.#loop = (async () => {
+            const watch = loopWatch(this.#deps.logger, "hedge");
+            const usualMs = this.#deps.intervalMs ?? 30_000;
             while (!signal.aborted) {
-                await this.tick().catch((error: unknown) =>
-                    this.#deps.logger.warn({ err: error }, "Hedge pass failed"),
-                );
+                let waitMs = usualMs;
+                try {
+                    await this.tick();
+                    watch.ok();
+                } catch (error) {
+                    waitMs = watch.failed(error, usualMs);
+                }
                 await new Promise<void>((resolve) => {
-                    const timer = setTimeout(done, this.#deps.intervalMs ?? 30_000);
+                    const timer = setTimeout(done, waitMs);
                     function done() {
                         clearTimeout(timer);
                         signal.removeEventListener("abort", done);

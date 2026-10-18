@@ -1,17 +1,22 @@
 import { erc20Abi, getAddress, type Address, type PublicClient } from "viem";
+import type { Logger } from "pino";
+import { throttle } from "../log-throttle.ts";
 import type { CoinBalance } from "../protocol.ts";
 import { EVM_COINS, formatCoinAmount, type Coin } from "./catalog.ts";
 import type { SourceClients } from "./chains.ts";
 import type { PriceFeed } from "./prices.ts";
 
-type Deps = { sources: SourceClients; arc: PublicClient; prices: PriceFeed };
+type Deps = { sources: SourceClients; arc: PublicClient; prices: PriceFeed; logger?: Logger };
+
+/** A dead RPC fails every read; one line a minute per chain says which. */
+const unreadChain = throttle(60_000);
 
 /**
  * Every EVM catalog coin the wallet holds or could hold, richest first; coins with no known price go last in
  * catalog order. Each balance is its own plain call, in parallel, since a fresh chain has no Multicall3.
  * A chain whose read fails keeps its rows with null amounts; the other chains still read.
  */
-export async function readBalances({ sources, arc, prices }: Deps, owner: Address): Promise<CoinBalance[]> {
+export async function readBalances({ sources, arc, prices, logger }: Deps, owner: Address): Promise<CoinBalance[]> {
     const read = (coin: Coin): Promise<bigint> => {
         const client = coin.chain === "arc" ? arc : sources[coin.chain as "ethereum" | "bnb"];
         return coin.token
@@ -25,12 +30,22 @@ export async function readBalances({ sources, arc, prices }: Deps, owner: Addres
                 const coins = EVM_COINS.filter((coin) => coin.chain === chain);
                 try {
                     return await Promise.all(coins.map(async (coin) => ({ coin, held: await read(coin) })));
-                } catch {
+                } catch (error) {
+                    if (unreadChain(chain)) {
+                        logger?.warn(
+                            { err: error, event: "balances.read", chain, owner: `${owner.slice(0, 8)}…` },
+                            `Couldn't read a wallet's balances on ${chain}; they show as unavailable`,
+                        );
+                    }
                     return coins.map((coin) => ({ coin, held: null }));
                 }
             }),
         ),
-        prices.usd(EVM_COINS).catch(() => new Map<string, number>()),
+        prices.usd(EVM_COINS).catch((error: unknown) => {
+            if (unreadChain("prices"))
+                logger?.warn({ err: error, event: "balances.prices" }, "Couldn't read coin prices");
+            return new Map<string, number>();
+        }),
     ]);
 
     const wallet = getAddress(owner);
@@ -44,7 +59,10 @@ export async function readBalances({ sources, arc, prices }: Deps, owner: Addres
             decimals: coin.decimals,
             wallet,
         };
-        if (held === null) return { ...base, amount: null, spendable: null, usd: null };
+        if (held === null) {
+            const readError = `${coin.chainName} didn't answer, so this balance isn't shown.`;
+            return { ...base, amount: null, spendable: null, usd: null, readError };
+        }
         const price = usd.get(coin.key);
         const amount = formatCoinAmount(coin, held);
         return {
