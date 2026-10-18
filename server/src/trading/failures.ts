@@ -1,3 +1,4 @@
+import { hideUrls } from "../logger.ts";
 import { formatUnits18 } from "./units.ts";
 
 /** A scaled dollar amount as a person reads it: cents above a dollar, more places below. */
@@ -47,17 +48,6 @@ export function upstreamSaid(error: unknown): string {
         .map((part) => first(part))
         .filter((part, index, all) => part !== "" && all.indexOf(part) === index);
     return hideUrls(parts.join(": ")).slice(0, UPSTREAM_LIMIT);
-}
-
-/** Replaces every URL in a text by its origin, since the path and query are where providers put API keys. */
-export function hideUrls(text: string): string {
-    return text.replace(/https?:\/\/[^\s"'<>)]+/gi, (url) => {
-        try {
-            return new URL(url).origin;
-        } catch {
-            return "[url]";
-        }
-    });
 }
 
 /** Why a coin send failed: what is stored on the withdrawal, and what the person is told. */
