@@ -13,7 +13,7 @@ import { withdrawalView } from "../withdrawals/views.ts";
 import { AppError, isAppError, newRef, toApiError, wentWrong } from "../errors.ts";
 import type { Ack, ApiError, ClientToServerEvents, HandshakeAuth, ServerToClientEvents } from "../protocol.ts";
 import { listHoldings } from "../trading/holdings.ts";
-import { isTradeError } from "../trading/trades.ts";
+import { isTradeError, type TradeError } from "../trading/trades.ts";
 import { coinWithdrawalView } from "../trading/views.ts";
 import type { HoldingView, TradeView, TradingAck, TradingErrorCode } from "../trading/types.ts";
 import type { Services } from "../services.ts";
@@ -620,6 +620,13 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         return account;
     }
 
+    /** An expected refusal, logged once as a warning with the event and account, unless the thrower already logged it with its numbers. */
+    function refused(ack: object, error: AppError | TradeError) {
+        if (error instanceof AppError && error.logged) return;
+        const { event, account } = describe(ack);
+        logger.warn({ event, account, code: error.code }, `${error.message} (${event})`);
+    }
+
     async function reply<T>(ack: unknown, work: () => Promise<T>) {
         // Every event is a request; one sent without an acknowledgement has nowhere to answer.
         if (typeof ack !== "function") return;
@@ -636,6 +643,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     { err: error.cause ?? error, event, account, code: error.code },
                     `${error.message} (${event})`,
                 );
+            else refused(ack, error);
             ack(failure(toApiError(error, ref)));
         }
     }
@@ -648,10 +656,19 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         } catch (error) {
             let code: TradingErrorCode = "unavailable";
             let message = "Something went wrong on our side. Try again shortly.";
-            if (isTradeError(error)) ({ code, message } = error);
-            else if (isAppError(error)) {
+            if (isTradeError(error)) {
+                ({ code, message } = error);
+                refused(ack, error);
+            } else if (isAppError(error)) {
                 code = TRADING_CODES[error.code] ?? "unavailable";
                 message = error.message;
+                if (error.status >= 500) {
+                    const { event, account } = describe(ack);
+                    logger.error(
+                        { err: error.cause ?? error, event, account, code: error.code },
+                        `${error.message} (${event})`,
+                    );
+                } else refused(ack, error);
             } else {
                 const ref = newRef();
                 const { event, account } = describe(ack);

@@ -28,9 +28,12 @@ const STATUS: Record<ErrorCode, number> = {
 export class AppError extends Error {
     readonly code: ErrorCode;
     readonly status: number;
+    /** The thrower already logged this refusal with its own numbers, so the socket layer doesn't log it again. */
+    readonly logged: boolean;
 
-    constructor(code: ErrorCode, message: string, options?: { cause?: unknown }) {
+    constructor(code: ErrorCode, message: string, options?: { cause?: unknown; logged?: boolean }) {
         super(message, options);
+        this.logged = options?.logged ?? false;
         this.name = "AppError";
         this.code = code;
         this.status = STATUS[code];

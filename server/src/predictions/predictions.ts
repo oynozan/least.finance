@@ -284,7 +284,7 @@ export class PredictionService {
                 },
                 "Turned down a sale because the price moved from the client's quote",
             );
-            throw new AppError("price_moved", PRICE_MOVED);
+            throw new AppError("price_moved", PRICE_MOVED, { logged: true });
         }
 
         const now = new Date(this.#now());
@@ -380,7 +380,7 @@ export class PredictionService {
                 },
                 "Turned down a prediction because the price moved from the client's quote",
             );
-            throw new AppError("price_moved", PRICE_MOVED);
+            throw new AppError("price_moved", PRICE_MOVED, { logged: true });
         }
         const amount = this.#amount(input.amountUSD, offered.outcome.minUSD);
         const ask = { label: offered.outcome.label, minUSD: offered.outcome.minUSD };
