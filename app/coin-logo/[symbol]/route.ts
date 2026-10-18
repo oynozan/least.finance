@@ -19,12 +19,18 @@ export async function GET(_request: Request, ctx: { params: Promise<{ symbol: st
     if (!remoteLogosOn()) return notFound("no-store");
     // Only a coin Hyperliquid lists is asked for, so a made-up ticker costs nothing upstream.
     const listing = await coinListing(symbol);
-    if (listing !== "listed") return notFound(listing === "unlisted" ? MISSING : FAILED);
+    if (listing !== "listed") {
+        if (listing === "unknown") console.warn(`coin-logo ${symbol}: Hyperliquid's coin list has not been read yet`);
+        return notFound(listing === "unlisted" ? MISSING : FAILED);
+    }
     const logo = await coinLogo(base);
     if (logo.status === "found") {
         return new Response(new Uint8Array(logo.webp), {
             headers: { "Content-Type": "image/webp", "Cache-Control": FOUND, "X-Content-Type-Options": "nosniff" },
         });
+    }
+    if (logo.status !== "missing") {
+        console.warn(`coin-logo ${symbol}: the logo could not be drawn (${logo.status}); the cause is in the line above`);
     }
     return notFound(logo.status === "missing" ? MISSING : FAILED);
 }

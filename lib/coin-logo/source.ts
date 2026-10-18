@@ -78,7 +78,7 @@ async function download(base: string): Promise<{ bytes: Buffer; vector: boolean 
         await res.body?.cancel();
         // A redirect is never followed, and neither it nor an overloaded source says the coin has no logo.
         if (res.status >= 500 || res.status === 429 || (res.status >= 300 && res.status < 400)) {
-            throw new Error(`source answered ${res.status}`);
+            throw new Error(`${ICON_URL}${base}.svg answered ${res.status}`);
         }
         return null;
     }

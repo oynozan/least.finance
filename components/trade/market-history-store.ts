@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { ChancePoints } from "@/lib/trade/chance-chart";
 import { API_URL } from "@/lib/api";
+import { reportRefusal, reportUnreachable } from "@/lib/net/report";
 
 export type MarketHistorySnapshot = {
     /** Each outcome token's chance line by token id; empty until the server has answered. */
@@ -68,6 +69,7 @@ export function createMarketHistoryStore(options: { apiUrl: string; fetch?: type
                 const response = await request(
                     `${options.apiUrl}/markets/${eventId}/history?outcomes=${tokens.join(",")}`,
                 );
+                if (!response.ok) await reportRefusal("Market history", response);
                 const read = response.ok ? toLines(await response.json()) : null;
                 if (!read || read.size === 0) {
                     tokens.forEach((token) => failedAt.set(token, time));
@@ -80,8 +82,9 @@ export function createMarketHistoryStore(options: { apiUrl: string; fetch?: type
                 }
                 snapshot = { lines };
                 listeners.forEach((listener) => listener());
-            } catch {
+            } catch (error) {
                 // Offline or the server is down; a want after the pause tries again.
+                reportUnreachable("Market history", error);
                 tokens.forEach((token) => failedAt.set(token, time));
             } finally {
                 tokens.forEach((token) => reading.delete(token));

@@ -14,6 +14,8 @@ export type MarketsSnapshot = {
     answered: string | null;
     /** The search for `answered` got no answer, so `results` stays null. */
     searchFailed: boolean;
+    /** Why it got none, in the server's words or ours; null when the search didn't fail or nothing said. */
+    searchError: string | null;
     /** Until the first answer for the trending list, or a cached one, there is nothing to show. */
     loading: boolean;
     /** Every question seen, so one picked earlier still resolves after it leaves the list. */
@@ -36,6 +38,7 @@ const EMPTY: MarketsSnapshot = {
     results: null,
     answered: null,
     searchFailed: false,
+    searchError: null,
     loading: true,
     known: new Map(),
 };
@@ -76,21 +79,27 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         if (stopped || query !== snapshot.query) return;
         const body = result?.body as { markets?: unknown } | null | undefined;
         if (!body || !Array.isArray(body.markets)) {
-            set({ results: null, answered: query, searchFailed: true });
+            set({ results: null, answered: query, searchFailed: true, searchError: result?.error ?? null });
             return;
         }
         const markets = validMarkets(body.markets);
-        set({ results: markets, answered: query, searchFailed: false, known: remember(markets) });
+        set({ results: markets, answered: query, searchFailed: false, searchError: null, known: remember(markets) });
     }
 
     const visible = () => typeof document === "undefined" || document.visibilityState !== "hidden";
 
-    async function getJson(path: string): Promise<{ status: number; body: unknown } | null> {
+    /** `error` is why there is no body: the server's own message from a refusal, or that the browser is offline. */
+    async function getJson(path: string): Promise<{ status: number; body: unknown; error?: string } | null> {
         try {
             const response = await request(`${options.apiUrl}${path}`);
-            return { status: response.status, body: response.ok ? await response.json() : null };
+            if (response.ok) return { status: response.status, body: await response.json() };
+            const refusal = (await response.json().catch(() => null)) as { error?: { message?: unknown } } | null;
+            const said = refusal?.error?.message;
+            return { status: response.status, body: null, ...(typeof said === "string" ? { error: said } : {}) };
         } catch {
-            return null;
+            return typeof navigator !== "undefined" && navigator.onLine === false
+                ? { status: 0, body: null, error: "You're offline." }
+                : null;
         }
     }
 
@@ -229,7 +238,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
             if (trimmed === snapshot.query) return;
             clearTimeout(searchTimer);
             if (trimmed.length < SEARCH_MIN) {
-                set({ query: "", results: null, answered: null, searchFailed: false });
+                set({ query: "", results: null, answered: null, searchFailed: false, searchError: null });
                 return;
             }
             // The earlier results stay on screen until this query's answer replaces them.

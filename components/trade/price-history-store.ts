@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { PriceHistoryView, PriceRange } from "@/server/src/protocol";
 import { API_URL } from "@/lib/api";
+import { reportRefusal, reportUnreachable } from "@/lib/net/report";
 
 /** One coin's dollar prices, oldest first: [unix ms, USD]. */
 export type PricePoints = readonly (readonly [number, number])[];
@@ -93,9 +94,11 @@ export function createPriceHistoryStore(options: {
         let coins: Map<string, PricePoints> | null = null;
         try {
             const response = await request(`${options.apiUrl}/prices/history?range=${range}`);
-            coins = response.ok ? toCoins(await response.json()) : null;
-        } catch {
+            if (response.ok) coins = toCoins(await response.json());
+            else await reportRefusal("Price history", response);
+        } catch (error) {
             // Offline or the server is down; the next refresh tries again.
+            reportUnreachable("Price history", error);
         }
         if (users === 0 || !coins || coins.size === 0) return;
         swapCoins = coins;
@@ -111,6 +114,7 @@ export function createPriceHistoryStore(options: {
             const response = await request(
                 `${options.apiUrl}/prices/history?range=${range}&coins=${encodeURIComponent(symbol)}`,
             );
+            if (!response.ok) await reportRefusal("Price history", response);
             const points = response.ok ? toCoins(await response.json())?.get(symbol) : undefined;
             if (!points) {
                 failed(symbol, time);
@@ -120,8 +124,9 @@ export function createPriceHistoryStore(options: {
             readAt.set(symbol, time);
             retries.delete(symbol);
             publish();
-        } catch {
+        } catch (error) {
             // Offline or the server is down; the pause below tries again.
+            reportUnreachable("Price history", error);
             failed(symbol, time);
         } finally {
             reading.delete(symbol);

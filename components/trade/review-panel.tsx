@@ -197,6 +197,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const account = useAccount();
     const [sent, setSent] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
+    const [notExecuted, setNotExecuted] = useState<string | null>(null);
     // What the trade just confirmed came to, in the words the done line uses.
     const [summary, setSummary] = useState<string | null>(null);
     const [accepted, setAccepted] = useState(false);
@@ -416,8 +417,10 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             return;
         }
         setSending(true);
-        await submitIntent(view.intent);
+        setNotExecuted(null);
+        const submission = await submitIntent(view.intent);
         setSending(false);
+        if (submission.status === "unsupported") return setNotExecuted(submission.message);
         setSent(intentKey);
     };
 
@@ -431,7 +434,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             : view.blocking
               ? (view.blocking.cta ?? view.cta)
               : confirmLabel;
-    const swapNotice = perpError ?? quoteRefused;
+    const swapNotice = perpError ?? quoteRefused ?? notExecuted;
 
     return (
         <motion.div

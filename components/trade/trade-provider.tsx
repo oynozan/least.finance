@@ -185,11 +185,8 @@ function useLiveCatalog(): {
         () => ({ maxOrderUSD: perpMaxOrderUSD(perpView), loaded: perpView !== null }),
         [perpView],
     );
-    const { trending, query, results, answered, searchFailed, loading, known, maxOrderUSD } = useSyncExternalStore(
-        store.subscribe,
-        store.getSnapshot,
-        store.getSnapshot,
-    );
+    const { trending, query, results, answered, searchFailed, searchError, loading, known, maxOrderUSD } =
+        useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
     const catalog = useMemo<Catalog>(() => {
         const view = (id: string) => {
             const found = known.get(id);
@@ -208,7 +205,7 @@ function useLiveCatalog(): {
     const empty = !answeredNow
         ? undefined
         : searchFailed
-          ? "Search isn't available right now."
+          ? (searchError ?? "Search isn't available right now.")
           : results?.length === 0
             ? `No markets match \u201c${query}\u201d.`
             : undefined;

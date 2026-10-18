@@ -128,10 +128,13 @@ export class WithdrawQuoter {
 
     async #fetch(target: { amount: string; to: string }) {
         const run = this.#run;
-        const result = await this.#ask(target.amount, target.to).catch((): ApiError => ({
-            code: "unavailable",
-            message: "Couldn't price this right now. Nothing was taken.",
-        }));
+        const result = await this.#ask(target.amount, target.to).catch((error: unknown): ApiError => {
+            console.warn("A withdrawal quote threw:", error);
+            return {
+                code: "unavailable",
+                message: `Couldn't price this: ${error instanceof Error && error.message ? error.message : "the request failed"}. Nothing was taken.`,
+            };
+        });
         if (run !== this.#run) return;
         this.#set("code" in result ? { status: "error", message: result.message } : { status: "ready", quote: result });
     }

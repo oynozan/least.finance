@@ -1,6 +1,7 @@
 import { API_URL } from "@/lib/api";
 import type { PerpMarketsView } from "@/server/src/protocol";
 import { PERP_MARKETS, type PerpMarket } from "./catalog";
+import { reportRefusal, reportUnreachable } from "@/lib/net/report";
 
 const REFRESH_MS = 10_000;
 
@@ -45,12 +46,14 @@ export function createPerpMarketsStore(options: { apiUrl: string; fetch?: typeof
         async load(): Promise<void> {
             try {
                 const response = await request(`${options.apiUrl}/perps/markets`);
-                const body: unknown = response.ok ? await response.json() : null;
+                if (!response.ok) return await reportRefusal("Perp markets", response);
+                const body: unknown = await response.json();
                 if (!isMarketsView(body)) return;
                 view = body;
                 listeners.forEach((listener) => listener());
-            } catch {
+            } catch (error) {
                 // Offline or the server is down; the next refresh tries again.
+                reportUnreachable("Perp markets", error);
             }
         },
         get: () => view,

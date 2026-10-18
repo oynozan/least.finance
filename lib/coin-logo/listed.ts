@@ -30,7 +30,7 @@ async function readNames(): Promise<Set<string>> {
     });
     if (res.status !== 200) {
         await res.body?.cancel();
-        throw new Error(`list answered ${res.status}`);
+        throw new Error(`${META_URL} answered ${res.status}`);
     }
     const bytes = await readCapped(res, MAX_BYTES);
     if (!bytes) throw new Error("list is over the size limit");
