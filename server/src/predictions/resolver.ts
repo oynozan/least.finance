@@ -2,13 +2,16 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ObjectId } from "mongodb";
 import type { Logger } from "pino";
 import type { Collections, PositionDoc } from "../db/mongo.ts";
-import { e6ToWei, fromDecimal, toDecimal } from "../db/money.ts";
+import { e6ToWei, formatE6, formatUsdc, fromDecimal, toDecimal } from "../db/money.ts";
 import type { Ledger } from "../deposits/ledger.ts";
 import type { Bus } from "../events.ts";
 import type { GammaMarket } from "../markets/gamma.ts";
 import type { PolymarketData } from "../markets/polymarket-data.ts";
+import { HourlyLog } from "./rebalance-log.ts";
 
 const MARKETS_PER_PASS = 100;
+/** A market that has stayed unsettled this long with open positions is escalated from a warning to an error. */
+const WAITING_ERROR_MS = 86_400_000;
 
 type Deps = {
     collections: Collections;
@@ -48,10 +51,15 @@ export class PredictionResolver {
     #loop: Promise<void> | null = null;
     /** The last market of the previous pass, so passes walk every market in turn */
     #cursor: string | null = null;
+    /** A market that can't settle yet stays that way for passes, so each is logged once an hour. */
+    readonly #hourly: HourlyLog;
+    /** When each market with open positions was first seen unable to settle. */
+    readonly #waitingSince = new Map<string, number>();
 
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#hourly = new HourlyLog(deps.logger, this.#now);
     }
 
     start() {
@@ -92,16 +100,22 @@ export class PredictionResolver {
         this.#cursor = found.length < MARKETS_PER_PASS ? null : found[found.length - 1]!._id;
         for (const { _id: marketId } of found) {
             await this.#resolve(marketId).catch((error: unknown) =>
-                this.#deps.logger.warn({ err: error, market: marketId }, "Couldn't settle a market's positions"),
+                this.#hourly.once(
+                    `market:${marketId}`,
+                    "warn",
+                    { err: error, market: marketId },
+                    "Couldn't settle a market's positions",
+                ),
             );
         }
     }
 
     async #resolve(marketId: string): Promise<void> {
         const market = await this.#deps.data.market(marketId);
-        if (!market) return;
+        if (!market) return this.#waiting(marketId, null);
         const payouts = resolution(market);
-        if (!payouts) return;
+        if (!payouts) return this.#waiting(marketId, market);
+        this.#waitingSince.delete(marketId);
         const open = await this.#deps.collections.positions.find({ marketId, state: "open" }).toArray();
         if (open.length === 0) return;
 
@@ -127,12 +141,60 @@ export class PredictionResolver {
                 continue;
             }
             await this.#settle(position, payouts[index]!).catch((error: unknown) =>
-                this.#deps.logger.warn(
-                    { err: error, position: position._id.toHexString() },
-                    "Couldn't settle a position",
+                // A ledger or database failure leaves someone's winnings unpaid, so it is an error, said once an hour
+                this.#hourly.once(
+                    `settle:${position._id.toHexString()}`,
+                    "error",
+                    {
+                        err: error,
+                        position: position._id.toHexString(),
+                        accountId: position.accountId.toHexString(),
+                        marketId,
+                        tokenId: position.tokenId,
+                        shares: formatE6(fromDecimal(position.shares)),
+                        payoutUSD: formatUsdc(e6ToWei((fromDecimal(position.shares) * payouts[index]!) / 1_000_000n)),
+                    },
+                    "Couldn't pay a settled position",
                 ),
             );
         }
+    }
+
+    /** A market with open positions that can't settle: gone from Polymarket, or closed without a clean result. Open markets are normal and say nothing. */
+    async #waiting(marketId: string, market: GammaMarket | null) {
+        if (market && !market.closed) {
+            this.#waitingSince.delete(marketId);
+            return;
+        }
+        const now = this.#now();
+        const since = this.#waitingSince.get(marketId) ?? now;
+        this.#waitingSince.set(marketId, since);
+        const level = now - since >= WAITING_ERROR_MS ? "error" : "warn";
+        const { positions } = this.#deps.collections;
+        const open = { marketId, state: "open" as const };
+        const [count, first] = await Promise.all([positions.countDocuments(open), positions.findOne(open)]);
+        const base = { market: marketId, question: first?.question ?? null, positions: count };
+        const waitingSec = Math.round((now - since) / 1000);
+        if (!market)
+            this.#hourly.once(
+                `waiting:${marketId}:${level}`,
+                level,
+                { ...base, waitingSec },
+                "Polymarket no longer returns a market that has open positions, so they can't be paid",
+            );
+        else
+            this.#hourly.once(
+                `waiting:${marketId}:${level}`,
+                level,
+                {
+                    ...base,
+                    waitingSec,
+                    closed: market.closed,
+                    umaResolutionStatus: market.umaResolutionStatus ?? null,
+                    outcomePrices: market.outcomePrices,
+                },
+                "A market with open positions is closed but its result isn't clean yet, so they can't be paid",
+            );
     }
 
     /** Queues the condition's redemption, and queues a confirmed one again when winning shares were bought after it confirmed. */
@@ -217,7 +279,15 @@ export class PredictionResolver {
         });
         if (!done) return;
         this.#deps.logger.info(
-            { position: position._id.toHexString(), state: done.position.state },
+            {
+                position: position._id.toHexString(),
+                accountId: position.accountId.toHexString(),
+                marketId: position.marketId,
+                tokenId: position.tokenId,
+                shares: formatE6(fromDecimal(position.shares)),
+                state: done.position.state,
+                payoutUSD: formatUsdc(payout),
+            },
             "Position settled",
         );
         this.#deps.bus.emit("position:settled", done);

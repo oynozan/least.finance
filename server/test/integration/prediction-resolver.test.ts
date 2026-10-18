@@ -1,5 +1,5 @@
 import { ObjectId } from "mongodb";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import type { AccountDoc, PositionDoc } from "../../src/db/mongo.ts";
 import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { createPolymarketData } from "../../src/markets/polymarket-data.ts";
@@ -347,4 +347,55 @@ test("queueing or re-queueing a redemption asks for the trader", async () => {
     await holder(n);
     await resolver.tick();
     expect(traderAsked).toBe(mid + 1);
+});
+
+test("a closed market that won't settle, and a market Polymarket no longer returns, are said once an hour and escalate after a day", async () => {
+    let clock = 5_000_000;
+    const watching = new PredictionResolver({
+        collections: h.database.collections,
+        ledger: h.ledger,
+        data: createPolymarketData({ gammaUrl: fake.url, clobUrl: fake.url }),
+        bus: h.bus,
+        logger: h.logger,
+        resolveMs: 0,
+        now: () => clock,
+    });
+    const odd = market();
+    const gone = { id: `gone-${next++}`, yes: "t-yes", no: "t-no" };
+    const { position } = await holder(odd);
+    await holder(gone);
+    fake.resolve(odd.id, ["0.9", "0.1"]);
+    const warn = vi.spyOn(h.logger, "warn");
+    const error = vi.spyOn(h.logger, "error");
+    const said = (spy: typeof warn, market: string) =>
+        spy.mock.calls.filter(([fields]) => (fields as { market?: string }).market === market);
+
+    await watching.tick();
+    await watching.tick();
+    expect(said(warn, odd.id)).toHaveLength(1);
+    expect(said(warn, odd.id)[0]).toEqual([
+        expect.objectContaining({
+            question: "Will it rain?",
+            positions: 1,
+            closed: true,
+            umaResolutionStatus: "resolved",
+            outcomePrices: [0.9, 0.1],
+        }),
+        "A market with open positions is closed but its result isn't clean yet, so they can't be paid",
+    ]);
+    expect(said(warn, gone.id)[0]![1]).toBe(
+        "Polymarket no longer returns a market that has open positions, so they can't be paid",
+    );
+
+    clock += 3_600_001;
+    await watching.tick();
+    expect(said(warn, odd.id)).toHaveLength(2);
+
+    clock += 86_400_000;
+    await watching.tick();
+    expect(said(error, odd.id)).toHaveLength(1);
+    expect(said(error, odd.id)[0]![0]).toMatchObject({ waitingSec: 90_000 });
+    expect((await positionOf(position._id))!.state).toBe("open");
+    warn.mockRestore();
+    error.mockRestore();
 });
