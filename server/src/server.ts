@@ -442,9 +442,8 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                     `Connected to Polymarket after ${connectAttempts} attempts`,
                 );
             }
-            void service.refreshFloat().catch((error: unknown) => {
-                predictionLogger.warn({ err: error }, "Couldn't read the pool's float");
-            });
+            // refreshFloat logs its own failure
+            void service.refreshFloat().catch(() => undefined);
         });
         const trades = new TradeService({
             collections,

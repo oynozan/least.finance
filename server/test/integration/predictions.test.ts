@@ -476,7 +476,7 @@ test("a buy the market moved more than 2 cents past is price_moved before any ho
         const error = await own.service.place(account, { ...input("10", requestId), quotedPrice: 0.5 }).catch((e) => e);
         expect(isAppError(error) && error.code).toBe("price_moved");
         expect(isAppError(error) && error.message).toBe(
-            "The price moved, so your prediction didn't go through. Nothing was spent.",
+            "The price moved from 50c to 53c, so your prediction didn't go through. Nothing was spent.",
         );
         expect(await own.database.collections.predictionOrders.countDocuments({ requestId })).toBe(0);
         const s = await own.state(account._id);

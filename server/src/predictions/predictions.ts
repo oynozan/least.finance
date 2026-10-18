@@ -40,6 +40,7 @@ import {
     type Why,
 } from "./failures.ts";
 import type { MarketMeta, PoolTrader, SignedRecord } from "./trader.ts";
+import { HourlyLog } from "./rebalance-log.ts";
 import { formatUsdShort, orderView, positionView } from "./views.ts";
 
 /** Covers the PnL page's 30-day chart; the sidebar trims its Won and Lost rows to a week itself */
@@ -58,11 +59,29 @@ const FLOAT_ID = "polygon";
 const AMOUNT = /^\d+(\.\d{1,6})?$/;
 
 export { NOTHING_SPENT };
-const PRICE_MOVED = `The price moved, so your prediction didn't go through. ${NOTHING_SPENT}`;
-const TOO_SMALL = "Too small to sell. It pays out when the market resolves.";
+const cents = (price: number) => `${Math.round(price * 1000) / 10}c`;
 
-/** The outcome a buy is for, so a refusal can name it */
-type Ask = { label: string; minUSD: number };
+/** The price moved past what was quoted; says from what to what when both are known. */
+const movedText = (side: "buy" | "sell", from?: number | null, to?: number | null) => {
+    const moved =
+        from != null && to != null ? `The price moved from ${cents(from)} to ${cents(to)}` : "The price moved";
+    return side === "sell"
+        ? `${moved}, so the sale didn't go through. Nothing was sold.`
+        : `${moved}, so your prediction didn't go through. ${NOTHING_SPENT}`;
+};
+
+/** Nobody is bidding or offering enough shares at a price we would accept. */
+const noDepth = (side: "buy" | "sell") =>
+    side === "sell"
+        ? "Nobody is buying these shares at a fair price right now, so the sale didn't go through. Nothing was sold."
+        : `Polymarket doesn't have enough shares on offer at this price right now, so your prediction didn't go through. ${NOTHING_SPENT}`;
+
+/** Too few shares to sell; says what is held and, when known, Polymarket's minimum. */
+const tooSmall = (sharesE6: bigint, minShares?: number) =>
+    `You hold ${formatE6(sharesE6)} shares${minShares ? `, and Polymarket sells a minimum of ${minShares}` : ", too few to sell"}. They pay out when the market resolves.`;
+
+/** The outcome a buy is for, so a refusal can name it; `log` is what the refusal's log line carries about who asked. */
+type Ask = { label: string; minUSD: number; log?: Record<string, unknown> };
 
 export type CloseInput = { requestId: string; positionId: string; quotedPrice: number };
 
@@ -99,6 +118,10 @@ export class PredictionService {
     /** The float document as this process last saw it, for the figure shown to clients. */
     #mirror: { balanceE6: bigint; heldE6: bigint; unreadE6: bigint; at: number } | null = null;
     #floatState: "low" | "high" | "ok" = "ok";
+    /** Why the last balance read failed, for the line that says an order was refused for it. */
+    #floatError: { message: string; at: number } | null = null;
+    /** A balance outage repeats on every order and settle, so its line is logged once an hour. */
+    readonly #hourly: HourlyLog;
     /** Orders this process is still sending, so the tracker doesn't judge a post that hasn't answered yet. */
     readonly #submitting = new Set<string>();
 
@@ -108,6 +131,7 @@ export class PredictionService {
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#hourly = new HourlyLog(deps.logger, this.#now);
     }
 
     /** Stops taking new orders, so a shutdown doesn't post one it can't follow. */
@@ -127,8 +151,32 @@ export class PredictionService {
         return free <= 0n ? 0 : Number(free / 1_000_000n);
     }
 
-    /** Reads the pool's pUSD into the float document, keeping fills that landed during the read. */
+    /** Reads the pool's pUSD into the float document, keeping fills that landed during the read; a failed read is logged here, once an hour, and thrown. */
     async refreshFloat(): Promise<void> {
+        try {
+            await this.#readFloat();
+            this.#floatError = null;
+        } catch (error) {
+            this.#floatFailed(error);
+            throw error;
+        }
+    }
+
+    #floatFailed(error: unknown) {
+        const now = this.#now();
+        this.#floatError = { message: error instanceof Error ? error.message : String(error), at: now };
+        this.#hourly.once(
+            "float-read",
+            "warn",
+            {
+                err: error,
+                floatAgeSec: this.#mirror ? Math.round((now - this.#mirror.at) / 1000) : null,
+            },
+            "Couldn't read the pool's Polymarket balance",
+        );
+    }
+
+    async #readFloat(): Promise<void> {
         const trader = this.#deps.trader();
         if (!trader) return;
         const { poolFloat } = this.#deps.collections;
@@ -224,7 +272,10 @@ export class PredictionService {
         const [book, meta] = await Promise.all([trader.book(input.tokenId), trader.meta(input.tokenId)]);
         const q = quoteBuy(book, meta, weiToE6(amountWei));
         if (!q || q.worstPrice > limitBuyPrice(offered.outcome.buyPrice, meta.tickSize))
-            throw new AppError("price_moved", PRICE_MOVED);
+            throw new AppError(
+                "price_moved",
+                q ? movedText("buy", offered.outcome.buyPrice, q.worstPrice) : noDepth("buy"),
+            );
         const shares = formatE6(q.sharesE6);
         return {
             eventId: input.eventId,
@@ -244,10 +295,10 @@ export class PredictionService {
         const trader = this.#trader();
         const position = await this.#openPosition(account, positionId);
         const sharesE6 = sellable(position);
-        if (sharesE6 <= 0n) throw new AppError("below_minimum", TOO_SMALL);
+        if (sharesE6 <= 0n) throw new AppError("below_minimum", tooSmall(sharesE6));
         const [book, meta] = await Promise.all([trader.book(position.tokenId), trader.meta(position.tokenId)]);
         const q = quoteSell(book, meta, sharesE6);
-        if (!q) throw new AppError("price_moved", PRICE_MOVED);
+        if (!q) throw new AppError("price_moved", noDepth("sell"));
         return {
             positionId,
             side: "sell",
@@ -269,7 +320,8 @@ export class PredictionService {
         const position = await this.#openPosition(account, input.positionId);
         const sharesE6 = sellable(position);
         const book = await trader.book(position.tokenId);
-        if (sharesE6 <= 0n || sharesE6 < minSharesE6(book.minOrderSize)) throw new AppError("below_minimum", TOO_SMALL);
+        if (sharesE6 <= 0n || sharesE6 < minSharesE6(book.minOrderSize))
+            throw new AppError("below_minimum", tooSmall(sharesE6, book.minOrderSize));
 
         const check = referenceSellPrice(input.quotedPrice, book.bids[0]?.price ?? null);
         if (!check.ok) {
@@ -284,7 +336,11 @@ export class PredictionService {
                 },
                 "Turned down a sale because the price moved from the client's quote",
             );
-            throw new AppError("price_moved", PRICE_MOVED, { logged: true });
+            throw new AppError(
+                "price_moved",
+                book.bids[0] ? movedText("sell", input.quotedPrice, book.bids[0].price) : noDepth("sell"),
+                { logged: true },
+            );
         }
 
         const now = new Date(this.#now());
@@ -380,10 +436,22 @@ export class PredictionService {
                 },
                 "Turned down a prediction because the price moved from the client's quote",
             );
-            throw new AppError("price_moved", PRICE_MOVED, { logged: true });
+            throw new AppError("price_moved", movedText("buy", input.quotedPrice, offered.outcome.buyPrice), {
+                logged: true,
+            });
         }
         const amount = this.#amount(input.amountUSD, offered.outcome.minUSD);
-        const ask = { label: offered.outcome.label, minUSD: offered.outcome.minUSD };
+        const ask = {
+            label: offered.outcome.label,
+            minUSD: offered.outcome.minUSD,
+            log: {
+                event: "prediction:order",
+                account: account._id.toHexString(),
+                eventId: input.eventId,
+                tokenId: input.tokenId,
+                askedUSD: input.amountUSD,
+            },
+        };
         await this.#checkFloat(weiToE6(amount), ask);
 
         const now = new Date(this.#now());
@@ -942,9 +1010,8 @@ export class PredictionService {
             position: update.position,
             account: update.account,
         });
-        void this.refreshFloat().catch((error: unknown) =>
-            this.#deps.logger.warn({ err: error }, "Couldn't read the pool's float"),
-        );
+        // refreshFloat logs its own failure
+        void this.refreshFloat().catch(() => undefined);
     }
 
     /** Orders left placing by a restart never reached Polymarket, so they are refunded. */
@@ -1015,14 +1082,15 @@ export class PredictionService {
         const abort = new AbortController();
         const timer = sleep(FLOAT_READ_MS, undefined, { signal: abort.signal }).then(
             () => {
-                throw new Error("The balance read timed out");
+                throw new ReadTimedOut(`The balance read timed out after ${FLOAT_READ_MS / 1000} s`);
             },
             () => undefined,
         );
         try {
             await Promise.race([this.refreshFloat(), timer]);
         } catch (error) {
-            this.#deps.logger.warn({ err: error }, "Couldn't read the pool's float");
+            // A failed read logged itself; only the wait running out is ours to report
+            if (error instanceof ReadTimedOut) this.#floatFailed(error);
         } finally {
             abort.abort();
         }
@@ -1078,11 +1146,38 @@ export class PredictionService {
     }
 
     #short(doc: PoolFloatDoc | null, ask?: Ask): AppError {
-        const free = doc && !this.#stale(doc) ? freeOf(doc) : 0n;
+        const stale = !doc || this.#stale(doc);
+        const free = doc && !stale ? freeOf(doc) : 0n;
         const usd = free <= 0n ? 0 : Number(free / 1_000_000n);
-        return new AppError("float_short", `${floatShortMessage(usd, ask)} ${NOTHING_SPENT}`);
+        // A balance we couldn't read is not a limit, so it isn't described as one
+        const message = stale
+            ? `Predictions are briefly unavailable because we can't read the pool's balance right now. ${NOTHING_SPENT} Try again in a minute.`
+            : `${floatShortMessage(usd, ask)} ${NOTHING_SPENT}`;
+        if (!ask?.log) return new AppError("float_short", message);
+        const now = this.#now();
+        this.#deps.logger.warn(
+            {
+                ...ask.log,
+                code: "float_short",
+                stale,
+                freeUSD: doc ? Number(freeOf(doc)) / 1e6 : null,
+                heldUSD: doc ? Number(fromDecimal(doc.heldE6)) / 1e6 : null,
+                unreadUSD: doc ? Number(fromDecimal(doc.unreadFillsE6)) / 1e6 : null,
+                floatAgeSec: doc ? Math.round((now - doc.balanceAt.getTime()) / 1000) : null,
+                lastFloatError: this.#floatError && {
+                    message: this.#floatError.message,
+                    agoSec: Math.round((now - this.#floatError.at) / 1000),
+                },
+            },
+            stale
+                ? "Refused a prediction: the pool's balance couldn't be read"
+                : "Refused a prediction: the pool's float is short",
+        );
+        return new AppError("float_short", message, { logged: true });
     }
 }
+
+class ReadTimedOut extends Error {}
 
 /** Why a float of whole dollars can't cover an order, and for a buy what to do instead */
 function floatShortMessage(usd: number, ask?: Ask): string {

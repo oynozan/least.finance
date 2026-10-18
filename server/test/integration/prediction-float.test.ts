@@ -166,10 +166,49 @@ test("a stale balance refuses orders when it can't be read again", async () => {
     const account = await h.seedAccount("100");
     clock.t += 181_000;
     vi.spyOn(h.trader, "balanceE6").mockRejectedValue(new Error("down"));
+    const warn = vi.spyOn(h.logger, "warn");
     const error = await h.service.place(account, input("10")).catch((e: unknown) => e);
     expect(codeOf(error)).toBe("float_short");
+    // The person is told the balance can't be read, not that predictions are limited to nothing
+    expect(isAppError(error) && error.message).toBe(
+        "Predictions are briefly unavailable because we can't read the pool's balance right now. Nothing was spent. Try again in a minute.",
+    );
+    // The failed read is logged once, and the refusal once with the numbers and why the read failed
+    expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.objectContaining({ message: "down" }), floatAgeSec: 181 }),
+        "Couldn't read the pool's Polymarket balance",
+    );
+    expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+            event: "prediction:order",
+            account: account._id.toHexString(),
+            tokenId: TOKEN,
+            askedUSD: "10",
+            stale: true,
+            floatAgeSec: 181,
+            lastFloatError: { message: "down", agoSec: 0 },
+        }),
+        "Refused a prediction: the pool's balance couldn't be read",
+    );
+    expect(isAppError(error) && error.logged).toBe(true);
     expect((await h.state(account._id)).balance).toBe(wei("100"));
     expect((await pool(h)).held).toBe(0n);
+});
+
+test("a float that is short refuses with the limit and logs the numbers once", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("100");
+    const warn = vi.spyOn(h.logger, "warn");
+    const error = await h.service.place(account, input("80")).catch((e: unknown) => e);
+    expect(isAppError(error) && error.message).toBe(
+        "Predictions are limited to $50 right now. Try a smaller amount, or try again later. Nothing was spent.",
+    );
+    expect(warn.mock.calls.filter(([, message]) => String(message).startsWith("Refused a prediction"))).toEqual([
+        [
+            expect.objectContaining({ code: "float_short", stale: false, askedUSD: "80", freeUSD: 50, heldUSD: 0 }),
+            "Refused a prediction: the pool's float is short",
+        ],
+    ]);
 });
 
 test("a stale balance is read again before an order", async () => {

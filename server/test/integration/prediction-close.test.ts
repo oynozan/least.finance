@@ -150,7 +150,9 @@ test("a position below the minimum size can't be closed", async () => {
     const { account, position } = await holder(h, "90", 4_990_000n);
     const error = await h.service.close(account, closeInput(position)).catch((e: unknown) => e);
     expect(isAppError(error) && error.code).toBe("below_minimum");
-    expect(isAppError(error) && error.message).toBe("Too small to sell. It pays out when the market resolves.");
+    expect(isAppError(error) && error.message).toBe(
+        "You hold 4.99 shares, and Polymarket sells a minimum of 5. They pay out when the market resolves.",
+    );
     expect((await positionOf(h, position._id))!.state).toBe("open");
     expect(await h.database.collections.predictionOrders.countDocuments({ positionId: position._id })).toBe(0);
 });
@@ -487,7 +489,7 @@ test("a sell the bid fell more than 2 cents under is price_moved and the positio
         const input = closeInput(position);
         const error = await own.service.close(account, input).catch((e) => e);
         expect(isAppError(error) && error.code).toBe("price_moved");
-        expect(isAppError(error) && error.message).toContain("Nothing was spent.");
+        expect(isAppError(error) && error.message).toContain("Nothing was sold.");
         expect((await positionOf(own, position._id))!.state).toBe("open");
         expect(await orderOf(own, input.requestId)).toBeNull();
     } finally {

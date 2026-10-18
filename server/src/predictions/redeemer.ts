@@ -195,7 +195,8 @@ export class PredictionRedeemer {
         // The payout is pool float again
         await this.#deps.service
             .refreshFloat()
-            .catch((error: unknown) => this.#deps.logger.warn({ err: error }, "Couldn't read the pool's float"));
+            // refreshFloat logs its own failure
+            .catch(() => undefined);
     }
 
     /** Gives up on the current transaction: confirms the redemption if the pool's tokens are gone, else queues a fresh one. */

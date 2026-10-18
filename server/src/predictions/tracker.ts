@@ -84,7 +84,8 @@ export class PredictionTracker {
         this.#floatAt = now;
         await this.#deps.service
             .refreshFloat()
-            .catch((error: unknown) => this.#deps.logger.warn({ err: error }, "Couldn't read the pool's float"));
+            // refreshFloat logs its own failure
+            .catch(() => undefined);
     }
 
     /** One pass over the posted orders that are due, then the refunded ones still watched; an error on one leaves it as it was, and an aborted signal skips the orders not yet started. */
