@@ -62,7 +62,12 @@ export function poolAssets(o: {
                 assetsE6 += await trader.usdcBalanceE6();
             } catch (error) {
                 stale = true;
-                o.logger.warn({ err: error }, "Couldn't read the pool wallet's USDC for the solvency check");
+                log.once(
+                    "usdc-read",
+                    "warn",
+                    { err: error },
+                    "Couldn't read the pool wallet's USDC for the solvency check",
+                );
             }
         }
         return { assetsE6, stale };
