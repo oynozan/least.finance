@@ -114,15 +114,18 @@ const REJECT_TEXTS: [RegExp, Extract<PostResult, { kind: "rejected" }>["reason"]
     [/not enough balance|allowance is not enough/i, "unavailable"],
 ];
 
-const rejection = (message: string): PostResult => ({
+const rejection = (message: string, code?: string, status?: number): PostResult => ({
     kind: "rejected",
     reason: REJECT_TEXTS.find(([pattern]) => pattern.test(message))?.[1] ?? "rejected",
     message,
+    ...(code !== undefined && { code }),
+    ...(status !== undefined && { status }),
 });
 
 const CODE_REASONS = {
     fok_not_filled: "price_moved",
     fak_not_filled: "price_moved",
+    unmatched: "price_moved",
     market_not_ready: "market_closed",
     insufficient_balance_or_allowance: "unavailable",
 } as const;
@@ -189,6 +192,7 @@ export async function createPolymarketTrader(
                 kind: "rejected",
                 reason: CODE_REASONS[response.code as keyof typeof CODE_REASONS] ?? "rejected",
                 message: response.message,
+                code: response.code,
             };
         }
         if (response.status === "matched") {
@@ -326,12 +330,18 @@ export async function createPolymarketTrader(
                 if (error instanceof RequestRejectedError) {
                     // A 5xx may have reached the matching engine, so the outcome is unknown
                     if (error.status >= 500 && !REJECT_TEXTS.some(([pattern]) => pattern.test(error.message))) {
-                        logger.warn({ status: error.status }, "Polymarket answered an order with a server error");
+                        logger.warn(
+                            { status: error.status, code: error.code ?? null, polymarketMessage: error.message },
+                            "Polymarket answered an order with a server error, so its outcome is unknown",
+                        );
                         return { kind: "unknown" };
                     }
-                    return rejection(error.message);
+                    return rejection(error.message, error.code, error.status);
                 }
-                logger.warn({ err: error }, "posting a Polymarket order got no clear answer");
+                logger.warn(
+                    { err: error },
+                    "Posting a Polymarket order got no clear answer, so its outcome is unknown",
+                );
                 return { kind: "unknown" };
             }
         },

@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
 import type { Collections, PredictionOrderDoc } from "../db/mongo.ts";
+import { priceMoved, unconfirmed } from "./failures.ts";
 import type { PredictionService } from "./predictions.ts";
 import type { PoolTrader } from "./trader.ts";
 
@@ -151,7 +152,17 @@ export class PredictionTracker {
         for (const order of stale) {
             if (this.#deps.service.submitting(order._id)) continue;
             await this.#deps.service
-                .fail(order, "unavailable", "placing")
+                .fail(
+                    order,
+                    "unavailable",
+                    "placing",
+                    undefined,
+                    unconfirmed(
+                        order,
+                        "Refunded a prediction that never finished sending",
+                        `it was still placing ${Math.round((now - order.createdAt.getTime()) / 1000)} s after it was made`,
+                    ),
+                )
                 .catch((error: unknown) =>
                     this.#deps.logger.warn(
                         { err: error, order: order._id.toHexString() },
@@ -168,11 +179,33 @@ export class PredictionTracker {
             tokenId: order.tokenId,
         });
         if (found.kind === "filled") await this.#deps.service.settle(order, found.makingE6, found.takingE6);
-        else if (found.kind === "cancelled") await this.#deps.service.fail(order, "price_moved", "posted");
+        else if (found.kind === "cancelled")
+            await this.#deps.service.fail(
+                order,
+                "price_moved",
+                "posted",
+                undefined,
+                priceMoved(
+                    order,
+                    "Polymarket cancelled a prediction's order without filling it",
+                    "Polymarket cancelled the order unfilled",
+                    { limitPrice: order.limitPrice },
+                ),
+            );
         else if (found.kind === "missing") {
             if (order.postUnknownAt) await this.#unknown(trader, order, order.postUnknownAt);
             else if (this.#now() - (order.postedAt?.getTime() ?? 0) > MISSING_GIVE_UP_MS)
-                await this.#deps.service.fail(order, "unavailable", "posted");
+                await this.#deps.service.fail(
+                    order,
+                    "unavailable",
+                    "posted",
+                    undefined,
+                    unconfirmed(
+                        order,
+                        "Refunded a prediction Polymarket has no record of",
+                        `Polymarket had no record of the order ${Math.round(MISSING_GIVE_UP_MS / 1000)} s after it was posted`,
+                    ),
+                );
         }
     }
 
@@ -197,7 +230,18 @@ export class PredictionTracker {
                     "A prediction's post got no answer and a trade can't be linked to it; it needs review and was not refunded",
                 );
         } else if (found) await this.#deps.service.settle(order, found.makingE6, found.takingE6);
-        else await this.#deps.service.fail(order, "unavailable", "posted", new Date(now + LATE_WATCH_MS));
+        else
+            await this.#deps.service.fail(
+                order,
+                "unavailable",
+                "posted",
+                new Date(now + LATE_WATCH_MS),
+                unconfirmed(
+                    order,
+                    "Refunded a prediction whose post got no answer and shows no trade",
+                    "the post got no answer and the pool's trades show no fill for it",
+                ),
+            );
     }
 
     /** Looks for a fill on a refunded unknown post and books it if one landed. */

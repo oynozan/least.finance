@@ -59,6 +59,7 @@ export class FakeTrader implements PoolTrader {
     // A release can beat the post to the hold, so it waits here for the next held order on its token
     #released = new Map<string, Outcome>();
     #failSign = new Set<string>();
+    #refusals = new Map<string, Extract<PostResult, { kind: "rejected" }>>();
     #fills = new Map<string, Fill>();
     #lookups = new Map<string, LookupResult>();
     #transactions = new Map<string, RelayerTransaction>();
@@ -224,6 +225,11 @@ export class FakeTrader implements PoolTrader {
         this.#holdings = new Map(rows.map((row) => [row.tokenId, row.sharesE6]));
     }
 
+    /** The next post on this token is refused with Polymarket's own code and message. */
+    refuseNext(tokenId: string, refusal: Omit<Extract<PostResult, { kind: "rejected" }>, "kind">): void {
+        this.#refusals.set(tokenId, { kind: "rejected", ...refusal });
+    }
+
     failSign(tokenId: string): void {
         this.#failSign.add(tokenId);
     }
@@ -257,6 +263,12 @@ export class FakeTrader implements PoolTrader {
     async post(record: SignedRecord): Promise<PostResult> {
         this.posts.push(record);
         const signed = record.signed as Signed;
+        const refusal = this.#refusals.get(signed.tokenId);
+        if (refusal) {
+            this.#refusals.delete(signed.tokenId);
+            this.#lookups.set(record.orderHash, { kind: "cancelled" });
+            return refusal;
+        }
         const behavior = this.#next.get(signed.tokenId) ?? "fill";
         this.#next.delete(signed.tokenId);
         if (behavior === "hold") {

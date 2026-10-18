@@ -14,7 +14,16 @@ export type SignedRecord = { orderHash: string; signed: unknown };
 export type PostResult =
     | { kind: "filled"; orderId: string; makingE6: bigint; takingE6: bigint }
     | { kind: "delayed"; orderId: string }
-    | { kind: "rejected"; reason: "price_moved" | "market_closed" | "unavailable" | "rejected"; message: string }
+    | {
+          kind: "rejected";
+          reason: "price_moved" | "market_closed" | "unavailable" | "rejected";
+          /** Polymarket's own words. */
+          message: string;
+          /** Polymarket's code for the refusal, when it gave one. */
+          code?: string;
+          /** The HTTP status, when the refusal came as an error response. */
+          status?: number;
+      }
     | { kind: "unknown" };
 
 export type LookupResult =

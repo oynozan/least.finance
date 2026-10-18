@@ -230,3 +230,61 @@ test.describe("a trade filled in another tab", () => {
         }
     });
 });
+
+test.describe("a prediction that failed on the server", () => {
+    const failedOrder = (over: Record<string, unknown> = {}) => ({
+        id: "o1",
+        requestId: "r1",
+        side: "buy",
+        state: "failed",
+        reason: "rejected",
+        eventId: "ev1",
+        tokenId: "tok1",
+        question: "Will it rain?",
+        outcome: "Yes",
+        amountUSD: "10",
+        shares: null,
+        positionId: null,
+        createdAt: "2026-10-16T00:00:00.000Z",
+        updatedAt: "2026-10-16T00:00:00.000Z",
+        ...over,
+    });
+    const push = (stack: Stack, order: Record<string, unknown>) => {
+        for (const socket of stack.io.sockets.sockets.values())
+            socket.emit("prediction:update", { requestId: "r1", order, position: null, account: account("50", 2) });
+    };
+
+    test("shows the server's own words, not the generic line", async () => {
+        const stack = await fakeServer();
+        try {
+            const message = 'Polymarket refused the order: "invalid order size". Nothing was spent.';
+            push(stack, failedOrder({ message }));
+            await expect.poll(() => stack.client.getSnapshot().tradeNotice).toEqual({ message });
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("shows the server's words for a sale too", async () => {
+        const stack = await fakeServer();
+        try {
+            const message = "The price moved, so the sale didn't go through. Your position is back.";
+            push(stack, failedOrder({ side: "sell", message }));
+            await expect.poll(() => stack.client.getSnapshot().tradeNotice).toEqual({ message });
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("falls back to the generic line when an older server sends no message", async () => {
+        const stack = await fakeServer();
+        try {
+            push(stack, failedOrder({ reason: "market_closed" }));
+            await expect
+                .poll(() => stack.client.getSnapshot().tradeNotice)
+                .toEqual({ message: "This market just closed. Nothing was spent." });
+        } finally {
+            await stack.stop();
+        }
+    });
+});

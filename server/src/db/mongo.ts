@@ -133,6 +133,10 @@ export type PredictionOrderDoc = {
     signed: unknown | null;
     state: PredictionOrderState;
     reason: PredictionFailure | null;
+    /** Why it failed in the upstream's own words, or ours; absent on orders that failed before this was kept. */
+    detail?: string;
+    /** What the person is told about the failure, so a reload shows the same words. */
+    message?: string;
     /** E6 shares. */
     filledShares: Decimal128 | null;
     /** Wei. */

@@ -29,6 +29,16 @@ import {
     referenceBuyPrice,
     referenceSellPrice,
 } from "./pricing.ts";
+import {
+    couldntPrepare,
+    couldntSend,
+    NOTHING_SPENT,
+    polymarketRefused,
+    priceMoved,
+    unconfirmed,
+    unexplained,
+    type Why,
+} from "./failures.ts";
 import type { MarketMeta, PoolTrader, SignedRecord } from "./trader.ts";
 import { formatUsdShort, orderView, positionView } from "./views.ts";
 
@@ -47,7 +57,7 @@ const FLOAT_READ_MS = 30_000;
 const FLOAT_ID = "polygon";
 const AMOUNT = /^\d+(\.\d{1,6})?$/;
 
-export const NOTHING_SPENT = "Nothing was spent.";
+export { NOTHING_SPENT };
 const PRICE_MOVED = `The price moved, so your prediction didn't go through. ${NOTHING_SPENT}`;
 const TOO_SMALL = "Too small to sell. It pays out when the market resolves.";
 
@@ -262,7 +272,20 @@ export class PredictionService {
         if (sharesE6 <= 0n || sharesE6 < minSharesE6(book.minOrderSize)) throw new AppError("below_minimum", TOO_SMALL);
 
         const check = referenceSellPrice(input.quotedPrice, book.bids[0]?.price ?? null);
-        if (!check.ok) throw new AppError("price_moved", PRICE_MOVED);
+        if (!check.ok) {
+            this.#deps.logger.warn(
+                {
+                    account: account._id.toHexString(),
+                    tokenId: position.tokenId,
+                    side: "sell",
+                    shares: formatE6(sharesE6),
+                    quotedPrice: input.quotedPrice,
+                    bestBid: book.bids[0]?.price ?? null,
+                },
+                "Turned down a sale because the price moved from the client's quote",
+            );
+            throw new AppError("price_moved", PRICE_MOVED);
+        }
 
         const now = new Date(this.#now());
         const order: PredictionOrderDoc = {
@@ -315,7 +338,10 @@ export class PredictionService {
         if (!held.fresh) return orderView(held.order);
 
         void this.#submit(order).catch((error: unknown) =>
-            this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "Couldn't submit a sale"),
+            this.#deps.logger.error(
+                { err: error, order: order._id.toHexString() },
+                "Couldn't refund a sale that failed to send",
+            ),
         );
         return orderView(order);
     }
@@ -342,7 +368,20 @@ export class PredictionService {
         const offered = await this.#deps.markets.outcome(input.eventId, input.tokenId);
         if (!offered) throw marketClosed();
         const check = referenceBuyPrice(input.quotedPrice, offered.outcome.buyPrice);
-        if (!check.ok) throw new AppError("price_moved", PRICE_MOVED);
+        if (!check.ok) {
+            this.#deps.logger.warn(
+                {
+                    account: account._id.toHexString(),
+                    tokenId: input.tokenId,
+                    side: "buy",
+                    amountUSD: input.amountUSD,
+                    quotedPrice: input.quotedPrice ?? null,
+                    offeredPrice: offered.outcome.buyPrice,
+                },
+                "Turned down a prediction because the price moved from the client's quote",
+            );
+            throw new AppError("price_moved", PRICE_MOVED);
+        }
         const amount = this.#amount(input.amountUSD, offered.outcome.minUSD);
         const ask = { label: offered.outcome.label, minUSD: offered.outcome.minUSD };
         await this.#checkFloat(weiToE6(amount), ask);
@@ -387,7 +426,10 @@ export class PredictionService {
 
         if (reserved) this.#remember(reserved);
         void this.#submit(order).catch((error: unknown) =>
-            this.#deps.logger.error({ err: error, order: order._id.toHexString() }, "Couldn't submit a prediction"),
+            this.#deps.logger.error(
+                { err: error, order: order._id.toHexString() },
+                "Couldn't refund a prediction that failed to send",
+            ),
         );
         return orderView(order);
     }
@@ -421,18 +463,22 @@ export class PredictionService {
         try {
             await this.#send(order);
         } catch (error) {
-            this.#deps.logger.error({ err: error, order: id }, "Couldn't submit a prediction");
-            await this.#giveUp(order);
+            await this.#giveUp(order, couldntSend(order, error));
         } finally {
             this.#submitting.delete(id);
         }
     }
 
     /** Refunds an order that never reached the exchange; one that did is left posted, since this only moves a placing one. */
-    async #giveUp(order: PredictionOrderDoc): Promise<void> {
+    async #giveUp(order: PredictionOrderDoc, why: Why): Promise<void> {
         for (let attempt = 1; attempt <= GIVE_UP_TRIES; attempt++) {
             try {
-                return await this.fail(order, "unavailable", "placing");
+                if (await this.fail(order, "unavailable", "placing", undefined, why)) return;
+                this.#deps.logger.error(
+                    { err: why.err, ...this.#context(order) },
+                    "An error hit a prediction after it reached the exchange; it stays posted for the tracker",
+                );
+                return;
             } catch (error) {
                 this.#deps.logger.warn({ err: error, order: order._id.toHexString() }, "Couldn't refund a prediction");
                 await sleep(GIVE_UP_RETRY_MS * attempt);
@@ -446,6 +492,8 @@ export class PredictionService {
         let signed: SignedRecord;
         let meta: MarketMeta;
         let limitPrice: number;
+        let worstPrice: number | null = null;
+        const numbers = () => ({ quotedPrice: order.quotedPrice, limitPrice: limitPrice ?? null, worstPrice });
         try {
             if (!trader) throw new Error("The trader isn't ready");
             const [book, m] = await Promise.all([trader.book(order.tokenId), trader.meta(order.tokenId)]);
@@ -454,12 +502,42 @@ export class PredictionService {
                 const sharesE6 = fromDecimal(order.shares!);
                 limitPrice = limitSellPrice(order.quotedPrice, meta.tickSize);
                 const q = quoteSell(book, meta, sharesE6);
-                if (!q || q.worstPrice < limitPrice) return void (await this.fail(order, "price_moved", "placing"));
+                worstPrice = q?.worstPrice ?? null;
+                if (!q || q.worstPrice < limitPrice)
+                    return void (await this.fail(
+                        order,
+                        "price_moved",
+                        "placing",
+                        undefined,
+                        priceMoved(
+                            order,
+                            "The price moved past a sale's limit before it was sent",
+                            q
+                                ? `the book's worst price ${q.worstPrice} is under the limit ${limitPrice}`
+                                : "the book can't fill the shares",
+                            numbers(),
+                        ),
+                    ));
                 signed = await trader.signSell({ tokenId: order.tokenId, sharesE6, minPrice: limitPrice });
             } else {
                 limitPrice = limitBuyPrice(order.quotedPrice, meta.tickSize);
                 const q = quoteBuy(book, meta, weiToE6(fromDecimal(order.amount)));
-                if (!q || q.worstPrice > limitPrice) return void (await this.fail(order, "price_moved", "placing"));
+                worstPrice = q?.worstPrice ?? null;
+                if (!q || q.worstPrice > limitPrice)
+                    return void (await this.fail(
+                        order,
+                        "price_moved",
+                        "placing",
+                        undefined,
+                        priceMoved(
+                            order,
+                            "The price moved past a prediction's limit before it was sent",
+                            q
+                                ? `the book's worst price ${q.worstPrice} is over the limit ${limitPrice}`
+                                : "the book can't fill the amount",
+                            numbers(),
+                        ),
+                    ));
                 signed = await trader.signBuy({
                     tokenId: order.tokenId,
                     spendE6: weiToE6(fromDecimal(order.amount)),
@@ -467,8 +545,13 @@ export class PredictionService {
                 });
             }
         } catch (error) {
-            this.#deps.logger.warn({ err: error, order: order._id.toHexString() }, "Couldn't prepare a prediction");
-            return void (await this.fail(order, "unavailable", "placing"));
+            return void (await this.fail(
+                order,
+                "unavailable",
+                "placing",
+                undefined,
+                couldntPrepare(order, error, numbers()),
+            ));
         }
 
         const now = new Date(this.#now());
@@ -491,10 +574,23 @@ export class PredictionService {
         );
         if (!posted) return;
 
-        const result = await trader.post(signed).catch(() => ({ kind: "unknown" }) as const);
-        if (result.kind === "unknown") return;
+        const result = await trader.post(signed).catch((error: unknown) => {
+            this.#deps.logger.warn(
+                { err: error, ...this.#context(posted) },
+                "Posting a prediction threw, so its outcome is unknown and the tracker will find out",
+            );
+            return { kind: "unknown" } as const;
+        });
+        if (result.kind === "unknown") {
+            this.#deps.logger.warn(
+                this.#context(posted),
+                "Polymarket gave no clear answer to a prediction, so it stays posted for the tracker",
+            );
+            return;
+        }
         if (result.kind === "filled") await this.settle(posted, result.makingE6, result.takingE6);
-        else if (result.kind === "rejected") await this.fail(posted, result.reason, "posted");
+        else if (result.kind === "rejected")
+            await this.fail(posted, result.reason, "posted", undefined, polymarketRefused(posted, result, numbers()));
         else if (result.kind === "delayed")
             await predictionOrders.updateOne(
                 { _id: order._id, state: "posted" },
@@ -673,18 +769,43 @@ export class PredictionService {
         return { order, position, account };
     }
 
+    /** What every log line about an order carries: who, which market and side, and the sizes and prices it was made with. */
+    #context(order: PredictionOrderDoc) {
+        return {
+            order: order._id.toHexString(),
+            account: order.accountId.toHexString(),
+            side: order.side,
+            eventId: order.eventId,
+            tokenId: order.tokenId,
+            ...(order.side === "buy" && { amountUSD: formatUsdc(fromDecimal(order.amount)) }),
+            ...(order.side === "sell" && order.shares && { shares: formatE6(fromDecimal(order.shares)) }),
+            quotedPrice: order.quotedPrice,
+            ...(order.limitPrice > 0 && { limitPrice: order.limitPrice }),
+        };
+    }
+
     /** Fails an order and gives back everything it held; a failed sell reopens its position, and `watchUntil` marks a refund the tracker keeps checking for a late fill. A repeat, or an order that already moved on, does nothing. */
     async fail(
         order: PredictionOrderDoc,
         reason: PredictionFailure,
         from: "placing" | "posted",
         watchUntil?: Date,
-    ): Promise<void> {
+        why: Why = unexplained(order, reason),
+    ): Promise<boolean> {
         const { predictionOrders, positions, accounts } = this.#deps.collections;
         const done = await this.#deps.ledger.runInTransaction(async (session) => {
             const moved = await predictionOrders.findOneAndUpdate(
                 { _id: order._id, state: from },
-                { $set: { state: "failed", reason, updatedAt: new Date(), ...(watchUntil && { watchUntil }) } },
+                {
+                    $set: {
+                        state: "failed",
+                        reason,
+                        detail: why.detail,
+                        message: why.message,
+                        updatedAt: new Date(),
+                        ...(watchUntil && { watchUntil }),
+                    },
+                },
                 { session, returnDocument: "after" },
             );
             if (!moved) return null;
@@ -709,9 +830,19 @@ export class PredictionService {
             const float = await this.#release(session, reservedOf(moved), 0n);
             return { order: moved, position: null, account, float };
         });
-        if (!done) return;
-        this.#deps.logger.info({ order: order._id.toHexString(), reason }, "Prediction failed and refunded");
+        if (!done) return false;
+        this.#deps.logger[why.level](
+            {
+                ...this.#context(done.order),
+                reason,
+                detail: why.detail,
+                ...why.fields,
+                ...(why.err ? { err: why.err } : {}),
+            },
+            `${why.msg}; ${done.order.side === "sell" ? "the position is back" : "the amount was refunded"}`,
+        );
         this.#afterSettle(done);
+        return true;
     }
 
     /** Books a fill that landed after the order was refunded: takes the cost back from the person, or closes the reopened position. If neither can be done the order is orphaned and the pool keeps the shares. Exactly once. */
@@ -813,7 +944,18 @@ export class PredictionService {
     /** Orders left placing by a restart never reached Polymarket, so they are refunded. */
     async recover(): Promise<void> {
         const stale = await this.#deps.collections.predictionOrders.find({ state: "placing" }).toArray();
-        for (const order of stale) await this.fail(order, "unavailable", "placing");
+        for (const order of stale)
+            await this.fail(
+                order,
+                "unavailable",
+                "placing",
+                undefined,
+                unconfirmed(
+                    order,
+                    "Refunded a prediction the server restarted before sending",
+                    "the server restarted before the order was sent",
+                ),
+            );
     }
 
     async positions(account: AccountDoc): Promise<PositionsView> {

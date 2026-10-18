@@ -77,7 +77,7 @@ export type AccountSnapshot = {
     pnl: { bound: number; changed: number };
 };
 
-/** What the person is told when a placed prediction fails on the server. */
+/** What the person is told when a placed prediction fails and the server sent no message of its own. */
 const FAILURE_COPY: Record<PredictionFailure, string> = {
     price_moved: "The price moved, so your prediction didn't go through. Nothing was spent.",
     market_closed: "This market just closed. Nothing was spent.",
@@ -202,7 +202,10 @@ export class AccountClient {
             this.#dispatch({ type: "prediction", update });
             const { order } = update;
             if (order.state !== "failed") return;
-            this.#tradeNotice(order.side === "sell" ? SELL_FAILED_COPY : FAILURE_COPY[order.reason ?? "rejected"]);
+            // The server says why; the generic lines are for an older server that doesn't
+            this.#tradeNotice(
+                order.message ?? (order.side === "sell" ? SELL_FAILED_COPY : FAILURE_COPY[order.reason ?? "rejected"]),
+            );
         });
         socket.on("perp:update", (update) => {
             this.#dispatch({ type: "perp", update });

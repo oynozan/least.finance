@@ -370,6 +370,8 @@ export type PredictionOrderView = {
     side: "buy" | "sell";
     state: "placing" | "posted" | "filled" | "failed";
     reason: PredictionFailure | null;
+    /** Why a failed order failed, in plain words; absent while it hasn't and on orders from an older server. */
+    message?: string;
     eventId: string;
     tokenId: string;
     question: string;
