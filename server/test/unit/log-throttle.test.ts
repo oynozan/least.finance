@@ -13,6 +13,21 @@ test("a repeating warning passes once per interval and counts what it held back"
     expect(gate("a")).toEqual({ held: 2 });
 });
 
+test("keys past their interval are dropped once the map is full, so held counts restart for them", () => {
+    let now = 0;
+    const gate = throttle(1_000, () => now, 3);
+    gate("a");
+    gate("a");
+    gate("b");
+    gate("c");
+    now = 2_000;
+    gate("d");
+    // "a" was dropped with the others, so its two held lines are forgotten
+    expect(gate("a")).toEqual({ held: 0 });
+    // a key still inside its interval is kept
+    expect(gate("d")).toBeNull();
+});
+
 test("an upstream's words are quoted on one short line", () => {
     expect(upstreamSaid("Polymarket", 'invalid\n  "order" size')).toBe("Polymarket refused: \"invalid 'order' size\"");
     expect(quoted("x".repeat(500)).length).toBe(122);
