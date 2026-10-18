@@ -268,14 +268,14 @@ test("an account missing at the quote and present at create takes the cheaper pa
     gone.delete(usdc);
 });
 
-test("switch off is 'Solana isn't open yet.'", async () => {
+test("switch off is 'Solana withdrawals aren't open yet.'", async () => {
     const account = await seedAccount("100");
     await fundTreasury("500");
     switches.SOLANA_WITHDRAWALS = "off";
     try {
         expect(await failure(withdrawals.create(account, request(newWallet(), "10")))).toEqual({
             code: "unavailable",
-            message: "Solana isn't open yet.",
+            message: "Solana withdrawals aren't open yet.",
         });
         expect(await failure(withdrawals.quoteSolana(account, { amount: "10", to: newWallet() }))).toMatchObject({
             code: "unavailable",

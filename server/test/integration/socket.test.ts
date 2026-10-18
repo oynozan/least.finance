@@ -321,7 +321,7 @@ describe("Solana sockets", () => {
         await connect(socket);
         expect(await socket.timeout(5000).emitWithAck("solana:blockhash", {})).toEqual({
             ok: false,
-            error: { code: "unavailable", message: "Solana isn't open yet." },
+            error: { code: "unavailable", message: "Solana deposits aren't open yet." },
         });
     });
 
