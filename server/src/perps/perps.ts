@@ -19,7 +19,6 @@ import { AppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { PerpCloseRequest, PerpOrderRequest, PerpQuoteRequest, PerpQuoteView, PerpsView } from "../protocol.ts";
 import { formatUsdShort } from "../predictions/views.ts";
-import { NOTHING_SPENT } from "../predictions/failures.ts";
 import { nextNonce, type AccountState, type Fill, type HyperliquidClient, type OrderResult } from "./client.ts";
 import {
     OpenStepError,

@@ -21,7 +21,6 @@ import {
     weiToUsdc6,
 } from "./cctp-burn.ts";
 import {
-    forwardFailedMessage,
     networkRefused,
     rebalanceError,
     reverted,
