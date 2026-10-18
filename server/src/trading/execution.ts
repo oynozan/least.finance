@@ -56,7 +56,7 @@ export function createTradingExecution(deps: {
     const solana = createSolanaSender({
         seed: keyring.inventorySolana().seed,
         rpc: deps.solana,
-        send: jsonRpcSend(config.SOLANA_RPC_URLS),
+        send: jsonRpcSend(config.SOLANA_RPC_URLS, fetch, logger.child({ component: "solana-send" })),
     });
     const sender =
         config.COIN_WITHDRAWALS === "on"

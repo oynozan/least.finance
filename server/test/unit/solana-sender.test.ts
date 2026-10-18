@@ -1,5 +1,5 @@
 import { base64 } from "@scure/base";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { createKeyring } from "../../src/accounts/keyring.ts";
 import { refused } from "../../src/trading/send-errors.ts";
 import { SolanaRefusal, createSolanaSender, jsonRpcSend } from "../../src/trading/solana-sender.ts";
@@ -53,7 +53,7 @@ describe("Solana sender", () => {
         expect(await make({ confirmationStatus: "finalized", err: null }).status("s")).toBe("confirmed");
         expect(
             await make({ confirmationStatus: "confirmed", err: { InstructionError: [0, "Custom"] } }).status("s"),
-        ).toBe("failed");
+        ).toEqual({ state: "failed", err: { InstructionError: [0, "Custom"] } });
     });
 
     test("a preflight rejection is a refusal and an unreachable node is not", async () => {
@@ -70,5 +70,43 @@ describe("Solana sender", () => {
         });
         const unreachable = await down("wire").catch((caught: unknown) => caught);
         expect(refused(unreachable)).toBe(false);
+    });
+
+    test("a refusal keeps the cluster's code and error, and a total failure names each provider by number, never its URL", async () => {
+        const rejecting = jsonRpcSend(
+            ["http://x"],
+            async () =>
+                new Response(
+                    JSON.stringify({
+                        error: {
+                            message: "Transaction simulation failed",
+                            code: -32002,
+                            data: { err: "InsufficientFundsForRent" },
+                        },
+                    }),
+                ),
+        );
+        expect(await rejecting("wire").catch((caught: unknown) => caught)).toMatchObject({
+            code: -32002,
+            data: { err: "InsufficientFundsForRent" },
+        });
+
+        const warn = vi.fn();
+        const answers = [new Response("busy", { status: 429 }), undefined];
+        const down = jsonRpcSend(
+            ["http://one.test/key-SECRET", "http://two.test/key-SECRET"],
+            async () => {
+                const next = answers.shift();
+                if (next) return next;
+                throw new DOMException("The operation timed out", "TimeoutError");
+            },
+            { warn },
+        );
+        const error = (await down("wire").catch((caught: unknown) => caught)) as Error;
+        expect(error.message).toBe("RPC #1: HTTP 429; RPC #2: timed out");
+        expect(warn).toHaveBeenCalledTimes(2);
+        expect(warn.mock.calls[0]?.[0]).toMatchObject({ provider: 1, providers: 2 });
+        expect(warn.mock.calls[0]?.[1]).toBe("Solana RPC #1 didn't take the transaction: HTTP 429");
+        expect(JSON.stringify(warn.mock.calls.map((call) => call[1]))).not.toContain("SECRET");
     });
 });

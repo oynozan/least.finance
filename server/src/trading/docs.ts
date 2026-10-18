@@ -61,6 +61,8 @@ export type HedgeDoc = {
     attempts?: SendAttempt[];
     tool: string | null;
     reason: string | null;
+    /** LI.FI's or the network's own words behind the reason. */
+    detail?: string | null;
     createdAt: Date;
     updatedAt: Date;
 };
@@ -80,7 +82,12 @@ export type CoinWithdrawalDoc = {
     nonce: number | null;
     /** Every transaction signed on the nonce, since any of them may be the one that mines */
     attempts?: SendAttempt[];
+    /** A short code for why it failed; older withdrawals hold a sentence here. */
     reason: string | null;
+    /** The network's own words, or our explanation; while it is still sending, the last error met. */
+    detail?: string | null;
+    /** What the person is told, also after a reload. */
+    message?: string | null;
     createdAt: Date;
     updatedAt: Date;
 };

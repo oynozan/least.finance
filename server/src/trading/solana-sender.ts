@@ -15,6 +15,7 @@ import {
 } from "@solana/kit";
 import type { SolanaRpc } from "../crosschain/solana.ts";
 import type { SolanaSender } from "./coin-sender.ts";
+import { upstreamSaid } from "./failures.ts";
 
 const SYSTEM_PROGRAM = address("11111111111111111111111111111111");
 /** The System program's Transfer instruction index. */
@@ -68,17 +69,21 @@ export function createSolanaSender(options: {
         async status(signature) {
             const [status] = await rpc.getSignatureStatuses([signature]);
             if (!status) return null;
-            if (status.err !== null && status.err !== undefined) return "failed";
+            if (status.err !== null && status.err !== undefined) return { state: "failed" as const, err: status.err };
             return status.confirmationStatus === "processed" ? null : "confirmed";
         },
     };
 }
 
-/** `sendTransaction` over JSON-RPC, trying each URL in order. */
-export function jsonRpcSend(urls: readonly string[], fetchImpl: typeof fetch = fetch) {
+/** `sendTransaction` over JSON-RPC, trying each URL in order. A failure names the provider by its place in the list, never by its URL, which carries a key. */
+export function jsonRpcSend(
+    urls: readonly string[],
+    fetchImpl: typeof fetch = fetch,
+    logger?: { warn(context: object, message: string): void },
+) {
     return async (wire: string): Promise<void> => {
-        let failure: unknown = new Error("No Solana RPC URL is configured");
-        for (const url of urls) {
+        const failures: string[] = [];
+        for (const [index, url] of urls.entries()) {
             try {
                 const response = await fetchImpl(url, {
                     method: "POST",
@@ -91,24 +96,41 @@ export function jsonRpcSend(urls: readonly string[], fetchImpl: typeof fetch = f
                     }),
                     signal: AbortSignal.timeout(10_000),
                 });
-                if (!response.ok) throw new Error(`Solana RPC answered ${response.status}`);
-                const body = (await response.json()) as { error?: { message?: string } };
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const body = (await response.json()) as {
+                    error?: { message?: string; code?: number; data?: { err?: unknown; logs?: unknown } };
+                };
                 // A preflight rejection is the network turning the transaction down
-                if (body.error) throw new SolanaRefusal(body.error.message ?? "The cluster refused the transaction");
+                if (body.error)
+                    throw new SolanaRefusal(body.error.message ?? "The cluster refused the transaction", {
+                        code: body.error.code,
+                        data: body.error.data,
+                    });
                 return;
             } catch (error) {
                 if (error instanceof SolanaRefusal) throw error;
-                failure = error;
+                const said =
+                    error instanceof Error && error.name === "TimeoutError" ? "timed out" : upstreamSaid(error);
+                logger?.warn(
+                    { event: "solana:send", provider: index + 1, providers: urls.length, err: error },
+                    `Solana RPC #${index + 1} didn't take the transaction: ${said}`,
+                );
+                failures.push(`RPC #${index + 1}: ${said}`);
             }
         }
-        throw failure;
+        throw new Error(failures.length > 0 ? failures.join("; ") : "No Solana RPC URL is configured");
     };
 }
 
-/** The cluster read the transaction and said no; its text names what failed, such as insufficient funds. */
+/** The cluster read the transaction and said no; its text names what failed, such as insufficient funds, and `code` and `data.err` say it exactly. */
 export class SolanaRefusal extends Error {
-    constructor(message: string) {
+    readonly code: number | undefined;
+    readonly data: { err?: unknown; logs?: unknown } | undefined;
+
+    constructor(message: string, said: { code?: number; data?: { err?: unknown; logs?: unknown } } = {}) {
         super(message);
         this.name = "SolanaRefusal";
+        this.code = said.code;
+        this.data = said.data;
     }
 }

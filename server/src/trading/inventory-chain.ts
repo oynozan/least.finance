@@ -3,6 +3,7 @@ import type { HDAccount } from "viem/accounts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
 import type { PublicClient } from "viem";
 import type { SendAttempt } from "./docs.ts";
+import { upstreamSaid } from "./failures.ts";
 import { refused } from "./send-errors.ts";
 
 export type TxIntent = { to: Address; data: Hex; value: bigint };
@@ -193,22 +194,36 @@ export function createInventoryChain(options: {
             }),
 
         async approve(network, token, spender, amount) {
-            const prepared = await chain.prepare(network, {
-                to: token,
-                data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amount] }),
-                value: 0n,
-            });
+            const what = `The ${token} approval to ${spender} on ${network}`;
+            let prepared: PreparedTx;
             try {
-                await chain.broadcast(network, prepared);
+                prepared = await chain.prepare(network, {
+                    to: token,
+                    data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, amount] }),
+                    value: 0n,
+                });
+                try {
+                    await chain.broadcast(network, prepared);
+                } catch (error) {
+                    if (refused(error)) chain.release(network, prepared.nonce);
+                    throw error;
+                }
             } catch (error) {
-                if (refused(error)) chain.release(network, prepared.nonce);
-                throw error;
+                throw new Error(`${what} wasn't sent: ${upstreamSaid(error)}`, { cause: error });
             }
-            const receipt = await clients[network].waitForTransactionReceipt({
-                hash: prepared.hash,
-                timeout: APPROVAL_WAIT_MS,
-            });
-            if (receipt.status !== "success") throw new Error("The approval reverted");
+            let receipt;
+            try {
+                receipt = await clients[network].waitForTransactionReceipt({
+                    hash: prepared.hash,
+                    timeout: APPROVAL_WAIT_MS,
+                });
+            } catch (error) {
+                throw new Error(
+                    `${what} wasn't mined within ${APPROVAL_WAIT_MS / 1000} seconds (tx ${prepared.hash}): ${upstreamSaid(error)}`,
+                    { cause: error },
+                );
+            }
+            if (receipt.status !== "success") throw new Error(`${what} reverted (tx ${prepared.hash})`);
         },
     };
     return chain;

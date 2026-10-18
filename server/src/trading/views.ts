@@ -30,5 +30,7 @@ export const coinWithdrawalView = (doc: CoinWithdrawalDoc): CoinWithdrawalView =
     state: doc.state,
     txHash: doc.txHash,
     reason: doc.reason,
+    // Withdrawals that failed before the message was stored keep their sentence in the reason
+    message: doc.state === "sent" ? null : (doc.message ?? (doc.state === "failed" ? doc.reason : null)),
     at: doc.createdAt.toISOString(),
 });

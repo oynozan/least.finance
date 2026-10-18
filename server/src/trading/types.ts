@@ -63,7 +63,10 @@ export type CoinWithdrawalView = {
     to: string;
     state: CoinWithdrawalState;
     txHash: string | null;
+    /** A short code for why it failed. */
     reason: string | null;
+    /** What happened, in a sentence: why it failed, or while it is still sending the last error met. */
+    message?: string | null;
     at: string;
 };
 

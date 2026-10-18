@@ -60,5 +60,108 @@ export function hideUrls(text: string): string {
     });
 }
 
+/** Why a coin send failed: what is stored on the withdrawal, and what the person is told. */
+export type SendFailure = {
+    /** A short code that stays the same for the same cause. */
+    reason: string;
+    /** Our explanation or the network's own words, kept on the document. */
+    detail: string;
+    /** Shown to the person, also after a reload. */
+    message: string;
+    /** `error` when it is ours to fix (a coin we can't send, an empty wallet), `warn` when the network said no. */
+    level: "warn" | "error";
+};
+
+/** The sentence that ends a failed send. */
+export const sendBack = (symbol: string) => `Your ${symbol} is back in your holdings.`;
+
+const json = (value: unknown) => {
+    try {
+        return JSON.stringify(value) ?? String(value);
+    } catch {
+        return String(value);
+    }
+};
+
+/** A Solana transaction error (`InstructionError`, `InsufficientFundsForRent`) as a short text. */
+export const solanaErr = (err: unknown) => json(err).slice(0, 200);
+
+/** A send the network or cluster refused: the known refusals get a plain sentence, any other keeps the network's own words quoted. */
+export function sendRefusal(error: unknown, ctx: { symbol: string; network: string }): SendFailure {
+    const { symbol, network } = ctx;
+    const refusal = error as { code?: unknown; data?: { err?: unknown } } | null;
+    const solana = error instanceof Error && error.name === "SolanaRefusal";
+    const raw = upstreamSaid(error);
+    const err = solana ? refusal?.data?.err : undefined;
+    const extra = [
+        typeof refusal?.code === "number" ? `code ${refusal.code}` : null,
+        err !== undefined && err !== null ? solanaErr(err) : null,
+    ].filter((part) => part !== null);
+    const detail = extra.length > 0 ? `${raw} (${extra.join(", ")})` : raw;
+    const back = sendBack(symbol);
+    const make = (reason: string, message: string, level: SendFailure["level"] = "warn"): SendFailure => ({
+        reason,
+        detail,
+        message: `${message} ${back}`,
+        level,
+    });
+    if (/InsufficientFundsForRent/i.test(detail))
+        return make(
+            "rent",
+            `The send would leave a Solana account below its minimum balance, so ${network} refused it.`,
+        );
+    if (/BlockhashNotFound/i.test(detail))
+        return make("expired", `${network} didn't recognise the send's recent block, so it was refused. Try again.`);
+    if (/gas|fee/i.test(raw) && /insufficient funds/i.test(raw))
+        return make("out_of_gas", `Our sending wallet is out of gas on ${network}, so the send was refused.`, "error");
+    if (/transfer amount exceeds balance|exceeds (the )?balance/i.test(raw))
+        return make(
+            "inventory_short",
+            `Our sending wallet doesn't hold enough ${symbol} on ${network} right now.`,
+            "error",
+        );
+    if (/insufficient (funds|lamports)/i.test(raw))
+        return make(
+            "inventory_short",
+            `Our sending wallet doesn't hold enough ${symbol} on ${network} right now.`,
+            "error",
+        );
+    if (/underpriced|gas too low|intrinsic gas/i.test(raw))
+        return make("fee_too_low", `${network} refused the send's fee: ${quoted(raw)}.`);
+    if (/invalid address|invalid sender/i.test(raw))
+        return make("bad_address", `${network} refused the address: ${quoted(raw)}.`);
+    if (/execution reverted/i.test(raw)) return make("reverted", `${network} rejected the transfer: ${quoted(raw)}.`);
+    return make("network_refused", `The ${network} network refused the send: ${quoted(raw)}.`);
+}
+
+/** Repeats of one failure that a worker meets every pass: the first is logged, then one line per interval that says how many were left out. */
+export class RepeatGate {
+    readonly #seen = new Map<string, { message: string; at: number; skipped: number }>();
+    readonly #everyMs: number;
+    readonly #now: () => number;
+
+    constructor(everyMs: number, now: () => number = Date.now) {
+        this.#everyMs = everyMs;
+        this.#now = now;
+    }
+
+    /** Null while this failure repeats inside the interval; else how many times it was left out since the last line. */
+    note(key: string, message: string): { skipped: number } | null {
+        const at = this.#now();
+        const seen = this.#seen.get(key);
+        if (seen && seen.message === message && at - seen.at < this.#everyMs) {
+            seen.skipped += 1;
+            return null;
+        }
+        this.#seen.set(key, { message, at, skipped: 0 });
+        return { skipped: seen?.message === message ? seen.skipped : 0 };
+    }
+
+    /** The failure is over, so the next one is a first. */
+    clear(key: string) {
+        this.#seen.delete(key);
+    }
+}
+
 /** The words a person reads for one thing the network said, trimmed to one short quoted line. */
 export const quoted = (text: string) => `"${text.replace(/\s+/g, " ").trim().replaceAll('"', "'").slice(0, 120)}"`;

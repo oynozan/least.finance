@@ -123,7 +123,7 @@ describe("CoinSender on EVM", () => {
 
         await worker.tick();
         expect(await reload(doc)).toMatchObject({ state: "failed" });
-        expect((await reload(doc))?.reason).toMatch(/refused/);
+        expect((await reload(doc))?.reason).toBe("out_of_gas");
         expect(await held("ETH")).toBe(5n * 10n ** 17n);
 
         await worker.tick();
