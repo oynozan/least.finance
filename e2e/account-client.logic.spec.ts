@@ -317,7 +317,7 @@ test.describe("a failed withdrawal", () => {
         try {
             for (const socket of stack.io.sockets.sockets.values()) {
                 socket.emit("withdrawal:update", {
-                    withdrawal: { ...failed, reason: "The network rejected the transfer." },
+                    withdrawal: { ...failed, message: "The network rejected the transfer. Your balance is back." },
                     account: account("50", 2),
                 });
             }
@@ -337,7 +337,7 @@ test.describe("a failed withdrawal", () => {
             }
             await expect
                 .poll(() => stack.client.getSnapshot().notice)
-                .toMatchObject({ message: "The withdrawal failed. Your balance is back." });
+                .toMatchObject({ message: "The withdrawal failed, and no reason was recorded. Your balance is back." });
         } finally {
             await stack.stop();
         }
@@ -627,11 +627,11 @@ test.describe("a deposit the wallet or the server can't take", () => {
     test("before the account is open, the server is blamed and not the wallet", async () => {
         const client = new AccountClient("http://127.0.0.1:1");
         expect(await client.deposit("10", wallet)).toEqual({
-            failed: "Still signing you in; try again in a moment.",
+            failed: "Still connecting to your account.",
         });
         expect(await client.quote("ethereum:ETH", "1", EVM)).toEqual({
             code: "unavailable",
-            message: "Still signing you in; try again in a moment.",
+            message: "Still connecting to your account.",
         });
     });
 

@@ -104,7 +104,8 @@ export type WithdrawResult =
     | "not-ready"
     | { problem: "changed"; message: string };
 const SELL_FAILED_COPY = "Couldn't sell right now. Your position is back.";
-const WITHDRAW_FAILED_COPY = "The withdrawal failed. Your balance is back.";
+/** Only for a failed withdrawal an older server sent no reason for. */
+const WITHDRAW_FAILED_COPY = "The withdrawal failed, and no reason was recorded. Your balance is back.";
 /** The price sent when none is known; the exchange takes the best bid anyway, within a cent of it. */
 const UNQUOTED_SELL_PRICE = 0.01;
 
