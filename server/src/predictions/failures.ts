@@ -122,7 +122,8 @@ export function polymarketRefused(
         level: known?.level ?? "error",
         detail: refusal.message,
         message:
-            known?.say(order.side, refusal.message) ?? `Polymarket refused the order: ${quote(refusal.message)}. ${kept(order.side)}`,
+            known?.say(order.side, refusal.message) ??
+            `Polymarket refused the order: ${quote(refusal.message)}. ${kept(order.side)}`,
         fields: {
             ...fields,
             polymarketCode: refusal.code ?? null,
