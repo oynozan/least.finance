@@ -207,6 +207,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             collections,
             rules: { chainId: ARC_CHAIN_ID, minDeposit: formatUsdc(config.DEPOSIT_MIN_USDC) },
             solana: { deposits: config.SOLANA_DEPOSITS === "on", withdrawals: config.SOLANA_WITHDRAWALS === "on" },
+            logger: logger.child({ component: "sessions" }),
         });
         const pnl = new PnlService({ collections, logger: logger.child({ component: "pnl" }), now: overrides.now });
         const feed = new ActivityFeed({ collections, logger: logger.child({ component: "pnl" }), now: overrides.now });

@@ -144,7 +144,7 @@ describe("Solana deposits", () => {
         const result = await quote(socket, "solana:USDC", "10");
         expect(result).toEqual({
             ok: false,
-            error: { code: "forbidden", message: "That wallet isn't linked to your account." },
+            error: { code: "forbidden", message: "That wallet isn't linked to your account yet. Wait a few seconds after linking it, then try again." },
         });
     });
 

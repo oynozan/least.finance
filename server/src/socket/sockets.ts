@@ -3,6 +3,8 @@ import type { ObjectId } from "mongodb";
 import { RateLimiterMemory } from "rate-limiter-flexible";
 import { Server, type Socket } from "socket.io";
 import type { Identity } from "../auth/identity.ts";
+import { throttle } from "../log-throttle.ts";
+import { ACCOUNT_NOT_OPEN } from "../sessions.ts";
 import { solanaOpen } from "../crosschain/solana-switch.ts";
 import { orderView, sourceTxView } from "../crosschain/views.ts";
 import { perpOrderView, perpUpdate } from "../perps/views.ts";
@@ -68,6 +70,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         connectTimeout: 10_000,
     });
 
+    // A flood of refused connections from one address is one line a minute
+    const refusedHandshakes = throttle(60_000);
     const handshakes = new RateLimiterMemory({
         keyPrefix: "handshake",
         points: config.SOCKET_HANDSHAKES_PER_MINUTE,
@@ -100,17 +104,33 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 socket.handshake.address,
                 config.TRUST_PROXY,
             );
-            await handshakes.consume(ip).catch(() => {
-                throw new AppError("rate_limited", "Too many connections. Try again shortly.");
+            await handshakes.consume(ip).catch((limit: unknown) => {
+                throw tooMany(limit, "Too many connections.");
             });
             const token = (socket.handshake.auth as Partial<HandshakeAuth> | undefined)?.token;
-            if (typeof token !== "string" || token === "") throw new AppError("unauthorized", "Sign in first.");
+            if (typeof token !== "string" || token === "") {
+                throw new AppError("unauthorized", "Your session expired. Sign in again.", { detail: "no_token" });
+            }
             socket.data.identity = await services.identity.verify(token);
             socket.data.account = null;
             next();
         } catch (error) {
-            if (!isAppError(error)) logger.error({ err: error }, "Socket handshake failed");
-            next(connectError(toApiError(error)));
+            const where = {
+                event: "socket.handshake_refused",
+                ip: clientIp(socket.handshake.headers["x-forwarded-for"], socket.handshake.address, config.TRUST_PROXY),
+                origin: socket.handshake.headers.origin,
+            };
+            let ref: string | undefined;
+            if (!isAppError(error)) {
+                ref = newRef();
+                logger.error({ err: error, ref, ...where }, "Socket handshake failed");
+            } else if (error.code !== "rate_limited" || refusedHandshakes(where.ip ?? "")) {
+                logger.warn(
+                    { code: error.code, reason: error.message, detail: error.detail, ...where },
+                    "Refused a socket connection",
+                );
+            }
+            next(connectError(toApiError(error, ref)));
         }
     });
 
@@ -120,6 +140,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         const request = requests.get(ack);
         return { event: request?.event ?? "unknown", account: request?.accountId?.toHexString() ?? null };
     };
+
+    const refusedEvents = throttle(30_000);
 
     // Pushes go one at a time per account, so a step never overtakes the one before it.
     const pushing = new Map<string, Promise<void>>();
@@ -146,10 +168,17 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             if (typeof ack === "function") requests.set(ack, { event, accountId: socket.data.account?.id });
             events.consume(socket.data.identity.userId).then(
                 () => next(),
-                () => {
+                (limit: unknown) => {
                     const ack = args.at(-1);
+                    const seconds = retrySeconds(limit);
+                    if (refusedEvents(socket.data.identity.userId)) {
+                        logger.warn(
+                            { event, accountId: socket.data.identity.userId, retryInSeconds: seconds },
+                            "Refused a socket event because the connection sent too many",
+                        );
+                    }
                     if (typeof ack === "function") {
-                        ack(failure({ code: "rate_limited", message: "Too many requests. Try again shortly." }));
+                        ack(failure({ code: "rate_limited", message: `Too many requests. Try again in ${seconds}.` }));
                     }
                 },
             );
@@ -169,21 +198,30 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 services.balances
                     .refresh(account, socket.data.identity, "bind", (view) => socket.emit("balances", view))
                     .catch((error: unknown) => {
-                        logger.warn({ err: error }, "Couldn't read balances at sign-in");
+                        logger.warn(
+                            { err: error, event: "account:open", accountId: account._id.toHexString() },
+                            "Couldn't read balances for an account at sign-in",
+                        );
                     });
                 // Read and sent in the account's push order, so a settling push can't be overwritten by an older snapshot
                 enqueue(account._id.toHexString(), async () => {
                     try {
                         socket.emit("positions", await services.predictions.positions(account));
                     } catch (error) {
-                        logger.warn({ err: error }, "Couldn't read positions at sign-in");
+                        logger.warn(
+                            { err: error, event: "account:open", accountId: account._id.toHexString() },
+                            "Couldn't read positions for an account at sign-in",
+                        );
                     }
                 });
                 enqueue(account._id.toHexString(), async () => {
                     try {
                         socket.emit("perps", await services.perps.positions(account));
                     } catch (error) {
-                        logger.warn({ err: error }, "Couldn't read perp positions at sign-in");
+                        logger.warn(
+                            { err: error, event: "account:open", accountId: account._id.toHexString() },
+                            "Couldn't read perp positions for an account at sign-in",
+                        );
                     }
                 });
                 return session;
@@ -203,8 +241,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("deposit:submit", (payload, ack) =>
             reply(ack, async () => {
                 const { txHash } = parse(depositReport, payload);
-                await reports.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many deposits reported. Try again shortly.");
+                await reports.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many deposits reported.");
                 });
                 return services.deposits.report(await boundAccount(socket), txHash);
             }),
@@ -213,8 +251,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("deposit:quote", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(coinWalletAmount, payload);
-                await quotes.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many quotes. Try again shortly.");
+                await quotes.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many quotes.");
                 });
                 const account = await boundAccount(socket);
                 const wallet = await authorizedWallet(socket, input.wallet);
@@ -225,8 +263,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("deposit:order", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(coinWalletAmount, payload);
-                await orders.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many deposit orders. Try again shortly.");
+                await orders.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many deposit orders.");
                 });
                 const account = await boundAccount(socket);
                 const wallet = await authorizedWallet(socket, input.wallet);
@@ -238,8 +276,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("solana:blockhash", (_payload, ack) =>
             reply(ack, async () => {
                 solanaOpen(config, "deposits");
-                await blockhashes.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                await blockhashes.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many requests.");
                 });
                 return services.solana.getLatestBlockhash();
             }),
@@ -259,8 +297,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
         socket.on("withdraw:limits", (_payload, ack) =>
             reply(ack, async () => {
-                await withdrawLimits.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                await withdrawLimits.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many requests.");
                 });
                 const { max, min } = await services.withdrawals.limits(await boundAccount(socket));
                 return { max: formatUsdc(max), min: formatUsdc(min) };
@@ -270,8 +308,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("withdraw:quote", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(withdrawQuoteRequest, payload);
-                await withdrawQuotes.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                await withdrawQuotes.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many requests.");
                 });
                 if (!BASE58_ADDRESS.test(input.to)) {
                     throw new AppError("bad_request", "Only withdrawals to a Solana wallet have a quote.");
@@ -294,8 +332,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("withdraw:create", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(withdrawRequest, payload);
-                await withdrawals.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many withdrawals. Try again shortly.");
+                await withdrawals.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many withdrawals.");
                 });
                 const account = await boundAccount(socket);
                 const to = await services.identity.authorizeWallet(socket.data.identity, input.to);
@@ -311,8 +349,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             reply(ack, async () => {
                 const selling = typeof payload === "object" && payload !== null && "positionId" in payload;
                 const input = selling ? parse(sellQuote, payload) : parse(predictionQuote, payload);
-                await predictionQuotes.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many quotes. Try again shortly.");
+                await predictionQuotes.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many quotes.");
                 });
                 const account = await boundAccount(socket);
                 return "positionId" in input
@@ -324,8 +362,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("prediction:order", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(predictionOrder, payload);
-                await predictionOrders.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many predictions. Try again shortly.");
+                await predictionOrders.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many predictions.");
                 });
                 const account = await boundAccount(socket);
                 const placed = await services.predictions.place(account, input);
@@ -338,8 +376,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("prediction:close", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(predictionClose, payload);
-                await predictionOrders.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many predictions. Try again shortly.");
+                await predictionOrders.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many predictions.");
                 });
                 return services.predictions.close(await boundAccount(socket), input);
             }),
@@ -348,8 +386,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("perp:quote", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(perpQuote, payload);
-                await perpQuotes.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many quotes. Try again shortly.");
+                await perpQuotes.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many quotes.");
                 });
                 await boundAccount(socket);
                 return services.perps.quote(input);
@@ -359,8 +397,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("perp:order", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(perpOrder, payload);
-                await perpOrders.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many orders. Try again shortly.");
+                await perpOrders.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many orders.");
                 });
                 const placed = await services.perps.place(await boundAccount(socket), input);
                 return { order: perpOrderView(placed.order), account: accountView(placed.account) };
@@ -370,8 +408,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("perp:close", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(perpClose, payload);
-                await perpOrders.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many orders. Try again shortly.");
+                await perpOrders.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many orders.");
                 });
                 const closed = await services.perps.close(await boundAccount(socket), input);
                 return { order: perpOrderView(closed.order) };
@@ -381,8 +419,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("trade:order", (payload, ack) =>
             tradingReply(ack, async () => {
                 const input = parse(tradeOrder, payload);
-                await tradeOrders.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many trades. Try again shortly.");
+                await tradeOrders.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many trades.");
                 });
                 const account = await boundAccount(socket);
                 const result = await services.trades.order(account, input);
@@ -398,8 +436,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("holding:withdraw", (payload, ack) =>
             tradingReply(ack, async () => {
                 const input = parse(coinWithdraw, payload);
-                await coinWithdrawals.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                await coinWithdrawals.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many requests.");
                 });
                 const account = await boundAccount(socket);
                 services.trades.assertWithdrawalsOpen();
@@ -413,8 +451,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("pnl:series", (payload, ack) =>
             reply(ack, async () => {
                 const { tz } = parse(pnlSeries, payload);
-                await pnlSeriesLimit.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                await pnlSeriesLimit.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many requests.");
                 });
                 const account = await boundAccount(socket);
                 return services.pnl.series(account._id, tz);
@@ -424,8 +462,8 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
         socket.on("activity:list", (payload, ack) =>
             reply(ack, async () => {
                 const input = parse(activityPage, payload);
-                await activityList.consume(socket.data.identity.userId).catch(() => {
-                    throw new AppError("rate_limited", "Too many requests. Try again shortly.");
+                await activityList.consume(socket.data.identity.userId).catch((limit: unknown) => {
+                    throw tooMany(limit, "Too many requests.");
                 });
                 const account = await boundAccount(socket);
                 return services.feed.page(account._id, input);
@@ -446,6 +484,17 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                         socket.emit("pnl:changed");
                     } else socket.leave(roomOf(deposit.accountId));
                 }
+            })
+            .catch((error: unknown) => {
+                logger.warn(
+                    {
+                        err: error,
+                        event: "deposit:credited",
+                        depositId: deposit._id.toHexString(),
+                        accountId: deposit.accountId.toHexString(),
+                    },
+                    "Couldn't push a credited deposit",
+                );
             });
     });
 
@@ -458,6 +507,13 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     if (socket.data.identity.userId === privyUserId) socket.emit("balances", view);
                     else socket.leave(roomOf(accountId));
                 }
+            })
+            .catch((error: unknown) => {
+                // A stray rejection here would stop the whole server, so it ends in a log line
+                logger.warn(
+                    { err: error, event: "balances:updated", accountId: accountId.toHexString() },
+                    "Couldn't push balances to a person's sockets",
+                );
             });
     });
 
@@ -473,7 +529,15 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     else socket.leave(roomOf(order.accountId));
                 }
             } catch (error) {
-                logger.warn({ err: error }, "Couldn't push an order update");
+                logger.warn(
+                    {
+                        err: error,
+                        event: "order:updated",
+                        orderId: order._id.toHexString(),
+                        accountId: order.accountId.toHexString(),
+                    },
+                    "Couldn't push a deposit order update",
+                );
             }
         });
     });
@@ -493,7 +557,15 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     } else socket.leave(room);
                 }
             } catch (error) {
-                logger.warn({ err: error }, "Couldn't push a withdrawal update");
+                logger.warn(
+                    {
+                        err: error,
+                        event: "withdrawal:updated",
+                        withdrawalId: withdrawal._id.toHexString(),
+                        accountId: withdrawal.accountId.toHexString(),
+                    },
+                    "Couldn't push a withdrawal update",
+                );
             }
         });
     });
@@ -512,7 +584,15 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     } else socket.leave(room);
                 }
             } catch (error) {
-                logger.warn({ err: error }, "Couldn't push a prediction update");
+                logger.warn(
+                    {
+                        err: error,
+                        event: "prediction:updated",
+                        orderId: update.order._id.toHexString(),
+                        accountId: update.account._id.toHexString(),
+                    },
+                    "Couldn't push a prediction update",
+                );
             }
         });
     });
@@ -531,7 +611,10 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     } else socket.leave(room);
                 }
             } catch (error) {
-                logger.warn({ err: error }, "Couldn't push a perp update");
+                logger.warn(
+                    { err: error, event: "perp:updated", accountId: update.account._id.toHexString() },
+                    "Couldn't push a perp update",
+                );
             }
         });
     });
@@ -548,7 +631,15 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     } else socket.leave(room);
                 }
             } catch (error) {
-                logger.warn({ err: error }, "Couldn't push a settled position");
+                logger.warn(
+                    {
+                        err: error,
+                        event: "position:settled",
+                        positionId: position._id.toHexString(),
+                        accountId: account._id.toHexString(),
+                    },
+                    "Couldn't push a settled position",
+                );
             }
         });
     });
@@ -569,7 +660,15 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     if (holdings) socket.emit("holdings:update", { holdings });
                 }
             } catch (error) {
-                logger.warn({ err: error }, "Couldn't push a coin withdrawal");
+                logger.warn(
+                    {
+                        err: error,
+                        event: "coin-withdrawal:updated",
+                        withdrawalId: withdrawal._id.toHexString(),
+                        accountId: withdrawal.accountId.toHexString(),
+                    },
+                    "Couldn't push a coin withdrawal",
+                );
             }
         });
     });
@@ -596,7 +695,10 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                     if (push.moves) socket.emit("pnl:changed");
                 }
             } catch (error) {
-                logger.warn({ err: error }, "Couldn't push a trade");
+                logger.warn(
+                    { err: error, event: "trade:filled", accountId: accountId.toHexString() },
+                    "Couldn't push a trade",
+                );
             }
         });
     }
@@ -609,14 +711,15 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
 
     async function boundAccount(socket: IoSocket) {
         const bound = socket.data.account;
-        if (!bound) throw new AppError("wallet_not_connected", "Open your account first.");
+        if (!bound) throw new AppError("wallet_not_connected", ACCOUNT_NOT_OPEN, { detail: "socket_not_bound" });
         const account = await services.accounts.findById(bound.id);
         // The account belongs to another Privy user than this socket's.
         if (account && account.privyUserId !== socket.data.identity.userId) {
             await socket.leave(bound.room);
             socket.data.account = null;
         }
-        if (!account || !socket.data.account) throw new AppError("wallet_not_connected", "Open your account first.");
+        if (!account || !socket.data.account)
+            throw new AppError("wallet_not_connected", ACCOUNT_NOT_OPEN, { detail: "socket_not_bound" });
         return account;
     }
 
@@ -624,7 +727,10 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
     function refused(ack: object, error: AppError | TradeError) {
         if (error instanceof AppError && error.logged) return;
         const { event, account } = describe(ack);
-        logger.warn({ event, account, code: error.code }, `${error.message} (${event})`);
+        logger.warn(
+            { event, account, code: error.code, detail: error instanceof AppError ? error.detail : undefined },
+            `${error.message} (${event})`,
+        );
     }
 
     async function reply<T>(ack: unknown, work: () => Promise<T>) {
@@ -640,7 +746,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 logger.error({ err: error, event, account, ref }, `Unexpected error in socket request ${event}`);
             } else if (error.status >= 500)
                 logger.error(
-                    { err: error.cause ?? error, event, account, code: error.code },
+                    { err: error.cause ?? error, event, account, code: error.code, detail: error.detail },
                     `${error.message} (${event})`,
                 );
             else refused(ack, error);
@@ -690,6 +796,19 @@ const TRADING_CODES: Partial<Record<ApiError["code"], TradingErrorCode>> = {
 };
 
 const failure = (error: ApiError): Ack<never> => ({ ok: false, error });
+
+/** How long until a limiter lets the next one through, in words ("4 seconds"). */
+function retrySeconds(limit: unknown) {
+    const ms = (limit as { msBeforeNext?: unknown } | null)?.msBeforeNext;
+    const seconds = typeof ms === "number" ? Math.max(1, Math.ceil(ms / 1000)) : 10;
+    return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+}
+
+/** What a limiter's rejection becomes: the refusal with the wait in it, or the real error when it wasn't the limit that said no. */
+function tooMany(limit: unknown, what: string) {
+    if (limit instanceof Error) return limit;
+    return new AppError("rate_limited", `${what} Try again in ${retrySeconds(limit)}.`);
+}
 
 /** Socket.io hands `connect_error` listeners the message and `data`. */
 function connectError(error: ApiError) {

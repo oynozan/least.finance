@@ -161,7 +161,7 @@ test.describe("a sent deposit", () => {
                 ack(
                     link.bound
                         ? { ok: true, data: receipt(txHash) }
-                        : { ok: false, error: { code: "wallet_not_connected", message: "Open your account first." } },
+                        : { ok: false, error: { code: "wallet_not_connected", message: "Your account isn't open yet. Reload the page to open it." } },
                 );
             });
         });

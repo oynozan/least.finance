@@ -44,7 +44,7 @@ describe("market routes", () => {
         expect(search.status).toBe(503);
         expect(search.json.error).toEqual({
             code: "unavailable",
-            message: "Markets are unavailable right now. Try again shortly.",
+            message: "Polymarket's markets didn't load. Try again shortly.",
         });
 
         stack.polymarket.failNext("/events/:id");

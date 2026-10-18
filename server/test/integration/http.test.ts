@@ -230,7 +230,7 @@ describe("accounts", () => {
         const user = await stack.user();
         const res = await call("GET", "/v1/account", { token: user.token });
         expect(res.status).toBe(409);
-        expect(res.json.error).toEqual({ code: "wallet_not_connected", message: "Open your account first." });
+        expect(res.json.error).toEqual({ code: "wallet_not_connected", message: "Your account isn't open yet. Reload the page to open it." });
     });
 
     test("an account is readable after opening", async () => {

@@ -144,7 +144,7 @@ describe("activity:list", () => {
         expect(results.every((result) => result.ok)).toBe(true);
         expect(last).toMatchObject({
             ok: false,
-            error: { code: "rate_limited", message: "Too many requests. Try again shortly." },
+            error: { code: "rate_limited", message: expect.stringMatching(/^Too many requests. Try again in \d+ seconds?.$/) },
         });
         expect(unaffected.ok).toBe(true);
     });

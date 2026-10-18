@@ -2,7 +2,8 @@ import { APIError, PrivyClient } from "@privy-io/node";
 import { createRemoteJWKSet, errors, importSPKI, jwtVerify, type CryptoKey, type JWTVerifyGetKey } from "jose";
 import type { Logger } from "pino";
 import { getAddress, isAddress, type Address } from "viem";
-import { AppError } from "../errors.ts";
+import { AppError, newRef } from "../errors.ts";
+import { throttle } from "../log-throttle.ts";
 
 /** Who a verified access token belongs to. */
 export type Identity = {
@@ -81,6 +82,8 @@ export class PrivyIdentity implements IdentityProvider {
     readonly #appId: string;
     readonly #key: CryptoKey | JWTVerifyGetKey;
     readonly #logger: Logger;
+    readonly #source: "pem" | "jwks";
+    readonly #quiet = throttle(60_000);
     readonly #wallets = new Map<string, Wallets>();
     readonly #fetching = new Map<string, Promise<Wallets>>();
     #api: PrivyApiState = "unchecked";
@@ -98,10 +101,17 @@ export class PrivyIdentity implements IdentityProvider {
                   timeoutDuration: 5_000,
               });
         const privy = new PrivyClient({ appId, appSecret, apiUrl, timeout: 10_000, maxRetries: 1 });
-        return new PrivyIdentity(privy, appId, key, logger);
+        return new PrivyIdentity(privy, appId, key, logger, verificationKey ? "pem" : "jwks");
     }
 
-    private constructor(privy: PrivyClient, appId: string, key: CryptoKey | JWTVerifyGetKey, logger: Logger) {
+    private constructor(
+        privy: PrivyClient,
+        appId: string,
+        key: CryptoKey | JWTVerifyGetKey,
+        logger: Logger,
+        source: "pem" | "jwks",
+    ) {
+        this.#source = source;
         this.#privy = privy;
         this.#appId = appId;
         this.#key = key;
@@ -127,19 +137,71 @@ export class PrivyIdentity implements IdentityProvider {
                 typeof key === "function" ? await jwtVerify(token, key, options) : await jwtVerify(token, key, options);
             return { userId: payload.sub!, expiresAt: payload.exp! * 1000 };
         } catch (error) {
-            if (BAD_TOKEN.some((type) => error instanceof type)) {
-                throw new AppError("unauthorized", "Your session isn't valid. Sign in again.", { cause: error });
+            if (error instanceof errors.JWTExpired) {
+                throw new AppError("unauthorized", "Your session expired. Sign in again.", {
+                    cause: error,
+                    detail: "token_expired",
+                });
             }
-            this.#logger.error({ err: error }, "Couldn't verify a Privy access token");
-            throw new AppError("unavailable", "Couldn't check your session right now. Try again shortly.", {
+            if (error instanceof errors.JWTClaimValidationFailed && (error.claim === "aud" || error.claim === "iss")) {
+                // Every person is refused alike when the app ID is wrong, so the owner has to be told
+                const held = this.#quiet(`claim:${error.claim}`);
+                if (held) {
+                    this.#logger.warn(
+                        {
+                            event: "auth.token_refused",
+                            claim: error.claim,
+                            reason: error.reason,
+                            code: error.code,
+                            held: held.held,
+                        },
+                        `A sign-in token was refused for its ${error.claim}; if every person is signed out, PRIVY_APP_ID doesn't match the web app's`,
+                    );
+                }
+                throw new AppError(
+                    "unauthorized",
+                    "Your sign-in belongs to a different app than this server. Sign in again; if it keeps happening the owner must check PRIVY_APP_ID.",
+                    { cause: error, detail: `claim_${error.claim}_${error.reason}` },
+                );
+            }
+            if (BAD_TOKEN.some((type) => error instanceof type)) {
+                const code = (error as { code?: string }).code ?? "invalid";
+                const held = this.#quiet(`token:${code}`);
+                if (held) {
+                    this.#logger.warn(
+                        { event: "auth.token_refused", code, source: this.#source, held: held.held },
+                        "A sign-in token was refused",
+                    );
+                }
+                throw new AppError("unauthorized", "Your sign-in token isn't valid. Sign in again.", {
+                    cause: error,
+                    detail: code,
+                });
+            }
+            const held = this.#quiet("keys");
+            const ref = held ? newRef() : undefined;
+            if (held) {
+                this.#logger.warn(
+                    { event: "auth.keys_unreachable", source: this.#source, ref, err: error, held: held.held },
+                    "Couldn't check a sign-in token because the key source didn't answer",
+                );
+            }
+            throw new AppError("unavailable", `The sign-in service didn't answer. Try again shortly${refOf(ref)}.`, {
                 cause: error,
+                detail: "keys_unreachable",
             });
         }
     }
 
     async authorizeWallet(identity: Identity, address: string): Promise<string> {
         const isEvm = isAddress(address, { strict: false });
-        if (!isEvm && !BASE58_ADDRESS.test(address)) throw new AppError("bad_request", "That isn't a wallet address.");
+        if (!isEvm && !BASE58_ADDRESS.test(address)) {
+            this.#logger.warn(
+                { event: "auth.bad_address", accountId: identity.userId, length: address.length },
+                "A request named something that isn't a wallet address",
+            );
+            throw new AppError("bad_request", "That isn't a wallet address.");
+        }
         const has = (wallets: Wallets) =>
             isEvm ? wallets.evm.has(address.toLowerCase()) : wallets.solana.has(address);
 
@@ -147,7 +209,21 @@ export class PrivyIdentity implements IdentityProvider {
         if (!has(wallets) && Date.now() - wallets.fetchedAt > RECHECK_AFTER_MS) {
             wallets = await this.#walletsOf(identity.userId, true);
         }
-        if (!has(wallets)) throw new AppError("forbidden", "That wallet isn't linked to your account.");
+        if (!has(wallets)) {
+            this.#logger.warn(
+                {
+                    event: "auth.wallet_not_linked",
+                    accountId: identity.userId,
+                    address,
+                    cacheAgeMs: Date.now() - wallets.fetchedAt,
+                },
+                "A wallet isn't linked to the account that asked to use it",
+            );
+            throw new AppError(
+                "forbidden",
+                "That wallet isn't linked to your account yet. Wait a few seconds after linking it, then try again.",
+            );
+        }
         return isEvm ? getAddress(address) : address;
     }
 
@@ -177,8 +253,10 @@ export class PrivyIdentity implements IdentityProvider {
             this.#api = "ok";
         } catch (error) {
             this.#api = this.#classify(error);
-            if (this.#api === "rejected") this.#logger.error(REJECTED_MESSAGE);
-            else if (this.#api === "unreachable") this.#logger.warn({ err: error }, "Privy's API isn't answering");
+            if (this.#api === "rejected")
+                this.#logger.error({ event: "privy.check", status: statusOf(error) }, REJECTED_MESSAGE);
+            else if (this.#api === "unreachable")
+                this.#logger.warn({ err: error, event: "privy.check" }, "Privy's API isn't answering");
         }
         return this.#api;
     }
@@ -195,17 +273,45 @@ export class PrivyIdentity implements IdentityProvider {
         let user;
         try {
             user = await this.#privy.users()._get(userId);
+            if (this.#api !== "ok")
+                this.#logger.info({ event: "privy.user_read", was: this.#api }, "Privy's API answers again");
             this.#api = "ok";
         } catch (error) {
+            const was = this.#api;
             this.#api = this.#classify(error);
             if (this.#api === "ok") {
-                throw new AppError("unauthorized", "Your account no longer exists. Sign in again.", { cause: error });
+                throw new AppError("unauthorized", "Your account no longer exists. Sign in again.", {
+                    cause: error,
+                    detail: "privy_404",
+                });
             }
-            if (this.#api === "rejected") this.#logger.error(REJECTED_MESSAGE);
-            else this.#logger.error({ err: error, userId }, "Couldn't load a Privy user");
-            throw new AppError("unavailable", "Couldn't check your wallet right now. Try again shortly.", {
-                cause: error,
-            });
+            const status = statusOf(error);
+            // Every wallet read fails alike while this lasts, so a minute's worth is one line, and only it has a ref
+            const held = this.#quiet(`wallets:${this.#api}`);
+            const ref = held ? newRef() : undefined;
+            if (held) {
+                this.#logger.error(
+                    {
+                        event: "privy.user_read",
+                        userId,
+                        status,
+                        body: error instanceof Error ? error.message.slice(0, 300) : String(error),
+                        ref,
+                        was,
+                        held: held.held,
+                    },
+                    this.#api === "rejected"
+                        ? `${REJECTED_MESSAGE} Privy answered ${status}`
+                        : "Couldn't load a Privy user",
+                );
+            }
+            throw new AppError(
+                "unavailable",
+                this.#api === "rejected"
+                    ? `Wallet checks are down on our side${refOf(ref)}. Try again shortly.`
+                    : `The wallet service didn't answer in 10 seconds${refOf(ref)}. Try again shortly.`,
+                { cause: error, detail: `privy_${this.#api}_${status ?? "no_status"}` },
+            );
         }
 
         const evm = new Set<string>();
@@ -222,3 +328,8 @@ export class PrivyIdentity implements IdentityProvider {
         return wallets;
     }
 }
+
+const statusOf = (error: unknown) => (error instanceof APIError ? error.status : undefined);
+
+/** " (ref 3f9a2c)" when the failure was logged under one, nothing when a repeat was held back. */
+const refOf = (ref: string | undefined) => (ref ? ` (ref ${ref})` : "");

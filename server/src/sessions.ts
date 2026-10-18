@@ -1,3 +1,4 @@
+import type { Logger } from "pino";
 import type { DepositOrders } from "./crosschain/orders.ts";
 import { orderView } from "./crosschain/views.ts";
 import type { AccountService } from "./accounts/accounts.ts";
@@ -20,7 +21,11 @@ type Deps = {
     collections: Pick<Collections, "holdings">;
     rules: DepositRules;
     solana: { deposits: boolean; withdrawals: boolean };
+    logger: Logger;
 };
+
+/** What a person is told when a request needs an account that isn't open on this connection. */
+export const ACCOUNT_NOT_OPEN = "Your account isn't open yet. Reload the page to open it.";
 
 /** Opening a person's account, the same over HTTP and sockets. */
 export class Sessions {
@@ -52,7 +57,13 @@ export class Sessions {
     /** The user's account, for requests that don't open one. */
     async existing(identity: Identity): Promise<AccountDoc> {
         const account = await this.#deps.accounts.find(identity.userId);
-        if (!account) throw new AppError("wallet_not_connected", "Open your account first.");
+        if (!account) {
+            this.#deps.logger.warn(
+                { event: "account.existing", accountId: identity.userId },
+                "A signed-in person asked for an account that isn't open",
+            );
+            throw new AppError("wallet_not_connected", ACCOUNT_NOT_OPEN, { detail: "no_account_row" });
+        }
         return account;
     }
 }

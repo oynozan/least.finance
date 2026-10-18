@@ -137,7 +137,7 @@ describe("before account:open", () => {
         const result = await socket.timeout(5000).emitWithAck("deposits:list", {});
         expect(result).toMatchObject({
             ok: false,
-            error: { code: "wallet_not_connected", message: "Open your account first." },
+            error: { code: "wallet_not_connected", message: "Your account isn't open yet. Reload the page to open it." },
         });
     });
 

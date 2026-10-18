@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import cors from "cors";
-import express, { type ErrorRequestHandler, type RequestHandler, type Response } from "express";
+import express, { type ErrorRequestHandler, type Request, type RequestHandler, type Response } from "express";
 import { rateLimit } from "express-rate-limit";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
@@ -23,6 +23,29 @@ const REQUEST_ID = /^[\w.:-]{1,64}$/;
 /** A URL without its query string, which can carry tokens. */
 const pathOf = (url = "") => url.split("?")[0]!;
 
+/** Answers a refused request and logs it once, with what the person was told and why; the access log then stays quiet. */
+function refuse(
+    req: Request,
+    res: Response,
+    status: number,
+    error: ApiError,
+    fields: Record<string, unknown>,
+    msg: string,
+) {
+    res.status(status).json(errorBody(error));
+    res.locals.logged = true;
+    const startedAt = res.locals.startedAt as number | undefined;
+    req.log.warn(
+        {
+            ...fields,
+            res,
+            responseTime: startedAt ? Date.now() - startedAt : undefined,
+            accountId: (res.locals.identity as Identity | undefined)?.userId,
+        },
+        msg,
+    );
+}
+
 /** The HTTP API. Everything under /v1 needs a Privy access token as a Bearer token. */
 export function createApp(services: Services): express.Express {
     const { config, logger } = services;
@@ -31,6 +54,10 @@ export function createApp(services: Services): express.Express {
     // A hop count, never `true`: trusting every X-Forwarded-For would let clients pick their own IP.
     app.set("trust proxy", config.TRUST_PROXY);
 
+    app.use((_req, res, next) => {
+        res.locals.startedAt = Date.now();
+        next();
+    });
     app.use(
         pinoHttp({
             logger,
@@ -88,16 +115,32 @@ export function createApp(services: Services): express.Express {
         res.json({ status: "ok" });
     });
 
-    app.get("/ready", async (_req, res) => {
+    app.get("/ready", async (req, res) => {
         const scan = services.watcher.status();
-        const scanFresh = scan.lastSuccessAt !== null && Date.now() - scan.lastSuccessAt.getTime() < 60_000;
+        const scanAge = scan.lastSuccessAt === null ? null : Date.now() - scan.lastSuccessAt.getTime();
+        const scanFresh = scanAge !== null && scanAge < 60_000;
         const database = await services.database.db
             .command({ ping: 1 })
             .then(() => true)
-            .catch(() => false);
+            .catch((error: unknown) => {
+                req.log.warn({ err: error, event: "ready.database_ping" }, "MongoDB didn't answer a ping");
+                return false;
+            });
         const ready = database && scanFresh;
+        // What is wrong, in words, so a 503 explains itself
+        const reasons = [
+            ...(database ? [] : ["The database didn't answer."]),
+            ...(scanFresh
+                ? []
+                : [
+                      scanAge === null
+                          ? "The deposit scan hasn't succeeded since the server started."
+                          : `The deposit scan last succeeded ${Math.round(scanAge / 1000)} seconds ago.`,
+                  ]),
+        ];
         res.status(ready ? 200 : 503).json({
             status: ready ? "ready" : "degraded",
+            reasons,
             database,
             // Reported, not a reason to take the server out of rotation: signed-in people don't need Privy.
             privy: services.identity.apiState(),
@@ -119,7 +162,21 @@ export function createApp(services: Services): express.Express {
         res.set("Cache-Control", "no-store");
         next();
     };
-    const unavailable = () => new AppError("unavailable", "Markets are unavailable right now. Try again shortly.");
+    /** What went wrong reading Polymarket's markets, for the person and for the log. */
+    const unavailable = (error: unknown) => {
+        const text = error instanceof Error ? error.message : String(error);
+        const status = /\b429\b|rate limit|too many requests/i.test(text) ? 429 : undefined;
+        const timedOut = error instanceof Error && /timed? ?out|aborted|timeout/i.test(`${error.name} ${text}`);
+        return new AppError(
+            "unavailable",
+            status === 429
+                ? "Polymarket is limiting how fast we can read its markets. Try again in a minute."
+                : timedOut
+                  ? "Polymarket didn't answer in time. Try again shortly."
+                  : "Polymarket's markets didn't load. Try again shortly.",
+            { cause: error, detail: text.slice(0, 200) },
+        );
+    };
 
     app.get("/markets/trending", noStore, limit(120, 60_000), (_req, res) => {
         res.json(services.markets.trending());
@@ -129,8 +186,8 @@ export function createApp(services: Services): express.Express {
         const { q } = parse(marketSearch, req.query);
         res.json(
             await services.markets.search(q).catch((error: unknown) => {
-                req.log.warn({ err: error }, "Market search failed");
-                throw unavailable();
+                req.log.warn({ err: error, event: "markets.search", queryLength: q.length }, "Market search failed");
+                throw unavailable(error);
             }),
         );
     });
@@ -138,8 +195,8 @@ export function createApp(services: Services): express.Express {
     app.get("/markets/:eventId", noStore, limit(120, 60_000), async (req, res) => {
         const id = parse(marketId, req.params.eventId);
         const market = await services.markets.event(id).catch((error: unknown) => {
-            req.log.warn({ err: error }, "Market read failed");
-            throw unavailable();
+            req.log.warn({ err: error, event: "markets.event", eventId: id }, "Market read failed");
+            throw unavailable(error);
         });
         if (!market) throw new AppError("not_found", "That market isn't available.");
         res.json(market);
@@ -150,8 +207,8 @@ export function createApp(services: Services): express.Express {
         const id = parse(marketId, req.params.eventId);
         const { outcomes } = parse(marketHistoryQuery, req.query);
         const view = await services.marketHistory.view(id, outcomes).catch((error: unknown) => {
-            req.log.warn({ err: error }, "Market history read failed");
-            throw unavailable();
+            req.log.warn({ err: error, event: "markets.history", eventId: id }, "Market history read failed");
+            throw unavailable(error);
         });
         if (!view) throw new AppError("not_found", "That market isn't available.");
         res.json(view);
@@ -171,7 +228,16 @@ export function createApp(services: Services): express.Express {
     app.get("/prices/history", noStore, limit(120, 60_000), async (req, res) => {
         const { range, coins } = parse(priceHistory, req.query);
         const view = await services.priceHistory.view(range, coins);
-        if (!view) throw new AppError("unavailable", "Prices are unavailable right now. Try again shortly.");
+        if (!view) {
+            req.log.warn(
+                { event: "prices.history", path: req.path, range, coins: (coins ?? []).slice(0, 8) },
+                "No price history is ready for this range yet",
+            );
+            throw new AppError(
+                "unavailable",
+                "The price source hasn't answered yet, so this chart isn't ready. It retries on its own.",
+            );
+        }
         // A range changes every few minutes at most, so a minute in the browser misses nothing;
         // a coin left without points (its read failed) or left out (not listed yet) is asked for again soon.
         const answered = new Set(view.coins.map((coin) => coin.symbol.toLowerCase()));
@@ -208,8 +274,9 @@ export function createApp(services: Services): express.Express {
 
     app.use("/v1", v1);
 
-    app.use(() => {
-        throw new AppError("not_found", "There's nothing here.");
+    app.use((req) => {
+        const path = pathOf(req.originalUrl).slice(0, 80);
+        throw new AppError("not_found", `No such endpoint: ${req.method} ${path}.`, { detail: "no_route" });
     });
     app.use(errorHandler);
     return app;
@@ -221,8 +288,26 @@ function limit(requests: number, windowMs: number) {
         limit: requests,
         standardHeaders: "draft-8",
         legacyHeaders: false,
-        handler: (_req, res) => {
-            res.status(429).json(errorBody({ code: "rate_limited", message: "Too many requests. Try again shortly." }));
+        handler: (req, res, _next, options) => {
+            const wait = Number(res.getHeader("Retry-After"));
+            const seconds = Number.isFinite(wait) && wait > 0 ? Math.ceil(wait) : Math.ceil(windowMs / 1000);
+            refuse(
+                req,
+                res,
+                429,
+                {
+                    code: "rate_limited",
+                    message: `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`,
+                },
+                {
+                    event: "http.rate_limited",
+                    code: "rate_limited",
+                    ip: req.ip,
+                    limit: options.limit,
+                    retryInSeconds: seconds,
+                },
+                `Rate limited ${req.method} ${pathOf(req.originalUrl)}`,
+            );
         },
     });
 }
@@ -230,7 +315,9 @@ function limit(requests: number, windowMs: number) {
 function authenticate(services: Services): RequestHandler {
     return async (req, res, next) => {
         const token = /^Bearer\s+(\S+)$/i.exec(req.get("authorization") ?? "")?.[1];
-        if (!token) throw new AppError("unauthorized", "Sign in first.");
+        if (!token) {
+            throw new AppError("unauthorized", "Your session expired. Sign in again.", { detail: "no_token" });
+        }
         res.locals.identity = await services.identity.verify(token);
         next();
     };
@@ -246,20 +333,48 @@ const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     const status = (error as { status?: unknown }).status;
     const bodyError = (error as { type?: unknown }).type;
     if (typeof bodyError === "string" && typeof status === "number" && status >= 400 && status < 500) {
-        res.status(status).json(
-            errorBody({ code: "bad_request", message: "The request body isn't valid JSON, or is too large." }),
+        const message =
+            bodyError === "entity.too.large"
+                ? "The request was larger than 16 KB."
+                : bodyError === "entity.parse.failed"
+                  ? "The request wasn't valid JSON."
+                  : "The request body couldn't be read.";
+        refuse(
+            req,
+            res,
+            status,
+            { code: "bad_request", message },
+            { event: "http.bad_body", code: "bad_request", type: bodyError, length: req.get("content-length") },
+            `Refused ${req.method} ${pathOf(req.originalUrl)}: ${message}`,
         );
         return;
     }
     if (error instanceof AppError) {
+        const cause = error.cause ?? error;
         if (error.status >= 500) {
+            // An unexpected internal error carries the ref, like any other, so the person can quote it
+            const ref = error.code === "internal" ? String(req.id).slice(0, 8) : undefined;
             res.locals.logged = true;
             req.log.error(
-                { err: error.cause ?? error, code: error.code },
+                { err: cause, code: error.code, detail: error.detail, ref },
                 `${error.message} (${req.method} ${pathOf(req.originalUrl)})`,
             );
+            res.status(error.status).json(errorBody(toApiError(error, ref)));
+            return;
         }
-        res.status(error.status).json(errorBody(toApiError(error)));
+        refuse(
+            req,
+            res,
+            error.status,
+            toApiError(error),
+            {
+                code: error.code,
+                reason: error.message,
+                detail: error.detail,
+                cause: error.cause instanceof Error ? `${error.cause.name}: ${error.cause.message}` : undefined,
+            },
+            `Refused ${req.method} ${pathOf(req.originalUrl)}`,
+        );
         return;
     }
     // The ref is the head of the request id, which every log line of this request carries
