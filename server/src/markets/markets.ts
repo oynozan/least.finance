@@ -1,9 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
+import { HourlyLog } from "../predictions/rebalance-log.ts";
 import type { MarketOutcomeView, MarketSearchView, MarketView, TrendingView } from "../protocol.ts";
 import type { GammaEvent } from "./gamma.ts";
 import type { Book, PolymarketData } from "./polymarket-data.ts";
 import { shapeEvent } from "./shape.ts";
+import { describeUpstream } from "./upstream.ts";
 
 const TRENDING_COUNT = 50;
 const SEARCH_RESULTS = 20;
@@ -46,10 +48,19 @@ export class MarketService {
     readonly #unknown = new Map<string, number>();
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
+    /** Repeated failures log once an hour per read, so an outage doesn't fill the log. */
+    readonly #hourly: HourlyLog;
+    readonly #startedAt: number;
+    /** When the top-events read began failing, until it next works. */
+    #downSince: number | null = null;
+    /** Why the last top-events read gave nothing, in the words the picker shows. */
+    #lastError: string | null = null;
 
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#hourly = new HourlyLog(deps.logger, this.#now);
+        this.#startedAt = this.#now();
     }
 
     start() {
@@ -70,7 +81,8 @@ export class MarketService {
             try {
                 await this.tick(signal);
             } catch (error) {
-                this.#deps.logger.warn({ err: error }, "Market sync failed");
+                // tick catches every read itself, so reaching this is a bug in the sync
+                this.#deps.logger.error({ err: error }, "Market sync failed");
             }
             await sleep(this.#deps.syncMs, undefined, { signal }).catch(() => undefined);
         }
@@ -90,11 +102,46 @@ export class MarketService {
                 if (view && markets.length < TRENDING_COUNT) markets.push(view);
             }
             // An empty answer is more likely a changed schema than a quiet market
-            if (markets.length === 0)
-                this.#deps.logger.warn({ read: top.length }, "Polymarket's top events shaped to nothing");
-            else this.#trending = { value: markets, at: now };
+            if (markets.length === 0) {
+                this.#lastError = "Polymarket's list came back with nothing we can show.";
+                this.#hourly.once(
+                    "top-empty",
+                    "warn",
+                    { read: top.length },
+                    "Polymarket's top events shaped to nothing",
+                );
+            } else {
+                this.#trending = { value: markets, at: now };
+                this.#lastError = null;
+                if (this.#downSince !== null)
+                    this.#deps.logger.info(
+                        { downForSec: Math.round((now - this.#downSince) / 1000) },
+                        "Polymarket's top events can be read again",
+                    );
+                this.#downSince = null;
+            }
         } catch (error) {
-            this.#deps.logger.warn({ err: error }, "Couldn't read Polymarket's top events");
+            const { message, fields } = describeUpstream(error);
+            this.#downSince ??= now;
+            this.#lastError = message;
+            this.#hourly.once(
+                "top-read",
+                "warn",
+                {
+                    ...fields,
+                    err: error,
+                    failingForSec: Math.round((now - this.#downSince) / 1000),
+                    trendingAgeSec: this.#trending ? Math.round((now - this.#trending.at) / 1000) : null,
+                },
+                "Couldn't read Polymarket's top events",
+            );
+            if (!this.#trending)
+                this.#hourly.once(
+                    "trending-empty",
+                    "warn",
+                    { sinceBootSec: Math.round((now - this.#startedAt) / 1000), lastError: message },
+                    "Trending list still empty since the server started",
+                );
         }
 
         for (const [id, requestedAt] of this.#requested)
@@ -108,7 +155,12 @@ export class MarketService {
                 else this.#events.delete(id);
                 if (!event || !shapeEvent(event, date)) this.#requested.delete(id);
             } catch (error) {
-                this.#deps.logger.warn({ err: error, event: id }, "Couldn't re-read a requested event");
+                this.#hourly.once(
+                    `reread:${id}`,
+                    "warn",
+                    { ...describeUpstream(error).fields, err: error, event: id },
+                    "Couldn't re-read a requested event",
+                );
             }
         }
         this.sweep();
@@ -132,6 +184,8 @@ export class MarketService {
             markets: this.#trending?.value ?? [],
             maxOrderUSD: this.#deps.maxOrderUSD?.() ?? null,
             readAt: this.#trending ? new Date(this.#trending.at).toISOString() : null,
+            // Only while there is nothing to show: why, so the picker can say it instead of waiting
+            ...(!this.#trending && this.#lastError && { unavailableReason: this.#lastError }),
         };
     }
 
@@ -248,7 +302,12 @@ export class MarketService {
             this.#books.set(event.id, { value: books, at: now });
             return books;
         } catch (error) {
-            this.#deps.logger.warn({ err: error, event: event.id }, "Couldn't read an event's order books");
+            this.#hourly.once(
+                `books:${event.id}`,
+                "warn",
+                { ...describeUpstream(error).fields, err: error, event: event.id, tokens: tokens.length },
+                "Couldn't read an event's order books",
+            );
             return null;
         }
     }

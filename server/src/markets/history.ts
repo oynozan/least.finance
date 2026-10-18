@@ -1,3 +1,4 @@
+import { describeUpstream } from "./upstream.ts";
 import type { Logger } from "pino";
 import type { MarketHistoryView } from "../protocol.ts";
 import type { MarketService } from "./markets.ts";
@@ -106,7 +107,11 @@ export class MarketHistory {
                 }
             })
             .catch((error: unknown) => {
-                this.#deps.logger.warn({ err: error, eventId }, "Could not read price history");
+                // Logged here, once per read; the route that waits on it only maps the failure to a sentence
+                this.#deps.logger.warn(
+                    { ...describeUpstream(error).fields, err: error, eventId, tokens: tokens.length, ...query },
+                    "Polymarket price history read failed",
+                );
                 throw error;
             })
             .finally(() => {

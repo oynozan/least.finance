@@ -352,7 +352,13 @@ export type MarketView = {
     outcomes: MarketOutcomeView[];
 };
 
-export type TrendingView = { markets: MarketView[]; maxOrderUSD: number | null; readAt: string | null };
+export type TrendingView = {
+    markets: MarketView[];
+    maxOrderUSD: number | null;
+    readAt: string | null;
+    /** Why there is nothing to show, in plain words; absent once a list has been read. */
+    unavailableReason?: string;
+};
 export type MarketSearchView = { query: string; markets: MarketView[] };
 
 /** One outcome's chance over the market's life, oldest first, as [unix ms, chance 0–1]; empty when Polymarket has none. */

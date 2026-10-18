@@ -6,6 +6,7 @@ import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import type { Identity } from "../auth/identity.ts";
 import { AppError, toApiError } from "../errors.ts";
+import { describeUpstream } from "../markets/upstream.ts";
 import type { ApiError } from "../protocol.ts";
 import type { Services } from "../services.ts";
 import {
@@ -162,21 +163,15 @@ export function createApp(services: Services): express.Express {
         res.set("Cache-Control", "no-store");
         next();
     };
-    /** What went wrong reading Polymarket's markets, for the person and for the log. */
-    const unavailable = (error: unknown) => {
-        const text = error instanceof Error ? error.message : String(error);
-        const status = /\b429\b|rate limit|too many requests/i.test(text) ? 429 : undefined;
-        const timedOut = error instanceof Error && /timed? ?out|aborted|timeout/i.test(`${error.name} ${text}`);
-        return new AppError(
-            "unavailable",
-            status === 429
-                ? "Polymarket is limiting how fast we can read its markets. Try again in a minute."
-                : timedOut
-                  ? "Polymarket didn't answer in time. Try again shortly."
-                  : "Polymarket's markets didn't load. Try again shortly.",
-            { cause: error, detail: text.slice(0, 200) },
-        );
-    };
+    /** Logs a failed Polymarket read once, with which route and what it asked, and answers with the cause in plain words. */
+    const unavailable =
+        (req: express.Request, what: string, asked: Record<string, unknown>, log = true) =>
+        (error: unknown): never => {
+            const { message, level, fields } = describeUpstream(error);
+            if (log)
+                req.log[level]({ ...fields, ...asked, requestId: req.id, err: error }, `Polymarket ${what} failed`);
+            throw new AppError("unavailable", message, { cause: error, logged: true });
+        };
 
     app.get("/markets/trending", noStore, limit(120, 60_000), (_req, res) => {
         res.json(services.markets.trending());
@@ -184,20 +179,14 @@ export function createApp(services: Services): express.Express {
 
     app.get("/markets/search", noStore, limit(60, 60_000), async (req, res) => {
         const { q } = parse(marketSearch, req.query);
-        res.json(
-            await services.markets.search(q).catch((error: unknown) => {
-                req.log.warn({ err: error, event: "markets.search", queryLength: q.length }, "Market search failed");
-                throw unavailable(error);
-            }),
-        );
+        res.json(await services.markets.search(q).catch(unavailable(req, "search", { route: "markets.search", q })));
     });
 
     app.get("/markets/:eventId", noStore, limit(120, 60_000), async (req, res) => {
         const id = parse(marketId, req.params.eventId);
-        const market = await services.markets.event(id).catch((error: unknown) => {
-            req.log.warn({ err: error, event: "markets.event", eventId: id }, "Market read failed");
-            throw unavailable(error);
-        });
+        const market = await services.markets
+            .event(id)
+            .catch(unavailable(req, "market read", { route: "markets.event", eventId: id }));
         if (!market) throw new AppError("not_found", "That market isn't available.");
         res.json(market);
     });
@@ -206,10 +195,10 @@ export function createApp(services: Services): express.Express {
     app.get("/markets/:eventId/history", noStore, limit(120, 60_000), async (req, res) => {
         const id = parse(marketId, req.params.eventId);
         const { outcomes } = parse(marketHistoryQuery, req.query);
-        const view = await services.marketHistory.view(id, outcomes).catch((error: unknown) => {
-            req.log.warn({ err: error, event: "markets.history", eventId: id }, "Market history read failed");
-            throw unavailable(error);
-        });
+        const view = await services.marketHistory
+            .view(id, outcomes)
+            // The history service already logged the failed read, once for everyone waiting on it
+            .catch(unavailable(req, "price history read", {}, false));
         if (!view) throw new AppError("not_found", "That market isn't available.");
         res.json(view);
     });
@@ -351,9 +340,14 @@ const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     }
     if (error instanceof AppError) {
         const cause = error.cause ?? error;
+        // An unexpected internal error carries the ref, like any other, so the person can quote it
+        const ref = error.status >= 500 && error.code === "internal" ? String(req.id).slice(0, 8) : undefined;
+        if (error.logged) {
+            res.locals.logged = true;
+            res.status(error.status).json(errorBody(toApiError(error, ref)));
+            return;
+        }
         if (error.status >= 500) {
-            // An unexpected internal error carries the ref, like any other, so the person can quote it
-            const ref = error.code === "internal" ? String(req.id).slice(0, 8) : undefined;
             res.locals.logged = true;
             req.log.error(
                 { err: cause, code: error.code, detail: error.detail, ref },

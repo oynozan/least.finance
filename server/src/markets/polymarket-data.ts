@@ -1,7 +1,9 @@
 import "../polymarket-proxy.ts";
 import type { Logger } from "pino";
 import { z } from "zod";
-import { gammaEvent, gammaMarket, type GammaEvent, type GammaMarket } from "./gamma.ts";
+import { HourlyLog } from "../predictions/rebalance-log.ts";
+import { gammaEvent, gammaMarket, issuesOf, skippedMarkets, type GammaEvent, type GammaMarket } from "./gamma.ts";
+import { readBody, UpstreamError } from "./upstream.ts";
 
 const TIMEOUT_MS = 5_000;
 const HISTORY_TIMEOUT_MS = 8_000;
@@ -35,17 +37,6 @@ const bookResponse = z.array(
 const historyResponse = z.object({ history: z.record(z.string(), z.array(z.unknown())) });
 const searchResponse = z.object({ events: z.array(z.unknown()).nullish() });
 
-// One odd event shouldn't cost the rest of the list
-function parseEvents(items: unknown[], logger?: Logger): GammaEvent[] {
-    const events = items.flatMap((item) => {
-        const parsed = gammaEvent.safeParse(item);
-        return parsed.success ? [parsed.data] : [];
-    });
-    if (events.length < items.length)
-        logger?.warn({ dropped: items.length - events.length }, "Dropped events that failed the schema");
-    return events;
-}
-
 export function createPolymarketData(options: {
     gammaUrl: string;
     clobUrl: string;
@@ -53,6 +44,52 @@ export function createPolymarketData(options: {
     logger?: Logger;
 }): PolymarketData {
     const { gammaUrl, clobUrl, fetch: call = fetch, logger } = options;
+    const hourly = logger ? new HourlyLog(logger, Date.now) : null;
+
+    // One odd event shouldn't cost the rest of the list
+    function parseEvents(items: unknown[]): GammaEvent[] {
+        const events: GammaEvent[] = [];
+        const dropped: { id: unknown; issues: string }[] = [];
+        for (const item of items) {
+            const parsed = gammaEvent.safeParse(item);
+            if (parsed.success) events.push(parsed.data);
+            else dropped.push({ id: (item as { id?: unknown } | null)?.id ?? "?", issues: issuesOf(parsed.error) });
+        }
+        // Logged once an hour per first bad event, since a persistent one would repeat on every sync
+        if (dropped.length)
+            hourly?.once(
+                `events:${dropped[0]!.id}`,
+                "warn",
+                { dropped: dropped.length, of: items.length, samples: dropped.slice(0, 3) },
+                "Polymarket events failed our schema and were dropped",
+            );
+        for (const event of events) {
+            const skipped = skippedMarkets(event);
+            if (skipped.length)
+                hourly?.once(
+                    `markets:${event.id}:${skipped[0]}`,
+                    "warn",
+                    { event: event.id, skipped: skipped.length, samples: skipped.slice(0, 3) },
+                    "Polymarket markets failed our schema and were skipped",
+                );
+        }
+        return events;
+    }
+
+    /** Parses an answer, turning a schema failure into an error that says which call and what was wrong. */
+    function shaped<T>(service: string, method: string, path: string, parse: () => T): T {
+        try {
+            return parse();
+        } catch (error) {
+            if (!(error instanceof z.ZodError)) throw error;
+            throw new UpstreamError(
+                "shape",
+                `${service} answered ${method} ${path} in an unexpected shape: ${issuesOf(error)}`,
+                { service, method, path },
+                { cause: error },
+            );
+        }
+    }
 
     async function send(
         base: string,
@@ -61,10 +98,41 @@ export function createPolymarketData(options: {
         allowMissing = false,
         timeoutMs = TIMEOUT_MS,
     ): Promise<unknown> {
-        const response = await call(`${base}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        const service = base === clobUrl ? "Polymarket CLOB" : "Polymarket Gamma";
+        const method = init.method ?? "GET";
+        const shown = path.split("?")[0]!;
+        const info = { service, method, path: shown };
+        let response: Response;
+        try {
+            response = await call(`${base}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        } catch (error) {
+            if (error instanceof Error && error.name === "TimeoutError")
+                throw new UpstreamError(
+                    "timeout",
+                    `${service} didn't answer ${method} ${shown} within ${timeoutMs / 1000} s`,
+                    info,
+                    { timeoutMs, cause: error },
+                );
+            const code = (error as { cause?: { code?: string } }).cause?.code;
+            throw new UpstreamError(
+                "network",
+                `Couldn't reach ${service} for ${method} ${shown}${code ? ` (${code})` : ""}`,
+                info,
+                { cause: error },
+            );
+        }
         if (response.status === 200) return response.json();
-        if (allowMissing && response.status === 404) return null;
-        throw new Error(`Polymarket answered ${response.status} to ${path}`);
+        if (allowMissing && response.status === 404) {
+            await response.body?.cancel();
+            return null;
+        }
+        const body = await readBody(response);
+        throw new UpstreamError(
+            "status",
+            `${service} answered ${response.status} to ${method} ${shown}${body ? `: "${body}"` : ""}`,
+            info,
+            { status: response.status, retryAfter: response.headers.get("retry-after"), body },
+        );
     }
 
     return {
@@ -73,23 +141,28 @@ export function createPolymarketData(options: {
                 gammaUrl,
                 "/events?active=true&closed=false&order=volume24hr&ascending=false&limit=100",
             );
-            return parseEvents(z.array(z.unknown()).parse(body), logger);
+            return parseEvents(shaped("Polymarket Gamma", "GET", "/events", () => z.array(z.unknown()).parse(body)));
         },
 
         async search(query) {
             const params = new URLSearchParams({ q: query, events_status: "active", limit_per_type: "20" });
-            const body = searchResponse.parse(await send(gammaUrl, `/public-search?${params}`));
-            return parseEvents(body.events ?? [], logger);
+            const sent = await send(gammaUrl, `/public-search?${params}`);
+            const body = shaped("Polymarket Gamma", "GET", "/public-search", () => searchResponse.parse(sent));
+            return parseEvents(body.events ?? []);
         },
 
         async event(id) {
             const body = await send(gammaUrl, `/events/${encodeURIComponent(id)}`, {}, true);
-            return body === null ? null : gammaEvent.parse(body);
+            return body === null
+                ? null
+                : shaped("Polymarket Gamma", "GET", `/events/${id}`, () => gammaEvent.parse(body));
         },
 
         async market(id) {
             const body = await send(gammaUrl, `/markets/${encodeURIComponent(id)}`, {}, true);
-            return body === null ? null : gammaMarket.parse(body);
+            return body === null
+                ? null
+                : shaped("Polymarket Gamma", "GET", `/markets/${id}`, () => gammaMarket.parse(body));
         },
 
         async books(tokenIds) {
@@ -100,7 +173,7 @@ export function createPolymarketData(options: {
             });
             const books = new Map<string, Book>();
             // Matched by asset_id, since the answer's order and length aren't promised
-            for (const book of bookResponse.parse(body)) {
+            for (const book of shaped("Polymarket CLOB", "POST", "/books", () => bookResponse.parse(body))) {
                 const bids = book.bids.map((l) => l.price);
                 const asks = book.asks.map((l) => l.price);
                 books.set(book.asset_id, {
@@ -125,7 +198,9 @@ export function createPolymarketData(options: {
                 HISTORY_TIMEOUT_MS,
             );
             const histories = new Map<string, RawPoint[]>();
-            for (const [token, items] of Object.entries(historyResponse.parse(body).history)) {
+            for (const [token, items] of Object.entries(
+                shaped("Polymarket CLOB", "POST", "/batch-prices-history", () => historyResponse.parse(body)).history,
+            )) {
                 const points: RawPoint[] = [];
                 for (const item of items) {
                     const { t, p } = (item ?? {}) as { t?: unknown; p?: unknown };
