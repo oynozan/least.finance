@@ -9,6 +9,7 @@ import { loadConfig } from "../src/config.ts";
 import { createSolanaRpc } from "../src/crosschain/solana.ts";
 import { createSwapClients, type EvmNetworkId } from "../src/swaps/clients.ts";
 import { NETWORKS } from "../src/swaps/coins.ts";
+import { describeError } from "./describe-error.ts";
 
 const config = loadConfig();
 const keyring = createKeyring(config.DEPOSIT_MNEMONIC);
@@ -43,7 +44,7 @@ const rows = await Promise.all(
             const symbol = client.chain?.nativeCurrency.symbol ?? "";
             return `${network.name.padEnd(12)} ${formatUnits(balance, client.chain?.nativeCurrency.decimals ?? 18)} ${symbol}`;
         } catch (error) {
-            return `${network.name.padEnd(12)} unreadable: ${String((error as Error).message).split("\n")[0]}`;
+            return `${network.name.padEnd(12)} unreadable: ${describeError(error)}`;
         }
     }),
 );

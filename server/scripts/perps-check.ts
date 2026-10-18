@@ -15,6 +15,7 @@ import { nextNonce } from "../src/perps/client.ts";
 import { createNktkasClient } from "../src/perps/nktkas-client.ts";
 import { limitPrice, liquidationPrice, roundSize, sizeFor } from "../src/perps/math.ts";
 import { requireTestnet } from "./live-check-guards.ts";
+import { describeError } from "./describe-error.ts";
 
 const ASSET = "BTC";
 const LEVERAGE = 5;
@@ -192,6 +193,6 @@ async function main() {
 }
 
 await main().catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : error);
+    console.error(describeError(error));
     process.exitCode = 1;
 });

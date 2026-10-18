@@ -48,6 +48,7 @@ import {
 import { withTimeouts, type PoolTrader } from "../src/predictions/trader.ts";
 import { TREASURY_GAS_RESERVE } from "../src/withdrawals/withdrawals.ts";
 import { owedOf } from "./perps-rebalance.ts";
+import { describeError } from "./describe-error.ts";
 
 /** How long one call to Polymarket or Polygon may take before status gives up on it. */
 const TRADER_CALL_MS = 30_000;
@@ -174,7 +175,7 @@ export async function resolveRow(
 }
 
 const dollars = (e6: bigint) => `$${formatE6(e6)}`;
-const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const message = describeError;
 const ago = (ms: number) => (ms < 120_000 ? `${Math.max(0, Math.round(ms / 1000))}s` : `${Math.round(ms / 60_000)}m`);
 
 const rowLine = (row: PoolRebalanceDoc) =>

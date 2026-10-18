@@ -28,6 +28,7 @@ import { createNktkasClient, sendToEvmWithData } from "../src/perps/nktkas-clien
 import { nextNonce } from "../src/perps/client.ts";
 import { ObjectId, type Collection, type Decimal128 } from "mongodb";
 import { encodeFunctionData, parseAbi } from "viem";
+import { describeError } from "./describe-error.ts";
 
 const HYPEREVM_DOMAIN = 19;
 const ARC_DOMAIN = 26;
@@ -298,7 +299,7 @@ async function main() {
 
 if (import.meta.main) {
     await main().catch((error: unknown) => {
-        console.error(error instanceof Error ? error.message : error);
+        console.error(describeError(error));
         process.exitCode = 1;
     });
 }
