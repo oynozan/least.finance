@@ -1,5 +1,5 @@
 import { pino } from "pino";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { Candle, HyperliquidClient } from "../../src/perps/client.ts";
 import type { PriceRange } from "../../src/protocol.ts";
 import {
@@ -315,4 +315,22 @@ describe("perp coins", () => {
         const later = await history.view("7d", ["HYPE"]);
         expect(later!.readAt).toBe(new Date(first + 10 * MINUTE).toISOString());
     });
+});
+
+test("an outage is logged once an hour per range and status, with the status and Retry-After", async () => {
+    const quiet = pino({ level: "silent" });
+    const warn = vi.spyOn(quiet, "warn");
+    let now = Date.parse("2026-10-13T12:00:00Z");
+    const llama: DefiLlama = {
+        async chart() {
+            throw new LlamaError("DefiLlama answered 429", { status: 429, retryAfterMs: 120_000 });
+        },
+    };
+    const history = new PriceHistory({ llama, logger: quiet, now: () => now });
+    await history.tick();
+    now += 10 * MINUTE;
+    await history.tick();
+    const lines = warn.mock.calls.filter(([, message]) => message === "Couldn't read price history from DefiLlama");
+    expect(lines.length).toBe(PRICE_RANGES.length);
+    expect(lines[0]![0]).toMatchObject({ status: 429, retryAfterMs: 120_000, retryInMs: 120_000 });
 });

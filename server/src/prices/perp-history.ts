@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import type { Candle, CandleInterval, HyperliquidClient } from "../perps/client.ts";
+import { HourlyLog } from "../predictions/rebalance-log.ts";
 import type { PriceRange } from "../protocol.ts";
 import type { PricePoint } from "./defillama.ts";
 import { RANGES } from "./history.ts";
@@ -62,6 +63,8 @@ export class PerpPriceHistory {
     readonly #now: () => number;
     readonly #maxEntries: number;
     readonly #budget: number;
+    /** An outage retries per coin, so each line is logged once an hour per coin and range. */
+    readonly #hourly: HourlyLog;
     /** Oldest use first. */
     readonly #kept = new Map<string, PerpSeries>();
     readonly #reading = new Map<string, Promise<void>>();
@@ -76,6 +79,7 @@ export class PerpPriceHistory {
         this.#now = deps.now ?? Date.now;
         this.#maxEntries = deps.maxEntries ?? MAX_ENTRIES;
         this.#budget = deps.weightPerMinute ?? WEIGHT_PER_MINUTE;
+        this.#hourly = new HourlyLog(deps.logger, this.#now);
     }
 
     /** The listed market a name stands for, matched ignoring case; undefined when Hyperliquid doesn't list it. */
@@ -136,6 +140,12 @@ export class PerpPriceHistory {
             const wanted = span * stride + 1;
             if (!this.#affordable(at, weightOf(wanted + 1))) {
                 this.#deps.logger.debug({ asset, range }, "Hyperliquid candle reads are at their weight, skipping one");
+                this.#hourly.once(
+                    "weight",
+                    "info",
+                    { budget: this.#budget, spent: this.#spent.reduce((sum, spent) => sum + spent.weight, 0) },
+                    "Hyperliquid chart reads are held back by their weight budget",
+                );
                 return;
             }
             const candles = await this.#deps.client.candles(asset, interval, at - wanted * widthMs, at);
@@ -143,8 +153,17 @@ export class PerpPriceHistory {
             this.#retryAt.delete(key);
         } catch (error) {
             this.#retryAt.set(key, this.#now() + RETRY_MS);
-            this.#deps.logger.warn(
-                { err: error, asset, range, retryInMs: RETRY_MS },
+            const status = (error as { response?: { status?: number }; status?: number }) ?? {};
+            this.#hourly.once(
+                `candles:${asset}:${range}`,
+                "warn",
+                {
+                    err: error,
+                    asset,
+                    range,
+                    status: status.response?.status ?? status.status ?? null,
+                    retryInMs: RETRY_MS,
+                },
                 "Couldn't read price history from Hyperliquid",
             );
         } finally {

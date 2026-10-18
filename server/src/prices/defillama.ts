@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readBody } from "../markets/upstream.ts";
 
 /** DefiLlama's id for each swap coin, keyed by symbol. */
 export const LLAMA_IDS: Readonly<Record<string, string>> = {
@@ -70,6 +71,8 @@ export function createDefiLlama(options: { url: string; fetch?: typeof fetch }):
             if (ids.length * span > MAX_POINTS)
                 throw new LlamaError(`A chart of ${ids.length * span} points is over DefiLlama's ${MAX_POINTS}`);
             const query = new URLSearchParams({ end: String(end), span: String(span), period });
+            // What was asked, never the URL, which holds the Pro key
+            const asked = `${ids.length} coins, ${span} points, every ${period}`;
             let response: Response;
             try {
                 response = await fetchChart(`${base}/chart/${ids.join(",")}?${query}`, {
@@ -77,11 +80,18 @@ export function createDefiLlama(options: { url: string; fetch?: typeof fetch }):
                     signal: AbortSignal.timeout(TIMEOUT_MS),
                 });
             } catch (error) {
-                throw new LlamaError("Couldn't reach DefiLlama", { cause: error });
+                if (error instanceof Error && error.name === "TimeoutError")
+                    throw new LlamaError(`DefiLlama didn't answer within ${TIMEOUT_MS / 1000} s (${asked})`, {
+                        cause: error,
+                    });
+                const code = (error as { cause?: { code?: string } }).cause?.code;
+                throw new LlamaError(`Couldn't reach DefiLlama${code ? ` (${code})` : ""} (${asked})`, {
+                    cause: error,
+                });
             }
             if (!response.ok) {
-                await response.body?.cancel();
-                throw new LlamaError(`DefiLlama answered ${response.status}`, {
+                const body = await readBody(response);
+                throw new LlamaError(`DefiLlama answered ${response.status}${body ? `: "${body}"` : ""} (${asked})`, {
                     status: response.status,
                     retryAfterMs: retryAfter(response.headers.get("retry-after")),
                 });
@@ -90,7 +100,7 @@ export function createDefiLlama(options: { url: string; fetch?: typeof fetch }):
             try {
                 body = chartBody.parse(await response.json());
             } catch (error) {
-                throw new LlamaError("DefiLlama's chart isn't in the expected shape", { cause: error });
+                throw new LlamaError(`DefiLlama's chart isn't in the expected shape (${asked})`, { cause: error });
             }
 
             const found = new Map<string, PricePoint[]>();

@@ -101,3 +101,42 @@ test("no failure names the URL, which holds the key on DefiLlama Pro", async () 
         expect(`${message} ${stack} ${causeText}`).not.toContain("secret-key");
     }
 });
+
+test("a refusal keeps DefiLlama's own words and what was asked, never the URL", async () => {
+    const llama = createDefiLlama({
+        url: "https://pro-api.llama.fi/SECRETKEY/coins",
+        fetch: async () =>
+            new Response(JSON.stringify({ message: "Too many requests" }), {
+                status: 429,
+                headers: { "retry-after": "60" },
+            }),
+    });
+    const error = (await llama
+        .chart({ ids: [ETH, USDC], end: 4, span: 4, period: "1h" })
+        .catch((e: unknown) => e)) as LlamaError;
+    expect(error.message).toBe('DefiLlama answered 429: "Too many requests" (2 coins, 4 points, every 1h)');
+    expect(error.message).not.toContain("SECRETKEY");
+    expect(error.status).toBe(429);
+    expect(error.retryAfterMs).toBe(60_000);
+});
+
+test("a timeout and a refused connection are told apart", async () => {
+    const timedOut = createDefiLlama({
+        url: "https://coins.llama.fi",
+        fetch: async () => {
+            throw new DOMException("timed out", "TimeoutError");
+        },
+    });
+    await expect(timedOut.chart({ ids: [ETH], end: 4, span: 4, period: "1h" })).rejects.toThrow(
+        "DefiLlama didn't answer within 10 s (1 coins, 4 points, every 1h)",
+    );
+    const refused = createDefiLlama({
+        url: "https://coins.llama.fi",
+        fetch: async () => {
+            throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ENOTFOUND" } });
+        },
+    });
+    await expect(refused.chart({ ids: [ETH], end: 4, span: 4, period: "1h" })).rejects.toThrow(
+        "Couldn't reach DefiLlama (ENOTFOUND)",
+    );
+});

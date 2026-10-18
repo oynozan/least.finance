@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
+import { HourlyLog } from "../predictions/rebalance-log.ts";
 import type { PriceHistoryView, PriceRange } from "../protocol.ts";
 import { COINS } from "../swaps/coins.ts";
 import { LLAMA_IDS, LlamaError, MAX_POINTS, type DefiLlama, type PricePoint } from "./defillama.ts";
@@ -62,12 +63,17 @@ export class PriceHistory {
     readonly #reading = new Map<PriceRange, Promise<void>>();
     /** When each range may ask DefiLlama again after a failed read. */
     readonly #retryAt = new Map<PriceRange, number>();
+    /** An outage retries every RETRY_MS, so its line is logged once an hour per range and status. */
+    readonly #hourly: HourlyLog;
+    /** The coins last reported as unpriced, so the line is logged when the set changes, not on every read. */
+    #missing = "";
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#hourly = new HourlyLog(deps.logger, this.#now);
     }
 
     start() {
@@ -184,15 +190,28 @@ export class PriceHistory {
             const missing = SYMBOLS.filter((symbol) => !coins.has(symbol));
             // Not one coin priced is a changed API, not a quiet market
             if (missing.length === SYMBOLS.length) throw new LlamaError("DefiLlama priced none of the swap coins");
-            if (missing.length > 0)
-                this.#deps.logger.warn({ range, missing }, "DefiLlama has no prices for some coins");
+            const unpriced = missing.join(",");
+            if (unpriced !== this.#missing) {
+                this.#missing = unpriced;
+                if (missing.length > 0)
+                    this.#deps.logger.warn({ range, missing }, "DefiLlama has no prices for some coins");
+            }
             this.#reads.set(range, { coins, at });
             this.#retryAt.delete(range);
         } catch (error) {
             const wait = Math.max(RETRY_MS, error instanceof LlamaError ? (error.retryAfterMs ?? 0) : 0);
             this.#retryAt.set(range, this.#now() + wait);
-            this.#deps.logger.warn(
-                { err: error, range, retryInMs: wait },
+            const status = error instanceof LlamaError ? error.status : null;
+            this.#hourly.once(
+                `llama:${range}:${status}`,
+                "warn",
+                {
+                    err: error,
+                    range,
+                    status,
+                    retryAfterMs: error instanceof LlamaError ? error.retryAfterMs : null,
+                    retryInMs: wait,
+                },
                 "Couldn't read price history from DefiLlama",
             );
         }
