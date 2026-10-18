@@ -37,7 +37,7 @@ type Deps = {
 };
 
 const badCursor = () =>
-    new AppError("bad_request", "That page of your history is out of date. Reload to see the newest.");
+    new AppError("bad_request", "That page of your history is out of date (invalid before). Reload to see the newest.");
 
 export const encodeCursor = (key: FeedKey) => `${key.atMs}:${key.rank}:${key.id}`;
 

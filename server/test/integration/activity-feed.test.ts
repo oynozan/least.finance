@@ -296,7 +296,9 @@ test("a garbled before is bad_request", async () => {
         const error = await feed.page(new ObjectId(), { before }).catch((caught: unknown) => caught);
         expect(error).toBeInstanceOf(AppError);
         expect((error as AppError).code).toBe("bad_request");
-        expect((error as AppError).message).toBe("That page of your history is out of date. Reload to see the newest.");
+        expect((error as AppError).message).toBe(
+            "That page of your history is out of date (invalid before). Reload to see the newest.",
+        );
     }
 });
 
