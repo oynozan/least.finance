@@ -75,6 +75,10 @@ export function createSolanaSender(options: {
     };
 }
 
+/** Answers that say the node is busy or behind, not that the transaction is bad. */
+const TRANSIENT = /blockhash not found|node is unhealthy|node is behind|too many requests|try again/i;
+const TRANSIENT_CODES = new Set([-32004, -32005]);
+
 /** `sendTransaction` over JSON-RPC, trying each URL in order. A failure names the provider by its place in the list, never by its URL, which carries a key. */
 export function jsonRpcSend(
     urls: readonly string[],
@@ -101,6 +105,9 @@ export function jsonRpcSend(
                     error?: { message?: string; code?: number; data?: { err?: unknown; logs?: unknown } };
                 };
                 // A preflight rejection is the network turning the transaction down
+                // A node that is busy or behind says nothing about the transaction, so it is tried elsewhere or again
+                if (body.error && (TRANSIENT.test(body.error.message ?? "") || TRANSIENT_CODES.has(body.error.code ?? 0)))
+                    throw new Error(`${body.error.message ?? "node busy"} (code ${body.error.code})`);
                 if (body.error)
                     throw new SolanaRefusal(body.error.message ?? "The cluster refused the transaction", {
                         code: body.error.code,

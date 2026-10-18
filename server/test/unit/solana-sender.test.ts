@@ -56,6 +56,22 @@ describe("Solana sender", () => {
         ).toEqual({ state: "failed", err: { InstructionError: [0, "Custom"] } });
     });
 
+    test("a node that is behind is tried elsewhere and is never a refusal", async () => {
+        const answers = [
+            { error: { code: -32005, message: "Node is unhealthy" } },
+            { error: { code: -32002, message: "Transaction simulation failed: Blockhash not found" } },
+        ];
+        const send = jsonRpcSend(
+            ["https://one.example/key123", "https://two.example/key456"],
+            async () => new Response(JSON.stringify(answers.shift())),
+        );
+        const error = (await send("wire").catch((caught: unknown) => caught)) as Error;
+        expect(refused(error)).toBe(false);
+        expect(error.message).toContain("Node is unhealthy");
+        expect(error.message).toContain("Blockhash not found");
+        expect(error.message).not.toContain("key123");
+    });
+
     test("a preflight rejection is a refusal and an unreachable node is not", async () => {
         const rejecting = jsonRpcSend(
             ["http://x"],
