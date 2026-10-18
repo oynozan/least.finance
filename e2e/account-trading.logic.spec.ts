@@ -15,7 +15,7 @@ import { estimateTrade } from "@/lib/account/spot";
 import { askOf, lessSpread } from "@/lib/trade/spread";
 import { cleanAmount, normalizeAmount } from "@/components/deposit-form";
 import { holdingRows, recentSends, sendAddress, sendDecimals, sendIssue, validAddress } from "@/lib/account/holdings";
-import { toTradeRequest, type SpotInputs, type SpotIntent } from "@/lib/trade/spot-request";
+import { missingPrice, toTradeRequest, type SpotInputs, type SpotIntent } from "@/lib/trade/spot-request";
 import type { CoinWithdrawalView, HoldingView, TradeOrderRequest } from "@/server/src/trading/types";
 
 const session = (balance: string, holdings: HoldingView[] = []): WalletSession => ({
@@ -327,5 +327,14 @@ test.describe("the request a review places", () => {
     test("waits for a price", () => {
         expect(toTradeRequest({ ...spot("buy", "30"), token: "DOGE" }, inputs, "r")).toBeNull();
         expect(toTradeRequest(spot("buy", "0"), inputs, "r")).toBeNull();
+    });
+
+    test("names the price it waits for, and nothing for an empty amount or cash", () => {
+        expect(missingPrice({ ...spot("buy", "30"), token: "DOGE" }, inputs)).toBe("The DOGE price isn't loaded yet.");
+        expect(
+            missingPrice({ type: "swap", fromToken: "SOL", toToken: "DOGE", amountUSD: "30" } as SpotIntent, inputs),
+        ).toBe("The DOGE price isn't loaded yet.");
+        expect(missingPrice({ ...spot("buy", "0"), token: "DOGE" }, inputs)).toBeNull();
+        expect(missingPrice(spot("buy", "30"), inputs)).toBeNull();
     });
 });

@@ -369,3 +369,112 @@ test.describe("a request nothing answers", () => {
         }
     });
 });
+
+
+test.describe("a refused trade or coin send", () => {
+    const sol = { requestId: "t1", verb: "buy", symbol: "SOL", amountUSD: "50", quotedPriceUSD: "147.2" } as const;
+
+    test("shows the server's own words for a price that moved, with its prices, not a fixed line", async () => {
+        const message =
+            "SOL moved from $147.20 to $150.00, more than the 1% allowed. Review the new price and try again. Nothing was spent.";
+        const stack = await fakeServer((socket) =>
+            socket.on("trade:order", (_req, ack) => ack({ ok: false, code: "price_moved", message })),
+        );
+        try {
+            const placed = stack.client.placeTrade(sol);
+
+            expect(placed.sent).toBe(true);
+            expect(await placed.answer).toBe(message);
+            expect(stack.client.getSnapshot().tradeNotice).toEqual({ message });
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("names the refusal's code when the server sent no words", async () => {
+        const stack = await fakeServer((socket) =>
+            socket.on("trade:order", (_req, ack) => ack({ ok: false, code: "price_moved", message: "" })),
+        );
+        try {
+            expect(await stack.client.placeTrade(sol).answer).toBe("The server refused the buy (price_moved).");
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("says which price is missing when a trade can't be counted, and not that the person is offline", async () => {
+        const stack = await fakeServer();
+        try {
+            const placed = stack.client.placeTrade({ ...sol, quotedPriceUSD: "0" });
+
+            expect(placed.sent).toBe(false);
+            const message = "Couldn't work out this buy: the SOL price isn't loaded yet. Try again in a moment.";
+            expect(await placed.answer).toBe(message);
+            expect(stack.client.getSnapshot().tradeNotice).toEqual({ message });
+
+            const swap = stack.client.placeTrade({
+                requestId: "t2",
+                verb: "swap",
+                symbol: "SOL",
+                toSymbol: "ETH",
+                units: "1",
+                quotedPriceUSD: "147.2",
+            });
+            expect(await swap.answer).toBe(
+                "Couldn't work out this swap: the ETH price isn't loaded yet. Try again in a moment.",
+            );
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("a send the server refused shows its words, and one that fails later shows the stored reason", async () => {
+        const refused = "You hold 0.1 BNB but this sends 0.5. Nothing was sent.";
+        const stack = await fakeServer((socket) =>
+            socket.on("holding:withdraw", (_req, ack) =>
+                ack({ ok: false, code: "insufficient_holdings", message: refused }),
+            ),
+        );
+        try {
+            const sent = stack.client.withdrawHolding({ requestId: "w1", symbol: "BNB", units: "0.5", to: EVM });
+            expect(sent.sent).toBe(true);
+            await expect.poll(() => stack.client.getSnapshot().tradeNotice).toEqual({ message: refused });
+
+            const message =
+                "Our sending wallet is out of gas on BNB Chain, so the send was refused. Your BNB is back in your holdings.";
+            for (const socket of stack.io.sockets.sockets.values())
+                socket.emit("holding:withdrawal", {
+                    id: "000000000000000000000009",
+                    requestId: "w2",
+                    symbol: "BNB",
+                    units: "0.5",
+                    network: "bnb",
+                    to: EVM,
+                    state: "failed",
+                    txHash: null,
+                    reason: "out_of_gas",
+                    message,
+                    at: "2026-10-16T00:00:00.000Z",
+                });
+            await expect.poll(() => stack.client.getSnapshot().tradeNotice).toEqual({ message });
+        } finally {
+            await stack.stop();
+        }
+    });
+});
+
+test.describe("the copy for an order that can't be sent or confirmed", () => {
+    test("says which of loading, failed, offline and unreachable it is, with what was kept", async () => {
+        const { unconfirmedCopy, unsentCopy } = await import("@/lib/account/spot");
+
+        expect(unsentCopy("loading", "buy")).toBe("Your account is still loading. Try again in a moment.");
+        expect(unsentCopy("failed", "sell", "Sign in again")).toBe(
+            "Your account didn't load: Sign in again. Nothing was sold.",
+        );
+        expect(unsentCopy("offline", "swap")).toBe("You're offline. Nothing was swapped.");
+        expect(unsentCopy("unreachable", "send")).toBe("Can't reach the server right now. Nothing was sent.");
+        expect(unconfirmedCopy("buy", 45)).toBe(
+            "The server didn't answer in 45 seconds, so we can't confirm this buy. Check your balance and holdings before trying again.",
+        );
+    });
+});

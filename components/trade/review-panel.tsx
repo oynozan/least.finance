@@ -8,10 +8,10 @@ import type { TransactionIntent } from "@/lib/trade/intent";
 import { quoteRows as perpQuoteRows } from "@/lib/trade/perp-quote";
 import { quoteRows } from "@/lib/trade/prediction-quote";
 import { askOf, lessSpread } from "@/lib/trade/spread";
-import { isSpotIntent, toTradeRequest } from "@/lib/trade/spot-request";
+import { isSpotIntent, missingPrice, toTradeRequest, type SpotInputs } from "@/lib/trade/spot-request";
 import type { TradeOrderRequest } from "@/server/src/trading/types";
 import type { ApiError, PerpQuoteRequest, PerpQuoteView, QuoteView } from "@/server/src/protocol";
-import { OFFLINE_COPY, type Placed } from "@/components/account-client";
+import type { Placed } from "@/components/account-client";
 import { useAccount } from "@/components/account-provider";
 import { CloseIcon } from "@/components/icons";
 import { ProgressGlyph, useProgressFill, type ProgressPhase } from "@/components/progress-fill";
@@ -182,14 +182,19 @@ function ActionButton({
 }
 
 type PerpAnswer = { key: string; quote: PerpQuoteView } | { key: string; error: string };
-/** The server's answer to a prediction quote: the quote, or the refusal an order this size would meet too. */
-type QuoteAnswer = { tokenId: string; amountUSD: string; quote: QuoteView | null; refusal: string | null };
+/** The server's answer to a prediction quote: the quote, the refusal an order this size would meet too, or why there is no quote. */
+type QuoteAnswer = {
+    tokenId: string;
+    amountUSD: string;
+    quote: QuoteView | null;
+    refusal: string | null;
+    note: string | null;
+};
 
-/** A quote refusal that would refuse the order as well, in the words the review shows; other failures only drop the quote. */
-function quoteRefusal(error: ApiError): string | null {
-    if (error.code === "below_minimum") return error.message;
-    if (error.code === "market_closed") return "This market just closed.";
-    return null;
+/** A quote failure in the words the review shows: a refusal the order would meet too blocks it, any other only says why there is no live price. */
+function quoteFailure(error: ApiError): { refusal: string | null; note: string | null } {
+    if (error.code === "below_minimum" || error.code === "market_closed") return { refusal: error.message, note: null };
+    return { refusal: null, note: `Couldn't get a live price: ${error.message}` };
 }
 
 function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void }) {
@@ -219,11 +224,18 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const attempt = useRef(0);
     const follow = (placed: Placed) => {
         const mine = ++attempt.current;
-        setRefusal(placed.sent ? null : OFFLINE_COPY);
         setAccepted(false);
         setPlacing(placed.sent);
         setFlash(placed.sent ? null : "error");
-        if (!placed.sent) return;
+        if (!placed.sent) {
+            // Why it wasn't sent: the account is loading, the connection is down, or a price is missing
+            setRefusal(null);
+            void placed.answer.then((message) => {
+                if (attempt.current === mine) setRefusal(message);
+            });
+            return;
+        }
+        setRefusal(null);
         void placed.answer.then((message) => {
             if (attempt.current !== mine) return;
             setPlacing(false);
@@ -258,21 +270,18 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     // Buy, Sell and Swap run from the account balance once signed in: no wallet signs, and the fill is instant.
     const spotIntent = isSpotIntent(intent) ? intent : null;
     const { holdings, state: accountState } = account;
-    const tradeRequest = useMemo(
-        () =>
-            spotIntent && wallet.status === "connected" && accountState.status === "ready"
-                ? toTradeRequest(
-                      spotIntent,
-                      {
-                          price: (symbol) => catalog.tokens.find((t) => t.symbol === symbol)?.priceUSD ?? null,
-                          held: (symbol) => Number(holdings.find((h) => h.symbol === symbol)?.units ?? 0),
-                          heldText: (symbol) => holdings.find((h) => h.symbol === symbol)?.units ?? "0",
-                      },
-                      "",
-                  )
-                : null,
-        [spotIntent, wallet.status, accountState.status, catalog.tokens, holdings],
-    );
+    // The request at the prices shown, or the price it waits for
+    const { tradeRequest, priceWait } = useMemo(() => {
+        if (!spotIntent || wallet.status !== "connected" || accountState.status !== "ready")
+            return { tradeRequest: null, priceWait: null };
+        const inputs: SpotInputs = {
+            price: (symbol) => catalog.tokens.find((t) => t.symbol === symbol)?.priceUSD ?? null,
+            held: (symbol) => Number(holdings.find((h) => h.symbol === symbol)?.units ?? 0),
+            heldText: (symbol) => holdings.find((h) => h.symbol === symbol)?.units ?? "0",
+        };
+        const request = toTradeRequest(spotIntent, inputs, "");
+        return { tradeRequest: request, priceWait: request ? null : missingPrice(spotIntent, inputs) };
+    }, [spotIntent, wallet.status, accountState.status, catalog.tokens, holdings]);
     // A prediction is placed for real once signed in with the server's trading on.
     const prediction = intent?.type === "prediction" ? intent : null;
     const live = !!prediction && wallet.status === "connected" && maxOrderUSD !== null;
@@ -297,8 +306,8 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
                 if (!current) return;
                 setQuoteAnswer(
                     "shares" in result
-                        ? { tokenId, amountUSD, quote: result, refusal: null }
-                        : { tokenId, amountUSD, quote: null, refusal: quoteRefusal(result) },
+                        ? { tokenId, amountUSD, quote: result, refusal: null, note: null }
+                        : { tokenId, amountUSD, quote: null, ...quoteFailure(result) },
                 );
             });
         // The first quote comes as the panel opens; a later amount waits for typing to settle.
@@ -319,6 +328,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
     const quote = answered?.quote ?? null;
     // A refusal the order would meet too: a minimum risen with the price since the sentence was checked, say
     const quoteRefused = eventId ? (answered?.refusal ?? null) : null;
+    const quoteNote = eventId && !answered?.quote ? (answered?.note ?? null) : null;
     const other = market?.outcomes.length === 2 ? market.outcomes.find((o) => o.id !== outcome?.id) : undefined;
 
     // A perp is opened for real once signed in and the server's trading is on (an intent exists only then).
@@ -434,7 +444,7 @@ function ReviewBody({ showing, onDone }: { showing: boolean; onDone: () => void 
             : view.blocking
               ? (view.blocking.cta ?? view.cta)
               : confirmLabel;
-    const swapNotice = perpError ?? quoteRefused ?? notExecuted;
+    const swapNotice = perpError ?? quoteRefused ?? quoteNote ?? priceWait ?? notExecuted;
 
     return (
         <motion.div

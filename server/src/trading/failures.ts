@@ -1,4 +1,4 @@
-import { hideUrls } from "../logger.ts";
+import { scrubUrls } from "../logger.ts";
 import { formatUnits18 } from "./units.ts";
 
 /** A scaled dollar amount as a person reads it: cents above a dollar, more places below. */
@@ -47,7 +47,7 @@ export function upstreamSaid(error: unknown): string {
     const parts = [e?.shortMessage ?? first(e?.message ?? error), e?.details]
         .map((part) => first(part))
         .filter((part, index, all) => part !== "" && all.indexOf(part) === index);
-    return hideUrls(parts.join(": ")).slice(0, UPSTREAM_LIMIT);
+    return scrubUrls(parts.join(": ")).slice(0, UPSTREAM_LIMIT);
 }
 
 /** Why a coin send failed: what is stored on the withdrawal, and what the person is told. */

@@ -17,7 +17,7 @@ import {
     type WithdrawLimits,
 } from "@/lib/account/state";
 import { sellableShares } from "@/components/wallet-data";
-import { estimateTrade } from "@/lib/account/spot";
+import { estimateTrade, unconfirmedCopy, unsentCopy, whyNoEstimate } from "@/lib/account/spot";
 import type { CoinWithdrawRequest, TradeOrderRequest } from "@/server/src/trading/types";
 import { dropAfterSend, loadCachedBalances, needsRefresh, saveCachedBalances } from "@/lib/account/balances";
 import { resetPnlStores } from "@/lib/pnl/series-store";
@@ -84,7 +84,6 @@ const FAILURE_COPY: Record<PredictionFailure, string> = {
     unavailable: "Polymarket isn't answering. Nothing was spent.",
     rejected: "Your prediction didn't go through. Nothing was spent.",
 };
-const PRICE_MOVED_COPY = "The price moved, so the trade didn't go through. Nothing was spent.";
 export const OFFLINE_COPY = "You're offline. Nothing was spent.";
 
 /** An order handed to the server: `answer` settles with the refusal's words, or null once accepted or left unanswered. */
@@ -256,6 +255,8 @@ export class AccountClient {
         });
         socket.on("holding:withdrawal", (withdrawal) => {
             this.#dispatch({ type: "coin-withdrawal", withdrawal });
+            // A send that failed after it was accepted: the server says why
+            if (withdrawal.state === "failed" && withdrawal.message) this.#tradeNotice(withdrawal.message);
         });
         socket.on("position:settled", ({ position, account }) => {
             this.#dispatch({ type: "position-settled", position, account });
@@ -708,9 +709,11 @@ export class AccountClient {
         const socket = this.#socket;
         const estimate = estimateTrade(req);
         this.#tradeNotice(null);
-        if (this.#snapshot.state.status !== "ready" || !socket?.connected || !estimate) {
-            this.#tradeNotice(OFFLINE_COPY);
-            return { requestId, sent: false, answer: Promise.resolve(OFFLINE_COPY) };
+        const unsent = this.#unsent(req.verb) ?? (estimate ? null : whyNoEstimate(req));
+        if (unsent || !estimate || !socket) {
+            const message = unsent ?? unsentCopy("unreachable", req.verb);
+            this.#tradeNotice(message);
+            return { requestId, sent: false, answer: Promise.resolve(message) };
         }
         this.#dispatch({ type: "spot", trade: estimate });
         const answer = socket
@@ -718,7 +721,8 @@ export class AccountClient {
             .emitWithAck("trade:order", req)
             .catch(() => null)
             .then((result) => {
-                if (this.#socket !== socket || !result) return null;
+                if (!result) return this.#unconfirmed(socket, req.verb);
+                if (this.#socket !== socket) return null;
                 if (result.ok) {
                     this.#dispatch({
                         type: "spot-filled",
@@ -729,21 +733,45 @@ export class AccountClient {
                     return null;
                 }
                 this.#dispatch({ type: "spot-failed", requestId });
-                const message = result.code === "price_moved" ? PRICE_MOVED_COPY : result.message;
+                // The server's words carry the prices and what was kept; generic copy only if it sent none
+                const message = result.message || `The server refused the ${req.verb} (${result.code}).`;
                 this.#tradeNotice(message);
                 return message;
             });
         return { requestId, sent: true, answer };
     }
 
+    /** Why an order can't be sent now, or null when it can: the account still loading, failed to load, or the connection down. */
+    #unsent(verb: "buy" | "sell" | "swap" | "send"): string | null {
+        const { state } = this.#snapshot;
+        if (state.status === "failed") return unsentCopy("failed", verb, state.error.message);
+        if (state.status !== "ready") return unsentCopy("loading", verb);
+        if (!this.#socket?.connected) {
+            const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+            return unsentCopy(offline ? "offline" : "unreachable", verb);
+        }
+        return null;
+    }
+
+    /** The server never answered, so the order may or may not have gone through; the person is told so and not that it worked. */
+    #unconfirmed(socket: AppSocket, verb: "buy" | "sell" | "swap" | "send"): string | null {
+        // Another account or a replaced connection owns the notice now
+        if (this.#socket === null) return null;
+        const message = unconfirmedCopy(verb, REPORT_TIMEOUT_MS / 1000);
+        if (this.#socket === socket) this.#tradeNotice(message);
+        return message;
+    }
+
     /** Sends a held coin to the person's own address and counts it as gone at once; a refusal puts it back with the server's message. */
-    withdrawHolding(req: CoinWithdrawRequest): { requestId: string; sent: boolean } {
+    withdrawHolding(req: CoinWithdrawRequest): { requestId: string; sent: boolean; message?: string } {
         const { requestId } = req;
         const socket = this.#socket;
         this.#tradeNotice(null);
-        if (this.#snapshot.state.status !== "ready" || !socket?.connected) {
-            this.#tradeNotice(OFFLINE_COPY);
-            return { requestId, sent: false };
+        const unsent = this.#unsent("send");
+        if (unsent || !socket) {
+            const message = unsent ?? unsentCopy("unreachable", "send");
+            this.#tradeNotice(message);
+            return { requestId, sent: false, message };
         }
         this.#dispatch({ type: "coin-send", send: { requestId, symbol: req.symbol, units: req.units } });
         void socket
@@ -751,7 +779,11 @@ export class AccountClient {
             .emitWithAck("holding:withdraw", req)
             .catch(() => null)
             .then((result) => {
-                if (this.#socket !== socket || !result) return;
+                if (!result) {
+                    this.#unconfirmed(socket, "send");
+                    return;
+                }
+                if (this.#socket !== socket) return;
                 if (result.ok) {
                     this.#dispatch({
                         type: "coin-withdrawal",
@@ -761,7 +793,7 @@ export class AccountClient {
                     return;
                 }
                 this.#dispatch({ type: "coin-send-failed", requestId });
-                this.#tradeNotice(result.message);
+                this.#tradeNotice(result.message || `The server refused the send (${result.code}).`);
             });
         return { requestId, sent: true };
     }

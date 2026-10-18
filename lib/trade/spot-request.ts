@@ -27,6 +27,14 @@ function unitsFor(symbol: string, amountUSD: number, inputs: SpotInputs, price: 
     return coinText(amountUSD / price);
 }
 
+/** The sentence for the price an intent is waiting on, or null when it has them all or its amount is empty. */
+export function missingPrice(intent: SpotIntent, inputs: SpotInputs): string | null {
+    if (!(Number(intent.amountUSD) > 0)) return null;
+    const symbols = intent.type === "swap" ? [intent.fromToken, intent.toToken] : [intent.token];
+    const missing = symbols.find((symbol) => symbol !== QUOTE && !inputs.price(symbol));
+    return missing ? `The ${missing} price isn't loaded yet.` : null;
+}
+
 /** The request for an intent at the prices shown, or null while a price is unknown or the amount is empty. */
 export function toTradeRequest(intent: SpotIntent, inputs: SpotInputs, requestId: string): TradeOrderRequest | null {
     const amountUSD = Number(intent.amountUSD);

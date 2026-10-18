@@ -119,7 +119,7 @@ export type Account = {
     /** Buys, sells or swaps from the balance, counted at once; a refusal rolls it back and shows as the trade notice. */
     placeTrade: (req: TradeOrderRequest) => Placed;
     /** Sends units of a held coin to an address, counted at once. */
-    withdrawHolding: (req: CoinWithdrawRequest) => { requestId: string; sent: boolean };
+    withdrawHolding: (req: CoinWithdrawRequest) => { requestId: string; sent: boolean; message?: string };
     /** The account's coin sends, newest first. */
     coinWithdrawals: CoinWithdrawalView[];
 };

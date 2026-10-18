@@ -28,9 +28,11 @@ type HoldingsListProps = {
     /** The person's linked wallets, which a coin is sent to unless they type another address. */
     wallets: { evm?: string; solana?: string };
     withdrawals: CoinWithdrawalView[];
-    onSend: (req: CoinWithdrawRequest) => { requestId: string; sent: boolean };
+    onSend: (req: CoinWithdrawRequest) => { requestId: string; sent: boolean; message?: string };
 };
 
+/** Shown only when the account gave no reason for a send it didn't start. */
+const NOT_SENT = "The send wasn't started, so nothing was sent.";
 const SEND_STATE = { sending: "Sending", sent: "Sent", failed: "Couldn't send" } as const;
 
 const spring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.3 };
@@ -63,7 +65,8 @@ export function HoldingsList({ holdings, priceOf, wallets, withdrawals, onSend }
                                 onSend={(req) => {
                                     const result = onSend(req);
                                     if (result.sent) setSending(null);
-                                    return result.sent;
+                                    // null once sent, else why it wasn't
+                                    return result.sent ? null : (result.message ?? NOT_SENT);
                                 }}
                             />
                         )}
@@ -80,8 +83,10 @@ export function HoldingsList({ holdings, priceOf, wallets, withdrawals, onSend }
                             {SEND_STATE[send.state]} {formatUnits(Number(send.units), send.symbol)} to{" "}
                             {shortenAddress(send.to)}
                             {send.state === "failed"
-                                ? `${send.reason ? `: ${send.reason.replace(/[.\s]+$/, "")}` : ""}. It's back in your holdings.`
-                                : ""}
+                                ? `. ${send.message ?? "It's back in your holdings."}`
+                                : send.state === "sending" && send.message
+                                  ? `. ${send.message}`
+                                  : ""}
                         </li>
                     ))}
                 </ul>
@@ -160,7 +165,7 @@ function SendForm({
 }: {
     row: HoldingRow;
     prefill: string;
-    onSend: (req: CoinWithdrawRequest) => boolean;
+    onSend: (req: CoinWithdrawRequest) => string | null;
     onClose: () => void;
 }) {
     const [amount, setAmount] = useState("");
@@ -174,9 +179,8 @@ function SendForm({
         const issue = sendIssue(units, row.units) ?? (validAddress(row.network, to) ? null : "Enter a valid address.");
         setProblem(issue);
         if (issue) return;
-        if (!onSend({ requestId: crypto.randomUUID(), symbol: row.symbol, units, to })) {
-            setProblem("You're offline. Nothing was sent.");
-        }
+        const refused = onSend({ requestId: crypto.randomUUID(), symbol: row.symbol, units, to });
+        if (refused) setProblem(refused);
     };
 
     return (

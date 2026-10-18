@@ -11,6 +11,41 @@ export function coinText(value: number): string {
     return floored.toFixed(DECIMALS).replace(/\.?0+$/, "") || "0";
 }
 
+const VERB_ENDING = {
+    buy: "Nothing was spent.",
+    sell: "Nothing was sold.",
+    swap: "Nothing was swapped.",
+    send: "Nothing was sent.",
+} as const;
+
+/** What a person is told when a trade or send can't be sent because the account or the connection isn't ready. */
+export function unsentCopy(
+    why: "loading" | "failed" | "offline" | "unreachable",
+    verb: keyof typeof VERB_ENDING,
+    failed?: string,
+): string {
+    if (why === "loading") return "Your account is still loading. Try again in a moment.";
+    if (why === "failed") return `Your account didn't load${failed ? `: ${failed}` : ""}. ${VERB_ENDING[verb]}`;
+    if (why === "offline") return `You're offline. ${VERB_ENDING[verb]}`;
+    return `Can't reach the server right now. ${VERB_ENDING[verb]}`;
+}
+
+/** What a person is told when the server never answered a trade or send: it may or may not have gone through. */
+export const unconfirmedCopy = (verb: keyof typeof VERB_ENDING, seconds: number) =>
+    `The server didn't answer in ${seconds} seconds, so we can't confirm this ${verb}. Check your balance and holdings before trying again.`;
+
+/** Why a trade request can't be counted before it is sent, naming the price or amount that is missing. */
+export function whyNoEstimate(req: TradeOrderRequest): string {
+    const missing = !(Number(req.quotedPriceUSD) > 0)
+        ? `the ${req.symbol} price isn't loaded yet`
+        : req.verb === "swap" && !req.toSymbol
+          ? "no coin to swap into is picked"
+          : req.verb === "swap" && !(Number(req.quotedToPriceUSD) > 0)
+            ? `the ${req.toSymbol} price isn't loaded yet`
+            : "the amount is empty or isn't a number";
+    return `Couldn't work out this ${req.verb}: ${missing}. Try again in a moment.`;
+}
+
 const homeOf = (symbol: string) => TOKENS.find((t) => t.symbol === symbol)?.home ?? "ethereum";
 
 /** What a trade changes at the price shown and the spread, to count it before the server answers; null when the request can't be estimated. */
