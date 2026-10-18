@@ -96,13 +96,7 @@ export const OFFLINE_COPY = "You're offline. Nothing was spent.";
 export type Placed = { requestId: string; sent: boolean; answer: Promise<string | null> };
 /** How a withdrawal request ended; all but "sent", "refused" and a changed fee mean the server never answered. */
 export type WithdrawResult =
-    | "sent"
-    | "refused"
-    | "failed"
-    | "offline"
-    | "timeout"
-    | "not-ready"
-    | { problem: "changed"; message: string };
+    "sent" | "refused" | "failed" | "offline" | "timeout" | "not-ready" | { problem: "changed"; message: string };
 const SELL_FAILED_COPY = "Couldn't sell right now. Your position is back.";
 /** Only for a failed withdrawal an older server sent no reason for. */
 const WITHDRAW_FAILED_COPY = "The withdrawal failed, and no reason was recorded. Your balance is back.";
@@ -835,7 +829,12 @@ export class AccountClient {
             .catch(() => null)
             .then((result) => {
                 if (!result) {
-                    this.#unconfirmed(socket, "send");
+                    // A replaced connection doesn't own the notice, but the person still has to be told the send is unconfirmed
+                    if (this.#socket && this.#socket !== socket)
+                        this.#tradeNotice(
+                            "The connection dropped while sending. Check your holdings before trying again.",
+                        );
+                    else this.#unconfirmed(socket, "send");
                     return;
                 }
                 if (this.#socket !== socket) return;

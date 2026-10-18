@@ -428,6 +428,20 @@ test.describe("a refused trade or coin send", () => {
         }
     });
 
+    test("a send left unanswered while the connection is replaced says the connection dropped", async () => {
+        const stack = await fakeServer((socket) => socket.on("holding:withdraw", () => undefined));
+        try {
+            stack.client.withdrawHolding({ requestId: "w1", symbol: "BNB", units: "0.5", to: EVM });
+            await expect.poll(() => stack.log.some((entry) => entry.name === "holding:withdraw")).toBe(true);
+            stack.client.connect("other", async () => "token");
+            await expect
+                .poll(() => stack.client.getSnapshot().tradeNotice?.message)
+                .toBe("The connection dropped while sending. Check your holdings before trying again.");
+        } finally {
+            await stack.stop();
+        }
+    });
+
     test("a send the server refused shows its words, and one that fails later shows the stored reason", async () => {
         const refused = "You hold 0.1 BNB but this sends 0.5. Nothing was sent.";
         const stack = await fakeServer((socket) =>
