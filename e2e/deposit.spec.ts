@@ -55,6 +55,10 @@ const fieldFits = (input: Locator) =>
     });
 
 const DROPPED = "hasn't shown up on Arc";
+// The server's refusal, shown once the client has asked three more times and given up: about 25 s with the 4 s receipt wait in serve.ts.
+const GAVE_UP =
+    /^Transaction 0x[0-9a-f]{4}…[0-9a-f]{4} hasn't shown up on Arc after \d+ seconds\. If it lands later, it's credited automatically\.$/;
+const GIVE_UP_MS = 40_000;
 const LOSS = "rgb(255, 107, 91)";
 const FOREGROUND = "rgb(245, 245, 243)";
 
@@ -344,13 +348,16 @@ test("a wallet that ignores the switch sends nothing", async ({ page }) => {
     await moveWalletTo(page, "0x1");
     await ignoreNextChainSwitch(page);
     await submit(page, "5");
-    await expect(hint(page)).toContainText("on another network");
+    await expect(hint(page)).toContainText(
+        /Your wallet is on .+, not Arc\. Switch to Arc in the wallet and try again\./,
+    );
     expect(await sentTransactions(page)).toHaveLength(0);
 });
 
 test("a transaction that never lands is counted at once, then taken back with the server's message", async ({
     page,
 }) => {
+    test.setTimeout(GIVE_UP_MS + 20_000);
     await start(page);
     await dropNextSend(page);
     await submit(page, "40");
@@ -358,11 +365,10 @@ test("a transaction that never lands is counted at once, then taken back with th
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $40.00, show deposits");
     await expect(status(page)).toHaveText("Depositing $40.00…");
 
-    await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits", { timeout: 20_000 });
+    // While the client keeps asking, the deposit stays counted and the status carries the server's words
     await expect(status(page)).toContainText(DROPPED);
-    await expect(status(page)).toHaveText(
-        "That transaction hasn't shown up on Arc. If it lands later, it's credited automatically.",
-    );
+    await expect(status(page)).toHaveText(GAVE_UP, { timeout: GIVE_UP_MS });
+    await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits");
     expect(await serverBalance(page)).toBe("0");
 });
 
@@ -447,6 +453,7 @@ test("two devices on the same wallet both see a deposit as it's credited", async
 
 test("a deposit that is still confirming shows as pending, then as just now", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
+    test.setTimeout(GIVE_UP_MS + 20_000);
     await start(page);
     await dropNextSend(page);
     await submit(page, "15");
@@ -460,7 +467,7 @@ test("a deposit that is still confirming shows as pending, then as just now", as
 
     // Taken back when the transaction never shows up.
     await page.mouse.move(700, 700);
-    await expect(status(page)).toContainText(DROPPED, { timeout: 20_000 });
+    await expect(status(page)).toHaveText(GAVE_UP, { timeout: GIVE_UP_MS });
     await balanceButton(page).hover();
     await expect(deposits(page)).toHaveCount(0);
 });
@@ -588,6 +595,7 @@ test("the deposit button fills while the deposit confirms, then finishes green",
 });
 
 test("the fill creeps across from gray toward green while the server confirms", async ({ page }) => {
+    test.setTimeout(GIVE_UP_MS + 20_000);
     await start(page);
     await dropNextSend(page);
     await submit(page, "40");
@@ -605,7 +613,7 @@ test("the fill creeps across from gray toward green while the server confirms", 
     expect(g2 - r2).toBeGreaterThan(g1 - r1);
 
     // Never landing, it turns red and settles back.
-    await expect(status(page)).toContainText(DROPPED, { timeout: 20_000 });
+    await expect(status(page)).toHaveText(GAVE_UP, { timeout: GIVE_UP_MS });
     await expect(depositButton(page)).toHaveAttribute("data-phase", "idle", { timeout: 5_000 });
     await expect(depositButton(page)).not.toHaveAttribute("aria-busy");
 });
