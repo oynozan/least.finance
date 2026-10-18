@@ -5,8 +5,8 @@ import { ARC_CHAIN_ID } from "../chain/arc.ts";
 import type { Collections } from "../db/mongo.ts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
 import { COINS, NETWORKS, type CoinEntry } from "../swaps/coins.ts";
-import { checkQuote } from "../swaps/check.ts";
-import { LifiError, tooFarUnder, type Lifi, type LifiQuote } from "../swaps/lifi.ts";
+import { QuoteRejected, broke, checkQuote } from "../swaps/check.ts";
+import { LifiError, MAX_QUOTE_SLIPPAGE, tooFarUnder, type Lifi, type LifiQuote } from "../swaps/lifi.ts";
 import { loopWatch } from "../loop-watch.ts";
 import type { HedgeDoc, SendAttempt, TradeDoc } from "./docs.ts";
 import {
@@ -17,6 +17,7 @@ import {
     minedAmong,
     type InventoryChain,
 } from "./inventory-chain.ts";
+import { RepeatGate, quoted, upstreamSaid } from "./failures.ts";
 import { alreadySent, refused } from "./send-errors.ts";
 import { UNIT_DECIMALS, fromUnitsDecimal, toUnitsDecimal } from "./units.ts";
 
@@ -83,6 +84,8 @@ const homeOf = (symbol: string): { entry: CoinEntry; network: (typeof NETWORKS)[
 
 type Home = NonNullable<ReturnType<typeof homeOf>>;
 
+const nameOf = (id: string) => NETWORKS.find((network) => network.id === id)?.name ?? id;
+
 const arcUsdc = COINS.find((coin) => coin.symbol === "USDC")!.entries.find((entry) => entry.network === "arc")!;
 
 /** Nets unhedged trades per coin and sells the surplus on the market through LI.FI into the Arc treasury; buys are left planned for the operator. */
@@ -93,10 +96,34 @@ export class TradeHedger {
     #loop: Promise<void> | null = null;
     #running: Promise<void> = Promise.resolve();
     readonly #logged = new Map<string, number>();
+    /** The same failure of a pass or a hedge, logged once and then once every while. */
+    readonly #repeats: RepeatGate;
+    /** What the hedge in hand was doing when it failed, for the log line. */
+    #step = "";
+    #request: Record<string, unknown> = {};
 
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#repeats = new RepeatGate(STUCK_LOG_MS, this.#now);
+    }
+
+    /** What every log line about a hedge carries. */
+    #fields(hedge: HedgeDoc) {
+        const home = homeOf(hedge.symbol);
+        return {
+            hedge: hedge._id.toHexString(),
+            state: hedge.state,
+            symbol: hedge.symbol,
+            side: hedge.side,
+            units: hedge.units.toString(),
+            usd: hedge.usd.toString(),
+            network: home?.network.id ?? null,
+            tool: hedge.tool,
+            txHash: hedge.txHash,
+            nonce: hedge.nonce ?? null,
+            trades: hedge.tradeIds.length,
+        };
     }
 
     start() {
@@ -241,54 +268,135 @@ export class TradeHedger {
             .sort({ createdAt: 1 })
             .toArray();
         for (const hedge of open) {
+            this.#step = hedge.state === "planned" ? "start" : "follow";
+            this.#request = {};
             try {
                 if (hedge.state === "planned") await this.#execute(hedge);
                 else await this.#follow(hedge);
+                this.#repeats.clear(hedge._id.toHexString());
             } catch (error) {
-                this.#deps.logger.warn({ err: error, hedge: hedge._id.toString() }, "Couldn't move a hedge along");
+                await this.#stuck(hedge, error);
             }
         }
+    }
+
+    /** An error that doesn't fail the hedge leaves it where it is: logged once with the step it was on, and a planned hedge says what it waits for. */
+    async #stuck(hedge: HedgeDoc, error: unknown) {
+        const said = upstreamSaid(error);
+        const again = this.#repeats.note(hedge._id.toHexString(), `${this.#step}:${said}`);
+        if (!again) return;
+        this.#deps.logger.warn(
+            {
+                event: "hedge:stuck",
+                ...this.#fields(hedge),
+                step: this.#step,
+                ...this.#request,
+                upstream: error instanceof LifiError ? error.said : undefined,
+                repeatsLeftOut: again.skipped,
+                err: error,
+            },
+            `Couldn't move a hedge along at its ${this.#step} step: ${said}`,
+        );
+        if (hedge.state === "planned") await this.#note(hedge, `Retrying (${this.#step}): ${said}`, said);
+    }
+
+    /** Says on a planned hedge why it isn't moving, without changing its state. */
+    async #note(hedge: HedgeDoc, reason: string, detail: string) {
+        if (hedge.reason === reason) return;
+        await this.#deps.collections.hedges.updateOne(
+            { _id: hedge._id, state: "planned" },
+            { $set: { reason, detail } },
+        );
+        hedge.reason = reason;
     }
 
     /** Sells a planned hedge's coins from the inventory wallet for USDC on Arc. */
     async #execute(hedge: HedgeDoc) {
         const home = homeOf(hedge.symbol);
-        if (!home) return this.#fail(hedge, `${hedge.symbol} can't be hedged`);
+        if (!home)
+            return this.#fail(
+                hedge,
+                `${hedge.symbol} has no home network entry, so it can't be hedged`,
+                undefined,
+                "error",
+            );
         // Buys and Solana sells wait for the operator
         if (hedge.side === "buy" || home.network.kind !== "evm") return;
 
         const { lifi, chain, inventory, treasury } = this.#deps;
         const network = home.network.id as EvmNetworkId;
         const fromAmount = fromUnitsDecimal(hedge.units) / 10n ** BigInt(UNIT_DECIMALS - home.entry.decimals);
-        if (fromAmount <= 0n) return this.#fail(hedge, "Nothing to sell");
+        if (fromAmount <= 0n)
+            return this.#fail(
+                hedge,
+                `Nothing to sell: ${hedge.units.toString()} ${hedge.symbol} rounds to 0 at ${home.entry.decimals} decimals`,
+            );
 
+        const request = {
+            fromChain: home.network.chainId,
+            toChain: ARC_CHAIN_ID,
+            fromToken: home.entry.address,
+            toToken: arcUsdc.address,
+            fromAddress: inventory,
+            toAddress: treasury,
+            fromAmount: fromAmount.toString(),
+            slippage: this.#deps.slippage ?? 0.01,
+            integrator: this.#deps.integrator,
+        };
+        this.#step = "quote";
+        this.#request = { request };
         let quote;
         try {
-            quote = await lifi.quote({
-                fromChain: home.network.chainId,
-                toChain: ARC_CHAIN_ID,
-                fromToken: home.entry.address,
-                toToken: arcUsdc.address,
-                fromAddress: inventory,
-                toAddress: treasury,
-                fromAmount: fromAmount.toString(),
-                slippage: this.#deps.slippage ?? 0.01,
-                integrator: this.#deps.integrator,
-            });
+            quote = await lifi.quote(request);
         } catch (error) {
-            if (error instanceof LifiError && error.kind === "no_route") return this.#fail(hedge, "LI.FI has no route");
+            if (error instanceof LifiError && error.kind === "no_route")
+                return this.#fail(
+                    hedge,
+                    `LI.FI found no route for ${hedge.units.toString()} ${hedge.symbol} on ${nameOf(network)} to USDC on Arc`,
+                    `LI.FI answered ${error.said.status}${error.said.code !== undefined ? ` (code ${error.said.code})` : ""}${error.said.upstream ? `: "${error.said.upstream}"` : ""}`,
+                );
             throw error;
         }
         // A route whose minimum sits further under the amount than this is left planned, and asked for again on the next pass
         if (tooFarUnder(quote)) {
-            return this.#deps.logger.warn(
-                { hedge: hedge._id.toString(), shortfall: quote.shortfall, slippage: quote.slippage, tool: quote.tool },
-                "A hedge's minimum is too far under its amount, leaving it planned",
+            const percent = Math.round(quote.shortfall * 1000) / 10;
+            const reason = `Waiting: LI.FI's minimum is ${percent}% under the amount (limit ${MAX_QUOTE_SLIPPAGE * 100}%), retrying`;
+            if (this.#repeats.note(`${hedge._id.toHexString()}:far`, reason))
+                this.#deps.logger.warn(
+                    {
+                        event: "hedge:too-far-under",
+                        ...this.#fields(hedge),
+                        shortfall: quote.shortfall,
+                        slippage: quote.slippage,
+                        limit: MAX_QUOTE_SLIPPAGE,
+                        toAmount: quote.toAmount,
+                        toAmountMin: quote.toAmountMin,
+                        tool: quote.tool,
+                    },
+                    "A hedge's minimum is too far under its amount, leaving it planned",
+                );
+            return this.#note(
+                hedge,
+                reason,
+                `toAmount ${quote.toAmount}, toAmountMin ${quote.toAmountMin}, tool ${quote.tool}`,
             );
         }
-        if (quote.tx.kind !== "evm") return this.#fail(hedge, "LI.FI sent a transaction for another kind of chain");
+        if (quote.tx.kind !== "evm")
+            return this.#fail(
+                hedge,
+                `LI.FI sent a ${quote.tx.kind} transaction for a sell on ${nameOf(network)} (quote ${quote.id}, tool ${quote.tool})`,
+            );
 
-        await this.#check(quote, home, network, fromAmount);
+        this.#step = "check";
+        try {
+            await this.#check(quote, home, network, fromAmount, hedge);
+        } catch (error) {
+            // The quote was logged with both sides when it was refused; the hedge says why it waits
+            if (error instanceof QuoteRejected)
+                return this.#note(hedge, error.message, `${error.rule}: expected ${error.expected}, got ${error.got}`);
+            throw error;
+        }
+        this.#step = "approve";
 
         const native = home.entry.reserve !== undefined;
         if (!native && !quote.skipApproval && quote.approvalAddress) {
@@ -300,6 +408,7 @@ export class TradeHedger {
         }
 
         const tx = { to: quote.tx.to, data: quote.tx.data, value: BigInt(quote.tx.value).toString() };
+        this.#step = "prepare";
         let prepared;
         try {
             prepared = await chain.prepare(network, {
@@ -308,7 +417,14 @@ export class TradeHedger {
                 value: BigInt(tx.value),
             });
         } catch (error) {
-            if (refused(error)) return this.#fail(hedge, `The network refused it: ${firstLine(error)}`);
+            if (refused(error))
+                return this.#fail(
+                    hedge,
+                    `The ${nameOf(network)} network refused the sell: ${quoted(upstreamSaid(error))}`,
+                    upstreamSaid(error),
+                    "warn",
+                    error,
+                );
             throw error;
         }
         // The hash and nonce are recorded before the transaction goes out
@@ -331,6 +447,7 @@ export class TradeHedger {
         if (!claimed) return chain.release(network, prepared.nonce);
         this.#deps.onChange?.(claimed);
 
+        this.#step = "broadcast";
         try {
             await chain.broadcast(network, prepared);
         } catch (error) {
@@ -342,21 +459,43 @@ export class TradeHedger {
     /** A refused first attempt fails and frees its nonce, but a refused replacement leaves the earlier attempts to the receipts */
     async #answered(hedge: HedgeDoc, error: unknown, network: EvmNetworkId, nonce: number, replacing: boolean) {
         if (alreadySent(error) || (replacing && refused(error))) {
-            this.#deps.logger.warn(
-                { hedge: hedge._id.toString(), reason: firstLine(error) },
-                "The nonce is already in use, the receipts decide",
-            );
+            if (this.#repeats.note(`${hedge._id.toHexString()}:nonce:${nonce}`, upstreamSaid(error)))
+                this.#deps.logger.warn(
+                    {
+                        event: "hedge:nonce-in-use",
+                        ...this.#fields(hedge),
+                        network,
+                        nonce,
+                        attempts: attemptsOf(hedge).length,
+                        replacing,
+                        upstream: upstreamSaid(error),
+                    },
+                    "The nonce is already in use, the receipts decide",
+                );
             return;
         }
         if (!refused(error)) throw error;
-        await this.#fail(hedge, `The network refused it: ${firstLine(error)}`);
+        await this.#fail(
+            hedge,
+            `The ${nameOf(network)} network refused the sell: ${quoted(upstreamSaid(error))}`,
+            upstreamSaid(error),
+            "warn",
+            error,
+        );
         this.#deps.chain.release(network, nonce);
     }
 
     /** Throws unless the quote is the sell that was asked for, with any approval going to LI.FI's diamond */
-    async #check(quote: LifiQuote, home: Home, network: EvmNetworkId, fromAmount: bigint) {
+    async #check(quote: LifiQuote, home: Home, network: EvmNetworkId, fromAmount: bigint, hedge: HedgeDoc) {
         const { lifi, inventory, treasury, logger } = this.#deps;
         if (!lifi.chains) throw new Error("The hedger can't read LI.FI's chains, so it can't check a quote");
+        // A quote that fails the same way every pass is logged once, not every half minute
+        const gated = {
+            warn: (context: object, message: string) => {
+                if (this.#repeats.note(`${hedge._id.toHexString()}:check`, message))
+                    logger.warn({ ...this.#fields(hedge), ...context }, message);
+            },
+        };
         const chains = await lifi.chains();
         const diamond = chains.find((chain) => chain.id === home.network.chainId)?.diamondAddress ?? null;
         checkQuote(
@@ -371,12 +510,25 @@ export class TradeHedger {
                 fromUnits: fromAmount,
                 diamond,
             },
-            logger,
+            gated,
         );
         // An approval goes to the contract the checked transaction calls, and nowhere else
         const approves = home.entry.reserve === undefined && !quote.skipApproval;
         if (approves && quote.approvalAddress?.toLowerCase() !== diamond?.toLowerCase()) {
-            throw new Error("LI.FI asked for an approval to an address other than its diamond");
+            gated.warn(
+                {
+                    event: "quote:rejected",
+                    rule: "approval address",
+                    expected: diamond,
+                    got: quote.approvalAddress,
+                    quote: quote.id,
+                    tool: quote.tool,
+                },
+                "Refused a swap quote: its approval address doesn't match",
+            );
+            throw new QuoteRejected(
+                broke("approval address", diamond ?? "none listed by LI.FI", quote.approvalAddress),
+            );
         }
     }
 
@@ -397,13 +549,20 @@ export class TradeHedger {
             if (this.#now() - hedge.updatedAt.getTime() > STUCK_LOG_MS && this.#now() - last > STUCK_LOG_MS) {
                 this.#logged.set(hedge.txHash, this.#now());
                 this.#deps.logger.error(
-                    { hedge: hedge._id.toString(), txHash: hedge.txHash },
+                    {
+                        event: "hedge:unmined",
+                        ...this.#fields(hedge),
+                        attempts: attempts.length,
+                        ageMs: this.#now() - hedge.updatedAt.getTime(),
+                        fees: attempts.at(-1),
+                    },
                     "A hedge is still unmined",
                 );
             }
             return;
         }
-        if (mined.status === "reverted") return this.#fail(hedge, "The sell reverted on the network");
+        if (mined.status === "reverted")
+            return this.#fail(hedge, `The sell reverted on ${nameOf(network)} (tx ${mined.hash})`, `tx ${mined.hash} reverted`);
 
         // Whichever attempt mined is the sell to follow
         let current = hedge;
@@ -422,7 +581,8 @@ export class TradeHedger {
         else if (status.status === "FAILED")
             await this.#fail(
                 current,
-                `LI.FI reports the sell failed${status.substatus ? `: ${status.substatus}` : ""}`,
+                `LI.FI reports the sell failed${status.substatus ? `: ${status.substatus}` : ""}${status.substatusMessage ? ` (${status.substatusMessage})` : ""}`,
+                `LI.FI status FAILED, substatus ${status.substatus ?? "none"}, ${status.substatusMessage ?? "no message"}`,
             );
     }
 
@@ -461,7 +621,17 @@ export class TradeHedger {
         );
         if (!resent) return;
         if (attempts.length + 1 === MAX_ATTEMPTS) {
-            this.#deps.logger.error({ hedge: hedge._id.toString() }, "A hedge is still unmined after its last resend");
+            this.#deps.logger.error(
+                {
+                    event: "hedge:unmined",
+                    ...this.#fields(resent),
+                    network,
+                    attempts: attempts.length + 1,
+                    ageMs: this.#now() - hedge.updatedAt.getTime(),
+                    fees: attemptOf(prepared),
+                },
+                "A hedge is still unmined after its last resend",
+            );
         }
 
         try {
@@ -482,18 +652,27 @@ export class TradeHedger {
         return updated;
     }
 
-    async #fail(hedge: HedgeDoc, reason: string) {
-        this.#deps.logger.warn({ hedge: hedge._id.toString(), reason }, "A hedge failed");
+    /** Fails the hedge: `reason` is what it says is wrong, `detail` the upstream's own words behind it. */
+    async #fail(hedge: HedgeDoc, reason: string, detail?: string, level: "warn" | "error" = "warn", error?: unknown) {
         const updated = await this.#deps.collections.hedges.findOneAndUpdate(
             { _id: hedge._id, state: { $in: ["planned", "sending", "sent"] } },
-            { $set: { state: "failed", reason, updatedAt: new Date(this.#now()) } },
+            { $set: { state: "failed", reason, detail: detail ?? reason, updatedAt: new Date(this.#now()) } },
             { returnDocument: "after" },
         );
-        if (updated) this.#deps.onChange?.(updated);
+        if (updated) {
+            this.#deps.logger[level](
+                {
+                    event: "hedge:failed",
+                    ...this.#fields(hedge),
+                    step: this.#step,
+                    ...this.#request,
+                    reason,
+                    upstream: detail,
+                    ...(error !== undefined && { err: error }),
+                },
+                `A hedge failed: ${reason}`,
+            );
+            this.#deps.onChange?.(updated);
+        }
     }
 }
-
-const firstLine = (error: unknown) =>
-    String((error as Error)?.message ?? error)
-        .split("\n")[0]!
-        .slice(0, 200);

@@ -1,14 +1,16 @@
 import { readFileSync } from "node:fs";
 import { base58, base64 } from "@scure/base";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
-import { AppError } from "../../src/errors.ts";
-import { checkQuote } from "../../src/swaps/check.ts";
+import { checkQuote, QuoteRejected } from "../../src/swaps/check.ts";
 import { COINS, NATIVE_EVM, NETWORKS, type CoinEntry, type NetworkId } from "../../src/swaps/coins.ts";
 import { createLifi, type LifiQuote } from "../../src/swaps/lifi.ts";
 import { solanaFeePayer } from "../../src/swaps/solana-tx.ts";
 import { startFakeLifi, type FakeLifi } from "../support/fake-lifi.ts";
 
 type Want = Parameters<typeof checkQuote>[1];
+type Logged = Parameters<typeof checkQuote>[2];
+const quiet = { warn: () => undefined };
+const check = (quote: LifiQuote, want: Want, logger: Logged = quiet) => checkQuote(quote, want, logger);
 
 const DIAMOND = "0x1231DEB6f5749EF6cE6943a275A1D3E7486F4EaE";
 const ARC_DIAMOND = "0xA4072583658Fae592A3506A42431cb6316a8d40b";
@@ -16,7 +18,6 @@ const WALLET = "0x2222222222222222222222222222222222222222";
 const OTHER = "0x3333333333333333333333333333333333333333";
 const SOLANA_WALLET = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
 const SOLANA_OTHER = "11111111111111111111111111111112";
-const REFUSAL = new AppError("unavailable", "Swaps aren't available right now.");
 
 const entryOf = (symbol: string, network: NetworkId): CoinEntry =>
     COINS.find((coin) => coin.symbol === symbol)!.entries.find((entry) => entry.network === network)!;
@@ -66,7 +67,7 @@ async function quoted(options: {
 }
 
 const evm = () => quoted({ from: ["USDC", "base"], to: ["USDT", "base"], units: 50_000_000n });
-const refuses = (quote: LifiQuote, want: Want) => expect(() => checkQuote(quote, want)).toThrow(REFUSAL);
+const refuses = (quote: LifiQuote, want: Want) => expect(() => check(quote, want)).toThrow(QuoteRejected);
 const evmTx = (quote: LifiQuote) => {
     if (quote.tx.kind !== "evm") throw new Error("expected an EVM transaction");
     return quote.tx;
@@ -75,24 +76,37 @@ const evmTx = (quote: LifiQuote) => {
 test("a quote that matches the want passes", async () => {
     const { quote, want } = await evm();
 
-    expect(() => checkQuote(quote, want)).not.toThrow();
+    expect(() => check(quote, want)).not.toThrow();
 });
 
-test("a refusal is an unavailable AppError that logs the rule that failed", async () => {
+test("a refusal is a QuoteRejected that says what was expected and what LI.FI built, in the error and the log", async () => {
     const { quote, want } = await evm();
     const logger = { warn: vi.fn() };
 
     let thrown: unknown;
     try {
-        checkQuote({ ...quote, fromAddress: OTHER }, want, logger);
+        check({ ...quote, fromAddress: OTHER }, want, logger);
     } catch (error) {
         thrown = error;
     }
 
-    expect(thrown).toBeInstanceOf(AppError);
-    expect(thrown).toMatchObject({ code: "unavailable", message: "Swaps aren't available right now." });
+    expect(thrown).toBeInstanceOf(QuoteRejected);
+    expect(thrown).toMatchObject({ rule: "sender", expected: WALLET, got: OTHER });
+    expect((thrown as Error).message).toBe(
+        `LI.FI's quote didn't match the sell we asked for (sender: expected ${WALLET}, got ${OTHER}), so nothing was sent.`,
+    );
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn.mock.calls[0]?.[1]).toMatch(/sender/);
+    expect(logger.warn.mock.calls[0]?.[0]).toMatchObject({
+        event: "quote:rejected",
+        rule: "sender",
+        expected: WALLET,
+        got: OTHER,
+        quote: quote.id,
+        tool: quote.tool,
+        want: { fromAddress: WALLET, fromUnits: "50000000" },
+        quoted: { fromAddress: OTHER, fromAmount: "50000000" },
+    });
 });
 
 test("a wrong diamond is refused", async () => {
@@ -109,7 +123,7 @@ test("EVM addresses compare without case, Solana's exactly", async () => {
     const upper = (value: string) => `0x${value.slice(2).toUpperCase()}`;
 
     expect(() =>
-        checkQuote(
+        check(
             {
                 ...quote,
                 fromToken: upper(quote.fromToken),
@@ -185,9 +199,9 @@ test("a wrong value is refused", async () => {
     // A native input moves at most its amount
     const native = await quoted({ from: ["ETH", "base"], to: ["USDC", "base"], units: 10_000_000_000_000_000n });
     expect(evmTx(native.quote).value).toBe("10000000000000000");
-    expect(() => checkQuote(native.quote, native.want)).not.toThrow();
+    expect(() => check(native.quote, native.want)).not.toThrow();
     expect(() =>
-        checkQuote({ ...native.quote, tx: { ...evmTx(native.quote), value: "9999999999999999" } }, native.want),
+        check({ ...native.quote, tx: { ...evmTx(native.quote), value: "9999999999999999" } }, native.want),
     ).not.toThrow();
     refuses({ ...native.quote, tx: { ...evmTx(native.quote), value: "10000000000000001" } }, native.want);
 
@@ -201,8 +215,8 @@ test("Arc USDC's 18-decimal value is compared in 6 decimals", async () => {
     const tx = evmTx(quote);
 
     expect(tx.value).toBe("50000000000000000000");
-    expect(() => checkQuote(quote, want)).not.toThrow();
-    expect(() => checkQuote({ ...quote, tx: { ...tx, value: "0" } }, want)).not.toThrow();
+    expect(() => check(quote, want)).not.toThrow();
+    expect(() => check({ ...quote, tx: { ...tx, value: "0" } }, want)).not.toThrow();
     refuses({ ...quote, tx: { ...tx, value: "50000000000000000001" } }, want);
     // The same value compared in the token's own 6 decimals would be far over
     refuses({ ...quote, tx: { ...tx, value: String(50_000_000n * 10n ** 13n) } }, want);
@@ -226,7 +240,7 @@ test("a token input may carry the native fee a bridge charges on top, and not a 
     const { quote, want } = await evm();
     const fees = [feeOf("500000"), feeOf("100", { included: true }), feeOf("7", { token: want.from.address })];
 
-    expect(() => checkQuote(withValue(quote, "500000", fees), want)).not.toThrow();
+    expect(() => check(withValue(quote, "500000", fees), want)).not.toThrow();
     refuses(withValue(quote, "500001", fees), want);
     // A fee that is included, or paid in a token, adds nothing
     refuses(withValue(quote, "1", [feeOf("100", { included: true })]), want);
@@ -241,7 +255,7 @@ test("a native input may carry its amount plus the native fee", async () => {
     });
     const fees = [feeOf("500"), feeOf("20")];
 
-    expect(() => checkQuote(withValue(quote, "10000000000000520", fees), want)).not.toThrow();
+    expect(() => check(withValue(quote, "10000000000000520", fees), want)).not.toThrow();
     refuses(withValue(quote, "10000000000000521", fees), want);
 });
 
@@ -251,15 +265,15 @@ test("Arc USDC never carries the input as value and as an approval", async () =>
 
     // The value carries the input, so an approval for it would charge it twice
     refuses({ ...withValue(quote, amount, []), skipApproval: false }, want);
-    expect(() => checkQuote({ ...withValue(quote, amount, []), skipApproval: true }, want)).not.toThrow();
+    expect(() => check({ ...withValue(quote, amount, []), skipApproval: true }, want)).not.toThrow();
     // With no value the input travels by approval
-    expect(() => checkQuote({ ...withValue(quote, "0", []), skipApproval: false }, want)).not.toThrow();
+    expect(() => check({ ...withValue(quote, "0", []), skipApproval: false }, want)).not.toThrow();
     // Under the input, only a native fee fits beside the approval
     refuses({ ...withValue(quote, "1", []), skipApproval: false }, want);
-    expect(() => checkQuote({ ...withValue(quote, "1", [feeOf("1")]), skipApproval: false }, want)).not.toThrow();
+    expect(() => check({ ...withValue(quote, "1", [feeOf("1")]), skipApproval: false }, want)).not.toThrow();
     // On top of the input, the fee fits and nothing more
     expect(() =>
-        checkQuote({ ...withValue(quote, "50000000000000000009", [feeOf("9")]), skipApproval: true }, want),
+        check({ ...withValue(quote, "50000000000000000009", [feeOf("9")]), skipApproval: true }, want),
     ).not.toThrow();
     refuses({ ...withValue(quote, "50000000000000000010", [feeOf("9")]), skipApproval: true }, want);
 });
@@ -273,7 +287,7 @@ test("a Solana quote paid by the wallet passes", async () => {
     });
 
     expect(quote.tx.kind).toBe("solana");
-    expect(() => checkQuote(quote, want)).not.toThrow();
+    expect(() => check(quote, want)).not.toThrow();
 });
 
 test("a Solana transaction paid by someone else is refused", async () => {
@@ -287,7 +301,7 @@ test("a Solana transaction paid by someone else is refused", async () => {
 
     // The recorded transaction names its own fee payer, which is not the wallet
     const recorded = readFileSync(new URL("../fixtures/lifi/solana-tx.txt", import.meta.url), "utf8").trim();
-    expect(() => checkQuote({ ...quote, tx: { kind: "solana", data: recorded } }, want, logger)).toThrow(REFUSAL);
+    expect(() => check({ ...quote, tx: { kind: "solana", data: recorded } }, want, logger)).toThrow(QuoteRejected);
     expect(logger.warn.mock.calls[0]?.[1]).toMatch(/fee payer/);
 
     refuses(quote, { ...want, fromAddress: SOLANA_OTHER, toAddress: SOLANA_OTHER });
