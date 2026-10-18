@@ -65,11 +65,11 @@ export function reverted(step: PayoutStep, txHash: string, gasUsed: bigint | nul
 }
 
 /** The burn's amounts or recipient could never be encoded, so the withdrawal can't go out. */
-export function unsendable(error: unknown): Why {
+export function unsendable(error: unknown, id: ObjectId): Why {
     return {
         failure: "Couldn't build the transfer",
         detail: upstreamLine(error),
-        message: `Something is wrong with this withdrawal's details on our side, so it was cancelled. ${BALANCE_BACK}`,
+        message: `Something is wrong with this withdrawal's details on our side (ref ${withdrawalRef(id)}), so it was cancelled. ${BALANCE_BACK}`,
         level: "error",
         step: "burn",
         txHash: null,

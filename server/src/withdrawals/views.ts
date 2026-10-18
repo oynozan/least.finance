@@ -2,7 +2,7 @@ import type { WithdrawalDoc } from "../db/mongo.ts";
 import { quoted } from "../errors.ts";
 import { formatUsdc, fromDecimal } from "../db/money.ts";
 import type { WithdrawalView } from "../protocol.ts";
-import { forwardFailedMessage, forwardSlowMessage, withdrawalRef } from "./failures.ts";
+import { BALANCE_BACK, forwardFailedMessage, forwardSlowMessage, withdrawalRef } from "./failures.ts";
 
 /** Time in `forwarding` after which the view says it is taking longer than expected. */
 export const FORWARDING_DELAYED_MS = 15 * 60_000;
@@ -14,9 +14,9 @@ const REASONS: [RegExp, string][] = [
 
 /** A failed withdrawal's stored reason as a sentence for the person; what we don't recognise is quoted. */
 export function withdrawalReason(failure: string | null): string {
-    if (!failure) return "The withdrawal failed on our side.";
+    if (!failure) return `The withdrawal failed on our side. ${BALANCE_BACK}`;
     const known = REASONS.find(([test]) => test.test(failure));
-    return known ? known[1] : `The withdrawal failed: ${quoted(failure)}.`;
+    return `${known ? known[1] : `The withdrawal failed: ${quoted(failure)}.`} ${BALANCE_BACK}`;
 }
 
 export function withdrawalView(doc: WithdrawalDoc, now = Date.now()): WithdrawalView {

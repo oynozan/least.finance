@@ -619,7 +619,7 @@ test("a burn that can never be encoded fails the withdrawal with the values in t
     expect(failed.state).toBe("failed");
     expect(failed.detail).toContain("isn't a whole number of USDC units");
     expect(failed.message).toBe(
-        "Something is wrong with this withdrawal's details on our side, so it was cancelled. Your balance is back.",
+        `Something is wrong with this withdrawal's details on our side (ref ${withdrawal._id.toHexString().slice(-6)}), so it was cancelled. Your balance is back.`,
     );
     expect(await balanceOf(account._id)).toBe(wei("5") + 1n);
     expect(await refunds(withdrawal._id)).toBe(1);

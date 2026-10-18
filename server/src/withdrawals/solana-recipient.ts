@@ -63,6 +63,7 @@ export async function checkRecipient(
         throw new AppError(
             "bad_request",
             "That Solana address belongs to a program, not a wallet, so it can't receive USDC. Use your wallet's own address.",
+            { logged: true },
         );
     }
     return { usdcAccount, setup: tokenInfo === null };

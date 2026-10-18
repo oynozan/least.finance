@@ -57,6 +57,7 @@ test("a wallet owned by a program is refused", async () => {
         fake.setAccount(WALLET, { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", lamports: 1n });
         await expect(checkRecipient(rpc, WALLET)).rejects.toMatchObject({
             code: "bad_request",
+            logged: true,
             message:
                 "That Solana address belongs to a program, not a wallet, so it can't receive USDC. Use your wallet's own address.",
         });

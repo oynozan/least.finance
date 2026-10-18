@@ -196,7 +196,7 @@ export class Payouts {
             } catch (error) {
                 if (error instanceof BurnInputError) {
                     // Nothing was signed, and the same input would fail again, so the person gets the money back.
-                    await this.#fail(withdrawal, unsendable(error));
+                    await this.#fail(withdrawal, unsendable(error, withdrawal._id));
                     continue;
                 }
                 if (
