@@ -41,22 +41,38 @@ export function createPerpMarketsStore(options: { apiUrl: string; fetch?: typeof
     const request = options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
     const listeners = new Set<() => void>();
     let view: PerpMarketsView | null = null;
+    let error: string | null = null;
+
+    /** Remembers why the last read failed, and says so once in the console; a read that works clears it. */
+    const failed = (why: string | null) => {
+        if (why === error) return;
+        error = why;
+        if (why) console.warn(`Couldn't load the Long and Short markets: ${why}`);
+        listeners.forEach((listener) => listener());
+    };
 
     return {
         async load(): Promise<void> {
             try {
                 const response = await request(`${options.apiUrl}/perps/markets`);
-                if (!response.ok) return await reportRefusal("Perp markets", response);
+                if (!response.ok) {
+                    await reportRefusal("Perp markets", response);
+                    return failed(`HTTP ${response.status}`);
+                }
                 const body: unknown = await response.json();
-                if (!isMarketsView(body)) return;
+                if (!isMarketsView(body)) return failed("unexpected response");
                 view = body;
+                error = null;
                 listeners.forEach((listener) => listener());
-            } catch (error) {
-                // Offline or the server is down; the next refresh tries again.
-                reportUnreachable("Perp markets", error);
+            } catch (caught) {
+                // Offline or the server is down; the last good view stays and the next refresh tries again.
+                reportUnreachable("Perp markets", caught);
+                failed("offline");
             }
         },
         get: () => view,
+        /** Why the last read failed ("HTTP 429", "offline", "unexpected response"), or null. */
+        error: () => error,
         subscribe(listener: () => void) {
             listeners.add(listener);
             return () => void listeners.delete(listener);
@@ -68,6 +84,7 @@ const shared = createPerpMarketsStore({ apiUrl: API_URL });
 
 export const loadPerpMarkets = shared.load;
 export const getPerpMarkets = shared.get;
+export const getPerpMarketsError = shared.error;
 export const subscribePerpMarkets = shared.subscribe;
 
 /** Reads the markets now and every few seconds while the page is visible; returns the stop function. */

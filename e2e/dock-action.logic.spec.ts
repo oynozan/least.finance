@@ -124,7 +124,7 @@ test.describe("what the dock's button says and does", () => {
         expect(action("long", [], off)).toEqual({
             kind: "blocked",
             label: "Not available right now",
-            message: "Long and short aren't available right now.",
+            message: "Long and short are switched off for now.",
         });
         expect(action("long", [slot("collateralUSD", "10"), slot("leverage", "1")])).toMatchObject({
             kind: "blocked",

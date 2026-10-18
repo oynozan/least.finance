@@ -21,6 +21,7 @@ import { toTokens } from "@/lib/trade/live-coins";
 import { toPredictionMarket } from "@/lib/trade/markets";
 import {
     getPerpMarkets,
+    getPerpMarketsError,
     perpMarketsOf,
     perpMaxOrderUSD,
     subscribePerpMarkets,
@@ -181,9 +182,10 @@ function useLiveCatalog(): {
     useEffect(() => watchPerpMarkets(), []);
     const perpView = useSyncExternalStore(subscribePerpMarkets, getPerpMarkets, getPerpMarkets);
     const perpMarkets = useMemo(() => perpMarketsOf(perpView), [perpView]);
+    const perpError = useSyncExternalStore(subscribePerpMarkets, getPerpMarketsError, getPerpMarketsError);
     const perpTrading = useMemo(
-        () => ({ maxOrderUSD: perpMaxOrderUSD(perpView), loaded: perpView !== null }),
-        [perpView],
+        () => ({ maxOrderUSD: perpMaxOrderUSD(perpView), loaded: perpView !== null, error: perpError }),
+        [perpView, perpError],
     );
     const { trending, query, results, answered, searchFailed, searchError, loading, known, maxOrderUSD } =
         useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);

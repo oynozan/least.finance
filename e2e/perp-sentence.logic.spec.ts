@@ -42,15 +42,26 @@ test.describe("perp markets in the sentence", () => {
         expect(pulled.text).toBe("I want to Long BTC at 10x leverage with 100 USD.");
     });
 
-    test("Review stays blocked with 'Long and short aren't available right now.' while maxOrderUSD is null", () => {
-        const blocked = {
+    test("Review stays blocked, and says which of three reasons it is", () => {
+        expect(run("short", ctxOf(view({ maxOrderUSD: null }))).blocking).toEqual({
             code: "unavailable",
             severity: "error",
-            message: "Long and short aren't available right now.",
+            message: "Long and short are switched off for now.",
             cta: "Not available right now",
-        };
-        expect(run("short", ctxOf(view({ maxOrderUSD: null }))).blocking).toEqual(blocked);
-        expect(run("long", ctxOf(null)).blocking).toEqual(blocked);
+        });
+        expect(run("long", ctxOf(null)).blocking).toEqual({
+            code: "unavailable",
+            severity: "error",
+            message: "Checking whether Long and short are available…",
+            cta: "Checking…",
+        });
+        const failed = ctxOf(null, { perpTrading: { maxOrderUSD: null, loaded: false, error: "HTTP 503" } });
+        expect(run("long", failed).blocking).toEqual({
+            code: "unavailable",
+            severity: "error",
+            message: "Couldn't reach the server to load the markets (HTTP 503).",
+            cta: "Not available right now",
+        });
         expect(run("long", ctxOf(view())).blocking).toBeUndefined();
         expect(run("long", ctxOf(view()), [slot("collateralUSD", "5")]).blocking).toMatchObject({
             message: "Positions start at $10.",
@@ -70,17 +81,20 @@ test.describe("perp markets in the sentence", () => {
         let heard = 0;
         store.subscribe(() => (heard += 1));
         expect(store.get()).toBeNull();
+        expect(store.error()).toBeNull();
 
         await store.load();
         expect(store.get()?.markets.map((m) => m.asset)).toEqual(["BTC", "ETH"]);
         expect(perpMarketsOf(store.get()).map((m) => m.maxLeverage)).toEqual([10, 20]);
         expect(perpMaxOrderUSD(store.get())).toBe(150);
 
-        // A failed or malformed answer keeps the last good view.
+        // A failed or malformed answer keeps the last good view, and says why it failed.
         await store.load();
+        expect(store.error()).toBe("HTTP 503");
         await store.load();
+        expect(store.error()).toBe("unexpected response");
         expect(store.get()?.markets).toHaveLength(2);
-        expect(heard).toBe(1);
+        expect(heard).toBe(3);
     });
 });
 

@@ -1,5 +1,11 @@
 import { VERB, canonicalDecimal, type Bound, type Choice, type Issue } from "@/lib/sentence";
-import { PERP_FEE_USD } from "@/server/src/perps/fee";
+import {
+    PERP_FEE_USD,
+    PERP_MIN_COLLATERAL_MESSAGE,
+    PERP_MIN_COLLATERAL_USD,
+    PERP_MIN_POSITION_MESSAGE,
+    PERP_MIN_POSITION_USD,
+} from "@/server/src/perps/fee";
 import { LEVERAGE_STEPS } from "../catalog";
 import { operation, priceOf, token, type TradeCtx } from "../context";
 import { formatPrice, formatUsd, formatUsdShort } from "../format";
@@ -10,16 +16,23 @@ type Side = "long" | "short";
 type Values = { asset: string; leverage: string; collateralUSD: string };
 type Fixed = { side: Side };
 
-/** Trading is off or the server hasn't answered; the sentence still builds. */
-const UNAVAILABLE = {
-    code: "unavailable",
-    severity: "error",
-    message: "Long and short aren't available right now.",
-    cta: "Not available right now",
-} as const;
-
-const MIN_COLLATERAL = 10;
-const MIN_POSITION = 11;
+/** Long and short can't open yet; the sentence still builds. Which of the three reasons it is decides what it says. */
+function unavailable(ctx: TradeCtx): Issue<never> {
+    const trading = ctx.perpTrading;
+    const waiting = trading && !trading.loaded;
+    return {
+        code: "unavailable",
+        severity: "error",
+        message: !trading
+            ? "Long and short aren't available right now."
+            : !trading.loaded
+              ? trading.error
+                  ? `Couldn't reach the server to load the markets (${trading.error}).`
+                  : "Checking whether Long and short are available…"
+              : "Long and short are switched off for now.",
+        cta: waiting && !trading.error ? "Checking…" : "Not available right now",
+    };
+}
 
 /** A k-asset is priced and sized per thousand coins: kPEPE is "1,000 PEPE". */
 const thousand = (asset: string) => (/^k[A-Z]/.test(asset) ? `1,000 ${asset.slice(1)}` : undefined);
@@ -119,7 +132,7 @@ export const perp = operation({
         collateralUSD: {
             ...usdAmount(
                 (_v: Values & Fixed, ctx) => ({
-                    min: { ...minimum(MIN_COLLATERAL), message: "Positions start at $10." },
+                    min: { ...minimum(PERP_MIN_COLLATERAL_USD), message: PERP_MIN_COLLATERAL_MESSAGE },
                     max: collateralCap(ctx),
                 }),
                 (v) =>
@@ -145,14 +158,17 @@ export const perp = operation({
         return leverage === next.leverage ? next : { ...next, leverage };
     },
     check: (v, ctx) => {
-        if (!(ctx.perpTrading?.loaded && ctx.perpTrading.maxOrderUSD !== null)) return [UNAVAILABLE];
+        if (!(ctx.perpTrading?.loaded && ctx.perpTrading.maxOrderUSD !== null)) return [unavailable(ctx)];
         const collateral = Number(v.collateralUSD) || 0;
         const issues: Issue<keyof Values>[] = [];
-        if (collateral >= MIN_COLLATERAL && (collateral - PERP_FEE_USD) * (Number(v.leverage) || 1) < MIN_POSITION) {
+        if (
+            collateral >= PERP_MIN_COLLATERAL_USD &&
+            (collateral - PERP_FEE_USD) * (Number(v.leverage) || 1) < PERP_MIN_POSITION_USD
+        ) {
             issues.push({
                 code: "below_minimum",
                 severity: "error",
-                message: `A position starts at $${MIN_POSITION}. Raise the collateral or the leverage.`,
+                message: PERP_MIN_POSITION_MESSAGE,
                 cta: "Raise collateral or leverage",
             });
         }
