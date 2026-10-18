@@ -280,3 +280,20 @@ test("an open position's collateral is not counted as a surplus", async () => {
     expect(report.shortfallE6).toBe(e6("50"));
     expect(errors(h).some((line) => /short/i.test(line.msg))).toBe(true);
 });
+
+test("a stuck-balance sweep Hyperliquid refuses is logged with the index, the address and what it said", async () => {
+    const h = await fresh();
+    await h.seedAccount("1000");
+    const stuck = await idleAddress(h, "5", 77);
+    h.fake.failUsdSend(true);
+
+    const report = await reconciler(h, "100000").run();
+
+    expect(report.swept).toBe(0);
+    const logged = h.lines.filter((line) => line.event === "perp.reconcile.sweep_failed");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 50, index: 77, address: stuck });
+    expect(String((logged[0]!.err as { message?: string }).message)).toMatch(
+        /^Hyperliquid refused the sweep of a stuck 5000000 \(e6\) balance from index 77 to the master: usdSend is failing\.$/,
+    );
+});

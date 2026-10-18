@@ -83,7 +83,10 @@ export class PerpReconciler {
                 await sleep(RECONCILE_EVERY_MS, undefined, { signal }).catch(() => undefined);
                 if (signal.aborted) break;
                 await this.run().catch((error: unknown) =>
-                    this.#deps.logger.warn({ err: error }, "Perp reconciliation failed"),
+                    this.#deps.logger.warn(
+                        { event: "perp.reconcile.failed", err: error },
+                        "Perp reconciliation threw; the next run is in 10 minutes",
+                    ),
                 );
             }
         })();
@@ -124,7 +127,10 @@ export class PerpReconciler {
             stuck,
             nextNonce(person.address),
         );
-        if (sent.kind !== "ok") throw new Error(sent.kind === "rejected" ? sent.message : "duplicate nonce");
+        if (sent.kind !== "ok")
+            throw new Error(
+                `Hyperliquid refused the sweep of a stuck ${stuck} (e6) balance from index ${person.index} to the master: ${sent.kind === "rejected" ? sent.message : "duplicate nonce"}`,
+            );
         return stuck;
     }
 
@@ -157,7 +163,10 @@ export class PerpReconciler {
                 valueBy.set(person.index, state?.accountValueE6 ?? 0n);
             } catch (error) {
                 readable = false;
-                logger.warn({ err: error, index: person.index }, "Couldn't read a Hyperliquid account to reconcile");
+                logger.warn(
+                    { event: "perp.reconcile.read_failed", err: error, index: person.index, address: person.address },
+                    "Couldn't read a Hyperliquid account to reconcile; the solvency check is skipped this run",
+                );
             }
         }
 
@@ -195,7 +204,10 @@ export class PerpReconciler {
                     "Swept a stuck balance to the master",
                 );
             } catch (error) {
-                logger.error({ err: error, index: person.index }, "Couldn't sweep a stuck balance to the master");
+                logger.error(
+                    { event: "perp.reconcile.sweep_failed", err: error, index: person.index, address: person.address },
+                    "Couldn't sweep a stuck balance to the master",
+                );
             }
         }
 

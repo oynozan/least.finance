@@ -68,6 +68,8 @@ export class PerpTracker {
     readonly #polled = new Map<string, number>();
     readonly #fillsAt = new Map<string, number>();
     readonly #orderAt = new Map<string, number>();
+    /** The last failure of each order being followed, so the same one isn't logged every pass. */
+    readonly #failed = new Map<string, string>();
     readonly #addresses = new Map<number, string>();
     #budget = BUDGET_CAP;
     #budgetAt: number | null = null;
@@ -151,9 +153,26 @@ export class PerpTracker {
             this.#spend(weight);
             try {
                 await abortable(this.#settle(order), signal);
+                this.#failed.delete(key);
             } catch (error) {
-                if (!signal?.aborted)
-                    this.#deps.logger.warn({ err: error, order: key }, "Couldn't follow a perp order");
+                // A stuck order fails the same way every pass, so a repeat of the same words is not logged again
+                const said = error instanceof Error ? error.message : String(error);
+                if (!signal?.aborted && this.#failed.get(key) !== said) {
+                    this.#failed.set(key, said);
+                    this.#deps.logger.warn(
+                        {
+                            event: "perp.track.order_failed",
+                            order: key,
+                            accountId: order.accountId.toHexString(),
+                            kind: order.kind,
+                            state: order.state,
+                            asset: order.asset,
+                            ageMs: this.#now() - order.createdAt.getTime(),
+                            err: error,
+                        },
+                        "Following a perp order failed (will retry)",
+                    );
+                }
             }
         }
     }
@@ -208,7 +227,16 @@ export class PerpTracker {
                 await abortable(this.#poll(target.address, byIndex.get(target.index)!, at, signal), signal);
             } catch (error) {
                 if (!signal?.aborted)
-                    this.#deps.logger.warn({ err: error, address: target.address }, "Couldn't read a perp account");
+                    this.#deps.logger.warn(
+                        {
+                            event: "perp.track.read_failed",
+                            index: target.index,
+                            address: target.address,
+                            viewed: target.viewed,
+                            err: error,
+                        },
+                        "Reading a Hyperliquid account for tracking failed",
+                    );
             }
         }
     }

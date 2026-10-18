@@ -74,7 +74,15 @@ export class PerpMarkets {
             this.#assets = listed.sort((a, b) => this.#rank.get(a.asset)! - this.#rank.get(b.asset)!);
             this.#readAt = at;
         } catch (error) {
-            this.#deps.logger.warn({ err: error }, "Couldn't sync the Hyperliquid markets, keeping the last list");
+            this.#deps.logger.warn(
+                {
+                    event: "perp.markets.sync_failed",
+                    lastReadAt: this.#readAt,
+                    ageSec: this.#readAt === null ? null : Math.round((this.#now() - this.#readAt) / 1000),
+                    err: error,
+                },
+                "Couldn't sync the Hyperliquid markets, keeping the last list",
+            );
         }
     }
 

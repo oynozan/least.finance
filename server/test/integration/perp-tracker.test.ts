@@ -336,3 +336,37 @@ test("an empty state with no reducing fill does not close a position until a sec
     await trackerOf(h, { ...h.client, fills: async () => [closing] } as HyperliquidClient).pass(Date.now() + 40_000);
     expect(await positionOf(h, back._id)).toMatchObject({ state: "closed", active: false });
 });
+
+test("an order the tracker can't follow is logged with its account and state, and the same failure once", async () => {
+    const h = await fresh();
+    const account = await h.seedAccount("1000");
+    h.fake.nextOrder("drop");
+    const { order } = await h.place(account);
+    await h.until(async () => (await h.orderOf(order._id)).state === "posted" && !h.service.submitting(order._id));
+
+    const lines: Array<Record<string, unknown>> = [];
+    h.failing.add("orderStatus");
+    const tracker = new PerpTracker({
+        service: h.service,
+        client: h.client,
+        collections: h.database.collections,
+        config: h.config,
+        logger: pino({ level: "info" }, { write: (line: string) => void lines.push(JSON.parse(line)) }),
+        bus: h.bus,
+    });
+    await tracker.pass(Date.now());
+    await tracker.pass(Date.now() + 60_000);
+    await tracker.pass(Date.now() + 120_000);
+
+    const logged = lines.filter((line) => line.event === "perp.track.order_failed");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+        level: 40,
+        msg: "Following a perp order failed (will retry)",
+        order: order._id.toHexString(),
+        accountId: account._id.toHexString(),
+        kind: "open",
+        state: "posted",
+        asset: "BTC",
+    });
+});
