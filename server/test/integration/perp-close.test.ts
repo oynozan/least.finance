@@ -192,6 +192,8 @@ test("a rejected close restores open", async () => {
     expect(await positionOf(h, position._id)).toMatchObject({ state: "open", active: true });
     // The reason stays on the position after the toast is gone
     expect((await h.service.positions(account)).positions[0]!.notice).toBe(done.reason);
+    // Logged just after the order is stored as rejected
+    await h.until(async () => h.lines.some((line) => line.event === "perp.close.refused"));
     const refused = h.lines.filter((line) => line.event === "perp.close.refused");
     expect(refused).toHaveLength(1);
     expect(refused[0]).toMatchObject({
@@ -348,6 +350,7 @@ test("a partial close says how much closed, keeps why, and is logged with the si
         "Closed 0.003 of 0.00759 BTC; the book was too thin for the rest. Press Close again for the rest.",
     );
     expect(done).toMatchObject({ code: "partial_close", detail: expect.stringContaining("filled 0.003 of 0.00759") });
+    await h.until(async () => h.lines.some((line) => line.event === "perp.close.partial"));
     const logged = h.lines.filter((line) => line.event === "perp.close.partial");
     expect(logged).toHaveLength(1);
     expect(logged[0]).toMatchObject({
