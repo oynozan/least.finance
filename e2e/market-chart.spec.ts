@@ -1,5 +1,4 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { failNextPolymarket } from "./backend";
 import { API, sampleView, samples } from "./polymarket";
 import { installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 import { picker, trade } from "./swap-flow";
@@ -216,18 +215,26 @@ test("opening the picker hides the card, and Escape closes it", async ({ page, i
     await expect(card(page)).toHaveCount(0);
 });
 
-test("a history that can't be read shows no card", async ({ page, isMobile }) => {
+test("a history that can't be read says why in the card", async ({ page, isMobile }) => {
     test.skip(isMobile, "hover only");
-    // The pick's read-ahead takes the failure, and a failed read isn't retried within seconds
-    await failNextPolymarket("/batch-prices-history");
+    // Refused for this market only, so the default pick's own read-ahead can't take the failure
+    const why = "Polymarket didn't answer the price history read. Try again shortly.";
+    await page.route(new RegExp(`/markets/${samples.named}/history`), (route) =>
+        route.fulfill({
+            status: 503,
+            contentType: "application/json",
+            headers: { "access-control-allow-origin": "*" },
+            body: JSON.stringify({ error: { code: "unavailable", message: why } }),
+        }),
+    );
     const refused = page.waitForResponse(
         (response) => response.url().startsWith(`${API}/markets/${samples.named}/history`) && response.status() === 503,
     );
     await predict(page, samples.named!);
     await refused;
     await questionPill(page).hover();
-    await page.waitForTimeout(500);
-    await expect(card(page)).toHaveCount(0);
+    await expect(card(page)).toContainText(`The chart isn't available right now. ${why}`);
+    await expect(card(page).locator("svg")).toHaveCount(0);
 });
 
 test("a read that lands while the pill is hovered opens the card", async ({ page, isMobile }) => {
