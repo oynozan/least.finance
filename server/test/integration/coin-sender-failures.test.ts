@@ -253,6 +253,62 @@ describe("a send that can't go yet", () => {
         expect(await reload(doc)).toMatchObject({ state: "sent", detail: null, message: null });
     });
 
+    test("a send that recovers drops the stale 'Still trying' reason", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const worker = sender();
+        chain.failNext("prepare", new Error("fetch failed: ECONNREFUSED"));
+        await worker.tick();
+        expect(await reload(doc)).toMatchObject({ message: "Still trying: fetch failed: ECONNREFUSED" });
+
+        clock += 5_000;
+        await worker.tick();
+        const recovered = await reload(doc);
+        expect(recovered.state).toBe("sending");
+        expect(recovered.txHash).not.toBeNull();
+        expect(recovered.message).toBeNull();
+        expect(recovered.detail).toBeNull();
+        expect(coinWithdrawalView(recovered).message).toBeNull();
+    });
+
+    test("a send that never mines says so after its last resend, and is logged again every while", async () => {
+        const doc = await queue("ETH", "0.5", "ethereum");
+        const worker = sender({ resendAfterMs: 1_000 });
+        for (let pass = 0; pass < 10; pass += 1) {
+            await worker.tick();
+            clock += 2_000;
+        }
+        const last = await reload(doc);
+        expect(last.state).toBe("sending");
+        expect(last.attempts).toHaveLength(10);
+        expect(last.message ?? null).toBeNull();
+
+        // Later passes have nothing left to send, so they say what is going on instead of staying silent
+        await worker.tick();
+        const waiting = await reload(doc);
+        const ref = doc._id.toHexString().slice(-6);
+        expect(waiting.message).toBe(
+            `Still waiting for the network (tx ${last.txHash}). Contact support with ref ${ref}.`,
+        );
+        expect(coinWithdrawalView(waiting).message).toBe(waiting.message);
+        const reminders = lines.filter((line) => line.event === "coin-send:unmined");
+        expect(reminders).toHaveLength(1);
+        expect(reminders[0]).toMatchObject({
+            level: ERROR,
+            withdrawal: doc._id.toHexString(),
+            attempts: 10,
+            hashes: expect.any(Array),
+        });
+        expect(reminders[0]!.ageMs).toBeGreaterThan(0);
+
+        await worker.tick();
+        await worker.tick();
+        expect(lines.filter((line) => line.event === "coin-send:unmined")).toHaveLength(1);
+        clock += 11 * 60_000;
+        await worker.tick();
+        expect(lines.filter((line) => line.event === "coin-send:unmined")).toHaveLength(2);
+        expect(lines.filter((line) => line.event === "coin-send:unmined").at(-1)).toMatchObject({ repeatsLeftOut: 2 });
+    });
+
     test("an error text that only carries a refusal word in its URL is not a refusal", async () => {
         const doc = await queue("ETH", "0.5", "ethereum");
         chain.failNext(

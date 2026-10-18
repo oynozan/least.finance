@@ -5,7 +5,7 @@ import type { Collections } from "../db/mongo.ts";
 import { COINS, NETWORKS, type CoinEntry } from "../swaps/coins.ts";
 import type { EvmNetworkId } from "../swaps/clients.ts";
 import { loopWatch } from "../loop-watch.ts";
-import type { CoinWithdrawalDoc } from "./docs.ts";
+import type { CoinWithdrawalDoc, SendAttempt } from "./docs.ts";
 import { RepeatGate, sendBack, sendRefusal, solanaErr, upstreamSaid, type SendFailure } from "./failures.ts";
 import {
     MAX_ATTEMPTS,
@@ -235,7 +235,7 @@ export class CoinSender {
                     level: "warn",
                 });
             if (this.#now() - doc.updatedAt.getTime() < (this.#deps.resendAfterMs ?? DEFAULT_RESEND_MS)) return;
-            if (attempts.length >= MAX_ATTEMPTS) return;
+            if (attempts.length >= MAX_ATTEMPTS) return this.#unmined(doc, attempts);
         }
 
         // The nonce is stored before anything is signed, and a retry reuses it
@@ -261,31 +261,43 @@ export class CoinSender {
                 $set: {
                     txHash: prepared.hash,
                     attempts: [...attempts, attemptOf(prepared)],
+                    // The last pass's trouble is over once a transaction is signed
+                    detail: null,
+                    message: null,
                     updatedAt: new Date(this.#now()),
                 },
             },
         );
-        if (attempts.length + 1 === MAX_ATTEMPTS) {
-            this.#deps.logger.error(
-                {
-                    event: "coin-send:unmined",
-                    ...this.#fields(doc),
-                    txHash: prepared.hash,
-                    nonce,
-                    attempts: attempts.length + 1,
-                    ageMs: this.#now() - doc.createdAt.getTime(),
-                    maxFeePerGas: prepared.fees.maxFeePerGas.toString(),
-                    maxPriorityFeePerGas: prepared.fees.maxPriorityFeePerGas.toString(),
-                },
-                "A coin withdrawal is still unmined after its last resend",
-            );
-        }
-
         try {
             await chain.broadcast(network, prepared);
         } catch (error) {
             return this.#answered(doc, error, network, nonce, attempts.length > 0);
         }
+    }
+
+    /** Every resend is out and none is mined: said in the log every while and on the send itself, since nothing else will throw. */
+    async #unmined(doc: CoinWithdrawalDoc, attempts: SendAttempt[]) {
+        const again = this.#repeats.note(`${doc._id.toHexString()}:unmined`, "unmined");
+        if (!again) return;
+        const txHash = attempts.at(-1)!.hash;
+        this.#deps.logger.error(
+            {
+                event: "coin-send:unmined",
+                ...this.#fields(doc),
+                txHash,
+                attempts: attempts.length,
+                hashes: attempts.map((attempt) => attempt.hash),
+                ageMs: this.#now() - doc.createdAt.getTime(),
+                repeatsLeftOut: again.skipped,
+            },
+            "A coin withdrawal is still unmined after its last resend",
+        );
+        const message = `Still waiting for the network (tx ${txHash}). Contact support with ref ${doc._id.toHexString().slice(-6)}.`;
+        if (doc.message !== message)
+            await this.#deps.collections.coinWithdrawals.updateOne(
+                { _id: doc._id, state: "sending" },
+                { $set: { detail: `Unmined after ${attempts.length} attempts`, message } },
+            );
     }
 
     /** A refused first attempt fails and frees its nonce, but a refused replacement leaves the earlier attempts to the receipts */
@@ -346,7 +358,7 @@ export class CoinSender {
         }
         await this.#deps.collections.coinWithdrawals.updateOne(
             { _id: doc._id, state: "sending" },
-            { $set: { txHash: prepared.signature, updatedAt: new Date(this.#now()) } },
+            { $set: { txHash: prepared.signature, detail: null, message: null, updatedAt: new Date(this.#now()) } },
         );
         try {
             await prepared.broadcast();
@@ -363,6 +375,7 @@ export class CoinSender {
             { $set: { state: "sent", txHash, detail: null, message: null, updatedAt: new Date(this.#now()) } },
             { returnDocument: "after" },
         );
+        this.#repeats.clear(`${doc._id.toHexString()}:unmined`);
         if (updated) this.#deps.onChange?.(updated, false);
     }
 
