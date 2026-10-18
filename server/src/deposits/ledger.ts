@@ -10,7 +10,7 @@ import {
     type DepositDoc,
     type LedgerEntryDoc,
 } from "../db/mongo.ts";
-import { formatUsdc, toDecimal } from "../db/money.ts";
+import { E6_TO_WEI, formatE6, formatUsdc, toDecimal, fromDecimal } from "../db/money.ts";
 import type { Bus } from "../events.ts";
 
 export type Credit = {
@@ -49,10 +49,7 @@ export class Ledger {
     /** Null when the transfer is below the minimum, which isn't credited. */
     async credit(transfer: NativeTransfer, accountId: ObjectId, source: DepositDoc["source"]): Promise<Credit | null> {
         if (transfer.value < this.#deps.minDeposit) {
-            this.#deps.logger.info(
-                { txHash: transfer.txHash, logIndex: transfer.logIndex, amount: formatUsdc(transfer.value) },
-                "Deposit below the minimum, not credited",
-            );
+            await this.#skip(transfer, accountId, source);
             return null;
         }
 
@@ -79,6 +76,52 @@ export class Ledger {
         }
     }
 
+    /** Keeps a transfer under the minimum, with why, and says so once: it sits at the person's address and nothing else would tell anyone. */
+    async #skip(transfer: NativeTransfer, accountId: ObjectId, source: DepositDoc["source"]) {
+        const { collections, logger, minDeposit } = this.#deps;
+        const amount = formatUsdc(transfer.value);
+        const message = `Not credited: ${amount} USDC is under the ${formatUsdc(minDeposit)} USDC minimum (sent to your address in block ${transfer.blockNumber}; contact support to recover it).`;
+        const key = { chainId: ARC_CHAIN_ID, txHash: transfer.txHash, logIndex: transfer.logIndex };
+        try {
+            const kept = await collections.skippedDeposits.updateOne(
+                key,
+                {
+                    $setOnInsert: {
+                        _id: new ObjectId(),
+                        accountId,
+                        blockNumber: transfer.blockNumber,
+                        from: transfer.from,
+                        to: transfer.to,
+                        amount: toDecimal(transfer.value),
+                        minimum: toDecimal(minDeposit),
+                        reason: "below_minimum" as const,
+                        message,
+                        source,
+                        seenAt: new Date(),
+                    },
+                },
+                { upsert: true },
+            );
+            if (kept.upsertedCount === 0) return;
+        } catch (error) {
+            logger.error({ err: error, ...key }, "Couldn't keep a deposit that was left uncredited");
+        }
+        logger.warn(
+            {
+                op: "deposit.below_minimum",
+                accountId: accountId.toHexString(),
+                ...key,
+                blockNumber: transfer.blockNumber,
+                from: transfer.from,
+                to: transfer.to,
+                amount,
+                minimum: formatUsdc(minDeposit),
+                source,
+            },
+            "Deposit below the minimum, not credited",
+        );
+    }
+
     /** Takes wei off the balance inside the caller's transaction, which owns the order's state move and the bus event. */
     async debitInSession(
         session: ClientSession,
@@ -94,8 +137,28 @@ export class Ledger {
             { $inc: { balance: toDecimal(-wei), version: 1 }, $set: { updatedAt: now } },
             { session, returnDocument: "after" },
         );
-        if (!account)
-            throw new AppError("insufficient_funds", "You don't have enough USDC for this. Nothing was spent.");
+        if (!account) {
+            const held = await this.#deps.collections.accounts.findOne({ _id: accountId }, { session });
+            const balance = held ? fromDecimal(held.balance) : 0n;
+            this.#deps.logger.warn(
+                {
+                    op: "ledger.debit.refused",
+                    accountId: accountId.toHexString(),
+                    kind,
+                    refId: refId.toHexString(),
+                    amount: formatUsdc(wei),
+                    balance: formatUsdc(balance),
+                },
+                "Refused a debit: the balance is short",
+            );
+            // The balance is floored and the need rounded up, so the sentence never understates the gap
+            const need = formatE6((wei + E6_TO_WEI - 1n) / E6_TO_WEI);
+            throw new AppError(
+                "insufficient_funds",
+                `You have $${formatE6(balance / E6_TO_WEI)} but this needs $${need}. Nothing was spent.`,
+                { logged: true },
+            );
+        }
         await this.#entry(session, account, -wei, kind, refId, now);
         return account;
     }

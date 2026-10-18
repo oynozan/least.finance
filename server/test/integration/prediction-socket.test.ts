@@ -102,7 +102,7 @@ describe("prediction events", () => {
         const refused = results.find((r) => !r.ok);
         expect(refused).toMatchObject({
             ok: false,
-            error: { code: "insufficient_funds", message: "You don't have enough USDC for this. Nothing was spent." },
+            error: { code: "insufficient_funds", message: "You have $4 but this needs $6. Nothing was spent." },
         });
         const { accounts, ledger } = stack.server.services.database.collections;
         const account = (await accounts.findOne({ _id: accountId }))!;

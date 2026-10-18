@@ -1,6 +1,6 @@
 import { encodeAbiParameters, encodeEventTopics, getAddress, pad, type Address, type Hash, type Log } from "viem";
 import type { TransactionReceipt } from "viem";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { NATIVE_TRANSFER_EMITTER, transferEvent, type ArcClient } from "../../src/chain/arc.ts";
 import { findTransfersTo, transfersInReceipt } from "../../src/chain/native-transfers.ts";
 
@@ -288,6 +288,36 @@ describe("findTransfersTo", () => {
         const { client, calls } = fakeClient((call) => (call.toBlock > call.fromBlock ? error : []));
         await findTransfersTo(client, [addr(1)], 1, 2);
         expect(calls).toHaveLength(3);
+    });
+
+    it("says when it halves a range and why, and wraps a throttle so the scan's log says so", async () => {
+        const log = { warn: vi.fn(), info: vi.fn() };
+        const { client } = fakeClient((call) =>
+            call.toBlock > call.fromBlock ? new Error("query exceeds max results 2000") : [],
+        );
+        await findTransfersTo(client, [addr(1)], 1, 2, log);
+        expect(log.info).toHaveBeenCalledWith(
+            { op: "getLogs.split", fromBlock: 1, toBlock: 2, reason: "query exceeds max results 2000" },
+            expect.stringContaining("halves"),
+        );
+
+        const throttled = fakeClient(() => new Error("HTTP request failed. Status: 429"));
+        const error = await findTransfersTo(throttled.client, [addr(1)], 1, 100, log).catch((e: unknown) => e);
+        expect((error as Error).message).toMatch(/^Arc's RPC rate limited getLogs for blocks 1-100: /);
+        expect((error as Error).cause).toBeInstanceOf(Error);
+    });
+
+    it("skips a log missing a field and says which", async () => {
+        const log = { warn: vi.fn(), info: vi.fn() };
+        const bad = { ...fakeLog({ to: addr(1), block: 3, logIndex: 4 }), blockHash: null };
+        const good = fakeLog({ to: addr(1), block: 5, logIndex: 0 });
+        const { client } = fakeClient(() => [bad, good] as unknown as FakeLog[]);
+        const found = await findTransfersTo(client, [addr(1)], 1, 9, log);
+        expect(found.map((t) => t.blockNumber)).toEqual([5]);
+        expect(log.warn).toHaveBeenCalledWith(
+            expect.objectContaining({ logIndex: 4, blockNumber: 3, missing: ["blockHash"] }),
+            "Skipped a transfer log with missing fields",
+        );
     });
 
     it("rethrows when a single block still fails", async () => {

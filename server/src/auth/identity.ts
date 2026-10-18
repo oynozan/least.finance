@@ -2,7 +2,7 @@ import { APIError, PrivyClient } from "@privy-io/node";
 import { createRemoteJWKSet, errors, importSPKI, jwtVerify, type CryptoKey, type JWTVerifyGetKey } from "jose";
 import type { Logger } from "pino";
 import { getAddress, isAddress, type Address } from "viem";
-import { AppError, newRef } from "../errors.ts";
+import { AppError, newRef, shortOf } from "../errors.ts";
 import { throttle } from "../log-throttle.ts";
 
 /** Who a verified access token belongs to. */
@@ -221,7 +221,8 @@ export class PrivyIdentity implements IdentityProvider {
             );
             throw new AppError(
                 "forbidden",
-                "That wallet isn't linked to your account yet. Wait a few seconds after linking it, then try again.",
+                `${shortOf(address)} isn't linked to your account yet. Wait a few seconds after linking it, then try again.`,
+                { logged: true },
             );
         }
         return isEvm ? getAddress(address) : address;

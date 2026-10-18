@@ -11,6 +11,7 @@ import { isAppError } from "../../src/errors.ts";
 
 const wei = (usdc: string) => parseUnits(usdc, 18);
 
+const lines: Record<string, any>[] = [];
 let database: Database;
 let ledger: Ledger;
 beforeAll(async () => {
@@ -19,7 +20,7 @@ beforeAll(async () => {
         client: database.client,
         collections: database.collections,
         bus: new Bus(),
-        logger: pino({ level: "silent" }),
+        logger: pino({ level: "warn" }, { write: (line: string) => void lines.push(JSON.parse(line)) }),
         minDeposit: 0n,
     });
 });
@@ -87,6 +88,16 @@ test("a debit larger than the balance throws insufficient_funds and changes noth
     const error = await debit(id, "3.000000000000000001").catch((e: unknown) => e);
 
     expect(isAppError(error) && error.code).toBe("insufficient_funds");
+    expect((error as Error).message).toBe("You have $3 but this needs $3.000001. Nothing was spent.");
+    expect(
+        lines.find((line) => line.op === "ledger.debit.refused" && line.accountId === id.toHexString()),
+    ).toMatchObject({
+        level: 40,
+        kind: "prediction_buy",
+        amount: "3.000000000000000001",
+        balance: "3",
+        msg: "Refused a debit: the balance is short",
+    });
     const state = await ledgerState(id);
     expect(state.balance).toBe(wei("3"));
     expect(state.version).toBe(1);

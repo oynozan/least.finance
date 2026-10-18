@@ -155,10 +155,13 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             ledger,
             confirmations: config.DEPOSIT_CONFIRMATIONS,
             receiptTimeoutMs: config.DEPOSIT_RECEIPT_TIMEOUT_MS,
+            logger: logger.child({ component: "deposits" }),
         });
-        const solana = overrides.solana ?? createSolanaRpc(config.SOLANA_RPC_URLS);
+        const solana =
+            overrides.solana ??
+            createSolanaRpc(config.SOLANA_RPC_URLS, { logger: logger.child({ component: "solana-rpc" }) });
         const iris = overrides.iris ?? createIris({ baseUrl: config.CIRCLE_IRIS_URL });
-        const irisLimiter = new IrisLimiter();
+        const irisLimiter = new IrisLimiter({ logger: logger.child({ component: "iris" }) });
         const bridges = overrides.bridges ?? [
             createRelay({ apiKey: config.RELAY_API_KEY }),
             createCctp({
@@ -223,6 +226,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         const feed = new ActivityFeed({ collections, logger: logger.child({ component: "pnl" }), now: overrides.now });
         const watcher = new DepositWatcher({
             clients: config.ARC_RPC_URLS.map((url) => createArcClient([url])),
+            urls: config.ARC_RPC_URLS,
             collections,
             registry,
             ledger,

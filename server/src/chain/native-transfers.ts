@@ -25,6 +25,12 @@ const TOO_MUCH = /range|max results|too (large|many|big)|limit|exceed|response s
 /** Being throttled reads a lot like the above, but splitting would only make it worse. */
 const THROTTLED = /rate.?limit|too many requests|\b429\b/i;
 
+/** Where a scan says what it skipped or split; optional, since most callers have nobody to tell. */
+export type ScanLog = {
+    warn: (fields: object, message: string) => void;
+    info: (fields: object, message: string) => void;
+};
+
 type LogLike = {
     transactionHash: Hash | null;
     logIndex: number | null;
@@ -50,6 +56,37 @@ function toTransfer(log: LogLike): NativeTransfer | null {
     };
 }
 
+/** The transfers in the logs, saying so for each log that lacks a field a transfer needs. */
+function toTransfers(logs: LogLike[], log: ScanLog | undefined): NativeTransfer[] {
+    const found: NativeTransfer[] = [];
+    for (const entry of logs) {
+        const transfer = toTransfer(entry);
+        if (transfer) found.push(transfer);
+        else {
+            const { from, to, value } = entry.args;
+            const missing = [
+                ["from", from],
+                ["to", to],
+                ["value", value],
+                ["transactionHash", entry.transactionHash],
+                ["logIndex", entry.logIndex],
+                ["blockNumber", entry.blockNumber],
+                ["blockHash", entry.blockHash],
+            ].flatMap(([name, field]) => (field === undefined || field === null ? [name] : []));
+            log?.warn(
+                {
+                    txHash: entry.transactionHash,
+                    logIndex: entry.logIndex,
+                    blockNumber: Number(entry.blockNumber),
+                    missing,
+                },
+                "Skipped a transfer log with missing fields",
+            );
+        }
+    }
+    return found;
+}
+
 const byChainOrder = (a: NativeTransfer, b: NativeTransfer) => a.blockNumber - b.blockNumber || a.logIndex - b.logIndex;
 
 /** Native transfers a receipt records, in log order. Gas isn't among them. */
@@ -70,6 +107,7 @@ export async function findTransfersTo(
     recipients: readonly Address[],
     fromBlock: number,
     toBlock: number,
+    log?: ScanLog,
 ): Promise<NativeTransfer[]> {
     if (recipients.length === 0 || fromBlock > toBlock) return [];
     const wanted = new Set(recipients.map((address) => address.toLowerCase()));
@@ -80,7 +118,7 @@ export async function findTransfersTo(
 
     const found = new Map<string, NativeTransfer>();
     for (const to of chunks) {
-        for (const transfer of await queryRange(client, to, fromBlock, toBlock, all)) {
+        for (const transfer of await queryRange(client, to, fromBlock, toBlock, all, log)) {
             if (wanted.has(transfer.to)) found.set(`${transfer.txHash}:${transfer.logIndex}`, transfer);
         }
     }
@@ -107,6 +145,7 @@ async function queryRange(
     fromBlock: number,
     toBlock: number,
     recipients: Address[],
+    log?: ScanLog,
 ): Promise<NativeTransfer[]> {
     try {
         const logs = await client.getLogs({
@@ -117,20 +156,38 @@ async function queryRange(
             toBlock: BigInt(toBlock),
             strict: true,
         });
-        return logs.map(toTransfer).filter((transfer) => transfer !== null);
+        return toTransfers(logs, log);
     } catch (error) {
         const text = errorText(error);
-        if (THROTTLED.test(text) || !TOO_MUCH.test(text)) throw error;
+        if (THROTTLED.test(text)) {
+            throw new Error(`Arc's RPC rate limited getLogs for blocks ${fromBlock}-${toBlock}: ${text.trim().slice(0, 200)}`, { cause: error });
+        }
+        if (!TOO_MUCH.test(text)) throw error;
+        const reason = text.trim().slice(0, 200);
         if (fromBlock < toBlock) {
+            log?.info(
+                { op: "getLogs.split", fromBlock, toBlock, reason },
+                "Arc's RPC found a block range too big, so the scan halves it",
+            );
             const middle = Math.floor((fromBlock + toBlock) / 2);
-            const first = await queryRange(client, to, fromBlock, middle, recipients);
-            const second = await queryRange(client, to, middle + 1, toBlock, recipients);
+            const first = await queryRange(client, to, fromBlock, middle, recipients, log);
+            const second = await queryRange(client, to, middle + 1, toBlock, recipients, log);
             return [...first, ...second];
         }
         const narrower = to === undefined ? chunked(recipients) : halves(to);
-        if (narrower.length < 2) throw error;
+        if (narrower.length < 2) {
+            throw new Error(`Arc's RPC says block ${fromBlock} is too big to read even for one address: ${reason}`, {
+                cause: error,
+            });
+        }
+        log?.info(
+            { op: "getLogs.split", fromBlock, toBlock, reason, parts: narrower.length },
+            "Arc's RPC found one block too big, so the scan narrows it by address",
+        );
         const parts = [];
-        for (const part of narrower) parts.push(...(await queryRange(client, part, fromBlock, toBlock, recipients)));
+        for (const part of narrower) {
+            parts.push(...(await queryRange(client, part, fromBlock, toBlock, recipients, log)));
+        }
         return parts;
     }
 }

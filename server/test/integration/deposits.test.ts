@@ -1,13 +1,20 @@
+import { pino } from "pino";
 import { afterAll, afterEach, beforeAll, expect, inject, test, vi } from "vitest";
 import { formatUnits, pad, parseUnits, type Address, type Hash, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { fromDecimal } from "../../src/db/money.ts";
+import { Ledger } from "../../src/deposits/ledger.ts";
 import type { DepositReceipt } from "../../src/protocol.ts";
 import { startStack, type Stack, type User } from "../support/stack.ts";
 
+/** Every line the server logs, parsed. */
+const lines: Record<string, any>[] = [];
+const logger = pino({ level: "info" }, { write: (line: string) => void lines.push(JSON.parse(line)) });
+const logged = (op: string) => lines.filter((line) => line.op === op);
+
 let stack: Stack;
 beforeAll(async () => {
-    stack = await startStack({ mongoUri: inject("mongoUri"), anvilUrl: inject("anvilUrl") });
+    stack = await startStack({ mongoUri: inject("mongoUri"), anvilUrl: inject("anvilUrl"), logger });
 });
 afterAll(() => stack?.stop());
 
@@ -294,7 +301,10 @@ test("a transfer under the minimum is not credited by report or scan, and exactl
     const small = await send(user.wallet, user.depositAddress, "0.009");
     const viaHttp = await report(user, small);
     expect(viaHttp.status).toBe(422);
-    expect(viaHttp.body.error.code).toBe("below_minimum");
+    expect(viaHttp.body.error).toEqual({
+        code: "below_minimum",
+        message: "0.009 USDC is under the 0.01 USDC minimum, so it wasn't credited.",
+    });
     const viaSocket = await socket.timeout(5000).emitWithAck("deposit:submit", { txHash: small });
     expect(viaSocket).toMatchObject({ ok: false, error: { code: "below_minimum" } });
 
@@ -305,6 +315,25 @@ test("a transfer under the minimum is not credited by report or scan, and exactl
     await scanned();
     expect(await depositsOf(user)).toHaveLength(0);
     expect(await accountOf(user)).toMatchObject({ wei: 0n, version: 0 });
+
+    // Each under-minimum transfer is kept with why and logged once, whichever path saw it first
+    const kept = await collections().skippedDeposits.find({ accountId: user.accountId }).sort({ _id: 1 }).toArray();
+    expect(kept.map((row) => [fromDecimal(row.amount), row.reason])).toEqual([
+        [wei("0.009"), "below_minimum"],
+        [wei("0.00999999"), "below_minimum"],
+    ]);
+    expect(kept[0]!.message).toMatch(
+        /^Not credited: 0\.009 USDC is under the 0\.01 USDC minimum \(sent to your address in block \d+/,
+    );
+    const warned = logged("deposit.below_minimum").filter((line) => line.accountId === user.accountId.toHexString());
+    expect(warned.map((line) => line.amount)).toEqual(["0.009", "0.00999999"]);
+    expect(warned[0]).toMatchObject({
+        level: 40,
+        minimum: "0.01",
+        txHash: small,
+        to: user.depositAddress.toLowerCase(),
+        source: expect.stringMatching(/^(report|scan)$/),
+    });
 
     await send(user.wallet, user.depositAddress, "0.01");
     await waitForBalance(user, "0.01");
@@ -321,6 +350,17 @@ test("a reverted transaction that forwarded value is rejected and never credited
     const { status, body } = await report(user, hash);
     expect(status).toBe(422);
     expect(body.error.code).toBe("tx_reverted");
+    expect(body.error.message).toMatch(
+        new RegExp(
+            `^Transaction ${hash.slice(0, 6)}…${hash.slice(-4)} reverted on Arc \\(block \\d+\\), so nothing was deposited\\.$`,
+        ),
+    );
+    expect(logged("deposit.report").find((line) => line.txHash === hash)).toMatchObject({
+        level: 40,
+        outcome: "reverted",
+        accountId: user.accountId.toHexString(),
+        msg: "Deposit report refused: transaction reverted",
+    });
     await scanned();
     await new Promise((resolve) => setTimeout(resolve, 300));
     await scanned();
@@ -381,11 +421,110 @@ test("value forwarded through a contract is credited although the transaction wa
     expect(await depositsOf(user)).toHaveLength(1);
 });
 
-test("a transaction that sent nothing to the account is rejected", async () => {
+test("a transaction that sent nothing to the account is rejected, and says where the USDC went when it went elsewhere", async () => {
     const user = await openUser();
     const sender = await stranger();
     const hash = await send(sender, sender, "1");
     const { status, body } = await report(user, hash);
     expect(status).toBe(422);
-    expect(body.error.code).toBe("no_deposit");
+    expect(body.error).toEqual({
+        code: "no_deposit",
+        message: "That transaction moved no USDC on Arc (it may be a token on another network).",
+    });
+
+    const elsewhere = await stranger();
+    const moved = await send(sender, elsewhere, "1");
+    const refused = await report(user, moved);
+    expect(refused.status).toBe(422);
+    expect(refused.body.error.message).toMatch(
+        /^That transaction sent 1 USDC to 0x[0-9a-f]+…[0-9a-f]{4}, not to your deposit address 0x[0-9a-f]+…[0-9a-f]{4}\.$/i,
+    );
+    expect(logged("deposit.report").find((line) => line.txHash === moved)).toMatchObject({
+        outcome: "no_transfer_to_address",
+        accountId: user.accountId.toHexString(),
+        transfers: [{ to: elsewhere.toLowerCase(), value: "1" }],
+    });
+});
+
+test("a transaction that never shows up says how long it waited, and is logged", async () => {
+    const user = await openUser();
+    const hash = `0x${"cd".repeat(32)}` as Hash;
+    const { status, body } = await report(user, hash);
+    expect(status).toBe(404);
+    expect(body.error).toEqual({
+        code: "tx_not_found",
+        message: `Transaction ${hash.slice(0, 6)}…${hash.slice(-4)} hasn't shown up on Arc after 3 seconds. If it lands later, it's credited automatically.`,
+    });
+    expect(logged("deposit.report").find((line) => line.txHash === hash)).toMatchObject({
+        outcome: "not_found_within_ms",
+        waitedMs: 3000,
+    });
+});
+
+test("a quote for a wallet that isn't linked names it, tells the person what to do, and is logged with the user", async () => {
+    const user = await openUser();
+    const socket = await stack.socket(user);
+    await socket.timeout(5000).emitWithAck("account:open", {});
+    const stray = await stranger();
+    const refused = await socket
+        .timeout(5000)
+        .emitWithAck("deposit:quote", { coin: "ethereum:ETH", amount: "0.1", wallet: stray });
+    expect(refused).toMatchObject({
+        ok: false,
+        error: {
+            code: "forbidden",
+            message: `${stray.slice(0, 6)}…${stray.slice(-4)} isn't linked to your account. Link it from the wallet menu and try again.`,
+        },
+    });
+    expect(
+        logged("wallet.authorize").filter((line) => line.userId === user.userId && line.address === stray),
+    ).toHaveLength(1);
+});
+
+test("a transfer the scan can't credit is logged with who, what and where, then credited when the fault clears", async () => {
+    const user = await openUser();
+    await scanned();
+    lines.length = 0;
+    const credit = vi.spyOn(Ledger.prototype, "credit").mockRejectedValueOnce(new Error("database went away"));
+    try {
+        const hash = await send(user.wallet, user.depositAddress, "2");
+        await expect.poll(() => logged("deposit.credit").length, { timeout: 8_000, interval: 20 }).toBeGreaterThan(0);
+        expect(logged("deposit.credit")[0]).toMatchObject({
+            level: 50,
+            accountId: user.accountId.toHexString(),
+            txHash: hash,
+            amount: "2",
+            source: "scan",
+            to: user.depositAddress.toLowerCase(),
+            msg: "Couldn't credit a deposit the scan found",
+        });
+        const scan = logged("deposit.scan").find((line) => line.phase === "credit")!;
+        expect(scan).toMatchObject({ crediting: { txHash: hash }, msg: "Deposit scan failed crediting a transfer" });
+        await waitForBalance(user, "2");
+        await expect.poll(() => stack.server.services.watcher.status().lastErrorKind, { timeout: 5_000 }).toBeNull();
+    } finally {
+        credit.mockRestore();
+    }
+});
+
+test("a failing scan says what it was doing and where, and /ready's status says which part", async () => {
+    await scanned();
+    lines.length = 0;
+    stack.emulator.failNext(8);
+    await expect
+        .poll(() => stack.server.services.watcher.status().lastErrorKind, { timeout: 5_000, interval: 20 })
+        .toBe("rpc");
+    const failure = logged("deposit.scan").find((line) => line.phase !== undefined)!;
+    expect(failure).toMatchObject({
+        level: 40,
+        phase: "head",
+        msg: "Deposit scan failed reading the chain head",
+        consecutiveFailures: 1,
+        rpc: 0,
+        rpcHost: new URL(stack.emulator.url).host,
+    });
+    expect(failure.cursor).toEqual(expect.any(Number));
+    expect(failure.addresses).toEqual(expect.any(Number));
+    await expect.poll(() => stack.server.services.watcher.status().lastError, { timeout: 8_000 }).toBeNull();
+    expect(stack.server.services.watcher.status().lastErrorKind).toBeNull();
 });

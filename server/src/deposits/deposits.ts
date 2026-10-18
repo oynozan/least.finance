@@ -1,11 +1,12 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { ObjectId } from "mongodb";
-import { TransactionReceiptNotFoundError, type Hash, type TransactionReceipt } from "viem";
+import type { Logger } from "pino";
+import { TimeoutError, TransactionReceiptNotFoundError, type Hash, type TransactionReceipt } from "viem";
 import type { ArcClient } from "../chain/arc.ts";
 import { transfersInReceipt } from "../chain/native-transfers.ts";
 import type { AccountDoc, Collections } from "../db/mongo.ts";
 import { formatUsdc } from "../db/money.ts";
-import { AppError } from "../errors.ts";
+import { AppError, shortOf } from "../errors.ts";
 import type { DepositPage, DepositReceipt, Hex } from "../protocol.ts";
 import type { Ledger } from "./ledger.ts";
 import { accountView, depositView } from "./views.ts";
@@ -17,12 +18,18 @@ const RECEIPT_POLL_MAX_MS = 2_000;
 const MAX_CHECKS_PER_ACCOUNT = 3;
 export const MAX_PAGE = 100;
 
+const seconds = (ms: number) => {
+    const count = Math.max(1, Math.round(ms / 1000));
+    return `${count} second${count === 1 ? "" : "s"}`;
+};
+
 type Deps = {
     client: ArcClient;
     collections: Collections;
     ledger: Ledger;
     confirmations: number;
     receiptTimeoutMs: number;
+    logger: Logger;
 };
 
 /** Reads deposit history, and credits deposits the client reports. */
@@ -65,8 +72,21 @@ export class DepositService {
 
         const checks = this.#checksPerAccount.get(accountKey) ?? 0;
         if (checks >= MAX_CHECKS_PER_ACCOUNT) {
+            this.#deps.logger.warn(
+                {
+                    op: "deposit.report",
+                    accountId: accountKey,
+                    txHash,
+                    outcome: "rate_limited",
+                    checks,
+                    limit: MAX_CHECKS_PER_ACCOUNT,
+                },
+                "Deposit report refused: too many checks already running",
+            );
             return Promise.reject(
-                new AppError("rate_limited", "A few deposits are already being checked. Try again in a moment."),
+                new AppError("rate_limited", `${checks} deposits are already being checked. Try again in a moment.`, {
+                    logged: true,
+                }),
             );
         }
         this.#checksPerAccount.set(accountKey, checks + 1);
@@ -81,16 +101,52 @@ export class DepositService {
     }
 
     async #check(account: AccountDoc, txHash: Hash): Promise<DepositReceipt> {
-        const receipt = await this.#settledReceipt(txHash);
+        const { logger } = this.#deps;
+        const accountId = account._id.toHexString();
+        const receipt = await this.#settledReceipt(txHash, accountId);
         if (receipt.status !== "success") {
-            throw new AppError("tx_reverted", "That transaction failed on Arc, so nothing was deposited.");
+            logger.warn(
+                {
+                    op: "deposit.report",
+                    accountId,
+                    txHash,
+                    outcome: "reverted",
+                    blockNumber: Number(receipt.blockNumber),
+                },
+                "Deposit report refused: transaction reverted",
+            );
+            throw new AppError(
+                "tx_reverted",
+                `Transaction ${shortOf(txHash)} reverted on Arc (block ${receipt.blockNumber}), so nothing was deposited.`,
+                { logged: true },
+            );
         }
 
-        const transfers = transfersInReceipt(receipt).filter(
+        const all = transfersInReceipt(receipt);
+        const transfers = all.filter(
             (t) => t.to === account.depositAddress || account.formerDepositAddresses?.includes(t.to),
         );
         if (transfers.length === 0) {
-            throw new AppError("no_deposit", "That transaction didn't send any USDC to your deposit address.");
+            logger.warn(
+                {
+                    op: "deposit.report",
+                    accountId,
+                    txHash,
+                    outcome: "no_transfer_to_address",
+                    blockNumber: Number(receipt.blockNumber),
+                    depositAddress: account.depositAddress,
+                    transfers: all.map((t) => ({ to: t.to, value: formatUsdc(t.value) })),
+                },
+                "Deposit report refused: the transaction sent nothing to the deposit address",
+            );
+            const elsewhere = all[0];
+            throw new AppError(
+                "no_deposit",
+                elsewhere
+                    ? `That transaction sent ${formatUsdc(elsewhere.value)} USDC to ${shortOf(elsewhere.to)}, not to your deposit address ${shortOf(account.depositAddress)}.`
+                    : "That transaction moved no USDC on Arc (it may be a token on another network).",
+                { logged: true },
+            );
         }
 
         const credits = [];
@@ -99,13 +155,23 @@ export class DepositService {
             if (credit) credits.push(credit);
         }
         if (credits.length === 0) {
+            // The ledger has already kept and logged each transfer it left uncredited
+            const sent = transfers.reduce((sum, t) => sum + t.value, 0n);
             throw new AppError(
                 "below_minimum",
-                `Deposits under ${formatUsdc(this.#deps.ledger.minDeposit)} USDC aren't credited.`,
+                `${formatUsdc(sent)} USDC is under the ${formatUsdc(this.#deps.ledger.minDeposit)} USDC minimum, so it wasn't credited.`,
+                { logged: true },
             );
         }
         const current = await this.#deps.collections.accounts.findOne({ _id: account._id });
-        if (!current) throw new Error(`Account ${account._id.toHexString()} vanished`);
+        if (!current) {
+            // Credited, but the account can't be read back: say so, so the person isn't told it failed with no way to match it
+            logger.error(
+                { op: "deposit.report", accountId, txHash, outcome: "account_vanished", credited: credits.length },
+                "A reported deposit was credited but its account can't be read",
+            );
+            throw new Error(`Account ${accountId} vanished`);
+        }
         return {
             txHash: txHash as Hex,
             deposits: credits.map((credit) => depositView(credit.deposit)),
@@ -114,7 +180,7 @@ export class DepositService {
     }
 
     /** Waits for the transaction to land, plus any confirmations, up to the timeout. */
-    async #settledReceipt(txHash: Hash): Promise<TransactionReceipt> {
+    async #settledReceipt(txHash: Hash, accountId: string): Promise<TransactionReceipt> {
         const { client, confirmations, receiptTimeoutMs } = this.#deps;
         const deadline = Date.now() + receiptTimeoutMs;
         let receipt: TransactionReceipt | null = null;
@@ -131,16 +197,31 @@ export class DepositService {
                     if (head - receipt.blockNumber >= BigInt(confirmations)) return receipt;
                 }
             } catch (error) {
-                throw new AppError("unavailable", "Couldn't reach Arc to check that transaction. Try again shortly.", {
-                    cause: error,
-                });
+                this.#deps.logger.warn(
+                    { op: "deposit.report.rpc", accountId, txHash, err: error },
+                    "Couldn't read a reported deposit from Arc",
+                );
+                const timedOut =
+                    error instanceof TimeoutError || (error instanceof Error && error.name === "TimeoutError");
+                throw new AppError(
+                    "unavailable",
+                    timedOut
+                        ? "Arc's network didn't answer in time. Try again shortly."
+                        : "Couldn't reach Arc to check that transaction. Try again shortly.",
+                    { cause: error, logged: true },
+                );
             }
             await sleep(Math.min(pause, Math.max(deadline - Date.now(), 0)));
             pause = Math.min(pause * 1.5, RECEIPT_POLL_MAX_MS);
         }
+        this.#deps.logger.warn(
+            { op: "deposit.report", accountId, txHash, outcome: "not_found_within_ms", waitedMs: receiptTimeoutMs },
+            "Deposit report refused: the transaction hasn't shown up on Arc",
+        );
         throw new AppError(
             "tx_not_found",
-            "That transaction hasn't shown up on Arc. If it lands later, it's credited automatically.",
+            `Transaction ${shortOf(txHash)} hasn't shown up on Arc after ${seconds(receiptTimeoutMs)}. If it lands later, it's credited automatically.`,
+            { logged: true },
         );
     }
 }
