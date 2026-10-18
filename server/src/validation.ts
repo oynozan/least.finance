@@ -173,11 +173,85 @@ export const withdrawQuoteRequest = z.object({
 
 export const pnlSeries = z.object({ tz: z.string().max(64) });
 
-/** Parses client input, turning a mismatch into a 400 that names the field. */
+/** What each field is called in a sentence; a field not named here is its own name, spaced out. */
+const FIELD_NAMES: Record<string, string> = {
+    to: "The destination address",
+    wallet: "The wallet address",
+    amount: "The amount",
+    amountUSD: "The amount",
+    collateralUSD: "The amount",
+    units: "The amount",
+    requestId: "The request id",
+    quotedPrice: "The price",
+    quotedPriceUSD: "The price",
+    quotedToPriceUSD: "The price",
+    txHash: "The transaction hash",
+    tz: "The time zone",
+    eventId: "The market",
+    tokenId: "The outcome",
+    positionId: "The position",
+    orderId: "The order",
+    leverage: "The leverage",
+    reviewedFee: "The fee",
+    before: "The page position",
+    limit: "The page size",
+    filter: "The filter",
+    outcomes: "The outcomes",
+    coins: "The coins",
+    q: "The search",
+    range: "The range",
+    symbol: "The coin",
+    toSymbol: "The coin",
+    coin: "The coin",
+    verb: "The action",
+    side: "The side",
+    asset: "The market",
+    txHashes: "The transaction hash",
+};
+
+const fieldName = (path: readonly PropertyKey[]) => {
+    const key = path.filter((part) => typeof part === "string").at(-1) as string | undefined;
+    if (!key) return "The request";
+    return FIELD_NAMES[key] ?? `The ${key.replace(/([A-Z])/g, " $1").toLowerCase()}`;
+};
+
+/** One zod issue as a sentence for the person, in place of zod's own wording. */
+export function sayIssue(issue: z.core.$ZodIssue): string {
+    const name = fieldName(issue.path);
+    const address = /^(to|wallet)$/.test(String(issue.path.at(-1)));
+    if (issue.code === "invalid_type" && issue.input === undefined) return `${name} is missing.`;
+    if (issue.code === "invalid_type") return `${name} isn't the right kind of value.`;
+    if (issue.code === "invalid_value") return `${name} must be one of ${issue.values.map(String).join(", ")}.`;
+    if (issue.code === "too_small" || issue.code === "too_big") {
+        if (address) return "That doesn't look like a wallet address.";
+        if (issue.origin === "number") {
+            return issue.code === "too_small"
+                ? `${name} is too low.`
+                : /price/i.test(name)
+                  ? "The price must be between 0 and 1."
+                  : `${name} is too high.`;
+        }
+        return `${name} is too ${issue.code === "too_small" ? "short" : "long"}.`;
+    }
+    if (issue.code === "invalid_format" || issue.code === "custom") {
+        const wanted = issue.message;
+        if (address) return "That doesn't look like a wallet address.";
+        if (/^an amount/.test(wanted)) return `Enter ${wanted}.`;
+        // A description of what was wanted, e.g. "a transaction hash"
+        if (/^(a|an|one|up) /.test(wanted)) return `${name} should be ${wanted}.`;
+        return `${name}: ${wanted}`;
+    }
+    return `${name} isn't valid.`;
+}
+
+/** Parses client input, turning a mismatch into a 400 that says in plain words what is wrong. */
 export function parse<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
     const result = schema.safeParse(input ?? {});
     if (result.success) return result.data;
     const issue = result.error.issues[0];
-    const field = issue?.path.join(".");
-    throw new AppError("bad_request", field ? `Invalid ${field}: ${issue?.message}` : "Invalid request.");
+    // What the client really sent wrong, for the log: every issue with its path and zod's own words
+    const detail = result.error.issues.map((each) => `${each.path.join(".") || "(body)"}: ${each.message}`).join("; ");
+    throw new AppError("bad_request", issue ? sayIssue(issue) : "The request wasn't valid.", {
+        detail: detail.slice(0, 300),
+    });
 }

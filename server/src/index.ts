@@ -26,9 +26,11 @@ async function shutdown(signal: string, code = 0) {
 
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
+// Every order, withdrawal and deposit is stored in MongoDB before work on it starts, and each loop picks up where it
+// stopped, so one stray rejection is logged for the owner to fix and does not stop everyone's trades.
 process.on("unhandledRejection", (reason) => {
-    logger.fatal({ err: reason }, "Unhandled rejection");
-    void shutdown("unhandledRejection", 1);
+    const err = reason instanceof Error ? reason : new Error(`Rejected with ${JSON.stringify(reason) ?? String(reason)}`);
+    logger.error({ err, event: "process.unhandled_rejection" }, "A promise was rejected and nothing handled it");
 });
 process.on("uncaughtException", (error) => {
     logger.fatal({ err: error }, "Uncaught exception");
