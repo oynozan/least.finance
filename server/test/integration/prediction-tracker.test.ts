@@ -145,6 +145,12 @@ test("a trade that can't be linked to the order needs review and is never refund
     expect(flagged.state).toBe("posted");
     expect(flagged.needsReviewAt).toBeInstanceOf(Date);
     expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]![0]).toMatchObject({
+        order: order._id.toHexString(),
+        account: account._id.toHexString(),
+        side: "buy",
+        tokenId: TOKEN,
+    });
 
     clock += HOUR;
     await tracker.tick();
@@ -190,7 +196,9 @@ test("a refunded order that fills late is booked and the person re-debited once"
     await tracker.tick();
 
     const final = (await orderOf(view.requestId))!;
-    expect(final).toMatchObject({ state: "filled", lateFill: "settled" });
+    expect(final).toMatchObject({ state: "filled", lateFill: "settled", reason: null });
+    expect(final.detail).toBeUndefined();
+    expect(final.message).toBeUndefined();
     const positions = await h.database.collections.positions.find({ accountId: account._id }).toArray();
     expect(positions).toHaveLength(1);
     expect(fromDecimal(positions[0]!.shares)).toBe(20_000_000n);
@@ -216,6 +224,15 @@ test("a late fill the person can't cover is orphaned, not booked", async () => {
 
     expect(await orderOf(view.requestId)).toMatchObject({ state: "failed", lateFill: "orphaned" });
     expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]![0]).toMatchObject({
+        order: order._id.toHexString(),
+        account: account._id.toHexString(),
+        side: "buy",
+        tokenId: TOKEN,
+        makingE6: expect.any(String),
+        takingE6: expect.any(String),
+        err: expect.anything(),
+    });
     expect(await h.database.collections.positions.countDocuments({ accountId: account._id })).toBe(0);
     const s = await h.state(account._id);
     expect(s.balance).toBe(0n);

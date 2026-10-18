@@ -17,7 +17,7 @@ export const orderView = (order: PredictionOrderDoc): PredictionOrderView => ({
     side: order.side,
     state: order.state,
     reason: order.reason,
-    ...(order.message && { message: order.message }),
+    ...(order.state === "failed" && order.message && { message: order.message }),
     eventId: order.eventId,
     tokenId: order.tokenId,
     question: order.question,

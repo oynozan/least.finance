@@ -137,8 +137,9 @@ export class PredictionTracker {
         const queue = [...orders];
         const worker = async () => {
             for (let order = queue.shift(); order && !signal?.aborted; order = queue.shift()) {
-                const id = order._id.toHexString();
-                await work(order).catch((error: unknown) => this.#deps.logger.warn({ err: error, order: id }, failure));
+                await work(order).catch((error: unknown) =>
+                    this.#deps.logger.warn({ ...this.#deps.service.context(order), err: error }, failure),
+                );
             }
         };
         await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
@@ -226,7 +227,7 @@ export class PredictionTracker {
             );
             if (flagged.modifiedCount)
                 this.#deps.logger.error(
-                    { order: order._id.toHexString() },
+                    this.#deps.service.context(order),
                     "A prediction's post got no answer and a trade can't be linked to it; it needs review and was not refunded",
                 );
         } else if (found) await this.#deps.service.settle(order, found.makingE6, found.takingE6);

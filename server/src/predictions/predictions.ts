@@ -475,7 +475,7 @@ export class PredictionService {
             try {
                 if (await this.fail(order, "unavailable", "placing", undefined, why)) return;
                 this.#deps.logger.error(
-                    { err: why.err, ...this.#context(order) },
+                    { err: why.err, ...this.context(order) },
                     "An error hit a prediction after it reached the exchange; it stays posted for the tracker",
                 );
                 return;
@@ -576,14 +576,14 @@ export class PredictionService {
 
         const result = await trader.post(signed).catch((error: unknown) => {
             this.#deps.logger.warn(
-                { err: error, ...this.#context(posted) },
+                { err: error, ...this.context(posted) },
                 "Posting a prediction threw, so its outcome is unknown and the tracker will find out",
             );
             return { kind: "unknown" } as const;
         });
         if (result.kind === "unknown") {
             this.#deps.logger.warn(
-                this.#context(posted),
+                this.context(posted),
                 "Polymarket gave no clear answer to a prediction, so it stays posted for the tracker",
             );
             return;
@@ -770,7 +770,7 @@ export class PredictionService {
     }
 
     /** What every log line about an order carries: who, which market and side, and the sizes and prices it was made with. */
-    #context(order: PredictionOrderDoc) {
+    context(order: PredictionOrderDoc) {
         return {
             order: order._id.toHexString(),
             account: order.accountId.toHexString(),
@@ -833,7 +833,7 @@ export class PredictionService {
         if (!done) return false;
         this.#deps.logger[why.level](
             {
-                ...this.#context(done.order),
+                ...this.context(done.order),
                 reason,
                 detail: why.detail,
                 ...why.fields,
@@ -873,6 +873,7 @@ export class PredictionService {
                             filledShares: toDecimal(order.side === "sell" ? makingE6 : takingE6),
                             updatedAt: now,
                         },
+                        $unset: { detail: "", message: "" },
                     },
                     { session, returnDocument: "after" },
                 );
@@ -914,7 +915,12 @@ export class PredictionService {
             });
             if (orphaned.modifiedCount)
                 this.#deps.logger.error(
-                    { order: order._id.toHexString(), side: order.side },
+                    {
+                        ...this.context(order),
+                        makingE6: makingE6.toString(),
+                        takingE6: takingE6.toString(),
+                        err: error,
+                    },
                     "A refunded prediction filled late and can't be booked; the pool holds the shares",
                 );
             return;

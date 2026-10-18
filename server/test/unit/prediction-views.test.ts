@@ -48,3 +48,8 @@ test("orderView carries soldPart as costUSD, proceedsUSD and an ISO at", () => {
 test("orderView leaves soldPart out when the doc has none", () => {
     expect("soldPart" in orderView(sellOrder())).toBe(false);
 });
+
+test("orderView carries message only for a failed order", () => {
+    expect(orderView(sellOrder({ state: "failed", reason: "rejected", message: "No." })).message).toBe("No.");
+    expect("message" in orderView(sellOrder({ state: "filled", reason: null, message: "Old." }))).toBe(false);
+});
