@@ -64,3 +64,24 @@ test("a token that isn't a token says it isn't valid, and is logged once with it
     expect(lines[0]).toMatchObject({ event: "auth.token_refused", source: "pem" });
     expect(typeof lines[0]!.code).toBe("string");
 });
+
+test("refusals the identity already logged say so, so the transports don't log them again", async () => {
+    const other = await PrivyIdentity.create({
+        appId: "app-1",
+        appSecret: "secret",
+        apiUrl: "http://127.0.0.1:1",
+        logger,
+    });
+    lines.length = 0;
+    const down = (await other.verify(await sign({})).catch((e: unknown) => e)) as AppError;
+    expect(down).toMatchObject({ code: "unavailable", detail: "keys_unreachable", logged: true });
+    expect(lines.filter((line) => line.event === "auth.keys_unreachable")).toHaveLength(1);
+    expect((await refusal("not.a.jwt")).logged).toBe(true);
+    expect((await refusal(await sign({ aud: "other-app" }))).logged).toBe(true);
+    lines.length = 0;
+    const bad = (await identity
+        .authorizeWallet({ userId: "u1", expiresAt: 0 }, "nope")
+        .catch((e: unknown) => e)) as AppError;
+    expect(bad).toMatchObject({ code: "bad_request", logged: true });
+    expect(lines.filter((line) => line.event === "auth.bad_address")).toHaveLength(1);
+});

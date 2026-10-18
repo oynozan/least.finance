@@ -124,7 +124,7 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
             if (!isAppError(error)) {
                 ref = newRef();
                 logger.error({ err: error, ref, ...where }, "Socket handshake failed");
-            } else if (error.code !== "rate_limited" || refusedHandshakes(where.ip ?? "")) {
+            } else if (!error.logged && (error.code !== "rate_limited" || refusedHandshakes(where.ip ?? ""))) {
                 logger.warn(
                     { code: error.code, reason: error.message, detail: error.detail, ...where },
                     "Refused a socket connection",
@@ -781,10 +781,11 @@ export function attachSockets(httpServer: HttpServer, services: Services): IoSer
                 message = error.message;
                 if (error.status >= 500) {
                     const { event, account } = describe(ack);
-                    logger.error(
-                        { err: error.cause ?? error, event, account, code: error.code },
-                        `${error.message} (${event})`,
-                    );
+                    if (!error.logged)
+                        logger.error(
+                            { err: error.cause ?? error, event, account, code: error.code },
+                            `${error.message} (${event})`,
+                        );
                 } else refused(ack, error);
             } else {
                 const ref = newRef();

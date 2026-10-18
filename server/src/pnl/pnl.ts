@@ -123,20 +123,17 @@ export class PnlService {
 
         const series: PnlSeries = { tz: zone.tz, ranges: buildRanges(days, zone.dateOf(now)) };
         const ms = Math.round(performance.now() - started);
-        this.#logger[ms > SLOW_READ_MS ? "warn" : "debug"](
-            {
-                accountId: accountId.toHexString(),
-                ms,
-                rows: {
-                    deposits: depositRows.length,
-                    withdrawals: withdrawalRows.length,
-                    positions: positionRows.length,
-                    sales: saleRows.length,
-                    perps: perpRows.length,
-                },
-            },
-            "pnl.series",
-        );
+        const rows = {
+            deposits: depositRows.length,
+            withdrawals: withdrawalRows.length,
+            positions: positionRows.length,
+            sales: saleRows.length,
+            perps: perpRows.length,
+        };
+        // A success is not news; a slow one is, since the sum reads every row the account has
+        if (ms > SLOW_READ_MS)
+            this.#logger.warn({ accountId: accountId.toHexString(), ms, rows }, "PnL series was slow");
+        else this.#logger.debug({ accountId: accountId.toHexString(), ms, rows }, "PnL series built");
         return series;
     }
 }

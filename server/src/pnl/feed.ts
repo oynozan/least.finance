@@ -267,10 +267,10 @@ export class ActivityFeed {
             next: last && merged.length > limit ? encodeCursor(last.key) : null,
         };
         const ms = Math.round(performance.now() - started);
-        this.#logger[ms > SLOW_READ_MS ? "warn" : "debug"](
-            { accountId: accountId.toHexString(), ms, rows },
-            "pnl.feed",
-        );
+        const fields = { accountId: accountId.toHexString(), filter, ms, rows };
+        // A success is not news; a slow one is
+        if (ms > SLOW_READ_MS) this.#logger.warn(fields, "Activity page was slow");
+        else this.#logger.debug(fields, "Activity page built");
         return page;
     }
 }

@@ -161,7 +161,7 @@ export class PrivyIdentity implements IdentityProvider {
                 throw new AppError(
                     "unauthorized",
                     "Your sign-in belongs to a different app than this server. Sign in again; if it keeps happening the owner must check PRIVY_APP_ID.",
-                    { cause: error, detail: `claim_${error.claim}_${error.reason}` },
+                    { cause: error, detail: `claim_${error.claim}_${error.reason}`, logged: true },
                 );
             }
             if (BAD_TOKEN.some((type) => error instanceof type)) {
@@ -176,6 +176,7 @@ export class PrivyIdentity implements IdentityProvider {
                 throw new AppError("unauthorized", "Your sign-in token isn't valid. Sign in again.", {
                     cause: error,
                     detail: code,
+                    logged: true,
                 });
             }
             const held = this.#quiet("keys");
@@ -189,6 +190,7 @@ export class PrivyIdentity implements IdentityProvider {
             throw new AppError("unavailable", `The sign-in service didn't answer. Try again shortly${refOf(ref)}.`, {
                 cause: error,
                 detail: "keys_unreachable",
+                logged: true,
             });
         }
     }
@@ -200,7 +202,7 @@ export class PrivyIdentity implements IdentityProvider {
                 { event: "auth.bad_address", accountId: identity.userId, length: address.length },
                 "A request named something that isn't a wallet address",
             );
-            throw new AppError("bad_request", "That isn't a wallet address.");
+            throw new AppError("bad_request", "That isn't a wallet address.", { logged: true });
         }
         const has = (wallets: Wallets) =>
             isEvm ? wallets.evm.has(address.toLowerCase()) : wallets.solana.has(address);
@@ -313,7 +315,7 @@ export class PrivyIdentity implements IdentityProvider {
                 this.#api === "rejected"
                     ? `Wallet checks are down on our side${refOf(ref)}. Try again shortly.`
                     : `The wallet service didn't answer in 10 seconds${refOf(ref)}. Try again shortly.`,
-                { cause: error, detail: `privy_${this.#api}_${status ?? "no_status"}` },
+                { cause: error, detail: `privy_${this.#api}_${status ?? "no_status"}`, logged: true },
             );
         }
 
