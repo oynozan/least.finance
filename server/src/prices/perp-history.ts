@@ -65,6 +65,8 @@ export class PerpPriceHistory {
     readonly #budget: number;
     /** An outage retries per coin, so each line is logged once an hour per coin and range. */
     readonly #hourly: HourlyLog;
+    /** The coins and ranges whose last read failed, so the read that works again is logged once. */
+    readonly #failing = new Set<string>();
     /** Oldest use first. */
     readonly #kept = new Map<string, PerpSeries>();
     readonly #reading = new Map<string, Promise<void>>();
@@ -151,8 +153,11 @@ export class PerpPriceHistory {
             const candles = await this.#deps.client.candles(asset, interval, at - wanted * widthMs, at);
             this.#used(key, { points: pointsOf(candles, range, at), at });
             this.#retryAt.delete(key);
+            if (this.#failing.delete(key))
+                this.#deps.logger.info({ asset, range }, "Price history from Hyperliquid is readable again");
         } catch (error) {
             this.#retryAt.set(key, this.#now() + RETRY_MS);
+            this.#failing.add(key);
             const status = (error as { response?: { status?: number }; status?: number }) ?? {};
             this.#hourly.once(
                 `candles:${asset}:${range}`,

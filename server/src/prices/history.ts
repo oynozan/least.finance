@@ -65,6 +65,8 @@ export class PriceHistory {
     readonly #retryAt = new Map<PriceRange, number>();
     /** An outage retries every RETRY_MS, so its line is logged once an hour per range and status. */
     readonly #hourly: HourlyLog;
+    /** The ranges whose last read failed, so the read that works again is logged once. */
+    readonly #failing = new Set<PriceRange>();
     /** The coins last reported as unpriced, so the line is logged when the set changes, not on every read. */
     #missing = "";
     #stop: AbortController | null = null;
@@ -198,9 +200,12 @@ export class PriceHistory {
             }
             this.#reads.set(range, { coins, at });
             this.#retryAt.delete(range);
+            if (this.#failing.delete(range))
+                this.#deps.logger.info({ range }, "Price history from DefiLlama is readable again");
         } catch (error) {
             const wait = Math.max(RETRY_MS, error instanceof LlamaError ? (error.retryAfterMs ?? 0) : 0);
             this.#retryAt.set(range, this.#now() + wait);
+            this.#failing.add(range);
             const status = error instanceof LlamaError ? error.status : null;
             this.#hourly.once(
                 `llama:${range}:${status}`,

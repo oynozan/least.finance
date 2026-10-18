@@ -334,3 +334,54 @@ test("an outage is logged once an hour per range and status, with the status and
     expect(lines.length).toBe(PRICE_RANGES.length);
     expect(lines[0]![0]).toMatchObject({ status: 429, retryAfterMs: 120_000, retryInMs: 120_000 });
 });
+
+test("one info line says DefiLlama is readable again after an outage, and none for ranges that never failed", async () => {
+    const quiet = pino({ level: "silent" });
+    const info = vi.spyOn(quiet, "info");
+    let now = Date.parse("2026-10-13T12:00:00Z");
+    let up = false;
+    const llama: DefiLlama = {
+        async chart(request) {
+            if (!up) throw new LlamaError("DefiLlama answered 500", { status: 500 });
+            return everyPoint(request);
+        },
+    };
+    const history = new PriceHistory({ llama, logger: quiet, now: () => now });
+    await history.tick();
+    up = true;
+    now += 31_000;
+    await history.tick();
+    await history.tick();
+    const lines = info.mock.calls.filter(([, message]) => message === "Price history from DefiLlama is readable again");
+    expect(lines.length).toBe(PRICE_RANGES.length);
+    expect(lines[0]![0]).toMatchObject({ range: expect.any(String) });
+});
+
+test("one info line says Hyperliquid candles are readable again after a failed read", async () => {
+    const quiet = pino({ level: "silent" });
+    const info = vi.spyOn(quiet, "info");
+    let now = Date.parse("2026-10-13T12:00:00Z");
+    let up = false;
+    const perps = new PerpPriceHistory({
+        client: {
+            candles: async (_asset, _interval, startMs, endMs) => {
+                if (!up) throw new Error("Hyperliquid answered 500");
+                const found: Candle[] = [];
+                for (let open = Math.ceil(startMs / HOUR) * HOUR; open <= endMs; open += HOUR)
+                    found.push({ openMs: open, close: 1 });
+                return found;
+            },
+        },
+        assets: () => ["BTC"],
+        logger: quiet,
+        now: () => now,
+    });
+    await perps.series("7d", ["BTC"]);
+    up = true;
+    now += 31_000;
+    await perps.series("7d", ["BTC"]);
+    await perps.series("7d", ["BTC"]);
+    const lines = info.mock.calls.filter(([, message]) => message === "Price history from Hyperliquid is readable again");
+    expect(lines.length).toBe(1);
+    expect(lines[0]![0]).toMatchObject({ asset: "BTC", range: "7d" });
+});
