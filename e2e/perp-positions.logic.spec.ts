@@ -9,7 +9,7 @@ import {
     trendOf,
     type LivePerpPosition,
 } from "@/components/wallet-data";
-import { byNewest, perpActivity } from "@/lib/trade/activity";
+import { byNewest, perpActivity, perpRejectedActivity } from "@/lib/trade/activity";
 
 const NOW = Date.UTC(2026, 9, 14, 12);
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -182,6 +182,29 @@ test.describe("perp rows in the sidebar", () => {
 });
 
 test.describe("perps in the PnL feed", () => {
+    test("an open the exchange refused is a row with its reason and the exchange's words, after the toast is gone", () => {
+        const refused = {
+            ...openOrder("r1", null),
+            state: "rejected",
+            reason: "Hyperliquid's minimum for this market is $10. Nothing was spent.",
+            detail: "Order must have minimum value of $10.",
+            updatedAt: iso(NOW - 5_000),
+        };
+        expect(perpRejectedActivity(refused)).toMatchObject({
+            id: "perp:o-r1:rejected",
+            kind: "long",
+            title: "Long BTC at 5x didn't open",
+            detail: "Hyperliquid's minimum for this market is $10. Nothing was spent.",
+            note: "Order must have minimum value of $10.",
+            symbols: ["BTC"],
+            change: 0,
+        });
+        expect(perpRejectedActivity({ ...refused, reason: null })?.detail).toBe("No reason was recorded.");
+        // Only a refused open is a row of its own
+        expect(perpRejectedActivity({ ...refused, kind: "close" })).toBeNull();
+        expect(perpRejectedActivity(openOrder("r2", "p1"))).toBeNull();
+    });
+
     test("opening a position does not show as a drop in the balance chart", () => {
         const feed = perpActivity(position());
         expect(feed.length).toBeGreaterThan(0);

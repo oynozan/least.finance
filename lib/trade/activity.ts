@@ -2,6 +2,7 @@ import { QUOTE } from "./catalog";
 import { formatUnits, formatUsdShort } from "./format";
 import type {
     ActivityItem,
+    PerpOrderView,
     PerpPositionView,
     PositionView,
     PredictionOrderView,
@@ -32,6 +33,8 @@ export type Activity = {
     change: number;
     /** A deposit the server hasn't confirmed yet, or a buy it hasn't filled. */
     pending?: boolean;
+    /** What sits behind the detail line, such as the exchange's own words; shown on hover. */
+    note?: string;
 };
 
 export function depositActivity(deposit: { key: string; amountUSD: number; at: Date; pending?: boolean }): Activity {
@@ -174,6 +177,23 @@ export function perpActivity(position: PerpPositionView, optimistic = false): Ac
         });
     }
     return rows;
+}
+
+/** The row for a perp open the exchange or we refused, which has no position to hang a row on; null for any other order. */
+export function perpRejectedActivity(order: PerpOrderView): Activity | null {
+    if (order.kind !== "open" || order.state !== "rejected") return null;
+    const name = `${order.side === "long" ? "Long" : "Short"} ${order.asset} at ${order.leverage}x`;
+    return {
+        id: `perp:${order.id}:rejected`,
+        at: new Date(order.updatedAt),
+        kind: order.side,
+        title: `${name} didn't open`,
+        detail: order.reason ?? "No reason was recorded.",
+        ...(order.detail ? { note: order.detail } : {}),
+        symbols: [order.asset],
+        amountUSD: Number(order.collateralUSD),
+        change: 0,
+    };
 }
 
 /** The row for a sell that left its position open, or null for an order with no soldPart */

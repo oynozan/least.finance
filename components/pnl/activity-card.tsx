@@ -72,7 +72,7 @@ export function ActivityCard({ live }: { live: readonly Activity[] }) {
                                         <span className="truncate text-[17px] leading-snug font-medium tracking-[-0.01em]">
                                             {a.title}
                                         </span>
-                                        <span className="truncate text-[14px] leading-snug text-muted">
+                                        <span className="truncate text-[14px] leading-snug text-muted" title={a.note}>
                                             <span className="sm:hidden">
                                                 {a.amountUSD === null ? "—" : formatUsd(a.amountUSD)},{" "}
                                             </span>

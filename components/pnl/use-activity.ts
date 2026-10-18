@@ -8,6 +8,7 @@ import {
     depositActivity,
     pendingBuyActivity,
     perpActivity,
+    perpRejectedActivity,
     predictionActivity,
     saleActivity,
     withdrawalActivity,
@@ -77,7 +78,11 @@ function realPredictions({ positions, orders }: PositionsView, optimistic: reado
 }
 
 /** Perp positions as their rows; an open the server hasn't filled yet is pending. */
-const realPerps = ({ positions }: PerpsView): Activity[] => positions.flatMap((p) => perpActivity(p, isPendingPerp(p)));
+const realPerps = ({ positions, orders }: PerpsView): Activity[] => [
+    ...positions.flatMap((p) => perpActivity(p, isPendingPerp(p))),
+    // An open that was refused leaves no position, so its reason lives on the order
+    ...orders.flatMap((o) => perpRejectedActivity(o) ?? []),
+];
 
 /**
  * Everything the account did, newest first: its deposits, withdrawals, predictions and perps,
