@@ -6,6 +6,7 @@ import { AccountClient } from "@/components/account-client";
 import { answerStamp } from "@/components/pnl/use-activity-feed";
 import type { ApiError } from "@/lib/account/state";
 import {
+    AUTO_RETRY,
     NO_FEED,
     NO_PAGES,
     bodyState,
@@ -15,6 +16,7 @@ import {
     matchesFilter,
     olderPage,
     overlay,
+    retryDelay,
     type FeedState,
     type PagesState,
 } from "@/lib/pnl/activity-pages";
@@ -644,7 +646,15 @@ test.describe("the account client's page plumbing", () => {
         const answer = page([depositItem(1)], "c1");
         const stack = await fakeServer((_payload, ack) => ack({ ok: true, data: answer }));
         try {
-            expect(await stack.client.loadActivityPage({ filter: "all" })).toMatchObject({ code: "unavailable" });
+            // Not signed in yet is said as that, not as an outage
+            expect(await stack.client.loadActivityPage({ filter: "all" })).toEqual({
+                code: "unavailable",
+                message: "Still signing you in.",
+            });
+            expect(await stack.client.loadPnlSeries("UTC")).toEqual({
+                code: "unavailable",
+                message: "Still signing you in.",
+            });
             expect(stack.asked).toEqual([]);
             await stack.open();
             expect(await stack.client.loadActivityPage({ filter: "all" })).toEqual(answer);
@@ -681,6 +691,15 @@ test.describe("the account client's page plumbing", () => {
         } finally {
             await stack.stop();
         }
+    });
+});
+
+test.describe("when a failed first page is asked for again", () => {
+    test("the wait grows from 3 s to 30 s, and only a busy or away server is asked again by itself", () => {
+        expect([0, 1, 2, 3, 4, 9].map(retryDelay)).toEqual([3000, 6000, 12_000, 24_000, 30_000, 30_000]);
+        expect([...AUTO_RETRY].sort()).toEqual(["rate_limited", "unavailable"]);
+        expect(AUTO_RETRY.has("internal")).toBe(false);
+        expect(AUTO_RETRY.has("bad_request")).toBe(false);
     });
 });
 

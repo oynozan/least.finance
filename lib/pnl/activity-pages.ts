@@ -91,6 +91,14 @@ export function overlay(o: {
 
 /** How long a first page that failed waits before it is asked for again */
 export const RETRY_MS = 3000;
+/** The longest wait between asks of a first page that keeps failing */
+const MAX_RETRY_MS = 30_000;
+
+/** The wait before the next ask of a first page that has failed `tries` times: 3 s, 6 s, 12 s, then 30 s. */
+export const retryDelay = (tries: number) => Math.min(RETRY_MS * 2 ** tries, MAX_RETRY_MS);
+
+/** The failures worth asking again about by themselves: the server is away or busy. The rest need a person to look. */
+export const AUTO_RETRY: ReadonlySet<string> = new Set(["unavailable", "rate_limited"]);
 
 /** What the table's body shows: the rows, a quiet placeholder while history may still come, or an empty message */
 export function bodyState(o: {

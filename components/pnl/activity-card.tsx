@@ -28,7 +28,7 @@ const RESULT_TONE = { gain: "text-gain", loss: "text-loss", flat: "text-muted" }
 /** Every operation, newest first, with what it did to the balance: the live rows over the server's pages, older ones on request. */
 export function ActivityCard({ live }: { live: readonly Activity[] }) {
     const [filter, setFilter] = useState<ActivityFilter>("all");
-    const { rows, loaded, more, loadingMore, loadMore, error, moreError } = useActivityFeed(filter, live);
+    const { rows, loaded, more, loadingMore, loadMore, failure, retry } = useActivityFeed(filter, live);
     const body = bodyState({ filter, loaded, more, rows: rows.length });
 
     return (
@@ -95,13 +95,30 @@ export function ActivityCard({ live }: { live: readonly Activity[] }) {
                     ))}
                 </tbody>
             </table>
+            {/* Why the newest page can't be read, instead of waiting in silence */}
+            {failure?.kind === "first" && !loaded && (
+                <p role="status" className="px-[18px] py-10 text-center text-[15px] text-muted">
+                    {`Couldn't load your activity. ${failure.message}`}
+                    {failure.auto ? (
+                        " Trying again\u2026"
+                    ) : (
+                        <>
+                            {" "}
+                            <button
+                                type="button"
+                                onClick={retry}
+                                className="cursor-pointer underline underline-offset-3 hover:text-foreground"
+                            >
+                                Try again
+                            </button>
+                        </>
+                    )}
+                </p>
+            )}
             {/* The message's own height with no text, while history may still come */}
-            {body === "busy" && (
-                <p
-                    aria-busy={error ? undefined : "true"}
-                    className="px-[18px] py-10 text-center text-[15px] text-muted"
-                >
-                    {error ? `Couldn't load your history. ${error}` : "\u00a0"}
+            {body === "busy" && !(failure?.kind === "first" && !loaded) && (
+                <p aria-busy="true" className="px-[18px] py-10 text-center text-[15px] text-muted">
+                    {"\u00a0"}
                 </p>
             )}
             {/* Gone at once when rows come, so it never sits under them while they rise in */}
@@ -114,6 +131,11 @@ export function ActivityCard({ live }: { live: readonly Activity[] }) {
                     {body === "no-deposits" ? "No deposits yet" : "Nothing here yet"}
                 </motion.p>
             )}
+            {failure?.kind === "more" && (
+                <p role="status" className="px-[18px] pb-1 text-center text-[15px] text-muted">
+                    {`Couldn't load older activity. ${failure.message}`}
+                </p>
+            )}
             {more && (
                 <button
                     type="button"
@@ -121,12 +143,12 @@ export function ActivityCard({ live }: { live: readonly Activity[] }) {
                     disabled={loadingMore}
                     onClick={loadMore}
                 >
-                    Show older
+                    {failure?.kind === "more" ? "Try again" : "Show older"}
                 </button>
             )}
-            {moreError && (
+            {failure?.kind === "more" && (
                 <p role="status" className="px-[18px] pb-3 text-center text-[14px] text-muted">
-                    {`Couldn't load older history. ${moreError}`}
+                    {`Couldn't load older history. ${failure.message}`}
                 </p>
             )}
         </section>
