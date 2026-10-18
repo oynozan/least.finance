@@ -176,7 +176,14 @@ test("reconciliation logs a mismatch and stays quiet within 0.1 share", async ()
     h.trader.setHoldings([{ tokenId: token, sharesE6: 15_100_001n }]);
     await reconciler.tick();
     expect(mismatches(token)).toHaveLength(1);
-    expect(mismatches(token)[0]).toMatchObject({ tokenId: token, ledgerE6: 15_000_000, poolE6: 15_100_001 });
+    expect(mismatches(token)[0]).toMatchObject({
+        tokenId: token,
+        ledgerShares: "15",
+        poolShares: "15.100001",
+        gapShares: "0.100001",
+        direction: "pool long",
+        positions: expect.any(Array),
+    });
 
     // Tokens nobody holds a position in are a mismatch too
     const stray = `tok-${unique()}`;
@@ -364,7 +371,11 @@ test("ten failed lookups in a row expire the transaction, and one good answer re
 
     h.trader.failTransactionCheck();
     for (let i = 0; i < 3; i++) await redeemer.tick();
-    expect((await redemption(conditionId)).checkErrors).toBe(3);
+    expect(await redemption(conditionId)).toMatchObject({
+        checkErrors: 3,
+        // The cause of a failed lookup is kept on the row, not only in the log
+        lastError: `Couldn't look up transaction ${first.transactionId}: the relayer is unreachable`,
+    });
     h.trader.failTransactionCheck(false);
     await redeemer.tick();
     expect((await redemption(conditionId)).checkErrors).toBe(0);
@@ -439,7 +450,7 @@ test("a stuck redemption is retried every 6 hours and recovers to confirmed", as
     expect(logs.some((l) => l.msg === "Redemption recovered")).toBe(true);
 });
 
-test("stuck redemptions are reported on each reconciler pass, and the redeemer logs them at most every 10 minutes", async () => {
+test("stuck redemptions are reported once, by the redeemer, at most every 10 minutes, with their conditions and last errors", async () => {
     const conditionId = `0xcond-${unique()}`;
     await queue(conditionId);
     await failRedeems(conditionId, 10);
@@ -449,7 +460,8 @@ test("stuck redemptions are reported on each reconciler pass, and the redeemer l
     await reconciler.tick();
     await reconciler.tick();
     const reported = (msg: string) => logs.slice(before).filter((l) => l.level === ERROR && l.msg === msg);
-    expect(reported("Redemptions are stuck")).toHaveLength(2);
+    // The reconciler leaves it to the redeemer, so one stuck redemption is not reported twice
+    expect(reported("Redemptions are stuck")).toHaveLength(0);
 
     const mark = logs.length;
     await redeemer.tick();
@@ -458,7 +470,12 @@ test("stuck redemptions are reported on each reconciler pass, and the redeemer l
     clock += 11 * MINUTE;
     await redeemer.tick();
     await redeemer.tick();
-    expect(logs.slice(mark).filter((l) => l.msg === "Redemptions are stuck")).toHaveLength(1);
+    const stuck = logs.slice(mark).filter((l) => l.msg === "Redemptions are stuck");
+    expect(stuck).toHaveLength(1);
+    expect(stuck[0]).toMatchObject({
+        conditions: expect.arrayContaining([conditionId]),
+        lastErrors: expect.any(Array),
+    });
 });
 
 test("two redeemer ticks in parallel submit once", async () => {
@@ -485,7 +502,7 @@ test("a timed-out redeem is a failure, not a lost row", async () => {
     expect(await redemption(conditionId)).toMatchObject({
         state: "failed",
         attempts: 1,
-        lastError: "redeem timed out",
+        lastError: "redeem timed out after 20 ms",
     });
 });
 
@@ -673,7 +690,11 @@ test("a timed-out redeem shuts the gate and the next due redemption waits", asyn
     const { redeemer: behindGate } = await gated(() => withTimeouts(h.trader, 20));
     h.trader.hangNextRedeem();
     await behindGate.tick();
-    expect(await redemption(first)).toMatchObject({ state: "failed", attempts: 1, lastError: "redeem timed out" });
+    expect(await redemption(first)).toMatchObject({
+        state: "failed",
+        attempts: 1,
+        lastError: "redeem timed out after 20 ms",
+    });
     expect(await redemption(second)).toMatchObject({ state: "pending", attempts: 0, lastError: null });
     expect(redeemsOf(second)).toHaveLength(0);
 

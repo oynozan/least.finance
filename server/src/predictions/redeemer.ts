@@ -87,7 +87,15 @@ export class PredictionRedeemer {
         const submitted = await predictionRedemptions.find({ state: "submitted" }).toArray();
         for (const row of submitted) {
             await this.#check(trader, row).catch((error: unknown) =>
-                this.#deps.logger.warn({ err: error, condition: row.conditionId }, "Couldn't check a redemption"),
+                this.#deps.logger.warn(
+                    {
+                        err: error,
+                        condition: row.conditionId,
+                        marketId: row.marketId,
+                        transactionId: row.transactionId,
+                    },
+                    "Couldn't check a submitted redemption",
+                ),
             );
         }
         const due = await predictionRedemptions
@@ -95,18 +103,36 @@ export class PredictionRedeemer {
             .toArray();
         for (const row of due) {
             await this.#submit(trader, row).catch((error: unknown) =>
-                this.#deps.logger.warn({ err: error, condition: row.conditionId }, "Couldn't record a redemption"),
+                // The step that threw is after the relayer took the call when a transaction id was returned,
+                // so the redemption may be in flight without being written down
+                this.#deps.logger.error(
+                    {
+                        err: error,
+                        condition: row.conditionId,
+                        marketId: row.marketId,
+                        round: row.round ?? 1,
+                        attempts: row.attempts,
+                    },
+                    "Couldn't submit or save a redemption; if the relayer took it, it is not written down",
+                ),
             );
         }
         await this.#reportStuck();
     }
 
     async #reportStuck() {
-        const count = await this.#deps.collections.predictionRedemptions.countDocuments({ state: "stuck" });
+        const stuck = await this.#deps.collections.predictionRedemptions.find({ state: "stuck" }).toArray();
         const now = this.#now();
-        if (count === 0 || now - this.#stuckLoggedAt < STUCK_LOG_MS) return;
+        if (stuck.length === 0 || now - this.#stuckLoggedAt < STUCK_LOG_MS) return;
         this.#stuckLoggedAt = now;
-        this.#deps.logger.error({ count }, "Redemptions are stuck");
+        this.#deps.logger.error(
+            {
+                count: stuck.length,
+                conditions: stuck.slice(0, 5).map((row) => row.conditionId),
+                lastErrors: stuck.slice(0, 5).map((row) => row.lastError),
+            },
+            "Redemptions are stuck",
+        );
     }
 
     async #submit(trader: PoolTrader, row: PredictionRedemptionDoc) {
@@ -119,7 +145,7 @@ export class PredictionRedeemer {
                 const timedOut = /timed out/.test(message);
                 // A call that timed out may still complete, so no other batch is prepared meanwhile
                 if (timedOut) this.#deps.gate?.shut();
-                return { failure: timedOut ? "redeem timed out" : message };
+                return { failure: message, err: error };
             }
             const now = new Date(this.#now());
             await this.#deps.collections.predictionRedemptions.updateOne(
@@ -135,13 +161,14 @@ export class PredictionRedeemer {
                     },
                 },
             );
-            return { failure: null };
+            return { failure: null, err: undefined };
         };
         const outcome = this.#deps.gate
             ? await this.#deps.gate.run(send, { from: "redeemer" })
             : { ran: true as const, value: await send() };
         // A held gate leaves the row due for the next pass
-        if (outcome.ran && outcome.value.failure !== null) await this.#fail(row, outcome.value.failure);
+        if (outcome.ran && outcome.value.failure !== null)
+            await this.#fail(row, outcome.value.failure, undefined, outcome.value.err);
     }
 
     async #check(trader: PoolTrader, row: PredictionRedemptionDoc) {
@@ -152,13 +179,31 @@ export class PredictionRedeemer {
         } catch (error) {
             const counted = await predictionRedemptions.findOneAndUpdate(
                 { _id: row._id, state: "submitted" },
-                { $inc: { checkErrors: 1 }, $set: { updatedAt: new Date(this.#now()) } },
+                {
+                    $inc: { checkErrors: 1 },
+                    $set: {
+                        lastError: `Couldn't look up transaction ${row.transactionId}: ${error instanceof Error ? error.message : String(error)}`,
+                        updatedAt: new Date(this.#now()),
+                    },
+                },
                 { returnDocument: "after" },
             );
             if (counted && (counted.checkErrors ?? 0) >= CHECK_ERRORS_LIMIT) {
-                await this.#expire(trader, counted, "transaction lookups keep failing");
+                await this.#expire(
+                    trader,
+                    counted,
+                    `transaction lookups failed ${CHECK_ERRORS_LIMIT} times; last: ${counted.lastError}`,
+                );
             } else {
-                this.#deps.logger.warn({ err: error, condition: row.conditionId }, "Couldn't look up a redemption");
+                this.#deps.logger.warn(
+                    {
+                        err: error,
+                        condition: row.conditionId,
+                        transactionId: row.transactionId,
+                        checkErrors: counted?.checkErrors,
+                    },
+                    "Couldn't look up a redemption's transaction",
+                );
             }
             return;
         }
@@ -213,7 +258,12 @@ export class PredictionRedeemer {
         await this.#fail(row, reason, { abandoned: row.transactionId!, retryNow: first });
     }
 
-    async #fail(row: PredictionRedemptionDoc, reason: string, expired?: { abandoned: string; retryNow: boolean }) {
+    async #fail(
+        row: PredictionRedemptionDoc,
+        reason: string,
+        expired?: { abandoned: string; retryNow: boolean },
+        err?: unknown,
+    ) {
         const attempts = row.attempts + 1;
         const now = this.#now();
         const stuck = attempts >= STUCK_FROM_ATTEMPT;
@@ -236,7 +286,15 @@ export class PredictionRedeemer {
             },
         );
         if (moved.modifiedCount === 0) return;
-        const fields = { condition: row.conditionId, attempts, reason };
+        const fields = {
+            condition: row.conditionId,
+            marketId: row.marketId,
+            round: row.round ?? 1,
+            transactionId: row.transactionId,
+            attempts,
+            reason,
+            ...(err !== undefined && { err }),
+        };
         if (stuck) {
             this.#deps.logger.error(
                 { ...fields, lastError: reason, previousTransactions: previous },

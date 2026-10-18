@@ -1,7 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
 import type { Collections } from "../db/mongo.ts";
-import { fromDecimal } from "../db/money.ts";
+import { formatE6, fromDecimal } from "../db/money.ts";
+import { HourlyLog } from "./rebalance-log.ts";
 import type { PoolTrader } from "./trader.ts";
 
 /** The Data API leaves out holdings under 0.1 share, so smaller differences can't be told from dust. */
@@ -29,9 +30,12 @@ export class PredictionReconciler {
     readonly #deps: Deps;
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
+    /** A mismatch stays until someone fixes it, so each token's line is logged once an hour. */
+    readonly #hourly: HourlyLog;
 
     constructor(deps: Deps) {
         this.#deps = deps;
+        this.#hourly = new HourlyLog(deps.logger, deps.now ?? Date.now);
     }
 
     start() {
@@ -105,10 +109,23 @@ export class PredictionReconciler {
             const gap = ledgerE6 > poolE6 ? ledgerE6 - poolE6 : poolE6 - ledgerE6;
             if (gap <= TOLERANCE_E6) continue;
             if (poolE6 > ledgerE6 && (await this.#requeueLeftover(tokenId, redeemedConditions))) continue;
-            this.#deps.logger.error({ tokenId, ledgerE6, poolE6 }, "The pool's holdings don't match the positions");
+            const involved = [...owed, ...sold].filter((position) => position.tokenId === tokenId);
+            this.#hourly.once(
+                `mismatch:${tokenId}`,
+                "error",
+                {
+                    tokenId,
+                    question: involved[0]?.question ?? null,
+                    ledgerShares: formatE6(ledgerE6),
+                    poolShares: formatE6(poolE6),
+                    gapShares: formatE6(gap),
+                    direction: poolE6 < ledgerE6 ? "pool short" : "pool long",
+                    positions: involved.slice(0, 5).map((position) => position._id.toHexString()),
+                },
+                "The pool's holdings don't match the positions",
+            );
         }
-        const stuck = unredeemed.filter((row) => row.state === "stuck").length;
-        if (stuck > 0) this.#deps.logger.error({ count: stuck }, "Redemptions are stuck");
+        // Stuck redemptions are reported by the redeemer, with their conditions and last errors
     }
 
     /** Queues the confirmed redemption of a token's condition again because the pool still holds the token; false when no confirmed redemption explains it. */
