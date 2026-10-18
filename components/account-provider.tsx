@@ -305,7 +305,7 @@ function Provide({
     loadActivityPage = async () => UNAVAILABLE_PNL,
     withdrawLimits = async () => UNAVAILABLE_WITHDRAW,
     withdrawQuote = async () => UNAVAILABLE_WITHDRAW,
-    withdraw = async () => "offline",
+    withdraw = async () => "not-ready",
     placeTrade = (req) => ({ requestId: req.requestId, sent: false, answer: Promise.resolve(null) }),
     withdrawHolding = (req) => ({ requestId: req.requestId, sent: false }),
     children,
