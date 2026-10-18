@@ -294,7 +294,7 @@ test("a rejected close puts the position back with the message", async ({ page, 
     await nextOrder(picked.outcome.tokenId, "reject:price_moved");
     await reveal(page, picked, isMobile);
     await closeButton(page, picked).click();
-    await expect(status(page)).toHaveText("Couldn't sell right now. Your position is back.");
+    await expect(status(page)).toHaveText("The price moved, so the sale didn't go through. Your position is back.");
     await expect(row(page, picked)).toHaveCount(1);
     await expect(row(page, picked)).toContainText(/shares/);
     expect(await balanceOf(page)).toBe(before);

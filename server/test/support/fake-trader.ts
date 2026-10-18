@@ -41,8 +41,8 @@ export type FakeBatch = {
 const POOL_WALLET: Address = "0x1111111111111111111111111111111111111111";
 
 const REJECTS = {
-    price_moved: "price moved",
-    market_closed: "market closed",
+    price_moved: "order couldn't be fully filled. FOK orders are fully filled or killed.",
+    market_closed: "the market is not yet ready to process new orders",
     rejected: "rejected",
 } as const;
 
