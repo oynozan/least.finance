@@ -155,7 +155,7 @@ test("a rejection removes the position and shows the message", async ({ page }) 
     await openPerp(page, { side: "Long" });
     await confirmPerp(page);
 
-    const line = "This position couldn't be opened right now. Nothing was spent.";
+    const line = "Hyperliquid said the collateral doesn't cover this position at this leverage. Nothing was spent.";
     await expect(reviewPanel(page)).toContainText(line);
     await expect(reviewPanel(page).getByText("Position opened.")).toHaveCount(0);
     // Done shows the wallet rather than folding the sidebar
