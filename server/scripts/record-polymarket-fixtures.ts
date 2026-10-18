@@ -10,8 +10,6 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { gammaEvent, type GammaEvent } from "../src/markets/gamma.ts";
 import { isOffered, shapeEvent } from "../src/markets/shape.ts";
 
-import "../src/polymarket-proxy.ts";
-
 const GAMMA = "https://gamma-api.polymarket.com";
 const MAX_MARKETS = 12;
 const SEARCHES = ["aliens", "kraken", "fed", "senate"];
