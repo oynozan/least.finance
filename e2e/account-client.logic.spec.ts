@@ -478,3 +478,84 @@ test.describe("the copy for an order that can't be sent or confirmed", () => {
         );
     });
 });
+
+
+test.describe("a perp close or open the server does not confirm", () => {
+    const closeOrder = (over: Record<string, unknown> = {}) => ({
+        id: "p1",
+        requestId: "c1",
+        kind: "close",
+        asset: "BTC",
+        side: "long",
+        leverage: 5,
+        state: "done",
+        reason: null,
+        positionId: "pos1",
+        filledSizeCoin: "0.003",
+        requestedSizeCoin: "0.00759",
+        collateralUSD: "100",
+        creditedUSD: null,
+        createdAt: "2026-10-16T00:00:00.000Z",
+        updatedAt: "2026-10-16T00:00:00.000Z",
+        ...over,
+    });
+
+    test("a close that only took part of the position says how much", async () => {
+        const stack = await fakeServer();
+        try {
+            const reason =
+                "Closed 0.003 of 0.00759 BTC; the book was too thin for the rest. Press Close again for the rest.";
+            for (const socket of stack.io.sockets.sockets.values())
+                socket.emit("perp:update", {
+                    order: closeOrder({ reason }),
+                    position: null,
+                    account: account("50", 2),
+                });
+            await expect.poll(() => stack.client.getSnapshot().tradeNotice).toEqual({ message: reason });
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("a close whose answer is lost with the connection says it was not confirmed", async () => {
+        const stack = await fakeServer((socket) => socket.on("perp:close", () => undefined));
+        try {
+            const closing = stack.client.closePerp("pos1");
+            await expect.poll(() => stack.log.some((entry) => entry.name === "perp:close")).toBe(true);
+            stack.dropAll();
+            await closing;
+            expect(stack.client.getSnapshot().tradeNotice?.message).toMatch(
+                /^(You went offline before the server confirmed the close|The server didn't confirm the close within 45 seconds)\. Check whether the position is still open before trying again\.$/,
+            );
+        } finally {
+            await stack.stop();
+        }
+    });
+
+    test("an open whose answer is lost with the connection says it may still go through", async () => {
+        const stack = await fakeServer((socket) => socket.on("perp:order", () => undefined));
+        try {
+            const placed = stack.client.placePerp(
+                { requestId: "o1", asset: "BTC", side: "long", leverage: 5, collateralUSD: "100" },
+                {
+                    entryPx: "65000",
+                    sizeCoin: "0.00759",
+                    notionalUSD: "495",
+                    takerFeeUSD: "0.2",
+                    ourFeeUSD: "1",
+                    liquidationPx: "52000",
+                    fundingPerHour: "0.00001",
+                    marginUSD: "99",
+                },
+            );
+            await expect.poll(() => stack.log.some((entry) => entry.name === "perp:order")).toBe(true);
+            stack.dropAll();
+            expect(await placed.answer).toBeNull();
+            expect(stack.client.getSnapshot().tradeNotice?.message).toMatch(
+                /your long BTC\.? ?.*It may still go through; check Positions before trying again\.$/,
+            );
+        } finally {
+            await stack.stop();
+        }
+    });
+});

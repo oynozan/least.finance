@@ -124,6 +124,13 @@ const connectFailed = (error: Error): ApiError =>
     isOffline()
         ? OFFLINE
         : { code: "unavailable", message: `Couldn't connect to the server (${error.message}). Retrying…` };
+
+/** Why an acknowledgement never came: the connection was gone, or the server was too slow. */
+const noAnswer = (socket: { connected: boolean }, what: string, waitMs: number) =>
+    socket.connected
+        ? `The server didn't confirm ${what} within ${waitMs / 1000} seconds.`
+        : `You went offline before the server confirmed ${what}.`;
+
 /** Failures worth asking again about; the rest (a wallet that isn't the user's, say) won't change by retrying. */
 const RETRYABLE = new Set<ApiError["code"]>(["unavailable", "internal", "rate_limited"]);
 /** Refusals of a deposit report that say nothing about the deposit, so it stays pending and is reported again */
@@ -232,7 +239,11 @@ export class AccountClient {
             // A rejection, a partial fill or a liquidation carries the words the person is told.
             if (
                 order.reason &&
-                (order.state === "rejected" || order.state === "filled" || position?.state === "liquidated")
+                (order.state === "rejected" ||
+                    order.state === "filled" ||
+                    // A close that took only part of the position says how much
+                    (order.state === "done" && order.kind === "close") ||
+                    position?.state === "liquidated")
             )
                 this.#tradeNotice(order.reason);
         });
@@ -671,7 +682,14 @@ export class AccountClient {
             .emitWithAck("perp:order", req)
             .catch(() => null)
             .then((result) => {
-                if (this.#socket !== socket || !result) return null;
+                if (this.#socket !== socket) return null;
+                if (!result) {
+                    // The position stays counted; the person is told it isn't confirmed, so a second tap doesn't double it
+                    this.#tradeNotice(
+                        `${noAnswer(socket, `your ${req.side} ${req.asset}`, REPORT_TIMEOUT_MS)} It may still go through; check Positions before trying again.`,
+                    );
+                    return null;
+                }
                 if (result.ok) {
                     const { account, order } = result.data;
                     this.#dispatch({ type: "perp", update: { order, position: null, account } });
@@ -696,7 +714,14 @@ export class AccountClient {
             .timeout(REPORT_TIMEOUT_MS)
             .emitWithAck("perp:close", { requestId: crypto.randomUUID(), positionId })
             .catch(() => null);
-        if (this.#socket !== socket || !result || result.ok) return;
+        if (this.#socket !== socket) return;
+        if (!result) {
+            this.#tradeNotice(
+                `${noAnswer(socket, "the close", REPORT_TIMEOUT_MS)} Check whether the position is still open before trying again.`,
+            );
+            return;
+        }
+        if (result.ok) return;
         this.#tradeNotice(result.error.message);
     }
 
