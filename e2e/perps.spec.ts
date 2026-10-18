@@ -195,7 +195,9 @@ test("close raises the balance at once and restores the position when the fake r
     else await long(page).hover();
     await long(page).getByRole("button", { name: "Close Long BTC at 5x" }).click();
     // The balance counts the proceeds before the exchange answers, then the refusal takes them back.
-    await expect(status(page)).toHaveText(/Couldn.t close right now\. Your position is still open\./);
+    await expect(status(page)).toHaveText(
+        /^Hyperliquid refused the close: "Order could not be placed\."\. Your position is still open\.$/,
+    );
     await expect(long(page)).toHaveCount(1);
     await expect(long(page)).toContainText(/entry \$/);
     await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$400\.\d\d, show deposits$/);
