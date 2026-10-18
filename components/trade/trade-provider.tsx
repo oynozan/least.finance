@@ -187,8 +187,18 @@ function useLiveCatalog(): {
         () => ({ maxOrderUSD: perpMaxOrderUSD(perpView), loaded: perpView !== null, error: perpError }),
         [perpView, perpError],
     );
-    const { trending, query, results, answered, searchFailed, searchError, loading, known, maxOrderUSD } =
-        useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+    const {
+        trending,
+        query,
+        results,
+        answered,
+        searchFailed,
+        searchError,
+        trendingError,
+        loading,
+        known,
+        maxOrderUSD,
+    } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
     const catalog = useMemo<Catalog>(() => {
         const view = (id: string) => {
             const found = known.get(id);
@@ -204,10 +214,13 @@ function useLiveCatalog(): {
         };
     }, [tokens, perpMarkets, trending, results, known]);
     const answeredNow = query !== "" && answered === query;
+    // With no list to show and no search, the picker says why there is none
     const empty = !answeredNow
-        ? undefined
+        ? query === "" && trending.length === 0 && !loading
+            ? (trendingError ?? undefined)
+            : undefined
         : searchFailed
-          ? (searchError ?? "Search isn't available right now.")
+          ? `Search isn't available right now. ${searchError ?? ""}`.trim()
           : results?.length === 0
             ? `No markets match \u201c${query}\u201d.`
             : undefined;
@@ -253,10 +266,7 @@ function Provide({
     );
     const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, perpTrading, openPerps);
     const [openRequest, setOpenRequest] = useState<OpenRequest | null>(null);
-    const openSlot = useCallback(
-        (slot: string) => setOpenRequest((last) => ({ slot, id: (last?.id ?? 0) + 1 })),
-        [],
-    );
+    const openSlot = useCallback((slot: string) => setOpenRequest((last) => ({ slot, id: (last?.id ?? 0) + 1 })), []);
     const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;
     const marketId = watched?.kind === "choice" && watched.value ? watched.value : null;
     useEffect(() => {

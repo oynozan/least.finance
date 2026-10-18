@@ -456,24 +456,78 @@ test.describe("live markets", () => {
                 () => {
                     throw new Error("offline");
                 },
-                () => new Response(JSON.stringify({ error: "unavailable" }), { status: 503 }),
+                () =>
+                    new Response(
+                        JSON.stringify({
+                            error: {
+                                code: "unavailable",
+                                message: "Polymarket is rate limiting us right now. Try again in a minute.",
+                            },
+                        }),
+                        { status: 503 },
+                    ),
                 () => json({ query: "fed r", markets: [market("1", "Fed decision")] }),
             ];
             const store = createMarketsStore({ apiUrl: "http://api", fetch: async () => replies.shift()!() });
+            const reasons = [
+                "Couldn't reach the server.",
+                "Polymarket is rate limiting us right now. Try again in a minute.",
+            ];
             for (const query of ["fed", "fede"]) {
                 store.search(query);
                 await wait(300);
+                // The server's own words reach the snapshot; with no answer it says which kind of silence
                 expect(store.getSnapshot(), query).toMatchObject({
                     query,
                     answered: query,
                     results: null,
                     searchFailed: true,
+                    searchError: reasons.shift(),
                 });
             }
             store.search("fed r");
             await wait(300);
-            expect(store.getSnapshot()).toMatchObject({ answered: "fed r", searchFailed: false });
+            expect(store.getSnapshot()).toMatchObject({ answered: "fed r", searchFailed: false, searchError: null });
             expect(store.getSnapshot().results?.map((m) => m.id)).toEqual(["1"]);
+        });
+
+        test("a trending list that can't be read says why, and a later good answer clears it", async () => {
+            (globalThis as { document?: unknown }).document = {
+                visibilityState: "visible",
+                addEventListener() {},
+                removeEventListener() {},
+            };
+            const replies: (() => Response)[] = [
+                () =>
+                    json({
+                        markets: [],
+                        maxOrderUSD: null,
+                        readAt: null,
+                        unavailableReason: "Polymarket isn't reachable right now. Try again in a minute.",
+                    }),
+                () =>
+                    new Response(
+                        JSON.stringify({
+                            error: { code: "rate_limited", message: "Too many requests. Try again shortly." },
+                        }),
+                        { status: 429 },
+                    ),
+            ];
+            const store = createMarketsStore({ apiUrl: "http://api", fetch: async () => replies.shift()!() });
+            try {
+                store.start();
+                await wait(50);
+                expect(store.getSnapshot()).toMatchObject({
+                    loading: false,
+                    trending: [],
+                    trendingError: "Polymarket isn't reachable right now. Try again in a minute.",
+                });
+                await wait(2100);
+                expect(store.getSnapshot().trendingError).toBe("Too many requests. Try again shortly.");
+            } finally {
+                store.stop();
+                delete (globalThis as { document?: unknown }).document;
+            }
         });
 
         test("earlier results stay until the newer query is answered", async () => {

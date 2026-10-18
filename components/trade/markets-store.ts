@@ -14,8 +14,10 @@ export type MarketsSnapshot = {
     answered: string | null;
     /** The search for `answered` got no answer, so `results` stays null. */
     searchFailed: boolean;
-    /** Why it got none, in the server's words or ours; null when the search didn't fail or nothing said. */
+    /** Why that search got no answer, in plain words: offline, no answer in time, or the server's own message. */
     searchError: string | null;
+    /** Why there is no trending list to show, in plain words; null while there is one or none has been tried. */
+    trendingError: string | null;
     /** Until the first answer for the trending list, or a cached one, there is nothing to show. */
     loading: boolean;
     /** Every question seen, so one picked earlier still resolves after it leaves the list. */
@@ -25,6 +27,10 @@ export type MarketsSnapshot = {
 const TRENDING_MS = 60_000;
 /** Until the server has a list, ask again soon. */
 const WARMING_MS = 2_000;
+/** After this many empty answers in a row the wait stretches, so a server that can't read Polymarket isn't asked every 2 s. */
+const WARMING_TRIES = 5;
+const SLOW_WARMING_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 15_000;
 const WATCH_MS = 10_000;
 const HELD_MAX = 20;
 const SEARCH_MIN = 2;
@@ -39,6 +45,7 @@ const EMPTY: MarketsSnapshot = {
     answered: null,
     searchFailed: false,
     searchError: null,
+    trendingError: null,
     loading: true,
     known: new Map(),
 };
@@ -46,6 +53,20 @@ const EMPTY: MarketsSnapshot = {
 const limitOf = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
 
 const isTrending = (value: unknown): value is TrendingView => !!value && Array.isArray((value as TrendingView).markets);
+
+/** The server's own message from a failed answer, else its status. */
+async function said(response: Response): Promise<string> {
+    try {
+        const body = (await response.json()) as { error?: unknown };
+        const error = body?.error;
+        if (typeof error === "string") return error;
+        const message = (error as { message?: unknown } | undefined)?.message;
+        if (typeof message === "string" && message) return message;
+    } catch {
+        // Not JSON: a proxy's page
+    }
+    return `The server answered ${response.status}.`;
+}
 
 /** Polymarket's questions as the server serves them, kept fresh while the page is open. */
 export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fetch; now?: () => number }) {
@@ -61,6 +82,15 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
     let held: string[] = [];
     let heldTimer: ReturnType<typeof setInterval> | undefined;
     let searchTimer: ReturnType<typeof setTimeout> | undefined;
+    let emptyAnswers = 0;
+    const warned = new Set<string>();
+
+    /** Said once per distinct failure in development, so a developer sees what the page was told. */
+    const note = (what: string, message: string) => {
+        if (process.env.NODE_ENV === "production" || warned.has(`${what}|${message}`)) return;
+        warned.add(`${what}|${message}`);
+        console.warn(`${what}: ${message}`);
+    };
 
     const set = (next: Partial<MarketsSnapshot>) => {
         snapshot = { ...snapshot, ...next };
@@ -77,9 +107,11 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         const result = await getJson(`/markets/search?q=${encodeURIComponent(query)}`);
         // The sent string is the token: an answer for an older query is dropped.
         if (stopped || query !== snapshot.query) return;
-        const body = result?.body as { markets?: unknown } | null | undefined;
+        const body = result.body as { markets?: unknown } | null | undefined;
         if (!body || !Array.isArray(body.markets)) {
-            set({ results: null, answered: query, searchFailed: true, searchError: result?.error ?? null });
+            const searchError = result.error ?? "The server sent something we couldn't read.";
+            note("Market search failed", searchError);
+            set({ results: null, answered: query, searchFailed: true, searchError });
             return;
         }
         const markets = validMarkets(body.markets);
@@ -88,18 +120,26 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
 
     const visible = () => typeof document === "undefined" || document.visibilityState !== "hidden";
 
-    /** `error` is why there is no body: the server's own message from a refusal, or that the browser is offline. */
-    async function getJson(path: string): Promise<{ status: number; body: unknown; error?: string } | null> {
+    /** What came back, or why nothing did: `error` is the server's own message when it sent one, else which kind of silence it was. */
+    async function getJson(path: string): Promise<{ status: number; body: unknown; error: string | null }> {
         try {
-            const response = await request(`${options.apiUrl}${path}`);
-            if (response.ok) return { status: response.status, body: await response.json() };
-            const refusal = (await response.json().catch(() => null)) as { error?: { message?: unknown } } | null;
-            const said = refusal?.error?.message;
-            return { status: response.status, body: null, ...(typeof said === "string" ? { error: said } : {}) };
-        } catch {
-            return typeof navigator !== "undefined" && navigator.onLine === false
-                ? { status: 0, body: null, error: "You're offline." }
-                : null;
+            const response = await request(`${options.apiUrl}${path}`, {
+                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            });
+            if (response.ok) return { status: response.status, body: await response.json(), error: null };
+            return { status: response.status, body: null, error: await said(response) };
+        } catch (error) {
+            const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+            const slow = error instanceof Error && error.name === "TimeoutError";
+            return {
+                status: 0,
+                body: null,
+                error: offline
+                    ? "You're offline."
+                    : slow
+                      ? `The server didn't answer in ${REQUEST_TIMEOUT_MS / 1000} seconds.`
+                      : "Couldn't reach the server.",
+            };
         }
     }
 
@@ -107,17 +147,25 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         const result = await getJson("/markets/trending");
         if (!running) return;
         // Any answer, even a failed or empty one, ends the wait: the picker then says what it has.
-        if (!result || !isTrending(result.body)) {
-            if (snapshot.loading) set({ loading: false });
+        if (!isTrending(result.body)) {
+            const trendingError = result.error ?? "The server sent something we couldn't read.";
+            note("Market list failed", trendingError);
+            set({ ...(snapshot.loading && { loading: false }), trendingError });
             return;
         }
         const view = { ...result.body, markets: validMarkets(result.body.markets) };
         // An empty answer from a server still warming up shouldn't wipe the cached list.
         if (view.markets.length === 0 && view.readAt === null) {
-            if (snapshot.loading) set({ loading: false });
+            emptyAnswers++;
+            const reason = (result.body as { unavailableReason?: unknown }).unavailableReason;
+            const trendingError = typeof reason === "string" ? reason : null;
+            if (trendingError) note("Market list is empty", trendingError);
+            set({ ...(snapshot.loading && { loading: false }), trendingError });
             return;
         }
+        emptyAnswers = 0;
         set({
+            trendingError: null,
             loading: false,
             trending: view.markets,
             readAt: view.readAt,
@@ -135,7 +183,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
                 if (visible()) await refreshTrending();
                 scheduleTrending();
             },
-            snapshot.readAt === null ? WARMING_MS : TRENDING_MS,
+            snapshot.readAt === null ? (emptyAnswers >= WARMING_TRIES ? SLOW_WARMING_MS : WARMING_MS) : TRENDING_MS,
         );
     }
 
@@ -143,7 +191,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         const id = watched;
         if (!id || !running || !visible()) return;
         const result = await getJson(`/markets/${encodeURIComponent(id)}`);
-        if (!running || !result || id !== watched) return;
+        if (!running || result.status === 0 || id !== watched) return;
         if (result.status === 404 || (result.body && !isMarketView(result.body))) {
             const known = new Map(snapshot.known);
             known.delete(id);
@@ -167,7 +215,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
         const ids = held;
         const answers = await Promise.all(ids.map((id) => getJson(`/markets/${encodeURIComponent(id)}`)));
         if (!running) return;
-        const views = answers.flatMap((answer) => (answer && isMarketView(answer.body) ? [answer.body] : []));
+        const views = answers.flatMap((answer) => (isMarketView(answer.body) ? [answer.body] : []));
         if (views.length === 0) return;
         const fresh = new Map(views.map((v) => [v.id, v]));
         set({
