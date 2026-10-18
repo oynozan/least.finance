@@ -4,7 +4,7 @@ import { useState, type FormEvent } from "react";
 import { motion, useAnimate, useReducedMotion, type Transition } from "motion/react";
 import { formatUnits } from "@/lib/trade/format";
 import type { CoinBalance } from "@/server/src/protocol";
-import { NEEDS_SOL, type DepositResult } from "./account-client";
+import type { DepositResult } from "./account-client";
 import { CloseIcon } from "./icons";
 import { ProgressGlyph } from "./progress-fill";
 import { formatUsd } from "./wallet-data";
@@ -146,17 +146,8 @@ export function DepositForm({
         setSending(false);
         // Turned down in the wallet: the amount stays, ready to try again.
         if (result === "cancelled") return;
-        if (typeof result === "object") return setWalletProblem(result.refused);
-        if (result === "needs_sol") return setWalletProblem(NEEDS_SOL);
-        if (result === "failed") return setWalletProblem("Your wallet couldn't send the deposit. Try again.");
-        if (result === "switch_failed")
-            return setWalletProblem(
-                isArc
-                    ? "Your wallet couldn't switch to Arc. Add Arc (chain ID 5042) in its network settings, or connect another wallet."
-                    : `Your wallet couldn't switch to ${coin.chainName}. Switch it there yourself and try again.`,
-            );
-        if (result === "wrong_network")
-            return setWalletProblem(`Your wallet is on another network. Switch it to ${coin.chainName} and try again.`);
+        // Refused by the server or failed on the way: either way it says what went wrong and what to do.
+        if (typeof result === "object") return setWalletProblem("refused" in result ? result.refused : result.failed);
         // Sent: the balance already counts it, and the status line follows its confirmation.
         onClose();
     };
@@ -174,7 +165,9 @@ export function DepositForm({
         (sending ? IN_WALLET : null) ??
         issue ??
         estimate ??
-        (isArc && walletBalance === null ? "Couldn't read your wallet's balance." : null);
+        (isArc && walletBalance === null
+            ? "Couldn't read your Arc balance (Arc's network didn't answer). You can still type an amount."
+            : null);
     const held = isArc ? walletBalance : coin.amount === null ? null : Number(coin.amount);
     const wallet = over
         ? OVER_WALLET

@@ -1,3 +1,5 @@
+import { oneLine, USER_REJECTED } from "./failure";
+
 /** A wallet's network: an EVM chain ID, or Solana. */
 export type Network = number | "solana";
 
@@ -24,16 +26,21 @@ export function networkName(network: Network | undefined): string {
     return NAMES[network] ?? `Chain ${network}`;
 }
 
-/** EIP-1193's code for a request the user turned down in their wallet. */
-const USER_REJECTED = 4001;
-
 export type SwitchableWallet = {
     chainId: string;
     switchChain(chainId: number): Promise<void>;
     getEthereumProvider(): Promise<{ request(args: { method: string }): Promise<unknown> }>;
 };
 
-export type NetworkCheck = "ready" | "declined" | "switch_failed" | "wrong_network";
+/**
+ * Whether the wallet is on the chain: ready, turned down by the person, or a problem with what the wallet said (its
+ * error's code and words) or with the chain it ended up on.
+ */
+export type NetworkCheck =
+    | "ready"
+    | "declined"
+    | { kind: "switch_failed"; code: number | null; message: string }
+    | { kind: "wrong_network"; actual: Network | undefined };
 
 /** Moves the wallet to `chainId` if it isn't there, then asks the wallet itself, right before a send. */
 export async function ensureNetwork(wallet: SwitchableWallet, chainId: number): Promise<NetworkCheck> {
@@ -41,10 +48,39 @@ export async function ensureNetwork(wallet: SwitchableWallet, chainId: number): 
         try {
             await wallet.switchChain(chainId);
         } catch (error) {
-            return (error as { code?: unknown } | null)?.code === USER_REJECTED ? "declined" : "switch_failed";
+            const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+            if (code === USER_REJECTED) return "declined";
+            console.warn(`Your wallet couldn't switch to chain ${chainId}`, error);
+            return {
+                kind: "switch_failed",
+                code: typeof code === "number" ? code : null,
+                message: typeof message === "string" ? message : "",
+            };
         }
     }
     const provider = await wallet.getEthereumProvider();
     const current = await provider.request({ method: "eth_chainId" });
-    return typeof current === "string" && Number(current) === chainId ? "ready" : "wrong_network";
+    if (typeof current === "string" && Number(current) === chainId) return "ready";
+    const actual = typeof current === "string" && Number.isFinite(Number(current)) ? Number(current) : undefined;
+    return { kind: "wrong_network", actual };
+}
+
+/** What the person is told when the wallet is not on `chainId` after `ensureNetwork`. */
+export function networkProblem(check: Exclude<NetworkCheck, "ready" | "declined">, chainId: number): string {
+    const chain = networkName(chainId);
+    if (check.kind === "wrong_network") {
+        return check.actual === undefined
+            ? `Your wallet didn't say which network it is on. Switch it to ${chain} and try again.`
+            : `Your wallet is on ${networkName(check.actual)}, not ${chain}. Switch to ${chain} in the wallet and try again.`;
+    }
+    if (check.code === 4902) {
+        return chainId === 5042
+            ? "Your wallet doesn't know Arc yet. Add Arc (chain ID 5042) in its network settings, or connect another wallet."
+            : `Your wallet doesn't know ${chain} yet. Add it in the wallet's network settings and try again.`;
+    }
+    if (check.code === -32002) return "Your wallet already has a request open. Answer it first, then try again.";
+    const words = oneLine(check.message).replace(/\.+$/, "");
+    return words
+        ? `Your wallet couldn't switch to ${chain}: "${words}". Switch it there yourself and try again.`
+        : `Your wallet couldn't switch to ${chain}. Switch it there yourself and try again.`;
 }

@@ -1,5 +1,5 @@
 import { io, type Socket } from "socket.io-client";
-import { parseGwei, toHex } from "viem";
+import { formatUnits, parseGwei, toHex } from "viem";
 import {
     accountReducer,
     initialAccountState,
@@ -34,6 +34,8 @@ import type {
     WithdrawQuote,
 } from "@/server/src/protocol";
 import { buildDepositTransaction, signWithFreshKeys, withFreshSigners } from "@/lib/account/solana-tx";
+import { oneLine, shortHash, walletFailure } from "@/lib/wallet/failure";
+import { networkName, networkProblem, type NetworkCheck } from "@/lib/wallet/network";
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
@@ -42,26 +44,30 @@ export type WalletProvider = { request(args: { method: string; params?: unknown[
 
 /** Where a deposit stands, as the sidebar tells it. */
 export type DepositNotice =
-    /** Sent from the wallet; the server is confirming it. */
-    | { kind: "confirming"; amount: bigint }
+    /** Sent from the wallet; the server is confirming it. `message` says why it is taking longer than usual. */
+    | { kind: "confirming"; amount: bigint; message?: string }
     | { kind: "credited"; amount: bigint }
     /** The server couldn't confirm it, so it came back out of the balance. */
     /** `withdrawal`: a failed withdrawal, which the deposit button ignores. */
     | { kind: "reverted"; message: string; withdrawal?: true };
 
-/** How the wallet took a deposit: turned down, failed to send, or sent (and now being confirmed). */
-/** `refused` is the server's reason for not opening the deposit, such as "That's too small to cover the fee." */
-export type DepositResult =
-    "cancelled" | "failed" | "sent" | "switch_failed" | "wrong_network" | "needs_sol" | { refused: string };
+/**
+ * How the wallet took a deposit: turned down, sent (and now being confirmed), or not sent with a reason.
+ * `refused` is the server's reason for not opening the deposit, such as "That's too small to cover the fee."
+ * `failed` is ours or the wallet's, in plain words: what went wrong and what to do.
+ */
+export type DepositResult = "cancelled" | "sent" | { refused: string } | { failed: string };
 
-/** What a Solana wallet without SOL for the network fee is told before any order is opened. */
-export const NEEDS_SOL = "You need a little SOL to send from Solana.";
+/** What a Solana wallet short of SOL is told before any order is opened, with the numbers. */
+export function needsSolMessage(needed: bigint, have: bigint, rent: boolean) {
+    return `You need about ${formatUnits(needed, 9)} SOL to send this from Solana (the network fee${rent ? " plus rent for the transfer" : ""}); your wallet has ${formatUnits(have, 9)} SOL.`;
+}
 
 /** What a bridged deposit needs from the wallet: its provider, its address, and a move to the source chain. */
 export type BridgeWallet = {
     provider: WalletProvider;
     from: string;
-    ensure(chainId: number): Promise<"ready" | "declined" | "switch_failed" | "wrong_network">;
+    ensure(chainId: number): Promise<NetworkCheck>;
 };
 
 /** The Solana wallet a deposit is signed with: signs, sends and returns the base58 signature of a transaction. */
@@ -95,8 +101,6 @@ const WITHDRAW_FAILED_COPY = "The withdrawal failed. Your balance is back.";
 /** The price sent when none is known; the exchange takes the best bid anyway, within a cent of it. */
 const UNQUOTED_SELL_PRICE = 0.01;
 
-/** EIP-1193's code for a request the user turned down in their wallet. */
-const USER_REJECTED = 4001;
 /** Arc drops transactions offering under 20 gwei, so this leaves room for the base fee to rise. */
 const MAX_FEE_PER_GAS = parseGwei("40");
 const PRIORITY_FEE_PER_GAS = parseGwei("1");
@@ -108,8 +112,11 @@ const RECEIPT_TIMEOUT_MS = 120_000;
 const CREDITED_NOTICE_MS = 5_000;
 const TRADE_NOTICE_MS = 8_000;
 const MAX_RETRY_MS = 30_000;
+/** How long after the last try a sent deposit's hashes are offered to the server again, when it didn't take them. */
+const REGISTER_RETRY_MS = [2_000, 4_000, 8_000, 16_000];
+/** How many times a deposit the server can't find is asked about again before it stops counting. */
+const NOT_FOUND_RETRIES = 3;
 
-const REJECTED_WORDING = /reject|declin|denied|cancel/i;
 /** Lamports a Solana wallet needs to pay the network fee (about 0.00001 SOL is quoted). */
 const MIN_FEE_LAMPORTS = BigInt(10_000);
 
@@ -131,6 +138,19 @@ const noAnswer = (socket: { connected: boolean }, what: string, waitMs: number) 
         ? `The server didn't confirm ${what} within ${waitMs / 1000} seconds.`
         : `You went offline before the server confirmed ${what}.`;
 
+/** Why the server gave no answer, said as it was: offline, or no answer in time. */
+const silence = () =>
+    isOffline() ? "You're offline" : `The server didn't answer in ${CONNECT_TIMEOUT_MS / 1000} seconds`;
+/** Said when a deposit can't start because the account isn't open or the server went quiet; nothing has left the wallet. */
+const notSent = (reason: string) => ({ failed: `${reason}, so nothing was sent from your wallet.` });
+const SIGNED_OUT = { failed: "You were signed out while this was open, so nothing was sent." };
+/** Said when a wallet answers a send with something that is not a hash; the deposit may have gone. */
+const notAHash = (value: unknown) => {
+    console.warn("Your wallet answered a send with something other than a transaction hash", value);
+    return {
+        failed: `Your wallet answered with something other than a transaction hash ("${oneLine(typeof value === "string" ? value : JSON.stringify(value), 30)}"). Check your wallet's activity before trying again; the deposit may have been sent.`,
+    };
+};
 /** Failures worth asking again about; the rest (a wallet that isn't the user's, say) won't change by retrying. */
 const RETRYABLE = new Set<ApiError["code"]>(["unavailable", "internal", "rate_limited"]);
 /** Refusals of a deposit report that say nothing about the deposit, so it stays pending and is reported again */
@@ -390,7 +410,7 @@ export class AccountClient {
     async deposit(amount: string, wallet: { provider: WalletProvider; from: string }): Promise<DepositResult> {
         const { state } = this.#snapshot;
         const socket = this.#socket;
-        if (state.status !== "ready" || !socket) return "failed";
+        if (state.status !== "ready" || !socket) return { failed: this.#notReady().message };
         const value = toWei(amount);
 
         let txHash: Hex;
@@ -410,9 +430,10 @@ export class AccountClient {
                 ],
             })) as Hex;
         } catch (error) {
-            return (error as { code?: unknown }).code === USER_REJECTED ? "cancelled" : "failed";
+            const failure = walletFailure(error, { symbol: "USDC" });
+            return failure.kind === "cancelled" ? "cancelled" : { failed: failure.message };
         }
-        if (typeof txHash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) return "failed";
+        if (typeof txHash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) return notAHash(txHash);
         // The user signed out or switched wallets while the wallet was open; that account's server
         // credits the deposit, and it mustn't show up in this one.
         if (this.#socket !== socket) return "sent";
@@ -846,13 +867,15 @@ export class AccountClient {
      */
     async bridgeDeposit(coin: string, amount: string, wallet: BridgeWallet): Promise<DepositResult> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket) return "failed";
+        if (this.#snapshot.state.status !== "ready" || !socket) return { failed: this.#notReady().message };
+        const symbol = coin.split(":")[1];
         try {
             const opened = await socket
                 .timeout(CONNECT_TIMEOUT_MS)
                 .emitWithAck("deposit:order", { coin, amount, wallet: wallet.from })
                 .catch(() => null);
-            if (!opened || this.#socket !== socket) return "failed";
+            if (this.#socket !== socket) return SIGNED_OUT;
+            if (!opened) return notSent(silence());
             if (!opened.ok) return { refused: opened.error.message };
             const { order, txs } = opened.data;
             this.#dispatch({ type: "order", order });
@@ -861,29 +884,87 @@ export class AccountClient {
             for (const [i, tx] of txs.entries()) {
                 const network = await wallet.ensure(tx.chainId);
                 if (network === "declined") return "cancelled";
-                if (network !== "ready") return network;
+                if (network !== "ready") return { failed: networkProblem(network, tx.chainId) };
                 const hash = (await wallet.provider.request({
                     method: "eth_sendTransaction",
                     params: [
                         { from: wallet.from, to: tx.to, data: tx.data, value: tx.value, chainId: toHex(tx.chainId) },
                     ],
                 })) as Hex;
-                if (typeof hash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(hash)) return "failed";
+                if (typeof hash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(hash)) return notAHash(hash);
                 hashes.push(hash);
-                if (i < txs.length - 1 && !(await this.#landed(wallet.provider, hash))) return "failed";
+                if (i < txs.length - 1) {
+                    const landed = await this.#landed(wallet.provider, hash);
+                    const chain = networkName(tx.chainId);
+                    if (landed === "reverted") {
+                        return {
+                            failed: `The approval transaction reverted on ${chain}, so the deposit wasn't sent. Nothing was bridged.`,
+                        };
+                    }
+                    if (landed === "timeout") {
+                        return {
+                            failed: `The approval hasn't confirmed on ${chain} after 2 minutes. Check your wallet's activity, then try again.`,
+                        };
+                    }
+                }
             }
             if (this.#socket !== socket) return "sent";
 
-            const reported = await socket
-                .timeout(CONNECT_TIMEOUT_MS)
-                .emitWithAck("deposit:source", { orderId: order.id, txHashes: hashes })
-                .catch(() => null);
-            if (reported?.ok) this.#dispatch({ type: "order", order: reported.data });
+            await this.#registerSource(socket, order.id, hashes);
             this.#dropBalance(coin, wallet.from, amount);
             return "sent";
         } catch (error) {
-            return (error as { code?: unknown }).code === USER_REJECTED ? "cancelled" : "failed";
+            const failure = walletFailure(error, { symbol });
+            return failure.kind === "cancelled" ? "cancelled" : { failed: failure.message };
         }
+    }
+
+    /**
+     * Tells the server which transactions the wallet sent for an order. A refusal or a missing answer is asked again
+     * in the background while it could change; one that won't is told to the person with the hash, since the money has
+     * gone and the order would otherwise stay unfollowed.
+     */
+    async #registerSource(socket: AppSocket, orderId: string, hashes: string[]) {
+        const first = await this.#sendSource(socket, orderId, hashes);
+        if (first === null || first === "registered") return;
+        if (!first.again) return this.#notifyUnregistered(hashes, first.reason);
+        void (async () => {
+            let reason = first.reason;
+            for (const delay of REGISTER_RETRY_MS) {
+                await pause(delay);
+                const next = await this.#sendSource(socket, orderId, hashes);
+                if (next === null || next === "registered") return;
+                reason = next.reason;
+                if (!next.again) break;
+            }
+            this.#notifyUnregistered(hashes, reason);
+        })();
+    }
+
+    /** One try at reporting an order's hashes: registered, moot (the account changed), or refused with a reason and whether asking again could help. */
+    async #sendSource(socket: AppSocket, orderId: string, hashes: string[]) {
+        if (this.#socket !== socket) return null;
+        const reported = await socket
+            .timeout(CONNECT_TIMEOUT_MS)
+            .emitWithAck("deposit:source", { orderId, txHashes: hashes })
+            .catch(() => null);
+        if (this.#socket !== socket) return null;
+        if (reported?.ok) {
+            this.#dispatch({ type: "order", order: reported.data });
+            return "registered" as const;
+        }
+        return {
+            reason: reported ? reported.error.message : `${silence()}.`,
+            again: !reported || RETRYABLE.has(reported.error.code),
+        };
+    }
+
+    #notifyUnregistered(hashes: string[], reason: string) {
+        const hash = hashes.at(-1);
+        this.#notify({
+            kind: "reverted",
+            message: `Your deposit was sent${hash ? ` (${shortHash(hash)})` : ""} but we couldn't register it with the server: ${reason} It will still be credited once the bridge pays out on Arc, but its progress won't show here.`,
+        });
     }
 
     /**
@@ -896,72 +977,100 @@ export class AccountClient {
         wallet: { address: string; signer: SolanaSigner | undefined; solBalance: bigint | null },
     ): Promise<DepositResult> {
         const socket = this.#socket;
-        if (this.#snapshot.state.status !== "ready" || !socket || !wallet.signer) return "failed";
-        if (wallet.solBalance !== null && wallet.solBalance < MIN_FEE_LAMPORTS) return "needs_sol";
+        if (this.#snapshot.state.status !== "ready" || !socket) return { failed: this.#notReady().message };
+        if (!wallet.signer) {
+            return { failed: `Connect ${shortHash(wallet.address)} in your wallet app to deposit from it.` };
+        }
+        if (wallet.solBalance !== null && wallet.solBalance < MIN_FEE_LAMPORTS) {
+            return { refused: needsSolMessage(MIN_FEE_LAMPORTS, wallet.solBalance, false) };
+        }
         try {
             // The quote says what the transaction costs in SOL (a CCTP burn also pays rent), so a short wallet is told before an order opens.
             if (wallet.solBalance !== null) {
                 const quoted = await this.quote(coin, amount, wallet.address);
-                if (this.#socket !== socket) return "failed";
+                if (this.#socket !== socket) return SIGNED_OUT;
                 if ("code" in quoted) return { refused: quoted.message };
-                if (quoted.sol && wallet.solBalance < BigInt(quoted.sol.needed)) return "needs_sol";
+                if (quoted.sol && wallet.solBalance < BigInt(quoted.sol.needed)) {
+                    return {
+                        refused: needsSolMessage(
+                            BigInt(quoted.sol.needed),
+                            wallet.solBalance,
+                            BigInt(quoted.sol.held) > BigInt(0),
+                        ),
+                    };
+                }
             }
             const opened = await socket
                 .timeout(CONNECT_TIMEOUT_MS)
                 .emitWithAck("deposit:order", { coin, amount, wallet: wallet.address })
                 .catch(() => null);
-            if (!opened || this.#socket !== socket) return "failed";
+            if (this.#socket !== socket) return SIGNED_OUT;
+            if (!opened) return notSent(silence());
             if (!opened.ok) return { refused: opened.error.message };
             const { order, txs } = opened.data;
             this.#dispatch({ type: "order", order });
             const tx = txs[0];
-            if (txs.length !== 1 || tx?.kind !== "solana") return "failed";
+            if (txs.length !== 1 || tx?.kind !== "solana") {
+                return {
+                    failed: `The bridge returned a transaction we can't use (${txs.length} part${txs.length === 1 ? "" : "s"}). Nothing was sent.`,
+                };
+            }
 
             // Fetched right before signing, so the blockhash is as fresh as the wallet prompt allows.
             const recent = await socket
                 .timeout(CONNECT_TIMEOUT_MS)
                 .emitWithAck("solana:blockhash", {})
                 .catch(() => null);
-            if (!recent?.ok || this.#socket !== socket) return "failed";
-            const { instructions, keyPairs } = await withFreshSigners(tx.instructions);
-            const bytes = await signWithFreshKeys(
-                buildDepositTransaction({
-                    payer: wallet.address,
-                    blockhash: recent.data,
-                    instructions,
-                    lookupTables: tx.lookupTables,
-                }),
-                keyPairs,
-            );
+            if (this.#socket !== socket) return SIGNED_OUT;
+            if (!recent) return notSent(silence());
+            if (!recent.ok) return { refused: recent.error.message };
+            let bytes: Uint8Array;
+            try {
+                const { instructions, keyPairs } = await withFreshSigners(tx.instructions);
+                bytes = await signWithFreshKeys(
+                    buildDepositTransaction({
+                        payer: wallet.address,
+                        blockhash: recent.data,
+                        instructions,
+                        lookupTables: tx.lookupTables,
+                    }),
+                    keyPairs,
+                );
+            } catch (error) {
+                console.warn("Couldn't build the Solana deposit transaction", error);
+                return {
+                    failed: `Couldn't build the Solana transaction: "${oneLine((error as Error | null)?.message)}". Nothing was sent.`,
+                };
+            }
             const signature = await wallet.signer.signAndSend(bytes);
-            if (typeof signature !== "string" || signature === "") return "failed";
+            if (typeof signature !== "string" || signature === "") {
+                console.warn("Your Solana wallet answered a send without a signature", signature);
+                return {
+                    failed: "Your Solana wallet answered without a transaction signature. Check its activity before trying again; the deposit may have been sent.",
+                };
+            }
             if (this.#socket !== socket) return "sent";
 
-            const reported = await socket
-                .timeout(CONNECT_TIMEOUT_MS)
-                .emitWithAck("deposit:source", { orderId: order.id, txHashes: [signature] })
-                .catch(() => null);
-            if (reported?.ok) this.#dispatch({ type: "order", order: reported.data });
+            await this.#registerSource(socket, order.id, [signature]);
             this.#dropBalance(coin, wallet.address, amount);
             return "sent";
         } catch (error) {
-            const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
-            const rejected = code === USER_REJECTED || (typeof message === "string" && REJECTED_WORDING.test(message));
-            return rejected ? "cancelled" : "failed";
+            const failure = walletFailure(error, { solana: true });
+            return failure.kind === "cancelled" ? "cancelled" : { failed: failure.message };
         }
     }
 
-    /** Whether a transaction succeeded in a block within 120 s, asking the wallet every second. */
-    async #landed(provider: WalletProvider, hash: Hex) {
+    /** Whether a transaction succeeded in a block within 120 s, asking the wallet every second: it landed, reverted, or never showed. */
+    async #landed(provider: WalletProvider, hash: Hex): Promise<"landed" | "reverted" | "timeout"> {
         const deadline = Date.now() + RECEIPT_TIMEOUT_MS;
         while (Date.now() < deadline) {
             const receipt = (await provider.request({ method: "eth_getTransactionReceipt", params: [hash] })) as {
                 status?: string;
             } | null;
-            if (receipt) return receipt.status !== "0x0";
+            if (receipt) return receipt.status === "0x0" ? "reverted" : "landed";
             await pause(RECEIPT_POLL_MS);
         }
-        return false;
+        return "timeout";
     }
 
     /** Has the server credit a sent deposit, taking it back out only if the server says it can't be, and reporting it again after any other answer */
@@ -969,6 +1078,7 @@ export class AccountClient {
         const key = txHash.toLowerCase();
         if (this.#confirming.has(key)) return;
         this.#confirming.add(key);
+        let notFound = 0;
         try {
             for (let attempt = 0; ; attempt++) {
                 // An unbound socket would be told to open the account first, and a deposit isn't taken back for that
@@ -979,10 +1089,17 @@ export class AccountClient {
                     .catch(() => null);
                 if (this.#socket !== socket) return;
                 if (result === null) {
-                    console.warn(
-                        "The server didn't answer a deposit report in 45 seconds; it is reported again on reconnect.",
-                    );
-                    return;
+                    // No answer isn't a no: say it's taking long and ask again
+                    this.#notify({
+                        kind: "confirming",
+                        amount: value,
+                        message: isOffline()
+                            ? "You're offline; still waiting to confirm this deposit."
+                            : `The server hasn't confirmed this deposit yet (${shortHash(txHash)}); still checking.`,
+                    });
+                    await pause(Math.min(MAX_RETRY_MS, 1_000 * 2 ** attempt));
+                    if (this.#socket !== socket) return;
+                    continue;
                 }
                 if (result.ok) {
                     this.#dispatch({ type: "settled", receipt: result.data });
@@ -997,6 +1114,13 @@ export class AccountClient {
                 ) {
                     this.#notify({ kind: "credited", amount: value }, CREDITED_NOTICE_MS);
                     return;
+                }
+                // A transaction the server can't see yet may still land, and is credited when it does: it stays counted, and is asked about again
+                if (result.error.code === "tx_not_found" && notFound++ < NOT_FOUND_RETRIES) {
+                    this.#notify({ kind: "confirming", amount: value, message: result.error.message });
+                    await pause(Math.min(MAX_RETRY_MS, 1_000 * 2 ** attempt));
+                    if (this.#socket !== socket) return;
+                    continue;
                 }
                 if (!REPORT_RETRYABLE.has(result.error.code)) {
                     this.#dispatch({ type: "reverted", txHash });

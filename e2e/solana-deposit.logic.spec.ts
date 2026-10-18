@@ -10,7 +10,7 @@ import {
     type Instruction,
 } from "@solana/kit";
 import { Server } from "socket.io";
-import { AccountClient, NEEDS_SOL, type SolanaSigner } from "@/components/account-client";
+import { AccountClient, type SolanaSigner } from "@/components/account-client";
 import { isDepositOpen } from "@/lib/account/balances";
 import { buildDepositTransaction, signWithFreshKeys, withFreshSigners } from "@/lib/account/solana-tx";
 import type { BalancesView, CoinBalance, SolanaInstruction } from "@/server/src/protocol";
@@ -251,7 +251,7 @@ test.describe("solanaDeposit", () => {
         }
     });
 
-    test("a wallet with 0 SOL gets 'You need a little SOL to send from Solana.' and no order is opened", async () => {
+    test("a wallet with 0 SOL is told what the fee is and what it has, and no order is opened", async () => {
         const stack = await fakeServer([SOL_ROW("0")]);
         try {
             let prompted = false;
@@ -263,8 +263,10 @@ test.describe("solanaDeposit", () => {
                     return "sig";
                 }, BigInt(0)),
             );
-            expect(result).toBe("needs_sol");
-            expect(NEEDS_SOL).toBe("You need a little SOL to send from Solana.");
+            expect(result).toEqual({
+                refused:
+                    "You need about 0.00001 SOL to send this from Solana (the network fee); your wallet has 0 SOL.",
+            });
             expect(prompted).toBe(false);
             expect(stack.events.some((e) => e.name === "deposit:order")).toBe(false);
         } finally {
@@ -281,7 +283,10 @@ test.describe("solanaDeposit", () => {
                 return "sig";
             };
             const result = await stack.client.solanaDeposit("solana:USDC", "5", wallet(send, BigInt(4_102_479)));
-            expect(result).toBe("needs_sol");
+            expect(result).toEqual({
+                refused:
+                    "You need about 0.00410248 SOL to send this from Solana (the network fee plus rent for the transfer); your wallet has 0.004102479 SOL.",
+            });
             expect(prompted).toBe(false);
             expect(stack.events.some((e) => e.name === "deposit:order")).toBe(false);
 

@@ -32,7 +32,10 @@ export function useUsdcBalance(owner: string | undefined, live: boolean, refresh
             readUsdcBalance(owner).then(
                 (usdc) => settle(() => ({ owner, usdc })),
                 // A failed poll keeps the last balance this owner had.
-                () => settle((last) => (last?.owner === owner && last.usdc !== null ? last : { owner, usdc: null })),
+                (error: unknown) => {
+                    console.warn("Couldn't read the wallet's USDC balance on Arc", error);
+                    settle((last) => (last?.owner === owner && last.usdc !== null ? last : { owner, usdc: null }));
+                },
             );
         };
 

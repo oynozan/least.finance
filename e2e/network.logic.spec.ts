@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { chainIdOf, ensureNetwork, networkName, type SwitchableWallet } from "@/lib/wallet/network";
+import { chainIdOf, ensureNetwork, networkName, networkProblem, type SwitchableWallet } from "@/lib/wallet/network";
 
 test("chainIdOf reads the chain out of an EIP-155 CAIP-2 ID", () => {
     expect(chainIdOf("eip155:1")).toBe(1);
@@ -53,14 +53,39 @@ test("a switch the user turns down is declined", async () => {
     expect(await ensureNetwork(wallet, 5042)).toBe("declined");
 });
 
-test("any other failed switch is switch_failed", async () => {
-    const { wallet } = fakeWallet("eip155:1", "0x1", new Error("nope"));
-    expect(await ensureNetwork(wallet, 5042)).toBe("switch_failed");
+test("any other failed switch is switch_failed, with the wallet's code and words", async () => {
+    const { wallet } = fakeWallet("eip155:1", "0x1", Object.assign(new Error("nope"), { code: 4902 }));
+    expect(await ensureNetwork(wallet, 5042)).toEqual({ kind: "switch_failed", code: 4902, message: "nope" });
 });
 
-test("a switch that leaves the wallet where it was is wrong_network", async () => {
+test("a switch that leaves the wallet where it was is wrong_network, and says where it is", async () => {
     const { wallet } = fakeWallet("eip155:1", "0x1");
-    expect(await ensureNetwork(wallet, 5042)).toBe("wrong_network");
+    expect(await ensureNetwork(wallet, 5042)).toEqual({ kind: "wrong_network", actual: 1 });
+});
+
+test("each way a switch fails has its own sentence", () => {
+    const failed = (code: number | null, message = "") => ({ kind: "switch_failed" as const, code, message });
+    expect(networkProblem(failed(4902), 5042)).toBe(
+        "Your wallet doesn't know Arc yet. Add Arc (chain ID 5042) in its network settings, or connect another wallet.",
+    );
+    expect(networkProblem(failed(4902), 56)).toBe(
+        "Your wallet doesn't know BNB Chain yet. Add it in the wallet's network settings and try again.",
+    );
+    expect(networkProblem(failed(-32002), 5042)).toBe(
+        "Your wallet already has a request open. Answer it first, then try again.",
+    );
+    expect(networkProblem(failed(-32603, "Internal error."), 56)).toBe(
+        `Your wallet couldn't switch to BNB Chain: "Internal error". Switch it there yourself and try again.`,
+    );
+    expect(networkProblem(failed(null), 56)).toBe(
+        "Your wallet couldn't switch to BNB Chain. Switch it there yourself and try again.",
+    );
+    expect(networkProblem({ kind: "wrong_network", actual: 1 }, 5042)).toBe(
+        "Your wallet is on Ethereum, not Arc. Switch to Arc in the wallet and try again.",
+    );
+    expect(networkProblem({ kind: "wrong_network", actual: undefined }, 56)).toBe(
+        "Your wallet didn't say which network it is on. Switch it to BNB Chain and try again.",
+    );
 });
 
 test("the provider's chain counts, not a wallet.chainId that hasn't caught up", async () => {

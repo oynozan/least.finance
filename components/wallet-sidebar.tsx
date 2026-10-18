@@ -715,7 +715,7 @@ function NoticeText({ notice }: { notice: DepositNotice }) {
             return (
                 <>
                     <span className={styles.pendingDot} aria-hidden="true" />
-                    Depositing {formatUsd(toUsdc(notice.amount))}…
+                    Depositing {formatUsd(toUsdc(notice.amount))}…{notice.message ? ` ${notice.message}` : ""}
                 </>
             );
         case "credited":

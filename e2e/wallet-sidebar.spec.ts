@@ -259,7 +259,10 @@ test("a hanging Arc RPC gives up within one poll and shows no wallet balance", a
     await openDepositForm(page);
 
     await expect(walletLine(page)).toHaveText("Checking your wallet…");
-    await expect(hint(page)).toHaveText("Couldn't read your wallet's balance.", { timeout: 15_000 });
+    await expect(hint(page)).toHaveText(
+        "Couldn't read your Arc balance (Arc's network didn't answer). You can still type an amount.",
+        { timeout: 15_000 },
+    );
     await expect(sidebar(page).getByRole("button", { name: "Max" })).toHaveCount(0);
 });
 
@@ -268,7 +271,10 @@ test("an unreachable Arc RPC shows no wallet balance rather than zero", async ({
     await openWallet(page);
     await openDepositForm(page);
 
-    await expect(hint(page)).toHaveText("Couldn't read your wallet's balance.", { timeout: 10_000 });
+    await expect(hint(page)).toHaveText(
+        "Couldn't read your Arc balance (Arc's network didn't answer). You can still type an amount.",
+        { timeout: 10_000 },
+    );
     await expect(hint(page)).not.toContainText("$");
     // The account's own balance is unaffected.
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits");

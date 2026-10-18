@@ -28,7 +28,8 @@ import {
 import type { CoinWithdrawRequest, TradeOrderRequest } from "@/server/src/trading/types";
 import { sameWallet } from "@/lib/account/balances";
 import { API_URL } from "@/lib/api";
-import { ensureNetwork } from "@/lib/wallet/network";
+import { ensureNetwork, networkProblem } from "@/lib/wallet/network";
+import { oneLine, shortHash, walletFailure } from "@/lib/wallet/failure";
 import type {
     ActivityFilter,
     ActivityPage,
@@ -148,22 +149,6 @@ const UNAVAILABLE_WITHDRAW: ApiError = { code: "unavailable", message: "Withdraw
 
 const UNAVAILABLE_PNL: ApiError = { code: "unavailable", message: "Sign in to see your history." };
 
-/** A wallet's own refusal as the person is told it; turning the request down is not a failure. */
-function walletRefusal(error: unknown): "cancelled" | { refused: string } {
-    console.warn("A wallet refused a deposit", error);
-    const { code, shortMessage, message } = (error ?? {}) as {
-        code?: unknown;
-        shortMessage?: unknown;
-        message?: unknown;
-    };
-    if (code === 4001) return "cancelled";
-    if (code === -32002) return { refused: "Your wallet already has a request open. Answer it first." };
-    const said = [shortMessage, message].find((text): text is string => typeof text === "string" && text !== "");
-    if (!said) return { refused: "Your wallet couldn't send the deposit and gave no reason. Try again." };
-    const line = said.split("\n")[0]!.replace(/\s+/g, " ").trim().replaceAll('"', "'").slice(0, 120);
-    return { refused: `Your wallet refused the deposit: "${line}".` };
-}
-
 const AccountContext = createContext<Account | null>(null);
 
 export function useAccount() {
@@ -176,6 +161,19 @@ export function useAccount() {
 export function AccountProvider({ children }: { children: ReactNode }) {
     if (!walletEnabled) return <Provide snapshot={IDLE}>{children}</Provide>;
     return <PrivyAccountProvider>{children}</PrivyAccountProvider>;
+}
+
+/** A wallet that is linked to the account but isn't connected in this browser, so it can't sign here. */
+const notConnected = (address: string) => ({
+    failed: `Connect ${shortHash(address)} in your wallet app to deposit from it.`,
+});
+
+/** What an error from opening a wallet or its provider comes to: turned down, or the wallet's own words. */
+function openingWalletFailed(error: unknown): DepositResult {
+    const failure = walletFailure(error, { what: "deposit" });
+    if (failure.kind === "cancelled") return "cancelled";
+    const words = oneLine((error as { message?: unknown } | null)?.message);
+    return { failed: words ? `Couldn't open your wallet: "${words}".` : failure.message };
 }
 
 function PrivyAccountProvider({ children }: { children: ReactNode }) {
@@ -218,22 +216,22 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
 
     const deposit = async (amount: string, from: string): Promise<DepositResult> => {
         const wallet = wallets.find((w) => w.address.toLowerCase() === from.toLowerCase());
-        if (!wallet) return "failed";
+        if (!wallet) return notConnected(from);
         try {
             const network = await ensureNetwork(wallet, arc.id);
             if (network === "declined") return "cancelled";
-            if (network !== "ready") return network;
+            if (network !== "ready") return { failed: networkProblem(network, arc.id) };
             const provider = await wallet.getEthereumProvider();
             return await client.deposit(amount, { provider, from: wallet.address });
         } catch (error) {
-            return walletRefusal(error);
+            return openingWalletFailed(error);
         }
     };
 
     // Both act for the wallet of the row picked, not the active one.
     const depositCoin = async (coin: string, amount: string, from: string): Promise<DepositResult> => {
         if (coin.startsWith("solana:")) {
-            if (solanaSigner?.address !== from) return "failed";
+            if (solanaSigner?.address !== from) return notConnected(from);
             const sol = snapshot.balances?.rows.find((r) => r.coin === "solana:SOL" && r.wallet === from)?.amount;
             try {
                 return await client.solanaDeposit(coin, amount, {
@@ -242,11 +240,11 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
                     solBalance: sol == null ? null : parseUnits(sol, 9),
                 });
             } catch (error) {
-                return walletRefusal(error);
+                return openingWalletFailed(error);
             }
         }
         const wallet = wallets.find((w) => w.address.toLowerCase() === from.toLowerCase());
-        if (!wallet) return { refused: "That wallet isn't connected any more. Connect it again and try once more." };
+        if (!wallet) return notConnected(from);
         try {
             const provider = await wallet.getEthereumProvider();
             return await client.bridgeDeposit(coin, amount, {
@@ -255,7 +253,7 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
                 ensure: (id) => ensureNetwork(wallet, id),
             });
         } catch (error) {
-            return walletRefusal(error);
+            return openingWalletFailed(error);
         }
     };
 
@@ -291,8 +289,8 @@ function PrivyAccountProvider({ children }: { children: ReactNode }) {
 
 function Provide({
     snapshot,
-    deposit = async () => "failed",
-    depositCoin = async () => "failed",
+    deposit = async () => ({ failed: "Wallets aren't ready yet. Try again in a moment." }),
+    depositCoin = async () => ({ failed: "Wallets aren't ready yet. Try again in a moment." }),
     canDepositFrom = () => false,
     dismissNotice = () => undefined,
     refreshBalances = () => undefined,
