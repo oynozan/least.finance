@@ -351,7 +351,8 @@ export class OrderTracker {
         );
         if (!moved) return;
         const problem = state === "failed" || state === "refunded" || state === "expired";
-        this.#deps.logger[problem ? "warn" : "info"](
+        // Money burned on one side and never delivered on the other is ours to chase
+        this.#deps.logger[failure?.code === "bridge_failed" ? "error" : problem ? "warn" : "info"](
             {
                 op: "deposit.order.moved",
                 orderId: order._id.toHexString(),

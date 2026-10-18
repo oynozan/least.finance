@@ -109,7 +109,6 @@ export function createCctp(options: {
     logger?: Logger;
 }): BridgeProvider {
     const { iris, rpc, arcDomain, solanaDomain, logger } = options;
-    const reported = new Set<string>();
     const delayed = new Set<string>();
     // The burn's message account is the same size every time, so its rent is asked of the network once.
     const messageRent = (bytes: number) => {
@@ -182,20 +181,9 @@ export function createCctp(options: {
                 return { stage: "filled", fillTxHash: message.forwardTxHash as Hex };
             }
             if (message?.status === "failed") {
-                const detail = `${FORWARD_FAILED}: ${brief(JSON.stringify(message.raw), 300)}`;
-                if (!reported.has(signature)) {
-                    reported.add(signature);
-                    logger?.error(
-                        {
-                            op: "cctp.forward_failed",
-                            signature,
-                            delayReason: message.delayReason,
-                            feeExecutedE6: message.feeExecutedE6 === null ? null : String(message.feeExecutedE6),
-                            raw: message.raw,
-                        },
-                        "A CCTP deposit burned on Solana but never minted on Arc",
-                    );
-                }
+                // The tracker logs the order moving to failed, with this detail, so the log has the order and the account
+                const held = message.delayReason ? ` (Circle's delay reason: ${message.delayReason})` : "";
+                const detail = `${FORWARD_FAILED}: ${brief(JSON.stringify(message.raw), 300)}${held}`;
                 return { stage: "failed", detail };
             }
             if (message?.delayReason) {

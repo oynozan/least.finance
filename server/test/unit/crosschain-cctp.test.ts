@@ -153,7 +153,7 @@ test("a fee service that doesn't answer is Circle's, and the person is told to t
     }
 });
 
-test("a burned message that never mints fails the order with Circle's raw message, and is logged once at error", async () => {
+test("a burned message that never mints fails the order with Circle's raw message and its delay reason, and logs nothing itself", async () => {
     const provider = cctp();
     const failed = base58.encode(new Uint8Array(64).fill(9));
     fake.setForwardFailed(failed);
@@ -161,11 +161,8 @@ test("a burned message that never mints fails the order with Circle's raw messag
     const status = await provider.status({ ref: "cctp-y" }, failed, USDC);
     expect(status).toMatchObject({ stage: "failed", detail: expect.stringMatching(/^forward failed: .*FAILED/) });
     expect(await provider.status({ ref: "cctp-y" }, failed, USDC)).toMatchObject({ stage: "failed" });
-    expect(logger.error).toHaveBeenCalledTimes(1);
-    expect(logger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ op: "cctp.forward_failed", signature: failed, raw: expect.anything() }),
-        expect.stringContaining("never minted"),
-    );
+    // The tracker logs the order's move to failed with its ids and this detail, so a second line would only repeat it
+    expect(logger.error).not.toHaveBeenCalled();
 });
 
 test("a message Circle holds back stays pending with Circle's reason in plain words, and is logged once", async () => {

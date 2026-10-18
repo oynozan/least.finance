@@ -726,6 +726,36 @@ test("an order whose status can't be read is logged with what it is and why, the
     }
 });
 
+test("a bridge that burned and never delivered is logged once as an error with the order, account and what the bridge said", async () => {
+    const { slow, tracker, lines } = await loggedTracker();
+    try {
+        const user = await slow.user();
+        const placed = await place(user, slow, "ethereum:ETH", "0.1");
+        await placed.report([HASH]);
+        await slow.server.services.database.collections.depositOrders.updateOne(
+            { _id: new ObjectId(placed.order.id) },
+            { $set: { state: "bridging" } },
+        );
+        const said = 'forward failed: {"status":"failed"}';
+        vi.spyOn(slow.bridge, "status").mockResolvedValue({ stage: "failed", detail: said });
+        await tracker.tick();
+        const moved = lines.filter((line) => line.fields.op === "deposit.order.moved");
+        expect(moved).toHaveLength(1);
+        expect(moved[0]).toMatchObject({
+            level: "error",
+            fields: {
+                orderId: placed.order.id,
+                accountId: placed.accountId.toHexString(),
+                to: "failed",
+                reason: "bridge_failed",
+                detail: said,
+            },
+        });
+    } finally {
+        await slow.stop();
+    }
+});
+
 test("an order on a bridge that isn't configured is logged once as an error, with the bridges that are", async () => {
     const { slow, tracker, lines, at } = await loggedTracker({ providers: "none" });
     try {
