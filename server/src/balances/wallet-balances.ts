@@ -1,6 +1,7 @@
 import type { ObjectId } from "mongodb";
 import type { Logger } from "pino";
 import type { Address } from "viem";
+import { AppError } from "../errors.ts";
 import type { Identity, IdentityProvider } from "../auth/identity.ts";
 import type { AccountDoc } from "../db/mongo.ts";
 import type { Bus } from "../events.ts";
@@ -91,11 +92,18 @@ export class WalletBalances {
                 linked = await this.#deps.identity.linkedWallets(identity, { fresh: true });
             } catch (error) {
                 // Privy can't answer: use the last list read.
-                this.#deps.logger.warn(
-                    { err: error, accountId: account._id.toHexString() },
-                    "Couldn't check linked wallets afresh",
-                );
-                linked = state?.linked ?? (await this.#deps.identity.linkedWallets(identity));
+                const who = { accountId: account._id.toHexString(), privyUserId: account.privyUserId };
+                this.#deps.logger.warn({ ...who, err: error }, "Couldn't check linked wallets afresh");
+                try {
+                    linked = state?.linked ?? (await this.#deps.identity.linkedWallets(identity));
+                } catch (again) {
+                    this.#deps.logger.warn({ ...who, err: again }, "Couldn't read the linked wallets from Privy");
+                    throw new AppError(
+                        "unavailable",
+                        "Privy didn't answer, so your wallets couldn't be listed. Try again in a moment.",
+                        { cause: again, logged: true },
+                    );
+                }
             }
         } else {
             linked = due ? await this.#deps.identity.linkedWallets(identity) : state!.linked;
@@ -119,7 +127,13 @@ export class WalletBalances {
                     );
                 } catch (error) {
                     this.#deps.logger.warn(
-                        { err: error, accountId: account._id.toHexString(), wallet: address, evm },
+                        {
+                            err: error,
+                            accountId: account._id.toHexString(),
+                            privyUserId: account.privyUserId,
+                            wallet: address,
+                            evm,
+                        },
                         "Couldn't read a wallet's balances",
                     );
                 }
