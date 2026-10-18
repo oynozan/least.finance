@@ -6,7 +6,7 @@ import type { ArcClient } from "../chain/arc.ts";
 import { transfersInReceipt } from "../chain/native-transfers.ts";
 import type { AccountDoc, Collections } from "../db/mongo.ts";
 import { formatUsdc } from "../db/money.ts";
-import { AppError, shortOf } from "../errors.ts";
+import { AppError, newRef, shortOf } from "../errors.ts";
 import type { DepositPage, DepositReceipt, Hex } from "../protocol.ts";
 import type { Ledger } from "./ledger.ts";
 import { accountView, depositView } from "./views.ts";
@@ -166,11 +166,16 @@ export class DepositService {
         const current = await this.#deps.collections.accounts.findOne({ _id: account._id });
         if (!current) {
             // Credited, but the account can't be read back: say so, so the person isn't told it failed with no way to match it
+            const ref = newRef();
             logger.error(
-                { op: "deposit.report", accountId, txHash, outcome: "account_vanished", credited: credits.length },
+                { op: "deposit.report", accountId, txHash, ref, outcome: "account_vanished", credited: credits.length },
                 "A reported deposit was credited but its account can't be read",
             );
-            throw new Error(`Account ${accountId} vanished`);
+            throw new AppError(
+                "internal",
+                `Your deposit ${shortOf(txHash)} was credited, but your account couldn't be read back. Reload to see it, and quote ref ${ref} if it's missing.`,
+                { logged: true },
+            );
         }
         return {
             txHash: txHash as Hex,

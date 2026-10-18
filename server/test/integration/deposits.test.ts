@@ -500,8 +500,9 @@ test("a transfer the scan can't credit is logged with who, what and where, then 
             to: user.depositAddress.toLowerCase(),
             msg: "Couldn't credit a deposit the scan found",
         });
-        const scan = logged("deposit.scan").find((line) => line.phase === "credit")!;
-        expect(scan).toMatchObject({ crediting: { txHash: hash }, msg: "Deposit scan failed crediting a transfer" });
+        // One line for the failure, the credit one, with the transfer; the scan keeps the status but doesn't log it again
+        expect(stack.server.services.watcher.status().lastErrorKind).not.toBeNull();
+        expect(logged("deposit.scan").filter((line) => line.phase === "credit")).toHaveLength(0);
         await waitForBalance(user, "2");
         await expect.poll(() => stack.server.services.watcher.status().lastErrorKind, { timeout: 5_000 }).toBeNull();
     } finally {

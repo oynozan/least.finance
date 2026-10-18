@@ -89,6 +89,8 @@ export class DepositWatcher {
     #phase: Phase = "head";
     /** The block range being scanned. */
     #range: { from: number; to: number } | null = null;
+    /** Failures logged where they happened, which the scan loop doesn't log again. */
+    readonly #alreadyLogged = new WeakSet<object>();
     /** The transfer being credited, when a credit is what failed. */
     #crediting: { txHash: string; logIndex: number } | null = null;
     #failures = 0;
@@ -149,23 +151,25 @@ export class DepositWatcher {
                 this.#failures += 1;
                 backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : this.#deps.pollMs);
                 wait = backoff;
-                this.#deps.logger[this.#failures >= ESCALATE_AFTER ? "error" : "warn"](
-                    {
-                        op: "deposit.scan",
-                        phase: this.#phase,
-                        cursor: this.#cursor,
-                        head: this.#head,
-                        range: this.#range,
-                        addresses: this.#deps.registry.size,
-                        crediting: this.#crediting,
-                        rpc: this.#provider,
-                        rpcHost: this.#host(this.#provider),
-                        consecutiveFailures: this.#failures,
-                        retryInMs: wait,
-                        err: error,
-                    },
-                    `Deposit scan failed ${PHASE_TEXT[this.#phase]}`,
-                );
+                const logged = typeof error === "object" && error !== null && this.#alreadyLogged.has(error);
+                if (!logged)
+                    this.#deps.logger[this.#failures >= ESCALATE_AFTER ? "error" : "warn"](
+                        {
+                            op: "deposit.scan",
+                            phase: this.#phase,
+                            cursor: this.#cursor,
+                            head: this.#head,
+                            range: this.#range,
+                            addresses: this.#deps.registry.size,
+                            crediting: this.#crediting,
+                            rpc: this.#provider,
+                            rpcHost: this.#host(this.#provider),
+                            consecutiveFailures: this.#failures,
+                            retryInMs: wait,
+                            err: error,
+                        },
+                        `Deposit scan failed ${PHASE_TEXT[this.#phase]}`,
+                    );
                 this.#useProvider((this.#provider + 1) % this.#deps.clients.length, "failed");
             }
             if (wait > 0) await sleep(wait, undefined, { signal }).catch(() => undefined);
@@ -262,6 +266,8 @@ export class DepositWatcher {
                         },
                         "Couldn't credit a deposit the scan found",
                     );
+                    // Logged with the transfer, so the scan's own line for this pass would repeat it
+                    if (typeof error === "object" && error !== null) this.#alreadyLogged.add(error);
                     throw error;
                 }
                 this.#phase = "logs";
