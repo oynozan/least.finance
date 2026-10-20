@@ -48,7 +48,13 @@ export const priceMoved = (order: Order, msg: string, detail: string, fields?: R
     fields,
 });
 
-type Known = { test: RegExp; level: "warn" | "error"; say: (side: Side, said: string) => string };
+type Known = {
+    test: RegExp;
+    level: "warn" | "error";
+    say: (side: Side, said: string) => string;
+    /** The log line when it says more than that Polymarket refused, such as how to fix it. */
+    log?: string;
+};
 
 /** The exchange's refusals we know, by the words of the CLOB's messages and codes; the first match wins. */
 const KNOWN: Known[] = [
@@ -87,6 +93,14 @@ const KNOWN: Known[] = [
             `Polymarket refused the price we sent for this market's price steps. That's on our side. ${kept(side)}`,
     },
     {
+        // The CLOB says both "balance / allowance" every time; this part names which one ran out
+        test: /the allowance is not enough/i,
+        level: "error",
+        say: (side) =>
+            `Our Polymarket account isn't set up to trade this kind of market yet. That's on our side, not yours. ${kept(side)}`,
+        log: "Polymarket refused a prediction: the pool wallet hasn't approved the spender Polymarket named. Run scripts/polymarket-setup.ts",
+    },
+    {
         test: /not enough balance|allowance|insufficient_balance/i,
         level: "error",
         say: (side) =>
@@ -119,7 +133,7 @@ export function polymarketRefused(
     const known = KNOWN.find(({ test }) => test.test(`${refusal.code ?? ""} ${refusal.message}`));
     return {
         reason: refusal.reason,
-        msg: "Polymarket refused a prediction",
+        msg: known?.log ?? "Polymarket refused a prediction",
         level: known?.level ?? "error",
         detail: refusal.message,
         message:

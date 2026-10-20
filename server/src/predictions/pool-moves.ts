@@ -2,13 +2,17 @@ import { decodeEventLog, encodeFunctionData, parseAbi, parseAbiItem, type Addres
 import { ARC_DOMAIN } from "../crosschain/iris.ts";
 import { encodeApprove, encodeBurnToEvm } from "../withdrawals/cctp-burn.ts";
 
-/** The Polygon contracts the pool's batches call; the one place their addresses are written. */
+/** The Polygon contracts the pool's batches and setup call; the one place their addresses are written. */
 export const POLYGON = {
     usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
     pusd: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
     onramp: "0x93070a847efEf7F70739046A929D47a521F5B8ee",
     offramp: "0x2957922Eb93258b93368531d39fAcCA3B4dC5854",
     tokenMessenger: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    /** Polymarket's position tokens (ERC-1155). */
+    conditionalTokens: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",
+    /** Polymarket's adapter for multi-outcome markets, which the CLOB checks approvals to before their orders. */
+    negRiskAdapter: "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
 } as const;
 
 export type Call = { to: Address; data: Hex };

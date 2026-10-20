@@ -38,6 +38,12 @@ test.each([
         "Our Polymarket balance can't cover this order right now. That's on our side, not yours. Nothing was spent.",
     ],
     [
+        "not enough balance / allowance: the allowance is not enough -> spender: 0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296, allowance: 0, sum of matched orders: 0, order amount (inc. fees): 3686680",
+        undefined,
+        "error",
+        "Our Polymarket account isn't set up to trade this kind of market yet. That's on our side, not yours. Nothing was spent.",
+    ],
+    [
         "Trading restricted in your region",
         undefined,
         "error",
@@ -67,6 +73,19 @@ test.each([
     expect(why.message).toBe(sentence);
     expect(why.detail).toBe(message);
     expect(why.fields).toMatchObject({ polymarketMessage: message, polymarketCode: code ?? null });
+});
+
+test("a missing approval's log line names the setup script that grants it, other refusals keep the plain line", () => {
+    const why = polymarketRefused(
+        buy,
+        refusal("not enough balance / allowance: the allowance is not enough -> spender: 0x1"),
+    );
+    expect(why.msg).toBe(
+        "Polymarket refused a prediction: the pool wallet hasn't approved the spender Polymarket named. Run scripts/polymarket-setup.ts",
+    );
+    expect(polymarketRefused(buy, refusal("not enough balance / allowance")).msg).toBe(
+        "Polymarket refused a prediction",
+    );
 });
 
 test("an unknown refusal quotes Polymarket's words on one line", () => {

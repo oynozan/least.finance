@@ -1,13 +1,17 @@
 /**
  * One-time setup of the pool's Polymarket deposit wallet: deploys it, approves Polymarket's contracts to
- * trade with it, and syncs the CLOB's view of its pUSD. It's safe to run again, and prints no secrets.
+ * trade with it (the neg-risk adapter too, which the SDK leaves out), and syncs the CLOB's view of its pUSD.
+ * It's safe to run again: it sends only the approvals still missing, and prints no secrets.
  *
  * Run it from server/ with `node --env-file=.env scripts/polymarket-setup.ts`, then fund the printed wallet with pUSD.
  */
 import { AssetType } from "@polymarket/client";
 import { updateBalanceAllowance } from "@polymarket/client/actions";
+import { createPublicClient, erc1155Abi, erc20Abi, http, maxUint256, type Address } from "viem";
+import { polygon } from "viem/chains";
 import { loadConfig } from "../src/config.ts";
 import { createPolymarketClient } from "../src/predictions/polymarket-trader.ts";
+import { POLYGON } from "../src/predictions/pool-moves.ts";
 
 const config = loadConfig();
 const missing = (
@@ -27,6 +31,40 @@ const client = await createPolymarketClient(config);
 // The pool key's own deposit wallet, which the SDK derives when no wallet is pinned
 const derived = (await createPolymarketClient(config, undefined, { ignorePinnedWallet: true })).account.wallet;
 await client.setupTradingApprovals();
+
+// The SDK's approvals leave out the neg-risk adapter, but the CLOB checks the pool's pUSD allowance to it before a
+// neg-risk buy and its position approval before a neg-risk sell, so every multi-outcome market refuses orders without them
+const { pusd: collateralToken, conditionalTokens, negRiskAdapter } = POLYGON;
+const wallet = client.account.wallet as Address;
+const chain = createPublicClient({ chain: polygon, transport: http(config.POLYGON_RPC_URL) });
+const [allowance, operator] = await Promise.all([
+    chain.readContract({
+        address: collateralToken,
+        abi: erc20Abi,
+        functionName: "allowance",
+        args: [wallet, negRiskAdapter],
+    }),
+    chain.readContract({
+        address: conditionalTokens,
+        abi: erc1155Abi,
+        functionName: "isApprovedForAll",
+        args: [wallet, negRiskAdapter],
+    }),
+]);
+if (allowance < maxUint256) {
+    await (
+        await client.approveErc20({ amount: "max", spenderAddress: negRiskAdapter, tokenAddress: collateralToken })
+    ).wait();
+    console.log("Approved the neg-risk adapter to spend the pool's pUSD.");
+}
+if (!operator) {
+    await (
+        await client.approveErc1155ForAll({ operatorAddress: negRiskAdapter, tokenAddress: conditionalTokens })
+    ).wait();
+    console.log("Approved the neg-risk adapter to move the pool's positions.");
+}
+
+// Refreshes the CLOB's cached balance and allowances, so it sees the approvals above
 const { balance } = await updateBalanceAllowance(client, { assetType: AssetType.COLLATERAL });
 
 const pusd = BigInt(balance);

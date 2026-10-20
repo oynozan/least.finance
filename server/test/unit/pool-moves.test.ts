@@ -41,6 +41,8 @@ test("POLYGON holds the addresses the spec names", () => {
         onramp: "0x93070a847efEf7F70739046A929D47a521F5B8ee",
         offramp: "0x2957922Eb93258b93368531d39fAcCA3B4dC5854",
         tokenMessenger: "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+        conditionalTokens: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",
+        negRiskAdapter: "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
     });
 });
 
@@ -177,4 +179,13 @@ test("decodeBurnLog answers null for a log that doesn't decode", () => {
     const good = burnLog({ depositor: WALLET, amountE6: AMOUNT });
     expect(decodeBurnLog({ topics: good.topics, data: "0x1234" })).toBeNull();
     expect(decodeBurnLog({ topics: good.topics.slice(0, 2), data: good.data })).toBeNull();
+});
+
+test("the Polymarket contracts written here are the ones the SDK trades with", async () => {
+    // The SDK's types hide its contract table, but production carries it at runtime
+    const { production } = await import("@polymarket/client");
+    const contracts = (production as unknown as { contracts: Record<string, string> }).contracts;
+    expect(POLYGON.pusd).toBe(contracts.collateralToken);
+    expect(POLYGON.conditionalTokens).toBe(contracts.conditionalTokens);
+    expect(POLYGON.negRiskAdapter).toBe(contracts.negRiskAdapter);
 });
