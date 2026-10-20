@@ -15,7 +15,12 @@ export const pillVariants: Variants = {
 };
 
 export const iconVariants: Variants = {
-    rest: { scale: 1, rotate: 0 },
-    hover: { scale: 1.12, rotate: -10 },
-    tap: { scale: 0.88, rotate: 4 },
+    rest: { scale: 1, rotate: 0, x: "0em" },
+    hover: { scale: 1.12, rotate: -10, x: "0em" },
+    tap: { scale: 0.88, rotate: 4, x: "0em" },
+    // A ringed pill's icon tucks into the circle of the pill's rounded end, clear of the ring: 1.29em across with
+    // its sticker and centred 0.705em in, it otherwise hangs a little over the pill's 1.22em height, onto the ring.
+    restTucked: { scale: 0.87, rotate: 0, x: "-0.095em" },
+    hoverTucked: { scale: 0.92, rotate: -10, x: "-0.095em" },
+    tapTucked: { scale: 0.77, rotate: 4, x: "-0.095em" },
 };

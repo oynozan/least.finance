@@ -125,6 +125,39 @@ test("an outcome over the pool's limit is named on the dock, and the dock opens 
     await expect(body(outcomePill(page))).not.toHaveCSS("box-shadow", LOSS);
 });
 
+test("a ringed pill's icon sits inside the ring, at rest and hovered", async ({ page, isMobile }) => {
+    await limitTo(page, 0);
+    await page.goto("/");
+    await connect(page);
+    await chooseVerb(page, /^Predict/);
+    await expect(body(verbPill(page))).toHaveCSS("box-shadow", LOSS);
+
+    // How far the icon's circle, white sticker ring and all, reaches past the circle of the pill's rounded end.
+    const overhang = () =>
+        verbPill(page).evaluate((button) => {
+            const pill = button.firstElementChild!.getBoundingClientRect();
+            const svg = button.querySelector("svg")!;
+            const icon = svg.getBoundingClientRect();
+            const end = { x: pill.left + pill.height / 2, y: pill.top + pill.height / 2, r: pill.height / 2 };
+            // Its size from the scales it is drawn at, since a hovered icon is turned and its box is wider than it.
+            let scale = 1;
+            for (let node = svg.parentElement; node && node !== button.parentElement; node = node.parentElement) {
+                const transform = getComputedStyle(node).transform;
+                if (transform !== "none") scale *= Math.hypot(new DOMMatrix(transform).a, new DOMMatrix(transform).b);
+            }
+            // The sticker ring is 0.07em on a 1.15em mark, outside it.
+            const r = (parseFloat(getComputedStyle(svg).width) / 2) * (1 + (2 * 0.07) / 1.15) * scale;
+            const off = Math.hypot(icon.left + icon.width / 2 - end.x, icon.top + icon.height / 2 - end.y);
+            return off + r - end.r;
+        });
+    await expect.poll(overhang).toBeLessThan(-0.5);
+    if (!isMobile) {
+        await verbPill(page).hover();
+        await page.waitForTimeout(800);
+        expect(await overhang()).toBeLessThan(0);
+    }
+});
+
 test("a pool that can place nothing reads Predictions paused, on the Predict pill and the dock", async ({ page }) => {
     await limitTo(page, 0);
     await page.goto("/");

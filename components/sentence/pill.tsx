@@ -17,6 +17,8 @@ type PillBodyProps = {
     /** Persistent content after the swapped part (a chevron, a unit). */
     trailing?: ReactNode;
     layoutTransition?: Transition;
+    /** Rings the pill in the loss colour, so a problem reads whatever the tone of its text; the icon tucks inside the ring. */
+    problem?: boolean;
     className?: string;
 };
 
@@ -35,8 +37,10 @@ export function PillBody({
     pose = "rest",
     trailing,
     layoutTransition = layoutSpring,
+    problem,
     className = "",
 }: PillBodyProps) {
+    const tuck = problem ? "Tucked" : "";
     const reduce = useReducedMotion();
     return (
         <motion.span
@@ -45,7 +49,7 @@ export function PillBody({
             transition={{ layout: layoutTransition }}
             // A numeric radius is what Motion's scale correction rewrites per frame.
             style={{ borderRadius: 999 }}
-            className={`flex max-w-full bg-pill transition-colors duration-150 [--badge-ring:var(--pill)] [overflow-x:clip] [overflow-y:visible] ${className}`}
+            className={`flex max-w-full bg-pill transition-colors duration-150 [--badge-ring:var(--pill)] [overflow-x:clip] [overflow-y:visible] ${problem ? "ring-2 ring-loss " : ""}${className}`}
         >
             <motion.span
                 layout="position"
@@ -68,8 +72,8 @@ export function PillBody({
                             <motion.span
                                 className="-my-[0.12em] flex shrink-0 select-none"
                                 variants={iconVariants}
-                                initial="rest"
-                                animate={pose}
+                                initial={`rest${tuck}`}
+                                animate={`${pose}${tuck}`}
                                 transition={wobble}
                             >
                                 {icon}
@@ -99,8 +103,6 @@ type PillButtonProps = Omit<PillBodyProps, "pose" | "className"> & {
     "aria-expanded"?: boolean;
     "aria-controls"?: string;
     "aria-invalid"?: boolean;
-    /** Rings the pill in the loss colour, so a problem reads whatever the tone of its text. */
-    problem?: boolean;
     tone?: "default" | "muted" | "gain" | "loss";
     /** Told when a mouse starts and stops hovering the pill; touch never hovers. */
     onHoverChange?: (hovered: boolean) => void;
@@ -174,7 +176,8 @@ export function PillButton({ ref, onClick, tone = "default", problem, onHoverCha
                 pose={pose}
                 trailing={trailing}
                 layoutTransition={layoutTransition}
-                className={`${problem ? "ring-2 ring-loss " : ""}group-hover:bg-pill-hover group-hover:[--badge-ring:var(--pill-hover)] group-focus-visible:bg-pill-hover group-focus-visible:[--badge-ring:var(--pill-hover)] group-aria-expanded:bg-pill-hover group-aria-expanded:[--badge-ring:var(--pill-hover)]`}
+                problem={problem}
+                className={`group-hover:bg-pill-hover group-hover:[--badge-ring:var(--pill-hover)] group-focus-visible:bg-pill-hover group-focus-visible:[--badge-ring:var(--pill-hover)] group-aria-expanded:bg-pill-hover group-aria-expanded:[--badge-ring:var(--pill-hover)]`}
             >
                 {children}
             </PillBody>
