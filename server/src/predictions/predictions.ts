@@ -255,7 +255,9 @@ export class PredictionService {
 
     #floatFailed(error: unknown) {
         const now = this.#now();
-        this.#floatError = { message: scrubUrls(error instanceof Error ? error.message : String(error)), at: now };
+        // The outage began at the first failed read; later failures only update what it said
+        const message = scrubUrls(error instanceof Error ? error.message : String(error));
+        this.#floatError = { message, at: this.#floatError?.at ?? now };
         // A float that comes back low after a failed read is news again
         this.#floatState = "ok";
         this.#watch();

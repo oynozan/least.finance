@@ -445,3 +445,18 @@ test("a read that fails with a URL in its message logs no key, in the err or in 
         ),
     ).toBe(true);
 });
+
+test("the recovery line counts the outage from its first failed read, not the latest", async () => {
+    const { lines, logger } = capture();
+    const clock = { t: Date.now() };
+    const h = await fresh({ now: () => clock.t, logger });
+    const read = vi.spyOn(h.trader, "balanceE6").mockRejectedValue(new Error("down"));
+    await h.service.refreshFloat().catch(() => undefined);
+    clock.t += 900_000;
+    await h.service.refreshFloat().catch(() => undefined);
+    clock.t += 900_000;
+    read.mockResolvedValue(50_000_000n);
+    await h.service.refreshFloat();
+    const back = lines.find((line) => line.msg === "The pool's Polymarket balance can be read again");
+    expect(back?.downForSec).toBe(1800);
+});
