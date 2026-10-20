@@ -56,7 +56,8 @@ const fields = z.object({
     /** Unset, it listens on every interface, IPv6 included (so `localhost` reaches it on macOS too). */
     HOST: z.string().min(1).optional(),
     PORT: z.coerce.number().int().min(0).max(65_535).default(4500),
-    LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+    /** Unset: "warn" in production, so the log holds problems only, and "info" otherwise. */
+    LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).optional(),
     /** Origins allowed to call the API, comma-separated. */
     CORS_ORIGINS: list(["http://localhost:3000"]),
     /** How many reverse proxies sit in front, so client IPs (and rate limits) come from the right hop. */
@@ -252,7 +253,12 @@ const schema = fields.superRefine((config, context) => {
     }
 });
 
-export type Config = z.output<typeof schema>;
+const withLogLevel = schema.transform((config) => ({
+    ...config,
+    LOG_LEVEL: config.LOG_LEVEL ?? (config.NODE_ENV === "production" ? ("warn" as const) : ("info" as const)),
+}));
+
+export type Config = z.output<typeof withLogLevel>;
 
 /** The environment is wrong; its message says how, and has no values in it, so it is printed as it is. */
 export class ConfigError extends Error {
@@ -274,7 +280,7 @@ function problemLine(issue: z.core.$ZodIssue) {
 
 /** Reads and checks the environment, naming every bad variable at once. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-    const parsed = schema.safeParse(env);
+    const parsed = withLogLevel.safeParse(env);
     if (parsed.success) return parsed.data;
     throw new ConfigError(`Invalid environment:\n${parsed.error.issues.map(problemLine).join("\n")}`);
 }

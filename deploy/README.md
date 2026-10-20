@@ -101,6 +101,8 @@ MONGO_APP_PASSWORD=    # openssl rand -hex 32
 
 `preflight.sh` warns when either Mongo password holds anything but `A-Za-z0-9`.
 
+`LOG_LEVEL` is best left unset: in production it defaults to `warn`, so `docker compose logs server` shows problems only. Set `LOG_LEVEL=info` in the env file to see routine lines too, and remove it again afterwards.
+
 Leave `MONGODB_URI`, `NODE_ENV`, `TRUST_PROXY`, `HOST` and `PORT` out: the compose file sets them (production mode, one proxy, the stack's own database). In production the API refuses to start if `CORS_ORIGINS` is not `https://`, if `TRUST_PROXY` is 0 or if the database URI has no credentials, and it names each problem in its log.
 
 Also add the Privy dashboard's allowed origin `https://least.finance` for the app.

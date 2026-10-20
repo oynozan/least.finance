@@ -31,6 +31,21 @@ describe("loadConfig", () => {
         }
     });
 
+    it("logs warnings and errors only in production, and everything from info in development and test", () => {
+        const production = {
+            NODE_ENV: "production",
+            TRUST_PROXY: "1",
+            CORS_ORIGINS: "https://least.finance",
+            MONGODB_URI: "mongodb://user:pw@mongo:27017",
+        };
+        expect(load(production).LOG_LEVEL).toBe("warn");
+        expect(load().LOG_LEVEL).toBe("info");
+        expect(load({ NODE_ENV: "test" }).LOG_LEVEL).toBe("info");
+        // An explicit level wins in every environment
+        expect(load({ ...production, LOG_LEVEL: "info" }).LOG_LEVEL).toBe("info");
+        expect(load({ LOG_LEVEL: "debug" }).LOG_LEVEL).toBe("debug");
+    });
+
     it("Polymarket URLs and the sync interval have defaults", () => {
         const config = load();
         expect(config.POLYMARKET_GAMMA_URL).toBe("https://gamma-api.polymarket.com");
@@ -80,7 +95,8 @@ describe("loadConfig", () => {
         } catch (error) {
             message = (error as Error).message;
         }
-        for (const name of TRADING_SECRETS) expect(message).toContain(`${name} is required when PREDICTIONS_TRADING=on`);
+        for (const name of TRADING_SECRETS)
+            expect(message).toContain(`${name} is required when PREDICTIONS_TRADING=on`);
         expect(message).not.toContain("POOL_REBALANCE=on");
     });
 

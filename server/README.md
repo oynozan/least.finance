@@ -46,6 +46,8 @@ npm run dev                    # http://localhost:4500, restarting on changes
 
 `npm start` runs it without the watcher. Without Docker, any replica set works: `mongod --replSet rs0 --port 27018 --dbpath <dir>`, then `mongosh --port 27018 --eval "rs.initiate()"` once.
 
+Logging: unset, `LOG_LEVEL` is `warn` in production, so the log holds problems only (each reported when it starts and when it clears, not on every pass), and `info` in development and test. Set `LOG_LEVEL=info` (or `debug`) to see the routine lines too; an explicit value always wins.
+
 The variables are documented in [.env.example](.env.example). The server checks them all at startup and names any that are missing or invalid.
 
 **Deploying the one-account-per-person release:** stop every server instance first. At startup the new code merges each person's accounts into the oldest and deletes the rest. An instance still on the old code would keep a merged address mapped to a deleted account, and its deposit scan would wedge on it.
