@@ -181,6 +181,7 @@ function Options({
         rows.current = [...(root.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [])];
     });
     const input = useRef<HTMLInputElement>(null);
+    const arrived = useRef(false);
     const typed = useRef({ text: "", at: 0 });
     // A current value that isn't listed was typed: start in the input with it.
     const [text, setText] = useState(() => (custom && selected && selectedAt < 0 ? selected : ""));
@@ -207,8 +208,10 @@ function Options({
             return;
         }
         rows.current[active]?.focus({ preventScroll: true });
-        rows.current[active]?.scrollIntoView({ block: "nearest" });
-    }, [active, isPresent, startInInput, hasSearch, second]);
+        // With a notice above the list, opening stays at the top so the notice is read; moving the highlight scrolls as usual
+        if (!(notice && !second && !arrived.current)) rows.current[active]?.scrollIntoView({ block: "nearest" });
+        arrived.current = true;
+    }, [active, isPresent, startInInput, hasSearch, second, notice]);
 
     // One highlight for the whole list, sliding to the active row's layout box
     // (offsetTop ignores the rows' entrance transforms). Each step has a list of its own.

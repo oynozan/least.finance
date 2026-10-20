@@ -114,6 +114,7 @@ test("an outcome over the pool's limit is named on the dock, and the dock opens 
     await dockButton(page).click();
     await expect(picker(page)).toBeVisible();
     await expect(picker(page)).toContainText(`needs at least $4.35`);
+    await expect(picker(page).getByText("needs at least $4.35")).toBeInViewport();
     await expect(picker(page).getByRole("option").filter({ hasNotText: yes.label })).not.toHaveAttribute(
         "aria-disabled",
         "true",
@@ -177,6 +178,8 @@ test("a pool that can place nothing reads Predictions paused, on the Predict pil
     await expect(picker(page)).toContainText(
         "Predictions are paused right now. Pick another trade, or try again later.",
     );
+    // The picker opens with the reason in view, not scrolled down to the selected Predict row
+    await expect(picker(page).getByText("Predictions are paused right now.")).toBeInViewport();
     await expect(picker(page).getByRole("option", { name: /^Buy/ })).toBeVisible();
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
     await page.keyboard.press("Escape");
