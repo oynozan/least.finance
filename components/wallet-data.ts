@@ -1,5 +1,5 @@
 import type { OptimisticTrade, PerpPositionView, PerpsView, PositionView, PositionsView } from "@/lib/account/state";
-import { formatPrice, formatUnits, formatUsdShort } from "@/lib/trade/format";
+import { formatPrice, formatUsdShort } from "@/lib/trade/format";
 import { isPendingPerp, perpPositionUSD, toUsdc } from "@/lib/account/state";
 import type { CoinSymbol } from "./coin-icons";
 
@@ -19,11 +19,11 @@ export type LivePredictionPosition = {
     outcome: string;
     /** Empty while a buy is waiting for its fill. */
     shares: string;
-    /** A buy still waiting; sells and settled rows have none. */
+    /** A buy still waiting; sells have none. */
     pending: boolean;
-    status: "pending" | "open" | "won" | "lost";
-    /** USD paid out, for a settled row. */
-    payout: number | null;
+    status: "pending" | "open";
+    /** When it was bought, in ms; the first buy for a row that holds several. */
+    openedAt: number;
     /** What a sale would close; null while only a buy is waiting. */
     position: PositionView | null;
 };
@@ -37,16 +37,16 @@ export type LivePerpPosition = {
     symbol: CoinSymbol;
     /** The collateral, in USD. */
     size: number;
-    /** Unrealized PnL after funding and the opening fees, or the realized PnL once settled. */
+    /** Unrealized PnL after funding and the opening fees. */
     pnl: number;
     asset: string;
     side: "long" | "short";
     leverage: number;
     entryPx: string | null;
     liquidationPx: string | null;
-    status: "pending" | "open" | "closing" | "closed" | "liquidated";
-    /** USD returned, for a settled row. */
-    payout: number | null;
+    status: "pending" | "open" | "closing";
+    /** When it was opened, in ms. */
+    openedAt: number;
     /** Why an open position couldn't be closed, from the server. */
     notice: string | null;
     position: PerpPositionView;
@@ -60,16 +60,26 @@ const perpName = (p: LivePerpPosition) => `${p.side === "long" ? "Long" : "Short
 /** The question a prediction bets on, or "Long BTC at 5x". */
 export const positionTitle = (p: Position) => (p.kind === "perp-live" ? perpName(p) : p.question);
 
-/** "YES, 26.32 shares", or just the outcome while a buy waits; "$500 position, entry $65,000, liquidates near $52,400" for a perp. */
-export function positionDetail(p: Position) {
+const shareCount = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
+
+/** What a position's row shows when it opens, a fact to a line: what a prediction bet on and paid, or a perp's size and prices. */
+export function positionFacts(p: Position): [label: string, value: string][] {
     if (p.kind === "perp-live") {
-        const parts = [`${formatUsdShort(perpPositionUSD(p.position))} position`];
-        if (p.entryPx) parts.push(`entry ${formatPrice(Number(p.entryPx))}`);
-        if (p.liquidationPx) parts.push(`liquidates near ${formatPrice(Number(p.liquidationPx))}`);
-        return parts.join(", ");
+        const facts: [string, string][] = [["Position", formatUsdShort(perpPositionUSD(p.position))]];
+        if (p.entryPx) facts.push(["Entry price", formatPrice(Number(p.entryPx))]);
+        if (p.position.markPx && p.status !== "pending") facts.push(["Price now", formatPrice(Number(p.position.markPx))]);
+        if (p.liquidationPx) facts.push(["Liquidation price", formatPrice(Number(p.liquidationPx))]);
+        return facts;
     }
-    return p.shares ? `${p.outcome}, ${formatUnits(Number(p.shares), "shares")}` : p.outcome;
+    const facts: [string, string][] = [["Outcome", p.outcome]];
+    // A buy waiting for its fill doesn't know its shares yet
+    if (p.shares) facts.push(["Shares", shareCount.format(Number(p.shares))]);
+    facts.push(["Paid", formatUsd(p.size)]);
+    return facts;
 }
+
+/** Newest first, so a position just opened is at the top. */
+export const newestFirst = (a: Position, b: Position) => b.openedAt - a.openedAt;
 
 /** The shares a sale takes: floored to 0.01, as the exchange quantizes, without going through a float. */
 export function sellableShares(shares: string): number {
@@ -106,22 +116,20 @@ export function perpCloseBlock(p: LivePerpPosition): string | null {
 export const TOO_SMALL = "Too small to sell. It pays out when the market resolves.";
 export const BUY_PENDING = "Selling opens when the buy is filled.";
 
-const SETTLED_SHOWN_MS = 7 * 86_400_000;
-
 /** The whole position in words, for its close button. */
 export const positionName = (p: Position) => (p.kind === "perp-live" ? perpName(p) : `${p.outcome} on ${p.question}`);
 
 /**
- * The rows for the person's predictions, oldest first: each
- * open position, plus the buys the server hasn't filled yet, plus positions that resolved in the last week.
- * Rows for one token become one, and a position being sold is out of the list.
+ * The rows for the person's open predictions, newest first: each open
+ * position, plus the buys the server hasn't filled yet. Rows for one token
+ * become one, and a position being sold is out of the list; a resolved one
+ * is in the PnL activity instead.
  */
 export function livePredictionRows(
     { positions, orders }: PositionsView,
     optimistic: readonly OptimisticTrade[],
-    now = Date.now(),
 ): LivePredictionPosition[] {
-    type Row = LivePredictionPosition & { at: number };
+    type Row = LivePredictionPosition;
     const rows = new Map<string, Row>();
     const add = (token: string, row: Row) => {
         const held = rows.get(token);
@@ -140,37 +148,13 @@ export function livePredictionRows(
             status: held.pending && row.pending ? "pending" : "open",
             position: held.position ?? row.position,
             id: held.position ? held.id : row.position ? row.id : held.id,
-            at: Math.min(held.at, row.at),
+            openedAt: Math.min(held.openedAt, row.openedAt),
         });
     };
     const placed = new Set(orders.map((o) => o.requestId));
     const selling = new Set(optimistic.flatMap((t) => (t.side === "sell" ? [t.positionId] : [])));
-    const base = { kind: "prediction-live", symbol: "USDC", pnl: 0, payout: null } as const;
+    const base = { kind: "prediction-live", symbol: "USDC", pnl: 0 } as const;
     for (const p of positions) {
-        if (
-            (p.state === "won" || p.state === "lost") &&
-            p.settledAt &&
-            now - Date.parse(p.settledAt) < SETTLED_SHOWN_MS
-        ) {
-            const payout = Number(p.payoutUSD ?? 0);
-            rows.set(p.id, {
-                ...base,
-                id: p.id,
-                eventId: p.eventId,
-                tokenId: p.tokenId,
-                question: p.question,
-                outcome: p.outcome,
-                shares: p.shares,
-                size: Number(p.costUSD),
-                pnl: payout - Number(p.costUSD),
-                pending: false,
-                status: p.state,
-                payout,
-                position: p,
-                at: Date.parse(p.openedAt),
-            });
-            continue;
-        }
         if (p.state !== "open" || selling.has(p.id)) continue;
         add(p.tokenId, {
             ...base,
@@ -184,7 +168,7 @@ export function livePredictionRows(
             shares: p.shares,
             size: Number(p.costUSD),
             pending: false,
-            at: Date.parse(p.openedAt),
+            openedAt: Date.parse(p.openedAt),
         });
     }
     for (const o of orders) {
@@ -201,7 +185,7 @@ export function livePredictionRows(
             shares: o.shares ?? "",
             size: Number(o.amountUSD ?? 0),
             pending: true,
-            at: Date.parse(o.createdAt),
+            openedAt: Date.parse(o.createdAt),
         });
     }
     for (const t of optimistic) {
@@ -218,16 +202,10 @@ export function livePredictionRows(
             shares: t.shares,
             size: toUsdc(t.amountWei),
             pending: true,
-            at: t.at,
+            openedAt: t.at,
         });
     }
-    return [...rows.values()]
-        .sort((a, b) => a.at - b.at)
-        .map((row) => {
-            const live: LivePredictionPosition & { at?: number } = { ...row };
-            delete live.at;
-            return live;
-        });
+    return [...rows.values()].sort(newestFirst);
 }
 
 /** The position with its mark and unrealized PnL taken from the live mark; unchanged without a mark or an entry. */
@@ -241,48 +219,33 @@ function marked(p: PerpPositionView, marks: Record<string, number>): PerpPositio
     return { ...p, markPx: String(mark), unrealizedPnlUSD: String(pnl) };
 }
 
-/** The rows for the person's perps: open and closing ones, an open on its way, and ones settled in the last week; `marks` are live prices by asset. */
-export function livePerpRows(
-    { positions, orders }: PerpsView,
-    now = Date.now(),
-    marks: Record<string, number> = {},
-): LivePerpPosition[] {
+/** The rows for the person's perps, newest first: open and closing ones and an open on its way; a settled one is in the PnL activity instead. `marks` are live prices by asset. */
+export function livePerpRows({ positions, orders }: PerpsView, marks: Record<string, number> = {}): LivePerpPosition[] {
     const openedBy = new Map(
         orders.filter((o) => o.kind === "open" && o.positionId).map((o) => [o.positionId, o.requestId]),
     );
     const rowKey = (p: PerpPositionView) =>
         `perp:${isPendingPerp(p) ? p.id.slice("pending:".length) : (openedBy.get(p.id) ?? p.id)}`;
     return positions
-        .map((p) => marked(p, marks))
-        .filter(
-            (p) =>
-                p.state === "open" ||
-                p.state === "closing" ||
-                now - Date.parse(p.settledAt ?? p.updatedAt) < SETTLED_SHOWN_MS,
-        )
-        .sort((a, b) => Date.parse(a.openedAt) - Date.parse(b.openedAt))
-        .map((p) => {
-            const collateral = Number(p.collateralUSD);
-            const settled = p.state === "closed" || p.state === "liquidated";
-            const payout = settled ? Number(p.proceedsUSD ?? 0) : null;
-            return {
-                id: p.id,
-                rowKey: rowKey(p),
-                kind: "perp-live",
-                symbol: p.asset,
-                size: collateral,
-                pnl: payout === null ? openPerpPnl(p) : payout - collateral,
-                asset: p.asset,
-                side: p.side,
-                leverage: p.leverage,
-                entryPx: p.entryPx,
-                liquidationPx: p.liquidationPx,
-                status: isPendingPerp(p) ? "pending" : p.state,
-                payout,
-                notice: p.notice,
-                position: p,
-            };
-        });
+        .flatMap((p) => (p.state === "open" || p.state === "closing" ? [marked(p, marks)] : []))
+        .map((p): LivePerpPosition => ({
+            id: p.id,
+            rowKey: rowKey(p),
+            kind: "perp-live",
+            symbol: p.asset,
+            size: Number(p.collateralUSD),
+            pnl: openPerpPnl(p),
+            asset: p.asset,
+            side: p.side,
+            leverage: p.leverage,
+            entryPx: p.entryPx,
+            liquidationPx: p.liquidationPx,
+            status: isPendingPerp(p) ? "pending" : p.state === "closing" ? "closing" : "open",
+            openedAt: Date.parse(p.openedAt),
+            notice: p.notice,
+            position: p,
+        }))
+        .sort(newestFirst);
 }
 
 const usd = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });

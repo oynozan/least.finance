@@ -12,7 +12,7 @@ import {
     formatUsd,
     liveValue,
     perpCloseBlock,
-    positionDetail,
+    positionFacts,
     positionName,
     positionTitle,
     sellableShares,
@@ -43,9 +43,9 @@ type PositionRowProps = {
 };
 
 /**
- * One prediction: its question, its outcome with its shares, and what it is
- * worth. Hovering (or focusing, or tapping on touch) slides in a close button
- * tinted by the PnL.
+ * One open position: what it is, what it has made and what it is worth.
+ * Hovering (or focusing, or tapping on touch) opens its details below and
+ * slides in a close button tinted by the PnL.
  */
 export function PositionRow({ position, entranceDelay, market, onSell, onClosePerp, ref }: PositionRowProps) {
     const { symbol } = position;
@@ -54,11 +54,11 @@ export function PositionRow({ position, entranceDelay, market, onSell, onClosePe
     const [focused, setFocused] = useState(false);
     const [tapped, setTapped] = useState(false);
     const revealed = hovered || focused || tapped;
-    const worth =
-        position.status === "open" || position.status === "closing" ? liveValue(position, market.sellPrice) : null;
-    const pnl = worth ? worth.pnl : position.pnl;
-    const trend = trendOf(pnl);
-    // Only a position that resolved or was bought but not yet filled has no sale to make
+    const worth = position.status === "pending" ? null : liveValue(position, market.sellPrice);
+    // To the cent, so a hair under zero reads as a flat $0.00; an order still filling, or a prediction whose price isn't in yet, says nothing
+    const pnl = worth ? Math.round(worth.pnl * 100) / 100 : null;
+    const trend = trendOf(pnl ?? 0);
+    // Close waits while an order fills or a close is under way, and for a prediction too small to sell
     const reason = closeBlock(position, market.minShares);
     const reasonId = `${useId()}-reason`;
 
@@ -88,49 +88,56 @@ export function PositionRow({ position, entranceDelay, market, onSell, onClosePe
                 <span className={styles.title} title={title}>
                     {title}
                 </span>
-                <span className={styles.detail}>
-                    {positionDetail(position)}
-                    {worth && `, ${formatPnl(worth.pnl)}`}
-                </span>
+                {pnl !== null && <span className={styles.change}>{formatPnl(pnl)}</span>}
                 {/* Why a close was refused stays in sight until the next close, not only in the screen reader's description. */}
                 {position.kind === "perp-live" && position.status === "open" && position.notice && (
-                    <span className={styles.detail}>{position.notice}</span>
+                    <span className={styles.notice}>{position.notice}</span>
                 )}
             </span>
             <span className={styles.pnl}>{liveText(position, worth?.value ?? null)}</span>
             {/* Always mounted, only collapsed, so keyboard users can tab to it. */}
-            {(position.status === "pending" || position.status === "open" || position.status === "closing") && (
-                <motion.span
-                    className={styles.closeSlot}
+            <motion.span
+                className={styles.closeSlot}
+                initial={false}
+                animate={revealed ? { width: "auto", opacity: 1 } : { width: 0, opacity: 0 }}
+                transition={reveal}
+            >
+                <motion.button
+                    type="button"
+                    className={styles.close}
+                    aria-label={`Close ${positionName(position)}`}
+                    aria-disabled={reason ? true : undefined}
+                    aria-describedby={reason ? reasonId : undefined}
                     initial={false}
-                    animate={revealed ? { width: "auto", opacity: 1 } : { width: 0, opacity: 0 }}
-                    transition={reveal}
+                    animate={revealed ? { scale: 1, x: 0 } : { scale: 0.6, x: 12 }}
+                    whileTap={{ scale: 0.9 }}
+                    transition={spring}
+                    onClick={() => {
+                        if (reason) return;
+                        if (position.kind === "perp-live") onClosePerp(position.position.id);
+                        else if (position.position) onSell(position.position, market.sellPrice);
+                    }}
                 >
-                    <motion.button
-                        type="button"
-                        className={styles.close}
-                        aria-label={`Close ${positionName(position)}`}
-                        aria-disabled={reason ? true : undefined}
-                        aria-describedby={reason ? reasonId : undefined}
-                        initial={false}
-                        animate={revealed ? { scale: 1, x: 0 } : { scale: 0.6, x: 12 }}
-                        whileTap={{ scale: 0.9 }}
-                        transition={spring}
-                        onClick={() => {
-                            if (reason) return;
-                            if (position.kind === "perp-live") onClosePerp(position.position.id);
-                            else if (position.position) onSell(position.position, market.sellPrice);
-                        }}
-                    >
-                        Close
-                    </motion.button>
-                    {reason && (
-                        <span id={reasonId} className="sr-only">
-                            {reason}
-                        </span>
-                    )}
-                </motion.span>
-            )}
+                    Close
+                </motion.button>
+                {reason && (
+                    <span id={reasonId} className="sr-only">
+                        {reason}
+                    </span>
+                )}
+            </motion.span>
+            <span className={styles.facts}>
+                <span>
+                    <dl>
+                        {positionFacts(position).map(([label, value]) => (
+                            <div key={label} className={styles.fact}>
+                                <dt>{label}</dt>
+                                <dd>{value}</dd>
+                            </div>
+                        ))}
+                    </dl>
+                </span>
+            </span>
         </motion.li>
     );
 }
@@ -142,16 +149,9 @@ function closeBlock(live: Position, minShares: number | null): string | null {
     return minShares !== null && sellableShares(live.shares) < minShares ? TOO_SMALL : null;
 }
 
-/** What sits at the row's right edge: the wait, the outcome, or the position's worth. */
+/** What sits at the row's right edge: the wait, or the position's worth. */
 function liveText(live: Position, value: number | null) {
     if (live.status === "pending") return "Pending";
-    if (live.kind === "perp-live") {
-        if (live.status === "closing") return "Closing";
-        if (live.status === "closed") return "Closed";
-        if (live.status === "liquidated") return "Liquidated";
-        return formatUsd(value ?? live.size);
-    }
-    if (live.status === "won") return `Won ${formatUsd(live.payout ?? 0)}`;
-    if (live.status === "lost") return "Lost";
+    if (live.status === "closing") return "Closing";
     return formatUsd(value ?? live.size);
 }

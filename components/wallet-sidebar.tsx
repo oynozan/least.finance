@@ -58,7 +58,15 @@ import { trackScrollEdges } from "./scroll-edges";
 import { useSidebar } from "./sidebar";
 import { getPerpMarkets, subscribePerpMarkets } from "@/lib/trade/perp-markets-store";
 import { useTrade } from "./trade/trade-provider";
-import { formatUsd, formatWhen, livePerpRows, livePredictionRows, shortenAddress, type Position } from "./wallet-data";
+import {
+    formatUsd,
+    formatWhen,
+    livePerpRows,
+    livePredictionRows,
+    newestFirst,
+    shortenAddress,
+    type Position,
+} from "./wallet-data";
 import { walletEnabled } from "./wallet-provider";
 import { WithdrawForm } from "./withdraw-form";
 import styles from "./wallet-sidebar.module.css";
@@ -70,8 +78,8 @@ const settle: Transition = { type: "spring", visualDuration: 0.4, bounce: 0.15 }
 // (the ones in view when the list overflows) take part in the stagger;
 // rows further down land straight away, out of sight.
 const STAGGERED_ROWS = 8;
-const entranceDelay = (index: number, count: number) =>
-    0.12 + Math.max(0, index - Math.max(0, count - STAGGERED_ROWS)) * 0.03;
+const entranceDelay = (fromBottom: number, count: number) =>
+    0.12 + Math.max(0, fromBottom - Math.max(0, count - STAGGERED_ROWS)) * 0.03;
 
 /** How long a finished bridged deposit stays under the button. */
 const ENDED_VISIBLE_MS = 10_000;
@@ -197,23 +205,15 @@ function SignedInWallet() {
         evm: user ? depositWalletAddress(user, active) : undefined,
         solana: user ? solanaWalletAddress(user, active) : undefined,
     };
-    // Moves on whenever the sidebar opens; a clock read while rendering can't be prerendered.
-    const [clock, setClock] = useState(0);
-    useEffect(() => {
-        const timer = setTimeout(() => setClock(Date.now()));
-        return () => clearTimeout(timer);
-    }, [open]);
     const perpView = useSyncExternalStore(subscribePerpMarkets, getPerpMarkets, getPerpMarkets);
     const marks = useMemo(
         () => Object.fromEntries((perpView?.markets ?? []).map((m) => [m.asset, Number(m.markPx)])),
         [perpView],
     );
     const positions = useMemo(
-        (): Position[] => [
-            ...livePredictionRows(predictions, optimisticTrades, clock),
-            ...livePerpRows(perps, clock, marks),
-        ],
-        [predictions, perps, optimisticTrades, clock, marks],
+        (): Position[] =>
+            [...livePredictionRows(predictions, optimisticTrades), ...livePerpRows(perps, marks)].sort(newestFirst),
+        [predictions, perps, optimisticTrades, marks],
     );
 
     // Remount the animated parts on every open so they replay their entrance.
@@ -305,7 +305,7 @@ function SignedInWallet() {
                                 <PositionRow
                                     key={position.kind === "perp-live" ? position.rowKey : position.id}
                                     position={position}
-                                    entranceDelay={entranceDelay(i, positions.length)}
+                                    entranceDelay={entranceDelay(positions.length - 1 - i, positions.length)}
                                     market={marketOf(position, known)}
                                     onSell={account.closePosition}
                                     onClosePerp={account.closePerp}

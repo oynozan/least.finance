@@ -10,7 +10,7 @@ import {
     type HistorySeed,
 } from "./backend";
 import { marketIdOf, pricesLosing, trendingView } from "./polymarket";
-import { buyPredictions, predictionsToBuy } from "./positions";
+import { buyPredictions, positionFact, predictionsToBuy } from "./positions";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 
 const dock = (page: Page) => page.getByRole("navigation", { name: "Pages" });
@@ -205,7 +205,7 @@ test("a prediction and its sale are listed, with what the sale realized", async 
     await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
     const position = sidebar(page).getByRole("list", { name: "Open positions" }).getByRole("listitem");
     const mine = position.filter({ hasText: title });
-    await expect(mine).toContainText(/\d[\d.]* shares/);
+    await expect(positionFact(mine, "Shares")).toHaveText(/^\d[\d.,]*$/);
     if (isMobile) await mine.tap();
     else await mine.hover();
     await mine.getByRole("button", { name: `Close ${outcome.label} on ${title}` }).click();

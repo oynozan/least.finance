@@ -9,6 +9,7 @@ import {
     shrinkPosition,
 } from "./backend";
 import { marketIdOf, trendingView } from "./polymarket";
+import { positionFact } from "./positions";
 import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 
 const trade = (page: Page) => page.getByRole("region", { name: "Trade" });
@@ -135,7 +136,7 @@ test("a prediction lowers the balance and adds a position at once, while the fak
     // The pending row leaves as the filled one takes its place.
     await expect(pending(page, picked)).toHaveCount(0);
     await expect(row(page, picked)).toHaveCount(1);
-    await expect(row(page, picked)).toContainText(/\d[\d.]* shares/);
+    await expect(positionFact(row(page, picked), "Shares")).toHaveText(/^\d[\d.,]*$/);
     await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$49\d\.\d\d, show deposits$/);
 });
 
@@ -192,7 +193,7 @@ test("a prediction in flight survives a reload", async ({ page }) => {
     await releaseOrder(picked.outcome.tokenId, "fill");
     await expect(pending(page, picked)).toHaveCount(0);
     await expect(row(page, picked)).toHaveCount(1);
-    await expect(row(page, picked)).toContainText(/shares/);
+    await expect(positionFact(row(page, picked), "Shares")).toHaveText(/^\d[\d.,]*$/);
 });
 
 test("offline at confirm says so and spends nothing", async ({ page }) => {
@@ -255,7 +256,7 @@ async function buyAndFill(page: Page, picked: Picked) {
     await connect(page);
     await predict(page, picked);
     await confirm(page);
-    await expect(row(page, picked)).toContainText(/\d[\d.]* shares/);
+    await expect(positionFact(row(page, picked), "Shares")).toHaveText(/^\d[\d.,]*$/);
     await expect(pending(page, picked)).toHaveCount(0);
 }
 
@@ -296,7 +297,7 @@ test("a rejected close puts the position back with the message", async ({ page, 
     await closeButton(page, picked).click();
     await expect(status(page)).toHaveText("The price moved, so the sale didn't go through. Your position is back.");
     await expect(row(page, picked)).toHaveCount(1);
-    await expect(row(page, picked)).toContainText(/shares/);
+    await expect(positionFact(row(page, picked), "Shares")).toHaveText(/^\d[\d.,]*$/);
     expect(await balanceOf(page)).toBe(before);
 });
 
@@ -308,7 +309,7 @@ test("a tiny position's Close is disabled with the reason", async ({ page }) => 
     await walletButton(page).click();
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
 
-    await expect(row(page, picked)).toContainText("0.5 shares");
+    await expect(positionFact(row(page, picked), "Shares")).toHaveText("0.5");
     const close = closeButton(page, picked);
     await expect(close).toHaveAttribute("aria-disabled", "true");
     await expect(close).toHaveAccessibleDescription("Too small to sell. It pays out when the market resolves.");
@@ -319,27 +320,25 @@ test("a tiny position's Close is disabled with the reason", async ({ page }) => 
 });
 
 // Resolving closes the market for everyone, so each project resolves a question of its own.
-test("a resolved win shows Won and raises the balance", async ({ page, isMobile }) => {
+test("a resolved win leaves the open positions and raises the balance", async ({ page, isMobile }) => {
     const picked = await pickMarket(isMobile ? 13 : 12);
     await buyAndFill(page, picked);
     const before = await balanceOf(page);
 
     await resolveMarket(marketIdOf(picked.outcome.tokenId), ["1", "0"]);
     await resolveNow();
-    await expect(row(page, picked)).toContainText(/Won \$\d/);
-    await expect(closeButton(page, picked)).toHaveCount(0);
+    await expect(row(page, picked)).toHaveCount(0);
     await expect.poll(() => balanceOf(page)).toBeGreaterThan(before);
 });
 
-test("a resolved loss shows Lost", async ({ page, isMobile }) => {
+test("a resolved loss leaves the open positions", async ({ page, isMobile }) => {
     const picked = await pickMarket(isMobile ? 15 : 14);
     await buyAndFill(page, picked);
     const before = await balanceOf(page);
 
     await resolveMarket(marketIdOf(picked.outcome.tokenId), ["0", "1"]);
     await resolveNow();
-    await expect(row(page, picked)).toContainText("Lost");
-    await expect(closeButton(page, picked)).toHaveCount(0);
+    await expect(row(page, picked)).toHaveCount(0);
     expect(await balanceOf(page)).toBe(before);
 });
 
@@ -353,6 +352,6 @@ test("a buy restored by a reload shows no amount in place of shares", async ({ p
     await page.reload();
     await walletButton(page).click();
     await expect(row(page, picked)).toContainText("Pending");
-    await expect(row(page, picked)).not.toContainText(/\$\d/);
+    await expect(positionFact(row(page, picked), "Shares")).toHaveCount(0);
     await releaseOrder(picked.outcome.tokenId, "fill");
 });

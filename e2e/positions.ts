@@ -1,3 +1,4 @@
+import type { Locator } from "@playwright/test";
 import { io, type Socket } from "socket.io-client";
 import type {
     Ack,
@@ -11,6 +12,13 @@ import { signUp } from "./backend";
 import { API, trendingView } from "./polymarket";
 
 export type Bought = { market: MarketView; outcome: MarketOutcomeView };
+
+/** What a position row's details give for `label`, such as "Shares" or "Entry price"; there while the row is closed, only folded away. */
+export const positionFact = (row: Locator, label: string) =>
+    row
+        .locator("dl > div")
+        .filter({ has: row.page().locator("dt", { hasText: new RegExp(`^${label}$`) }) })
+        .locator("dd");
 
 // predictions.spec.ts and pnl.spec.ts resolve these questions, which would settle a position bought here.
 const RESOLVED = new Set([12, 13, 14, 15, 16, 17]);

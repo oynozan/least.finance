@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seedDeposits } from "./backend";
+import { positionFact } from "./positions";
 import {
     balanceButton,
     confirmPerp,
@@ -35,7 +36,7 @@ async function confirmAndOpen(page: Page) {
 async function openFilled(page: Page) {
     await openPerp(page, { side: "Long" });
     await confirmAndOpen(page);
-    await expect(long(page)).toContainText("entry $");
+    await expect(positionFact(long(page), "Entry price")).toHaveText(/^\$/);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -92,7 +93,7 @@ test("confirm lowers the balance and adds the position at once while the fake ho
     await expect(balanceButton(page)).toHaveAccessibleName(balanceName("400.00"));
     await expect(long(page)).toHaveCount(1);
     await expect(long(page)).toContainText("Pending");
-    await expect(long(page)).toContainText(/\$49[34] position/);
+    await expect(positionFact(long(page), "Position")).toHaveText(/^\$49[34]$/);
     await expect(status(page)).toHaveText("");
     // Nothing to close until it fills.
     const close = long(page).getByRole("button", { name: "Close Long BTC at 5x" });
@@ -135,15 +136,18 @@ test("the real fill replaces the numbers in place", async ({ page }) => {
     await confirmAndOpen(page);
     await expect(long(page)).toContainText("Pending");
     // Until the fill, the row carries the quote's estimates.
-    const estimate = await long(page).locator("span").nth(1).innerText();
-    expect(estimate).toMatch(/entry \$[\d,.]+, liquidates near/);
+    const entry = positionFact(long(page), "Entry price");
+    const liquidation = positionFact(long(page), "Liquidation price");
+    await expect(entry).toHaveText(/^\$[\d,.]+$/);
+    await expect(liquidation).toHaveText(/^\$[\d,.]+$/);
+    const estimate = [await entry.textContent(), await liquidation.textContent()];
 
     // The tracker finds the fill by its client order id.
     await expect(long(page)).not.toContainText("Pending", { timeout: 30_000 });
     await expect(long(page)).toHaveCount(1);
-    await expect(long(page)).toContainText(/entry \$[\d,]+/);
-    await expect(long(page)).toContainText(/liquidates near \$[\d,]+/);
-    expect(await long(page).locator("span").nth(1).innerText()).not.toBe(estimate);
+    await expect(entry).toHaveText(/^\$[\d,]+/);
+    await expect(liquidation).toHaveText(/^\$[\d,]+/);
+    expect([await entry.textContent(), await liquidation.textContent()]).not.toEqual(estimate);
     // What the fill didn't use of the collateral comes back.
     await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$400\.\d\d, show deposits$/);
 });
@@ -199,22 +203,23 @@ test("close raises the balance at once and restores the position when the fake r
         /^Hyperliquid refused the close: "Order could not be placed"\. Your position is still open\.$/,
     );
     await expect(long(page)).toHaveCount(1);
-    await expect(long(page)).toContainText(/entry \$/);
+    await expect(positionFact(long(page), "Entry price")).toHaveText(/^\$/);
     await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$400\.\d\d, show deposits$/);
 
     await long(page).hover();
     await long(page).getByRole("button", { name: "Close Long BTC at 5x" }).click();
     await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$(49\d|500)\.\d\d, show deposits$/);
-    await expect(long(page)).toContainText("Closed");
+    // Closed, it leaves the open positions
+    await expect(long(page)).toHaveCount(0);
 });
 
-test("a liquidation shows Liquidated in the sidebar and the PnL feed", async ({ page }) => {
+test("a liquidation takes the position out of the sidebar and shows in the PnL feed", async ({ page }) => {
     await page.goto("/");
     await connect(page);
     await openFilled(page);
 
     await perpControl.liquidate(addressOf(page), "BTC");
-    await expect(long(page)).toContainText("Liquidated", { timeout: 45_000 });
+    await expect(long(page)).toHaveCount(0, { timeout: 45_000 });
     await expect(status(page)).toContainText("Your BTC long was liquidated.");
     await page.keyboard.press("Escape");
 
@@ -244,7 +249,7 @@ test("Review is blocked with trading off, and with a position already open on th
     await openPerp(page, { side: "Long" });
     await expect(reviewButton(page)).not.toHaveAttribute("aria-disabled", "true");
     await confirmAndOpen(page);
-    await expect(long(page)).toContainText("entry $");
+    await expect(positionFact(long(page), "Entry price")).toHaveText(/^\$/);
     await page.keyboard.press("Escape");
     await expect(sidebar(page)).toHaveAttribute("data-open", "false");
 

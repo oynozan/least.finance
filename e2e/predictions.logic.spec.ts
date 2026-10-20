@@ -12,7 +12,7 @@ import {
     type PredictionOrderView,
     type WalletSession,
 } from "@/lib/account/state";
-import { livePredictionRows, positionDetail } from "@/components/wallet-data";
+import { livePredictionRows, positionFacts } from "@/components/wallet-data";
 
 const DEPOSIT_ADDRESS = "0x00000000000000000000000000000000000000b2" as Hex;
 const RULES = { chainId: 5042, minDeposit: "0.01" };
@@ -363,7 +363,16 @@ test.describe("live prediction rows", () => {
         const placing = order(REQ_A, { state: "placing", positionId: null, shares: null });
         const [row] = livePredictionRows({ positions: [], orders: [placing] }, []);
         expect(row!.shares).toBe("");
-        expect(positionDetail(row!)).toBe("Yes");
+        expect(positionFacts(row!)).toEqual([
+            ["Outcome", "Yes"],
+            ["Paid", "$10.00"],
+        ]);
+        // Filled, it knows its shares
+        expect(positionFacts(view([position()])[0]!)).toEqual([
+            ["Outcome", "Yes"],
+            ["Shares", "20"],
+            ["Paid", "$10.00"],
+        ]);
     });
 
     test("two buys still waiting for their fills show no shares rather than 0", () => {
@@ -374,31 +383,17 @@ test.describe("live prediction rows", () => {
         expect([rows[0]!.shares, rows[0]!.size]).toEqual(["", 20]);
     });
 
-    test("won and lost positions of the last 7 days are settled rows; older and sold ones are gone", () => {
-        const now = Date.parse(at(0)) + 3 * 86_400_000;
-        const rows = livePredictionRows(
-            {
-                positions: [
-                    position({ id: "w", state: "won", payoutUSD: "20", settledAt: at(0) }),
-                    position({ id: "l", tokenId: "t2", state: "lost", settledAt: at(0) }),
-                    position({
-                        id: "old",
-                        tokenId: "t3",
-                        state: "won",
-                        payoutUSD: "5",
-                        settledAt: "2026-09-01T00:00:00.000Z",
-                    }),
-                    position({ id: "c", tokenId: "t4", state: "closed", settledAt: at(0) }),
-                ],
-                orders: [],
-            },
-            [],
-            now,
-        );
-        expect(rows.map((r) => [r.id, r.status, r.payout])).toEqual([
-            ["w", "won", 20],
-            ["l", "lost", 0],
+    test("won, lost and sold positions are gone at once; open ones are rows, newest first", () => {
+        const rows = view([
+            position({ id: "w", state: "won", payoutUSD: "20", settledAt: at(5) }),
+            position({ id: "l", tokenId: "t2", state: "lost", settledAt: at(5) }),
+            position({ id: "c", tokenId: "t3", state: "closed", settledAt: at(5) }),
+            position({ id: "older", tokenId: "t4", openedAt: at(1) }),
+            position({ id: "newer", tokenId: "t5", openedAt: at(2) }),
         ]);
-        expect(view([position()])[0]!.status).toBe("open");
+        expect(rows.map((r) => [r.id, r.status])).toEqual([
+            ["newer", "open"],
+            ["older", "open"],
+        ]);
     });
 });

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { randomSolanaAddress, seedDeposits } from "./backend";
 import { HISTORY, HISTORY_TOTAL } from "./fixtures";
-import { buyPredictions, predictionsToBuy, type Bought } from "./positions";
+import { buyPredictions, positionFact, predictionsToBuy, type Bought } from "./positions";
 import {
     addressOf,
     ARC_PRIMARY_RPC,
@@ -69,7 +69,7 @@ async function openWallet(page: Page, { history = false, positions = 0 } = {}) {
     await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$/, { timeout: 20_000 });
     await expect(rows(page)).toHaveCount(positions);
     // Open rows, not buys still waiting: each has its shares.
-    for (const row of bought) await expect(position(page, row)).toContainText(/\d shares/);
+    for (const row of bought) await expect(positionFact(position(page, row), "Shares")).toHaveText(/\d/);
     return bought;
 }
 
@@ -607,12 +607,15 @@ test("depositing adds to the history", async ({ page, isMobile }) => {
     await expect(balanceButton(page)).toHaveAccessibleName(`Balance ${usd(HISTORY_TOTAL + 500)}, show deposits`);
 });
 
-test("hovering a position reveals a close button in the PnL's color", async ({ page, isMobile }) => {
+test("hovering a position opens its details and reveals a close button in the PnL's color", async ({
+    page,
+    isMobile,
+}) => {
     test.skip(isMobile, "hover only");
     const bought = await openWallet(page, { positions: 3 });
     await settle(page);
 
-    // Bottom to top: the oldest position sits lowest.
+    // Top to bottom: the newest position is first.
     const tops = await Promise.all(
         bought.map((b) => position(page, b).evaluate((el) => el.getBoundingClientRect().top)),
     );
@@ -620,11 +623,14 @@ test("hovering a position reveals a close button in the PnL's color", async ({ p
 
     for (const b of bought) {
         const row = position(page, b);
-        // Each row names the question, then its outcome with its shares and PnL, and what it's worth.
-        const label = b.outcome.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        await expect(row).toContainText(
-            new RegExp(`${label}, [\\d.,]+ shares, [+−]?\\$[\\d,]+\\.\\d\\d\\$[\\d,]+\\.\\d\\d`),
-        );
+        // Closed, a row is its question, what it has made in its colour, and what it's worth.
+        const trend = (await row.getAttribute("data-trend")) as keyof typeof TREND_COLOR;
+        const change = row.getByText(/^[+−]?\$[\d,]+\.\d\d$/).first();
+        await expect(change).toBeVisible();
+        await expect(change).toHaveCSS("color", TREND_COLOR[trend]);
+        // Its details are folded away, all but taking no room.
+        const folded = () => row.locator("dl").evaluate((dl) => dl.parentElement!.getBoundingClientRect().height);
+        await expect.poll(folded).toBe(0);
 
         const close = closeButton(page, b);
         await expect.poll(() => close.evaluate((el) => el.parentElement!.getBoundingClientRect().width)).toBe(0);
@@ -632,8 +638,12 @@ test("hovering a position reveals a close button in the PnL's color", async ({ p
         await expect
             .poll(() => close.evaluate((el) => el.parentElement!.getBoundingClientRect().width))
             .toBeGreaterThan(50);
-        const trend = (await row.getAttribute("data-trend")) as keyof typeof TREND_COLOR;
         await expect(close).toHaveCSS("color", TREND_COLOR[trend]);
+        // Open, its details read a line each.
+        await expect.poll(folded).toBeGreaterThan(40);
+        await expect(positionFact(row, "Outcome")).toHaveText(b.outcome.label);
+        await expect(positionFact(row, "Shares")).toHaveText(/^\d[\d.,]*$/);
+        await expect(positionFact(row, "Paid")).toHaveText(/^\$[\d,]+\.\d\d$/);
     }
     await shoot(page, "4-hover-position");
 });

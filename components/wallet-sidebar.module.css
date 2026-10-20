@@ -829,11 +829,11 @@
     scrollbar-width: none;
 }
 
+/* Newest on top, right under the holdings, so a row opening its details grows down and only moves the rows under it. */
 .positions {
     display: flex;
-    flex-direction: column-reverse;
+    flex-direction: column;
     gap: 8px;
-    margin-top: auto;
     list-style: none;
 }
 
