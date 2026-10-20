@@ -4,6 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { PoolRebalanceDoc } from "../../src/db/mongo.ts";
 import { fromDecimal, toDecimal } from "../../src/db/money.ts";
 import { isAppError } from "../../src/errors.ts";
+import { createLogger } from "../../src/logger.ts";
 import { poolRebalanceRow } from "../support/pool-rebalance-row.ts";
 import { EVENT, predictionHarness, TOKEN, until, wei } from "../support/prediction-harness.ts";
 
@@ -421,4 +422,26 @@ test("the alarm bands follow the float target the harness is given", async () =>
     expect(warnings(lines)).toEqual([]);
     await fresh({ logger, floatUsd: 20 }, 4_000_000n);
     expect(warnings(lines)).toEqual(["The pool's Polymarket float is low"]);
+});
+
+test("a read that fails with a URL in its message logs no key, in the err or in lastFloatError", async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const logger = createLogger(
+        { NODE_ENV: "production", LOG_LEVEL: "warn" },
+        { write: (line: string) => void lines.push(JSON.parse(line)) },
+    );
+    const clock = { t: Date.now() };
+    const h = await fresh({ now: () => clock.t, logger });
+    vi.spyOn(h.trader, "balanceE6").mockRejectedValue(
+        new Error("fetch failed for https://rpc.example.com/v2/SECRETKEY123"),
+    );
+    clock.t += 181_000;
+    await h.service.refreshFloat().catch(() => undefined);
+    const text = JSON.stringify(lines);
+    expect(text).not.toContain("SECRETKEY123");
+    expect(
+        lines.some((line) =>
+            (line.lastFloatError as { message?: string } | undefined)?.message?.includes("rpc.example.com"),
+        ),
+    ).toBe(true);
 });

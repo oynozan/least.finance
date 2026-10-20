@@ -1,3 +1,4 @@
+import { scrubUrls } from "../logger.ts";
 import { newRef, wentWrong } from "../errors.ts";
 
 type Kind = "status" | "timeout" | "network" | "shape";
@@ -86,7 +87,7 @@ function describeOnce(error: unknown): Described {
             upstream: error.service,
             upstreamCall: `${error.method} ${error.path}`,
             upstreamStatus: error.status,
-            upstreamBody: error.body,
+            upstreamBody: error.body && scrubUrls(error.body),
             retryAfter: error.retryAfter,
         };
         if (error.kind === "timeout")

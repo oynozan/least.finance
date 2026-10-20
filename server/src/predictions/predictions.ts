@@ -41,6 +41,7 @@ import {
 } from "./failures.ts";
 import type { MarketMeta, PoolTrader, SignedRecord } from "./trader.ts";
 import { HourlyLog } from "./rebalance-log.ts";
+import { scrubUrls } from "../logger.ts";
 import { formatUsdShort, orderView, positionView } from "./views.ts";
 
 /** Covers the PnL page's 30-day chart; the sidebar trims its Won and Lost rows to a week itself */
@@ -254,7 +255,7 @@ export class PredictionService {
 
     #floatFailed(error: unknown) {
         const now = this.#now();
-        this.#floatError = { message: error instanceof Error ? error.message : String(error), at: now };
+        this.#floatError = { message: scrubUrls(error instanceof Error ? error.message : String(error)), at: now };
         // A float that comes back low after a failed read is news again
         this.#floatState = "ok";
         this.#watch();

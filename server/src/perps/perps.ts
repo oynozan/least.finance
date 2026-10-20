@@ -1,4 +1,5 @@
 import { ObjectId, type ClientSession } from "mongodb";
+import { scrubUrls } from "../logger.ts";
 import type { Logger } from "pino";
 import { parseUnits } from "viem";
 import type { Keyring } from "../accounts/keyring.ts";
@@ -122,6 +123,10 @@ const ZERO_FILL: PerpWhy = {
     msg: "A perp open filled nothing",
     level: "warn",
 };
+
+/** Fields with any URL in their text cut to its host, as the `err` serializer does for an error. */
+const scrubbed = (fields: Record<string, unknown> | undefined) =>
+    fields && Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, typeof v === "string" ? scrubUrls(v) : v]));
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -438,7 +443,14 @@ export class PerpService {
     /** One line for a failure with a reason: the level says whether it is an expected refusal or a bug, and the fields carry the upstream's words. */
     #log(event: string, why: PerpWhy, fields: Record<string, unknown>) {
         this.#deps.logger[why.level](
-            { event, ...fields, ...why.fields, code: why.code, detail: why.detail, err: why.err },
+            {
+                event,
+                ...fields,
+                ...scrubbed(why.fields),
+                code: why.code,
+                detail: why.detail && scrubUrls(why.detail),
+                err: why.err,
+            },
             why.msg,
         );
     }

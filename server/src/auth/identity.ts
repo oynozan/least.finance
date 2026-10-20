@@ -2,6 +2,7 @@ import { APIError, PrivyClient } from "@privy-io/node";
 import { createRemoteJWKSet, errors, importSPKI, jwtVerify, type CryptoKey, type JWTVerifyGetKey } from "jose";
 import type { Logger } from "pino";
 import { getAddress, isAddress, type Address } from "viem";
+import { scrubUrls } from "../logger.ts";
 import { AppError, newRef, shortOf } from "../errors.ts";
 import { throttle } from "../log-throttle.ts";
 
@@ -300,7 +301,7 @@ export class PrivyIdentity implements IdentityProvider {
                         event: "privy.user_read",
                         userId,
                         status,
-                        body: error instanceof Error ? error.message.slice(0, 300) : String(error),
+                        body: scrubUrls(error instanceof Error ? error.message.slice(0, 300) : String(error)),
                         ref,
                         was,
                         held: held.held,

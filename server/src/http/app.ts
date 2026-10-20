@@ -5,6 +5,7 @@ import { rateLimit } from "express-rate-limit";
 import helmet from "helmet";
 import { pinoHttp } from "pino-http";
 import type { Identity } from "../auth/identity.ts";
+import { scrubUrls } from "../logger.ts";
 import { AppError, toApiError } from "../errors.ts";
 import { describeUpstream } from "../markets/upstream.ts";
 import { outageLog } from "../log-throttle.ts";
@@ -379,9 +380,10 @@ const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
             toApiError(error),
             {
                 code: error.code,
-                reason: error.message,
+                reason: scrubUrls(error.message),
                 detail: error.detail,
-                cause: error.cause instanceof Error ? `${error.cause.name}: ${error.cause.message}` : undefined,
+                cause:
+                    error.cause instanceof Error ? scrubUrls(`${error.cause.name}: ${error.cause.message}`) : undefined,
             },
             `Refused ${req.method} ${pathOf(req.originalUrl)}`,
         );
