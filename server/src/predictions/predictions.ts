@@ -18,7 +18,13 @@ import { AppError, isAppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { MarketService } from "../markets/markets.ts";
 import { MIN_ORDER_USD } from "../markets/shape.ts";
-import type { PositionsView, PredictionOrderView, QuoteView, SellQuoteView } from "../protocol.ts";
+import type {
+    PoolState,
+    PositionsView,
+    PredictionOrderView,
+    QuoteView,
+    SellQuoteView,
+} from "../protocol.ts";
 import {
     costOfFill,
     feeE6,
@@ -89,6 +95,33 @@ const sellable = (position: PositionDoc): bigint => {
     const shares = fromDecimal(position.shares);
     return shares - (shares % SHARE_STEP_E6);
 };
+/** What the person is told for each state that stops orders, with nothing internal in it. */
+const POOL_TEXT = {
+    low: "Predictions are paused: our Polymarket balance is too low to place orders right now.",
+    settling: "Predictions are paused while earlier orders settle. Try again in a minute.",
+    unread: "Predictions are paused: we can't read our Polymarket balance right now. Try again in a few minutes.",
+} as const;
+/** The log line for the pool entering each paused state; the fields carry the numbers. */
+const POOL_LOG = {
+    unread: "Predictions are paused: the pool's Polymarket balance can't be read",
+    low: "Predictions are paused: the pool's Polymarket balance is under Polymarket's $1 order floor",
+    settling: "Predictions are paused: held and unread fills leave the pool under Polymarket's $1 order floor",
+} as const;
+
+/** Where a read float stands: too old to trust, too small for any order, only too busy for one now, or open. */
+function poolStateOf(f: {
+    balanceE6: bigint;
+    heldE6: bigint;
+    unreadE6: bigint;
+    balanceAt: number;
+    now: number;
+}): Exclude<PoolState, "off"> {
+    const floor = BigInt(MIN_ORDER_USD) * 1_000_000n;
+    if (f.balanceAt < f.now - FLOAT_MAX_AGE_MS) return "unread";
+    if (f.balanceE6 < floor) return "low";
+    return f.balanceE6 - f.heldE6 - f.unreadE6 < floor ? "settling" : "open";
+}
+
 const minSharesE6 = (minOrderSize: number): bigint => BigInt(Math.round(minOrderSize * 1e6));
 
 type Deps = {
@@ -98,7 +131,8 @@ type Deps = {
     trader: () => PoolTrader | null;
     bus: Bus;
     logger: Logger;
-    config: Pick<Config, "PREDICTIONS_TRADING" | "POLYMARKET_FLOAT_USD">;
+    config: Pick<Config, "PREDICTIONS_TRADING" | "POLYMARKET_FLOAT_USD"> &
+        Partial<Pick<Config, "POLYMARKET_DEPOSIT_WALLET">>;
     /** The clock, for tests. */
     now?: () => number;
 };
@@ -116,8 +150,10 @@ export class PredictionService {
     readonly #deps: Deps;
     readonly #now: () => number;
     /** The float document as this process last saw it, for the figure shown to clients. */
-    #mirror: { balanceE6: bigint; heldE6: bigint; unreadE6: bigint; at: number } | null = null;
+    #mirror: { balanceE6: bigint; heldE6: bigint; unreadE6: bigint; at: number; balanceAt: number } | null = null;
     #floatState: "low" | "high" | "ok" = "ok";
+    /** The pool state last written to the log: null before the first read, then open or a paused state. */
+    #announced: { state: PoolState; at: number } | null = null;
     /** Why the last balance read failed, for the line that says an order was refused for it. */
     #floatError: { message: string; at: number } | null = null;
     /** A balance outage repeats on every order and settle, so its line is logged once an hour. */
@@ -143,19 +179,79 @@ export class PredictionService {
         return this.#submitting.has(id.toHexString());
     }
 
-    /** The largest order the pool can cover now, in whole dollars; null while predictions aren't live. */
+    /** The pool's state with, for a paused one, the sentence that tells the person why; every call also notes a change for the log. */
+    pool(): { state: PoolState; message?: string } {
+        const { state } = this.#assess();
+        this.#watch();
+        return state === "open" || state === "off" ? { state } : { state, message: POOL_TEXT[state] };
+    }
+
+    /** The largest order the pool can cover now, in whole dollars; 0 while it is paused, null while predictions aren't live. */
     maxOrderUSD(): number | null {
-        if (this.#deps.config.PREDICTIONS_TRADING !== "on" || !this.#deps.trader() || this.#mirror === null)
-            return null;
-        const free = this.#mirror.balanceE6 - this.#mirror.heldE6 - this.#mirror.unreadE6;
-        return free <= 0n ? 0 : Number(free / 1_000_000n);
+        const { state, freeE6 } = this.#assess();
+        this.#watch();
+        if (state === "off") return null;
+        return state === "open" ? Number(freeE6 / 1_000_000n) : 0;
+    }
+
+    /** The pool's state from the figure this process holds, judged at this instant. */
+    #assess(): { state: PoolState; freeE6: bigint } {
+        if (this.#deps.config.PREDICTIONS_TRADING !== "on" || !this.#deps.trader()) return { state: "off", freeE6: 0n };
+        const m = this.#mirror;
+        if (m === null) return { state: "unread", freeE6: 0n };
+        return {
+            state: poolStateOf({ ...m, now: this.#now() }),
+            freeE6: m.balanceE6 - m.heldE6 - m.unreadE6,
+        };
+    }
+
+    /** Logs a change of the pool's state once: a paused state when it begins or turns into another, and open when it returns. */
+    #watch() {
+        const { state, freeE6 } = this.#assess();
+        const m = this.#mirror;
+        if (state === "off") {
+            this.#announced = null;
+            return;
+        }
+        // Before the first read the pool is only starting up, unless a read has already failed
+        if (m === null && this.#floatError === null && this.#announced === null) return;
+        const before = this.#announced;
+        if (before?.state === state) return;
+        const now = this.#now();
+        this.#announced = { state, at: now };
+        if (state === "open") {
+            if (before && before.state !== "open") {
+                this.#deps.logger.warn(
+                    { state, was: before.state, pausedSec: Math.round((now - before.at) / 1000) },
+                    "Predictions are open again: the pool's Polymarket balance can cover orders",
+                );
+            }
+            return;
+        }
+        const usd = (e6: bigint | undefined) => (e6 === undefined ? null : Number(e6) / 1e6);
+        this.#deps.logger.warn(
+            {
+                state,
+                was: before?.state ?? null,
+                balanceUSD: usd(m?.balanceE6),
+                heldUSD: usd(m?.heldE6),
+                unreadUSD: usd(m?.unreadE6),
+                freeUSD: usd(m ? freeE6 : undefined),
+                readAt: m ? new Date(m.balanceAt).toISOString() : null,
+                pool: this.#deps.config.POLYMARKET_DEPOSIT_WALLET ?? null,
+                lastFloatError: this.#floatError && {
+                    message: this.#floatError.message,
+                    agoSec: Math.round((now - this.#floatError.at) / 1000),
+                },
+            },
+            POOL_LOG[state],
+        );
     }
 
     /** Reads the pool's pUSD into the float document, keeping fills that landed during the read; a failed read is logged here, once an hour, and thrown. */
     async refreshFloat(): Promise<void> {
         try {
             await this.#readFloat();
-            this.#floatError = null;
         } catch (error) {
             this.#floatFailed(error);
             throw error;
@@ -165,6 +261,9 @@ export class PredictionService {
     #floatFailed(error: unknown) {
         const now = this.#now();
         this.#floatError = { message: error instanceof Error ? error.message : String(error), at: now };
+        // A float that comes back low after a failed read is news again
+        this.#floatState = "ok";
+        this.#watch();
         this.#hourly.once(
             "float-read",
             "warn",
@@ -183,6 +282,7 @@ export class PredictionService {
         const before = await poolFloat.findOne({ _id: FLOAT_ID });
         const unread = before ? fromDecimal(before.unreadFillsE6) : 0n;
         const balance = await trader.balanceE6();
+        this.#floatError = null;
         const now = new Date(this.#now());
         const initialHeld = before ? 0n : (await this.#openHolds()).total;
         const zero = toDecimal(0n);
@@ -252,7 +352,9 @@ export class PredictionService {
             heldE6: fromDecimal(doc.heldE6),
             unreadE6: fromDecimal(doc.unreadFillsE6),
             at,
+            balanceAt: doc.balanceAt.getTime(),
         };
+        this.#watch();
     }
 
     #warnOnFloat(freeE6: bigint) {
@@ -1167,32 +1269,40 @@ export class PredictionService {
     }
 
     #short(doc: PoolFloatDoc | null, ask?: Ask): AppError {
+        const now = this.#now();
         const stale = !doc || this.#stale(doc);
         const free = doc && !stale ? freeOf(doc) : 0n;
         const usd = free <= 0n ? 0 : Number(free / 1_000_000n);
+        const state = !doc
+            ? "unread"
+            : poolStateOf({
+                  balanceE6: fromDecimal(doc.balanceE6),
+                  heldE6: fromDecimal(doc.heldE6),
+                  unreadE6: fromDecimal(doc.unreadFillsE6),
+                  balanceAt: doc.balanceAt.getTime(),
+                  now,
+              });
+        // The pool's state is logged when it changes, so a refusal for it doesn't add a line of its own
+        this.#watch();
         // A balance we couldn't read is not a limit, so it isn't described as one
-        const message = stale
-            ? `Predictions are briefly unavailable because we can't read the pool's balance right now. Try again in a minute. ${NOTHING_SPENT}`
-            : `${floatShortMessage(usd, ask)} ${NOTHING_SPENT}`;
+        const message =
+            state === "unread"
+                ? `${POOL_TEXT.unread} ${NOTHING_SPENT}`
+                : ask && state !== "open"
+                  ? `${POOL_TEXT[state]} ${NOTHING_SPENT}`
+                  : `${floatShortMessage(usd, ask)} ${NOTHING_SPENT}`;
         if (!ask?.log) return new AppError("float_short", message);
-        const now = this.#now();
+        if (state !== "open") return new AppError("float_short", message, { logged: true });
         this.#deps.logger.warn(
             {
                 ...ask.log,
                 code: "float_short",
-                stale,
                 freeUSD: doc ? Number(freeOf(doc)) / 1e6 : null,
                 heldUSD: doc ? Number(fromDecimal(doc.heldE6)) / 1e6 : null,
                 unreadUSD: doc ? Number(fromDecimal(doc.unreadFillsE6)) / 1e6 : null,
                 floatAgeSec: doc ? Math.round((now - doc.balanceAt.getTime()) / 1000) : null,
-                lastFloatError: this.#floatError && {
-                    message: this.#floatError.message,
-                    agoSec: Math.round((now - this.#floatError.at) / 1000),
-                },
             },
-            stale
-                ? "Refused a prediction: the pool's balance couldn't be read"
-                : "Refused a prediction: the pool's float is short",
+            "Refused a prediction: the pool's float is short",
         );
         return new AppError("float_short", message, { logged: true });
     }
@@ -1204,7 +1314,6 @@ class ReadTimedOut extends Error {}
 function floatShortMessage(usd: number, ask?: Ask): string {
     const limit = formatUsdShort(usd);
     if (!ask) return `Predictions are limited to ${limit} right now.`;
-    if (usd < MIN_ORDER_USD) return "Predictions are paused right now. Try again later.";
     if (ask.minUSD > usd) {
         return `${ask.label} needs at least ${formatUsdShort(ask.minUSD)}, and predictions are limited to ${limit} right now. Pick another outcome or question, or try again later.`;
     }

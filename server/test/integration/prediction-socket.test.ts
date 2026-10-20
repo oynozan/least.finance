@@ -299,8 +299,14 @@ describe("prediction events", () => {
     });
 
     test("GET /markets/trending carries maxOrderUSD when trading is on", async () => {
-        const on = (await (await fetch(`${stack.url}/markets/trending`)).json()) as { maxOrderUSD: number | null };
+        const on = (await (await fetch(`${stack.url}/markets/trending`)).json()) as {
+            maxOrderUSD: number | null;
+            poolState?: string;
+            poolMessage?: string;
+        };
         expect(on.maxOrderUSD).toEqual(expect.any(Number));
+        expect(on.poolState).toBe(on.maxOrderUSD! >= 1 ? "open" : expect.stringMatching(/unread|low|settling/));
+        expect(on.poolMessage === undefined).toBe(on.poolState === "open");
         const none = (await (await fetch(`${off.url}/markets/trending`)).json()) as { maxOrderUSD: number | null };
         expect(none.maxOrderUSD).toBeNull();
     });

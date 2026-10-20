@@ -151,7 +151,7 @@ test("a float under Polymarket's $1 floor refuses as paused", async () => {
         const error = await own.service.place(account, input("5")).catch((e: unknown) => e);
         expect(isAppError(error) && error.code).toBe("float_short");
         expect(isAppError(error) && error.message).toBe(
-            "Predictions are paused right now. Try again later. Nothing was spent.",
+            "Predictions are paused: our Polymarket balance is too low to place orders right now. Nothing was spent.",
         );
         expect((await own.state(account._id)).rows).toHaveLength(1);
     } finally {

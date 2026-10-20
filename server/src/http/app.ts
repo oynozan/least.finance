@@ -7,7 +7,7 @@ import { pinoHttp } from "pino-http";
 import type { Identity } from "../auth/identity.ts";
 import { AppError, toApiError } from "../errors.ts";
 import { describeUpstream } from "../markets/upstream.ts";
-import type { ApiError } from "../protocol.ts";
+import type { ApiError, PoolState } from "../protocol.ts";
 import type { Services } from "../services.ts";
 import {
     depositPage,
@@ -25,6 +25,10 @@ const REQUEST_ID = /^[\w.:-]{1,64}$/;
 const pathOf = (url = "") => url.split("?")[0]!;
 
 /** Answers a refused request and logs it once, with what the person was told and why; the access log then stays quiet. */
+/** How /health reports the prediction pool: ready only while it can take an order. */
+const predictionsHealth = (state: PoolState) =>
+    state === "open" ? "ready" : state === "off" ? "off" : state === "unread" ? "unavailable" : "paused";
+
 function refuse(
     req: Request,
     res: Response,
@@ -148,9 +152,7 @@ export function createApp(services: Services): express.Express {
             predictions:
                 services.config.PREDICTIONS_TRADING !== "on"
                     ? "off"
-                    : services.predictions.maxOrderUSD() === null
-                      ? "unavailable"
-                      : "ready",
+                    : predictionsHealth(services.predictions.pool().state),
             depositScan: {
                 ...scan,
                 lagBlocks: scan.head !== null && scan.scannedThrough !== null ? scan.head - scan.scannedThrough : null,

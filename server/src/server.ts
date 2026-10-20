@@ -1,4 +1,5 @@
 import { createServer, type Server as HttpServer } from "node:http";
+import type { PoolState } from "./protocol.ts";
 import type { AddressInfo } from "node:net";
 import type { Logger } from "pino";
 import type { Hex } from "viem";
@@ -274,6 +275,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             now: () => Date.now(),
             // Read lazily: the service below needs the markets, so it's built after them
             maxOrderUSD: (): number | null => service.maxOrderUSD(),
+            pool: (): { state: PoolState; message?: string } => service.pool(),
         });
         const marketHistory = new MarketHistory({
             data: polymarket,

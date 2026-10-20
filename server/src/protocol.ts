@@ -352,9 +352,16 @@ export type MarketView = {
     outcomes: MarketOutcomeView[];
 };
 
+/** Whether the pool can take orders: off (trading off), unread (its balance can't be read), low (under Polymarket's $1 floor), settling (earlier orders hold it under the floor for now) or open. */
+export type PoolState = "off" | "unread" | "low" | "settling" | "open";
+
 export type TrendingView = {
     markets: MarketView[];
     maxOrderUSD: number | null;
+    /** Why orders are or aren't possible; absent from an older server. */
+    poolState?: PoolState;
+    /** For a paused state, the sentence to show the person. */
+    poolMessage?: string;
     readAt: string | null;
     /** Why there is nothing to show, in plain words; absent once a list has been read. */
     unavailableReason?: string;

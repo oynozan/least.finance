@@ -171,25 +171,22 @@ test("a stale balance refuses orders when it can't be read again", async () => {
     expect(codeOf(error)).toBe("float_short");
     // The person is told the balance can't be read, not that predictions are limited to nothing
     expect(isAppError(error) && error.message).toBe(
-        "Predictions are briefly unavailable because we can't read the pool's balance right now. Try again in a minute. Nothing was spent.",
+        "Predictions are paused: we can't read our Polymarket balance right now. Try again in a few minutes. Nothing was spent.",
     );
-    // The failed read is logged once, and the refusal once with the numbers and why the read failed
+    // The failed read is logged once, and the pool entering its unread state once with why the read failed; the refusal adds no line
     expect(warn).toHaveBeenCalledWith(
         expect.objectContaining({ err: expect.objectContaining({ message: "down" }), floatAgeSec: 181 }),
         "Couldn't read the pool's Polymarket balance",
     );
     expect(warn).toHaveBeenCalledWith(
         expect.objectContaining({
-            event: "prediction:order",
-            account: account._id.toHexString(),
-            tokenId: TOKEN,
-            askedUSD: "10",
-            stale: true,
-            floatAgeSec: 181,
+            state: "unread",
+            readAt: expect.any(String),
             lastFloatError: { message: "down", agoSec: 0 },
         }),
-        "Refused a prediction: the pool's balance couldn't be read",
+        "Predictions are paused: the pool's Polymarket balance can't be read",
     );
+    expect(warn.mock.calls.filter(([, message]) => String(message).startsWith("Refused a prediction"))).toEqual([]);
     expect(isAppError(error) && error.logged).toBe(true);
     expect((await h.state(account._id)).balance).toBe(wei("100"));
     expect((await pool(h)).held).toBe(0n);
@@ -205,7 +202,7 @@ test("a float that is short refuses with the limit and logs the numbers once", a
     );
     expect(warn.mock.calls.filter(([, message]) => String(message).startsWith("Refused a prediction"))).toEqual([
         [
-            expect.objectContaining({ code: "float_short", stale: false, askedUSD: "80", freeUSD: 50, heldUSD: 0 }),
+            expect.objectContaining({ code: "float_short", askedUSD: "80", freeUSD: 50, heldUSD: 0 }),
             "Refused a prediction: the pool's float is short",
         ],
     ]);

@@ -464,7 +464,7 @@ describe("a drain (polygon_to_arc)", () => {
         expect(await h.rowOf(row._id)).toMatchObject({
             state: "failed",
             lastError:
-                "The pool's float couldn't cover $40 when the move began: Predictions are briefly unavailable because we can't read the pool's balance right now. Try again in a minute.",
+                "The pool's float couldn't cover $40 when the move began: Predictions are paused: we can't read our Polymarket balance right now. Try again in a few minutes.",
         });
         expect(fromDecimal((await floatOf(h)).heldE6)).toBe(0n);
     });

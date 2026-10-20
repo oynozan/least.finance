@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { loopWatch } from "../loop-watch.ts";
 import type { Logger } from "pino";
 import { HourlyLog } from "../predictions/rebalance-log.ts";
-import type { MarketOutcomeView, MarketSearchView, MarketView, TrendingView } from "../protocol.ts";
+import type { MarketOutcomeView, MarketSearchView, MarketView, PoolState, TrendingView } from "../protocol.ts";
 import type { GammaEvent } from "./gamma.ts";
 import type { Book, PolymarketData } from "./polymarket-data.ts";
 import { shapeEvent } from "./shape.ts";
@@ -27,6 +27,8 @@ type Deps = {
     syncMs: number;
     /** The largest order the pool can cover now; null when predictions aren't live. */
     maxOrderUSD?: () => number | null;
+    /** The pool's state and, when paused, why in plain words. */
+    pool?: () => { state: PoolState; message?: string };
     /** The clock, for tests. */
     now?: () => number;
 };
@@ -187,10 +189,16 @@ export class MarketService {
         return {
             markets: this.#trending?.value ?? [],
             maxOrderUSD: this.#deps.maxOrderUSD?.() ?? null,
+            ...this.#poolView(),
             readAt: this.#trending ? new Date(this.#trending.at).toISOString() : null,
             // Only while there is nothing to show: why, so the picker can say it instead of waiting
             ...(!this.#trending && this.#lastError && { unavailableReason: this.#lastError }),
         };
+    }
+
+    #poolView(): { poolState?: PoolState; poolMessage?: string } {
+        const pool = this.#deps.pool?.();
+        return pool ? { poolState: pool.state, ...(pool.message && { poolMessage: pool.message }) } : {};
     }
 
     async search(query: string): Promise<MarketSearchView> {
