@@ -1,6 +1,10 @@
 import { REQUEST_TIMEOUT_MS, serverSaid, silenceOf } from "@/lib/fetch-failure";
 import { isMarketView, loadCachedTrending, saveCachedTrending, validMarkets } from "@/lib/trade/markets";
-import type { MarketView, TrendingView } from "@/server/src/protocol";
+import type { MarketView, PoolState, TrendingView } from "@/server/src/protocol";
+
+/** A paused pool: the state that tells the outcome rows why, and the server's sentence for the notice. */
+export type PoolPause = { state: Exclude<PoolState, "open" | "off">; message: string | null };
+const PAUSED_STATES: readonly string[] = ["unread", "low", "settling"];
 
 export type MarketsSnapshot = {
     trending: MarketView[];
@@ -8,6 +12,8 @@ export type MarketsSnapshot = {
     readAt: string | null;
     /** The most one prediction may spend while trading is live; null when it isn't. */
     maxOrderUSD: number | null;
+    /** Why the pool can't take orders, as the server says it; null while it is open, off or the server doesn't say. */
+    pool: PoolPause | null;
     query: string;
     /** Search results for `query`; null while it has none, so the trending list shows. */
     results: MarketView[] | null;
@@ -40,6 +46,7 @@ const EMPTY: MarketsSnapshot = {
     trending: [],
     readAt: null,
     maxOrderUSD: null,
+    pool: null,
     query: "",
     results: null,
     answered: null,
@@ -51,6 +58,14 @@ const EMPTY: MarketsSnapshot = {
 };
 
 const limitOf = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
+
+const poolOf = (view: TrendingView): PoolPause | null =>
+    typeof view.poolState === "string" && PAUSED_STATES.includes(view.poolState)
+        ? {
+              state: view.poolState as PoolPause["state"],
+              message: typeof view.poolMessage === "string" && view.poolMessage ? view.poolMessage : null,
+          }
+        : null;
 
 const isTrending = (value: unknown): value is TrendingView => !!value && Array.isArray((value as TrendingView).markets);
 
@@ -146,6 +161,7 @@ export function createMarketsStore(options: { apiUrl: string; fetch?: typeof fet
             trending: view.markets,
             readAt: view.readAt,
             maxOrderUSD: limitOf(view.maxOrderUSD),
+            pool: poolOf(view),
             known: remember(view.markets),
         });
         if (view.readAt !== null) saveCachedTrending(view);

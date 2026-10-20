@@ -192,6 +192,14 @@ test.describe("what the dock's button says and does", () => {
             message: "Predictions are paused right now. Pick another trade, or try again later.",
             slot: "verb",
         });
+        // The server's own sentence is what the dock says when it sends one
+        const message = "Predictions are paused while earlier orders settle. Try again in a minute.";
+        expect(action("predict", [], { ...paused, pool: { state: "settling", message } })).toEqual({
+            kind: "open",
+            label: "Predictions paused",
+            message,
+            slot: "verb",
+        });
         // Other verbs don't mind
         expect(action("buy", [], paused)).toEqual({ kind: "review" });
     });

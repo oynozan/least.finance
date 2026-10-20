@@ -8,6 +8,8 @@ export type TradeCtx = {
     holdings: Readonly<Record<string, number>> | null;
     /** The most one prediction may spend; a number only while signed in with trading live. */
     maxOrderUSD?: number | null;
+    /** Why the pool is paused, from the server; unset while it is open or the server doesn't say. */
+    pool?: { state: "unread" | "low" | "settling"; message: string | null } | null;
     /** Whether Long and Short can open positions: the server's markets have loaded and its order limit is set. */
     perpTrading?: { maxOrderUSD: number | null; loaded: boolean; error?: string | null };
     /** The account's perp positions that are open or closing, which hold their asset. */

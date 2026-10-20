@@ -92,7 +92,7 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
     const { ready, authenticated } = usePrivy();
     const { login } = useLogin();
     const { balance, predictions, holdings: coins } = useAccount();
-    const { catalog, store, search, maxOrderUSD, perpTrading, known } = useLiveCatalog();
+    const { catalog, store, search, maxOrderUSD, pool, perpTrading, known } = useLiveCatalog();
     // USDC is what the account has deposited and pays for Buy, Predict, Long and Short; the coins it holds are what Sell and Swap spend.
     // Until it loads, nothing is capped rather than everything.
     const holdings = useMemo(
@@ -148,6 +148,7 @@ function PrivyTradeProvider({ children }: { children: ReactNode }) {
             store={store}
             search={search}
             maxOrderUSD={maxOrderUSD}
+            pool={pool}
             perpTrading={perpTrading}
             known={known}
         >
@@ -164,6 +165,7 @@ function useLiveCatalog(): {
     store: MarketsStore;
     search: MarketSearch;
     maxOrderUSD: number | null;
+    pool: TradeCtx["pool"];
     perpTrading: NonNullable<TradeCtx["perpTrading"]>;
     known: ReadonlyMap<string, MarketView>;
 } {
@@ -198,6 +200,7 @@ function useLiveCatalog(): {
         loading,
         known,
         maxOrderUSD,
+        pool,
     } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
     const catalog = useMemo<Catalog>(() => {
         const view = (id: string) => {
@@ -230,7 +233,7 @@ function useLiveCatalog(): {
         () => ({ onQuery: store.search, empty, loading: waiting }),
         [store, empty, waiting],
     );
-    return { catalog, store, search, maxOrderUSD, perpTrading, known };
+    return { catalog, store, search, maxOrderUSD, pool, perpTrading, known };
 }
 
 function Provide({
@@ -240,6 +243,7 @@ function Provide({
     store,
     search,
     maxOrderUSD = null,
+    pool,
     perpTrading,
     known = NO_KNOWN,
     children,
@@ -250,6 +254,7 @@ function Provide({
     store: MarketsStore;
     search: MarketSearch;
     maxOrderUSD?: number | null;
+    pool?: TradeCtx["pool"];
     perpTrading?: TradeCtx["perpTrading"];
     known?: ReadonlyMap<string, MarketView>;
     children: ReactNode;
@@ -264,7 +269,7 @@ function Provide({
         () => (heldAssets ? heldAssets.split(",").map((asset) => ({ asset })) : undefined),
         [heldAssets],
     );
-    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, perpTrading, openPerps);
+    const { view, dispatch } = useTradeSentence(holdings, catalog, maxOrderUSD, perpTrading, openPerps, pool);
     const [openRequest, setOpenRequest] = useState<OpenRequest | null>(null);
     const openSlot = useCallback((slot: string) => setOpenRequest((last) => ({ slot, id: (last?.id ?? 0) + 1 })), []);
     const watched = view.verb.id === "predict" ? view.slots.marketId : undefined;

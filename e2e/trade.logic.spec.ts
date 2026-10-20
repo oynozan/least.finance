@@ -640,6 +640,38 @@ test.describe("live prediction markets", () => {
             expect(run("predict", [], limited([oct], null)).view.blocking).toBeUndefined();
         });
 
+        test("a paused pool shows the server's sentence on the notice and a short reason on each outcome", () => {
+            const cases = [
+                [
+                    "low",
+                    "Pool too low right now",
+                    "Predictions are paused: our Polymarket balance is too low to place orders right now.",
+                ],
+                [
+                    "settling",
+                    "Earlier orders settling",
+                    "Predictions are paused while earlier orders settle. Try again in a minute.",
+                ],
+                [
+                    "unread",
+                    "Balance can't be read",
+                    "Predictions are paused: we can't read our Polymarket balance right now. Try again in a few minutes.",
+                ],
+            ] as const;
+            for (const [state, rowText, message] of cases) {
+                const ctx: TradeCtx = { ...limited([oct], 0), pool: { state, message } };
+                const { view } = run("predict", [], ctx);
+                expect(view.blocking, state).toEqual({ ...PAUSED, message });
+                expect(
+                    rows(view).map((choice) => choice.disabled ?? choice.detail),
+                    state,
+                ).toEqual([rowText, rowText]);
+            }
+            // A server that names the state but sends no sentence still gets the generic notice
+            const bare: TradeCtx = { ...limited([oct], 0), pool: { state: "low", message: null } };
+            expect(run("predict", [], bare).view.blocking).toEqual(PAUSED);
+        });
+
         test("the default outcome is the likeliest one that fits the limit", () => {
             // The usual default is YES, or the first outcome
             expect(run("predict", [], live([oct])).view.text).toMatch(/Predict No change on/);

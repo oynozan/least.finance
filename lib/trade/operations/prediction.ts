@@ -38,11 +38,18 @@ const FLOOR_USD = 1;
 
 const limitOf = (ctx: TradeCtx) => (typeof ctx.maxOrderUSD === "number" ? ctx.maxOrderUSD : undefined);
 
+/** Why an outcome can't be picked while the pool is paused, short enough for its row; the state the server named, else the plain fact */
+const PAUSED_ROW = {
+    low: "Pool too low right now",
+    settling: "Earlier orders settling",
+    unread: "Balance can't be read",
+} as const;
+
 /** Why the pool's limit rules an outcome out, or nothing while it fits or no limit is set */
 function limitReason(ctx: TradeCtx, outcome: Outcome): string | undefined {
     const limit = limitOf(ctx);
     if (limit === undefined) return undefined;
-    if (limit < FLOOR_USD) return "Paused right now";
+    if (limit < FLOOR_USD) return (ctx.pool && PAUSED_ROW[ctx.pool.state]) ?? "Paused right now";
     return outcome.minUSD > limit ? `Over the ${formatUsdShort(limit)} limit` : undefined;
 }
 
@@ -69,13 +76,15 @@ function defaultOutcome(ctx: TradeCtx, market: PredictionMarket | undefined): Ou
     return likeliest(market.outcomes.filter((o) => !overLimit(ctx, o))) ?? usual;
 }
 
-const PAUSED = {
-    code: "paused",
-    severity: "error",
-    slot: VERB_SLOT,
-    message: "Predictions are paused right now. Pick another trade, or try again later.",
-    cta: "Predictions paused",
-} as const;
+/** The pause as the issue: the server's own sentence when it sent one, else the generic copy */
+const paused = (ctx: TradeCtx) =>
+    ({
+        code: "paused",
+        severity: "error",
+        slot: VERB_SLOT,
+        message: ctx.pool?.message ?? "Predictions are paused right now. Pick another trade, or try again later.",
+        cta: "Predictions paused",
+    }) as const;
 
 /** "I want to [Predict] [YES] on [Will BTC reach $150K?] with [10 USD]." */
 export const prediction = operation({
@@ -176,7 +185,7 @@ export const prediction = operation({
     check: (v, ctx): readonly Issue<keyof Values | typeof VERB_SLOT>[] => {
         const problem = stuck(ctx, v);
         if (!problem) return [];
-        if (problem.kind === "paused") return [PAUSED];
+        if (problem.kind === "paused") return [paused(ctx)];
         const limit = formatUsdShort(problem.limit);
         if (problem.kind === "question") {
             return [

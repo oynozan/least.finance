@@ -151,6 +151,42 @@ test.describe("live markets", () => {
         }
     });
 
+    test("a paused pool's state and sentence reach the snapshot, and an open or unknown one leaves none", async () => {
+        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+        (globalThis as { document?: unknown }).document = {
+            visibilityState: "visible",
+            addEventListener() {},
+            removeEventListener() {},
+        };
+        const body = {
+            markets: [view("Good", "2030-01-01T00:00:00Z")],
+            maxOrderUSD: 0,
+            readAt: "2026-10-12T00:00:00Z",
+        };
+        const poolOf = async (extra: object) => {
+            const store = createMarketsStore({
+                apiUrl: "http://api",
+                fetch: async () => new Response(JSON.stringify({ ...body, ...extra })),
+            });
+            store.start();
+            await wait(50);
+            store.stop();
+            return store.getSnapshot().pool;
+        };
+        try {
+            expect(await poolOf({ poolState: "low", poolMessage: "Too low." })).toEqual({
+                state: "low",
+                message: "Too low.",
+            });
+            expect(await poolOf({ poolState: "unread" })).toEqual({ state: "unread", message: null });
+            expect(await poolOf({ poolState: "open" })).toBeNull();
+            expect(await poolOf({ poolState: "mystery", poolMessage: "x" })).toBeNull();
+            expect(await poolOf({})).toBeNull();
+        } finally {
+            delete (globalThis as { document?: unknown }).document;
+        }
+    });
+
     test("maxOrderUSD survives the trending cache", async () => {
         const kept = new Map<string, string>();
         (globalThis as { localStorage?: unknown }).localStorage = {
