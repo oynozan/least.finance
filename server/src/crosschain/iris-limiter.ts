@@ -25,7 +25,7 @@ export class IrisLimiter {
         if (now < this.#blockedUntil) return false;
         if (this.#announced) {
             this.#announced = false;
-            this.#logger?.info({ op: "iris.rate_limited" }, "Circle's Iris is being asked again after its pause");
+            this.#logger?.warn({ op: "iris.rate_limited" }, "Circle's Iris is being asked again after its pause");
         }
         this.#asked = this.#asked.filter((at) => now - at < 1_000);
         if (this.#asked.length >= this.#perSecond) return false;

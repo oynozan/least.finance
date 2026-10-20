@@ -1,4 +1,5 @@
 import type { ObjectId } from "mongodb";
+import { outageLog } from "../log-throttle.ts";
 import type { Logger } from "pino";
 import type { Address } from "viem";
 import { AppError } from "../errors.ts";
@@ -39,9 +40,13 @@ export class WalletBalances {
     readonly #states = new Map<string, State>();
     readonly #running = new Map<string, Promise<{ read: boolean; emitted: boolean }>>();
 
+    /** A source that is down fails every refresh, so it is logged when it starts, once an hour, and when it clears. */
+    readonly #outage: ReturnType<typeof outageLog>;
+
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#outage = outageLog(deps.logger, this.#now);
     }
 
     /**
@@ -90,14 +95,26 @@ export class WalletBalances {
         if (check) {
             try {
                 linked = await this.#deps.identity.linkedWallets(identity, { fresh: true });
+                this.#outage.ok("linked-fresh", "Privy answers wallet checks again");
+                this.#outage.ok("linked", "Privy answers wallet reads again");
             } catch (error) {
                 // Privy can't answer: use the last list read.
                 const who = { accountId: account._id.toHexString(), privyUserId: account.privyUserId };
-                this.#deps.logger.warn({ ...who, err: error }, "Couldn't check linked wallets afresh");
+                this.#outage.failed(
+                    "linked-fresh",
+                    "warn",
+                    { ...who, err: error },
+                    "Couldn't check linked wallets afresh",
+                );
                 try {
                     linked = state?.linked ?? (await this.#deps.identity.linkedWallets(identity));
                 } catch (again) {
-                    this.#deps.logger.warn({ ...who, err: again }, "Couldn't read the linked wallets from Privy");
+                    this.#outage.failed(
+                        "linked",
+                        "warn",
+                        { ...who, err: again },
+                        "Couldn't read the linked wallets from Privy",
+                    );
                     throw new AppError(
                         "unavailable",
                         "Privy didn't answer, so your wallets couldn't be listed. Try again in a moment.",
@@ -125,8 +142,14 @@ export class WalletBalances {
                         address,
                         evm ? await this.#deps.readEvm(address as Address) : await this.#deps.readSolana(address),
                     );
+                    this.#outage.ok(`wallet:${address}`, "A wallet's balances can be read again", {
+                        wallet: address,
+                        evm,
+                    });
                 } catch (error) {
-                    this.#deps.logger.warn(
+                    this.#outage.failed(
+                        `wallet:${address}`,
+                        "warn",
                         {
                             err: error,
                             accountId: account._id.toHexString(),

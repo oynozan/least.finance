@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ClientSession } from "mongodb";
+import { outageLog } from "../log-throttle.ts";
 import type { Logger } from "pino";
 import type { Config } from "../config.ts";
 import type { Collections, PerpFloatDoc } from "../db/mongo.ts";
@@ -45,8 +46,12 @@ export class PerpFloat {
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
+    /** An unreadable balance repeats on every perp open, so it is logged when it starts, once an hour, and when it clears. */
+    readonly #outage: ReturnType<typeof outageLog>;
+
     constructor(deps: Deps) {
         this.#deps = deps;
+        this.#outage = outageLog(deps.logger, deps.now);
     }
 
     start(): void {
@@ -62,6 +67,8 @@ export class PerpFloat {
                         await this.refresh();
                         watch.ok();
                     } catch (error) {
+                        // A float that comes back low after a failed read is news again
+                        this.#level = "ok";
                         // Long and short stay limited while the balance can't be read, and this is why
                         waitMs = watch.failed(error, READ_EVERY_MS, { staleForMs: this.#staleMs() });
                     }
@@ -116,6 +123,8 @@ export class PerpFloat {
             { upsert: true, returnDocument: "after" },
         );
         if (doc) this.#remember(doc);
+        this.#outage.clear("read");
+        this.#outage.ok("stale", "The Hyperliquid float can be read again, long and short can open");
         this.#warn(balance);
     }
 
@@ -141,7 +150,9 @@ export class PerpFloat {
         try {
             await Promise.race([this.refresh(), timer]);
         } catch (error) {
-            this.#deps.logger.warn(
+            this.#outage.failed(
+                "read",
+                "warn",
                 {
                     event: "perp.float.read_failed",
                     waitMs: READ_WAIT_MS,
@@ -212,21 +223,20 @@ export class PerpFloat {
     short(doc: PerpFloatDoc | null, requestedE6: bigint): AppError {
         const stale = !doc || this.#stale(doc);
         const free = doc && !stale ? this.#wholeUSD(freeOf(doc) - ACTIVATION_E6 - SLACK_E6) : 0;
-        this.#deps.logger.warn(
-            {
-                event: "perp.float.short",
-                requestedE6: requestedE6.toString(),
-                balanceE6: doc ? fromDecimal(doc.balanceE6).toString() : null,
-                heldE6: doc ? fromDecimal(doc.heldE6).toString() : null,
-                unreadFillsE6: doc ? fromDecimal(doc.unreadFillsE6).toString() : null,
-                maxOrderUSD: free,
-                stale,
-                lastReadAt: doc?.balanceAt ?? null,
-            },
-            stale
-                ? "A perp open was refused: the Hyperliquid float can't be read"
-                : "A perp open was refused: the float is short",
-        );
+        const fields = {
+            event: "perp.float.short",
+            requestedE6: requestedE6.toString(),
+            balanceE6: doc ? fromDecimal(doc.balanceE6).toString() : null,
+            heldE6: doc ? fromDecimal(doc.heldE6).toString() : null,
+            unreadFillsE6: doc ? fromDecimal(doc.unreadFillsE6).toString() : null,
+            maxOrderUSD: free,
+            stale,
+            lastReadAt: doc?.balanceAt ?? null,
+        };
+        // A balance that can't be read refuses every open the same way, so that is said once; a short one is the order's own
+        if (stale)
+            this.#outage.failed("stale", "warn", fields, "Perp opens are refused: the Hyperliquid float can't be read");
+        else this.#deps.logger.warn(fields, "A perp open was refused: the float is short");
         if (stale)
             return new AppError(
                 "unavailable",

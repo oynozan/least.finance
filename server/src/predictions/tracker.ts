@@ -207,7 +207,10 @@ export class PredictionTracker {
                     ),
                 )
                 .catch((error: unknown) =>
-                    this.#deps.logger.warn(
+                    // The same order fails again every poll, so its line is logged once an hour
+                    this.#hourly.once(
+                        `refund:${order._id.toHexString()}`,
+                        "warn",
                         { err: error, order: order._id.toHexString() },
                         "Couldn't refund a prediction",
                     ),

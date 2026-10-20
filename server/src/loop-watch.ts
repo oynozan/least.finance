@@ -26,7 +26,7 @@ export function loopWatch(logger: Logger, loop: string) {
         /** Records a pass that worked. */
         ok(): void {
             if (failures === 0) return;
-            logger.info(
+            logger.warn(
                 { event: "loop.recovered", loop, failures },
                 `The ${loop} pass works again after ${failures} failures`,
             );

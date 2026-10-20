@@ -279,7 +279,7 @@ export class PrivyIdentity implements IdentityProvider {
         try {
             user = await this.#privy.users()._get(userId);
             if (this.#api !== "ok")
-                this.#logger.info({ event: "privy.user_read", was: this.#api }, "Privy's API answers again");
+                this.#logger.warn({ event: "privy.user_read", was: this.#api }, "Privy's API answers again");
             this.#api = "ok";
         } catch (error) {
             const was = this.#api;

@@ -22,7 +22,7 @@ test("a failing loop logs its first failure and then one in ten, waits longer ea
     expect(lines[1]).toMatchObject({ consecutive: 10 });
 
     watch.ok();
-    expect(lines.at(-1)).toMatchObject({ level: 30, event: "loop.recovered", loop: "payout", failures: 12 });
+    expect(lines.at(-1)).toMatchObject({ level: 40, event: "loop.recovered", loop: "payout", failures: 12 });
     watch.ok();
     expect(lines.at(-1)).toMatchObject({ event: "loop.recovered" });
     expect(lines).toHaveLength(3);

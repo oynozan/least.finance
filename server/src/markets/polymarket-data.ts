@@ -63,16 +63,19 @@ export function createPolymarketData(options: {
                 { dropped: dropped.length, of: items.length, samples: dropped.slice(0, 3) },
                 "Polymarket events failed our schema and were dropped",
             );
-        for (const event of events) {
-            const skipped = skippedMarkets(event);
-            if (skipped.length)
-                hourly?.once(
-                    `markets:${event.id}:${skipped[0]}`,
-                    "warn",
-                    { event: event.id, skipped: skipped.length, samples: skipped.slice(0, 3) },
-                    "Polymarket markets failed our schema and were skipped",
-                );
-        }
+        // One line for the whole list, not one per event, since a few odd markets are on every sync
+        const skippedBy = events.flatMap((event) => skippedMarkets(event).map((why) => ({ event: event.id, why })));
+        if (skippedBy.length)
+            hourly?.once(
+                `markets:${skippedBy[0]!.event}:${skippedBy[0]!.why}`,
+                "warn",
+                {
+                    skipped: skippedBy.length,
+                    events: new Set(skippedBy.map((entry) => entry.event)).size,
+                    samples: skippedBy.slice(0, 3),
+                },
+                "Polymarket markets failed our schema and were skipped",
+            );
         return events;
     }
 

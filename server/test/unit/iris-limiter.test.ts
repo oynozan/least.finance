@@ -75,8 +75,9 @@ test("a pause is announced once when it starts and once when it ends, so a 5 min
     );
 
     expect(limiter.take(12_000)).toBe(false);
-    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(limiter.take(11_000 + 5 * MINUTE)).toBe(true);
     expect(limiter.take(11_000 + 5 * MINUTE)).toBe(true);
-    expect(logger.info).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenLastCalledWith({ op: "iris.rate_limited" }, expect.stringContaining("asked again"));
 });

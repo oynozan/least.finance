@@ -170,7 +170,9 @@ export class PredictionReconciler {
         }
         const row = await predictionRedemptions.findOne({ conditionId: owner.conditionId });
         if (row?.state === "confirmed" && (row.round ?? 1) >= MAX_ROUNDS) {
-            this.#deps.logger.error(
+            this.#hourly.once(
+                `left-behind:${tokenId}`,
+                "error",
                 { tokenId, condition: owner.conditionId },
                 "Redemption leaves winning tokens behind",
             );

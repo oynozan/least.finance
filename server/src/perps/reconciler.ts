@@ -6,6 +6,7 @@ import type { ArcClient } from "../chain/arc.ts";
 import type { Config } from "../config.ts";
 import type { Collections } from "../db/mongo.ts";
 import { fromDecimal, weiToE6 } from "../db/money.ts";
+import { HourlyLog } from "../predictions/rebalance-log.ts";
 import { nextNonce, type AccountState, type HyperliquidClient } from "./client.ts";
 import { ACTIVATION_E6 } from "./float.ts";
 
@@ -70,8 +71,12 @@ export class PerpReconciler {
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
+    /** A condition that persists is found again by every run, so each one's line is logged once an hour. */
+    readonly #hourly: HourlyLog;
+
     constructor(deps: Deps) {
         this.#deps = deps;
+        this.#hourly = new HourlyLog(deps.logger, Date.now);
     }
 
     start(): void {
@@ -83,7 +88,9 @@ export class PerpReconciler {
                 await sleep(RECONCILE_EVERY_MS, undefined, { signal }).catch(() => undefined);
                 if (signal.aborted) break;
                 await this.run().catch((error: unknown) =>
-                    this.#deps.logger.warn(
+                    this.#hourly.once(
+                        "run-failed",
+                        "warn",
                         { event: "perp.reconcile.failed", err: error },
                         "Perp reconciliation threw; the next run is in 10 minutes",
                     ),
@@ -163,7 +170,9 @@ export class PerpReconciler {
                 valueBy.set(person.index, state?.accountValueE6 ?? 0n);
             } catch (error) {
                 readable = false;
-                logger.warn(
+                this.#hourly.once(
+                    `read:${person.index}`,
+                    "warn",
                     { event: "perp.reconcile.read_failed", err: error, index: person.index, address: person.address },
                     "Couldn't read a Hyperliquid account to reconcile; the solvency check is skipped this run",
                 );
@@ -175,7 +184,9 @@ export class PerpReconciler {
             const real = states.get(position.index)?.positions.find((p) => p.asset === position.asset);
             if (real && real.side === position.side && sameSize(real.sizeCoin, position.sizeCoin)) continue;
             mismatches++;
-            logger.error(
+            this.#hourly.once(
+                `mismatch:${position.index}:${position.asset}`,
+                "error",
                 { index: position.index, asset: position.asset, side: position.side, size: position.sizeCoin, real },
                 "A position doesn't match its Hyperliquid account",
             );
@@ -187,7 +198,9 @@ export class PerpReconciler {
             if (!state || moving.has(person.index)) continue;
             for (const real of state.positions) {
                 if (positions.some((p) => p.index === person.index && p.asset === real.asset)) continue;
-                logger.error(
+                this.#hourly.once(
+                    `unrecorded:${person.index}:${real.asset}`,
+                    "error",
                     { index: person.index, asset: real.asset, side: real.side, size: real.sizeCoin },
                     "A Hyperliquid position has no active record",
                 );
@@ -204,7 +217,9 @@ export class PerpReconciler {
                     "Swept a stuck balance to the master",
                 );
             } catch (error) {
-                logger.error(
+                this.#hourly.once(
+                    `sweep:${person.index}`,
+                    "error",
                     { event: "perp.reconcile.sweep_failed", err: error, index: person.index, address: person.address },
                     "Couldn't sweep a stuck balance to the master",
                 );
@@ -228,7 +243,9 @@ export class PerpReconciler {
             const fresh = inFlight.filter((row) => Date.now() - row.createdAt.getTime() < IN_FLIGHT_MAX_MS);
             for (const row of inFlight) {
                 if (fresh.includes(row)) continue;
-                logger.error(
+                this.#hourly.once(
+                    `rebalance:${row._id.toHexString()}`,
+                    "error",
                     { rebalanceId: row._id.toHexString(), amountE6: fromDecimal(row.amountE6).toString() },
                     "A rebalance has been sent for over an hour; mark it arrived once it has",
                 );
@@ -249,7 +266,9 @@ export class PerpReconciler {
             if (liabilities > assets) shortfallE6 = liabilities - assets;
             const tolerance = BigInt(Math.round(config.PERPS_RECONCILE_TOLERANCE_USD * 1e6));
             if (shortfallE6 > tolerance) {
-                logger[pool.stale ? "warn" : "error"](
+                this.#hourly.once(
+                    "shortfall",
+                    pool.stale ? "warn" : "error",
                     {
                         shortfallE6: shortfallE6.toString(),
                         assetsE6: assets.toString(),

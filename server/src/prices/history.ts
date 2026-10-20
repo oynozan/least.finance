@@ -201,7 +201,7 @@ export class PriceHistory {
             this.#reads.set(range, { coins, at });
             this.#retryAt.delete(range);
             if (this.#failing.delete(range))
-                this.#deps.logger.info({ range }, "Price history from DefiLlama is readable again");
+                this.#deps.logger.warn({ range }, "Price history from DefiLlama is readable again");
         } catch (error) {
             const wait = Math.max(RETRY_MS, error instanceof LlamaError ? (error.retryAfterMs ?? 0) : 0);
             this.#retryAt.set(range, this.#now() + wait);

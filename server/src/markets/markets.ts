@@ -120,7 +120,7 @@ export class MarketService {
                 this.#trending = { value: markets, at: now };
                 this.#lastError = null;
                 if (this.#downSince !== null)
-                    this.#deps.logger.info(
+                    this.#deps.logger.warn(
                         { downForSec: Math.round((now - this.#downSince) / 1000) },
                         "Polymarket's top events can be read again",
                     );

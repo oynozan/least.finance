@@ -154,7 +154,7 @@ export class PerpPriceHistory {
             this.#used(key, { points: pointsOf(candles, range, at), at });
             this.#retryAt.delete(key);
             if (this.#failing.delete(key))
-                this.#deps.logger.info({ asset, range }, "Price history from Hyperliquid is readable again");
+                this.#deps.logger.warn({ asset, range }, "Price history from Hyperliquid is readable again");
         } catch (error) {
             this.#retryAt.set(key, this.#now() + RETRY_MS);
             this.#failing.add(key);

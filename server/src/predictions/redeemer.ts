@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { HourlyLog } from "./rebalance-log.ts";
 import { loopWatch } from "../loop-watch.ts";
 import type { Logger } from "pino";
 import type { Collections, PredictionRedemptionDoc } from "../db/mongo.ts";
@@ -40,10 +41,13 @@ export class PredictionRedeemer {
     #loop: Promise<void> | null = null;
     #pass: Promise<void> | null = null;
     #stuckLoggedAt = 0;
+    /** A redemption that keeps failing repeats every pass, so each one's line is logged once an hour. */
+    readonly #hourly: HourlyLog;
 
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#hourly = new HourlyLog(deps.logger, this.#now);
     }
 
     start() {
@@ -91,7 +95,9 @@ export class PredictionRedeemer {
         const submitted = await predictionRedemptions.find({ state: "submitted" }).toArray();
         for (const row of submitted) {
             await this.#check(trader, row).catch((error: unknown) =>
-                this.#deps.logger.warn(
+                this.#hourly.once(
+                    `check:${row.conditionId}`,
+                    "warn",
                     {
                         err: error,
                         condition: row.conditionId,
@@ -109,7 +115,9 @@ export class PredictionRedeemer {
             await this.#submit(trader, row).catch((error: unknown) =>
                 // The step that threw is after the relayer took the call when a transaction id was returned,
                 // so the redemption may be in flight without being written down
-                this.#deps.logger.error(
+                this.#hourly.once(
+                    `submit:${row.conditionId}`,
+                    "error",
                     {
                         err: error,
                         condition: row.conditionId,
@@ -240,7 +248,7 @@ export class PredictionRedeemer {
         );
         if (moved.modifiedCount === 0) return;
         this.#deps.logger.info({ condition: row.conditionId, reason }, "Redemption confirmed");
-        if (row.stuckAt) this.#deps.logger.info({ condition: row.conditionId }, "Redemption recovered");
+        if (row.stuckAt) this.#deps.logger.warn({ condition: row.conditionId }, "Redemption recovered");
         // The payout is pool float again
         await this.#deps.service
             .refreshFloat()

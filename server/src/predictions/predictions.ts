@@ -18,13 +18,7 @@ import { AppError, isAppError } from "../errors.ts";
 import type { Bus } from "../events.ts";
 import type { MarketService } from "../markets/markets.ts";
 import { MIN_ORDER_USD } from "../markets/shape.ts";
-import type {
-    PoolState,
-    PositionsView,
-    PredictionOrderView,
-    QuoteView,
-    SellQuoteView,
-} from "../protocol.ts";
+import type { PoolState, PositionsView, PredictionOrderView, QuoteView, SellQuoteView } from "../protocol.ts";
 import {
     costOfFill,
     feeE6,
@@ -282,6 +276,11 @@ export class PredictionService {
         const before = await poolFloat.findOne({ _id: FLOAT_ID });
         const unread = before ? fromDecimal(before.unreadFillsE6) : 0n;
         const balance = await trader.balanceE6();
+        if (this.#floatError)
+            this.#deps.logger.warn(
+                { downForSec: Math.round((this.#now() - this.#floatError.at) / 1000) },
+                "The pool's Polymarket balance can be read again",
+            );
         this.#floatError = null;
         const now = new Date(this.#now());
         const initialHeld = before ? 0n : (await this.#openHolds()).total;

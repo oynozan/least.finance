@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
+import { outageLog } from "../log-throttle.ts";
 import type { Config } from "../config.ts";
 import type { PerpMarketsView } from "../protocol.ts";
 import type { HyperliquidClient, PerpMeta } from "./client.ts";
@@ -24,6 +25,8 @@ export class PerpMarkets {
     #rank = new Map<string, number>();
     #rankedAt: number | null = null;
     #readAt: number | null = null;
+    /** A sync that keeps failing is logged when it starts, once an hour, and when it clears. */
+    readonly #outage: ReturnType<typeof outageLog>;
     #maxOrderUSD: () => number | null = () => null;
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
@@ -31,6 +34,7 @@ export class PerpMarkets {
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#outage = outageLog(deps.logger, this.#now);
     }
 
     start(): void {
@@ -73,8 +77,11 @@ export class PerpMarkets {
             }
             this.#assets = listed.sort((a, b) => this.#rank.get(a.asset)! - this.#rank.get(b.asset)!);
             this.#readAt = at;
+            this.#outage.ok("sync", "The Hyperliquid markets are being read again");
         } catch (error) {
-            this.#deps.logger.warn(
+            this.#outage.failed(
+                "sync",
+                "warn",
                 {
                     event: "perp.markets.sync_failed",
                     lastReadAt: this.#readAt,

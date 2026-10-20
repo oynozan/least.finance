@@ -7,6 +7,7 @@ import { pinoHttp } from "pino-http";
 import type { Identity } from "../auth/identity.ts";
 import { AppError, toApiError } from "../errors.ts";
 import { describeUpstream } from "../markets/upstream.ts";
+import { outageLog } from "../log-throttle.ts";
 import type { ApiError, PoolState } from "../protocol.ts";
 import type { Services } from "../services.ts";
 import {
@@ -54,6 +55,8 @@ function refuse(
 /** The HTTP API. Everything under /v1 needs a Privy access token as a Bearer token. */
 export function createApp(services: Services): express.Express {
     const { config, logger } = services;
+    // Probes and charts ask again every few seconds while a source is down, so that is said when it starts, once an hour, and when it clears
+    const outage = outageLog(logger);
     const app = express();
     app.disable("x-powered-by");
     // A hop count, never `true`: trusting every X-Forwarded-For would let clients pick their own IP.
@@ -126,9 +129,17 @@ export function createApp(services: Services): express.Express {
         const scanFresh = scanAge !== null && scanAge < 60_000;
         const database = await services.database.db
             .command({ ping: 1 })
-            .then(() => true)
+            .then(() => {
+                outage.ok("database", "MongoDB answers pings again");
+                return true;
+            })
             .catch((error: unknown) => {
-                req.log.warn({ err: error, event: "ready.database_ping" }, "MongoDB didn't answer a ping");
+                outage.failed(
+                    "database",
+                    "warn",
+                    { err: error, event: "ready.database_ping" },
+                    "MongoDB didn't answer a ping",
+                );
                 return false;
             });
         const ready = database && scanFresh;
@@ -219,8 +230,11 @@ export function createApp(services: Services): express.Express {
     app.get("/prices/history", noStore, limit(120, 60_000), async (req, res) => {
         const { range, coins } = parse(priceHistory, req.query);
         const view = await services.priceHistory.view(range, coins);
+        if (view) outage.ok(`prices.history:${range}`, "Price history is ready again", { range });
         if (!view) {
-            req.log.warn(
+            outage.failed(
+                `prices.history:${range}`,
+                "warn",
                 { event: "prices.history", path: req.path, range, coins: (coins ?? []).slice(0, 8) },
                 "No price history is ready for this range yet",
             );

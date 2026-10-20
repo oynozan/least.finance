@@ -82,6 +82,11 @@ export class OrderTracker {
         while (!signal.aborted) {
             try {
                 await this.tick();
+                if (this.#failedPasses > 0)
+                    this.#deps.logger.warn(
+                        { op: "deposit.order.list", failures: this.#failedPasses },
+                        "Listing open deposit orders works again",
+                    );
                 this.#failedPasses = 0;
             } catch (error) {
                 // Logged on the 1st, 2nd, 4th, 8th... failed pass in a row, so a database that is down doesn't fill the log
@@ -158,7 +163,7 @@ export class OrderTracker {
     #recovered(order: DepositOrderDoc) {
         const id = order._id.toHexString();
         if (!this.#failing.delete(id)) return;
-        this.#deps.logger.info(
+        this.#deps.logger.warn(
             {
                 op: "deposit.order.follow",
                 orderId: id,

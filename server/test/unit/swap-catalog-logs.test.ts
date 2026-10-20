@@ -69,14 +69,16 @@ test("a failed read is logged with how old the prices are, then once as an error
         msg: "Swap prices are stale: LI.FI's token list is unread, trades are refused",
     });
 
+    // Still failing: nothing more is written
+    const written = lines.length;
     advance(60_000);
     await catalog.tick();
-    expect(lines.at(-1)).toMatchObject({ level: 40, consecutiveFailures: 3 });
+    expect(lines).toHaveLength(written);
 
     reading(true);
     await catalog.tick();
     expect(lines.at(-1)).toMatchObject({
-        level: 30,
+        level: 40,
         failures: 3,
         msg: "LI.FI's token list is being read again, swap prices are fresh",
     });

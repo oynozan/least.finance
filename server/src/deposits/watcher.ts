@@ -4,6 +4,7 @@ import type { Address } from "viem";
 import { ARC_CHAIN_ID, type ArcClient } from "../chain/arc.ts";
 import { findTransfersTo } from "../chain/native-transfers.ts";
 import { hostOf } from "../errors.ts";
+import { outageLog } from "../log-throttle.ts";
 import type { Collections } from "../db/mongo.ts";
 import { formatUsdc } from "../db/money.ts";
 import type { Ledger } from "./ledger.ts";
@@ -102,8 +103,12 @@ export class DepositWatcher {
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
+    /** A deposit the scan can't credit is retried every pass; it is logged when it first fails, once an hour, and when it goes through. */
+    readonly #creditOutage: ReturnType<typeof outageLog>;
+
     constructor(deps: Deps) {
         this.#deps = deps;
+        this.#creditOutage = outageLog(deps.logger);
     }
 
     status(): WatcherStatus {
@@ -135,6 +140,11 @@ export class DepositWatcher {
             let wait: number;
             try {
                 const caughtUp = await this.tick();
+                if (this.#failures > 0)
+                    this.#deps.logger.warn(
+                        { op: "deposit.scan", failures: this.#failures, cursor: this.#cursor },
+                        "The deposit scan works again",
+                    );
                 this.#lastSuccessAt = new Date();
                 this.#lastError = null;
                 this.#lastErrorKind = null;
@@ -152,7 +162,11 @@ export class DepositWatcher {
                 backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : this.#deps.pollMs);
                 wait = backoff;
                 const logged = typeof error === "object" && error !== null && this.#alreadyLogged.has(error);
-                if (!logged)
+                // The first failure, the one that makes it an error, then one in fifty, so an outage isn't a line a pass
+                const due =
+                    this.#failures === 1 ||
+                    (this.#failures >= ESCALATE_AFTER && (this.#failures - ESCALATE_AFTER) % 50 === 0);
+                if (!logged && due)
                     this.#deps.logger[this.#failures >= ESCALATE_AFTER ? "error" : "warn"](
                         {
                             op: "deposit.scan",
@@ -253,7 +267,9 @@ export class DepositWatcher {
                 try {
                     await ledger.credit(transfer, accountId, "scan");
                 } catch (error) {
-                    this.#deps.logger.error(
+                    this.#creditOutage.failed(
+                        `${transfer.txHash}:${transfer.logIndex}`,
+                        "error",
                         {
                             op: "deposit.credit",
                             accountId: accountId.toHexString(),
@@ -270,6 +286,16 @@ export class DepositWatcher {
                     if (typeof error === "object" && error !== null) this.#alreadyLogged.add(error);
                     throw error;
                 }
+                this.#creditOutage.ok(
+                    `${transfer.txHash}:${transfer.logIndex}`,
+                    "A deposit the scan couldn't credit is credited",
+                    {
+                        op: "deposit.credit",
+                        txHash: transfer.txHash,
+                        logIndex: transfer.logIndex,
+                        accountId: accountId.toHexString(),
+                    },
+                );
                 this.#phase = "logs";
             }
         }

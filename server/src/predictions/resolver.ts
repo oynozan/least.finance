@@ -133,12 +133,20 @@ export class PredictionResolver {
                 null,
             );
             await this.#queueRedemption(conditionId, marketId, latestBuyAt);
-        } else this.#deps.logger.error({ market: marketId }, "A resolved market has no condition to redeem");
+        } else
+            this.#hourly.once(
+                `no-condition:${marketId}`,
+                "error",
+                { market: marketId },
+                "A resolved market has no condition to redeem",
+            );
 
         for (const position of open) {
             const index = market.clobTokenIds.indexOf(position.tokenId);
             if (index < 0) {
-                this.#deps.logger.error(
+                this.#hourly.once(
+                    `no-token:${position._id.toHexString()}`,
+                    "error",
                     { market: marketId, position: position._id.toHexString() },
                     "A position's token isn't in its market",
                 );

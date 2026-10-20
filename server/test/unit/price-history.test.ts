@@ -335,9 +335,9 @@ test("an outage is logged once an hour per range and status, with the status and
     expect(lines[0]![0]).toMatchObject({ status: 429, retryAfterMs: 120_000, retryInMs: 120_000 });
 });
 
-test("one info line says DefiLlama is readable again after an outage, and none for ranges that never failed", async () => {
+test("one line says DefiLlama is readable again after an outage, and none for ranges that never failed", async () => {
     const quiet = pino({ level: "silent" });
-    const info = vi.spyOn(quiet, "info");
+    const info = vi.spyOn(quiet, "warn");
     let now = Date.parse("2026-10-13T12:00:00Z");
     let up = false;
     const llama: DefiLlama = {
@@ -357,9 +357,9 @@ test("one info line says DefiLlama is readable again after an outage, and none f
     expect(lines[0]![0]).toMatchObject({ range: expect.any(String) });
 });
 
-test("one info line says Hyperliquid candles are readable again after a failed read", async () => {
+test("one line says Hyperliquid candles are readable again after a failed read", async () => {
     const quiet = pino({ level: "silent" });
-    const info = vi.spyOn(quiet, "info");
+    const info = vi.spyOn(quiet, "warn");
     let now = Date.parse("2026-10-13T12:00:00Z");
     let up = false;
     const perps = new PerpPriceHistory({

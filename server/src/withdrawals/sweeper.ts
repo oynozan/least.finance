@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { createWalletClient, custom, formatUnits, parseGwei, type Hex } from "viem";
+import { outageLog } from "../log-throttle.ts";
 import type { Logger } from "pino";
 import type { Keyring } from "../accounts/keyring.ts";
 import { MIN_BASE_FEE, type ArcClient } from "../chain/arc.ts";
@@ -31,8 +32,12 @@ export class Sweeper {
     #loop: Promise<void> | null = null;
     #unsubscribe: (() => void) | null = null;
 
+    /** A pass that keeps failing is logged when it starts, once an hour, and when it clears. */
+    readonly #outage: ReturnType<typeof outageLog>;
+
     constructor(deps: Deps) {
         this.#deps = deps;
+        this.#outage = outageLog(deps.logger);
     }
 
     start() {
@@ -100,7 +105,9 @@ export class Sweeper {
         }
         // One line for the pass, not one per address, so an RPC outage doesn't write thousands
         if (failed.length > 0) {
-            logger.warn(
+            this.#outage.failed(
+                "pass",
+                "warn",
                 {
                     event: "sweep.failed",
                     failed: failed.length,
@@ -110,7 +117,7 @@ export class Sweeper {
                 },
                 `${failed.length} of ${total} deposit sweeps failed`,
             );
-        }
+        } else this.#outage.ok("pass", "Sweeping the deposit addresses works again", { total });
     }
 
     /** Rejects as soon as stop() is called, so a slow receipt can't hold shutdown. */
@@ -159,7 +166,9 @@ export class Sweeper {
                 await this.sweepAll(signal);
             } catch (error) {
                 if (signal.aborted) break;
-                this.#deps.logger.warn(
+                this.#outage.failed(
+                    "pass",
+                    "warn",
                     { event: "sweep.pass_failed", err: error },
                     "Looking for deposit addresses to sweep failed",
                 );

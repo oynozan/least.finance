@@ -1,4 +1,5 @@
 import { describeUpstream } from "./upstream.ts";
+import { outageLog } from "../log-throttle.ts";
 import type { Logger } from "pino";
 import type { MarketHistoryView } from "../protocol.ts";
 import type { MarketService } from "./markets.ts";
@@ -59,9 +60,12 @@ export class MarketHistory {
     readonly #entries = new Map<string, Entry>();
     readonly #pending = new Map<string, Promise<void>>();
 
+    readonly #outage: ReturnType<typeof outageLog>;
+
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#outage = outageLog(deps.logger, this.#now);
     }
 
     /** The asked tokens' lines in the order asked; null when the event isn't offered now or any token isn't one of its own; rejects when Polymarket fails and a token has nothing read within HISTORY_STALE_MS. */
@@ -105,10 +109,14 @@ export class MarketHistory {
                     const points = thin(cleanPoints(histories.get(token) ?? [], openedAt), MAX_POINTS);
                     this.#store(token, { points, stepMs, readAt: now });
                 }
+                this.#outage.ok("read", "Polymarket price history can be read again");
             })
             .catch((error: unknown) => {
                 // Logged here, once per read; the route that waits on it only maps the failure to a sentence
-                this.#deps.logger.warn(
+                // An outage fails every chart anyone opens, so it is logged when it starts, once an hour, and when it clears
+                this.#outage.failed(
+                    "read",
+                    "warn",
                     { ...describeUpstream(error).fields, err: error, eventId, tokens: tokens.length, ...query },
                     "Polymarket price history read failed",
                 );

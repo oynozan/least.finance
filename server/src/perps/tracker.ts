@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { loopWatch } from "../loop-watch.ts";
+import { outageLog } from "../log-throttle.ts";
 import type { ObjectId } from "mongodb";
 import type { Logger } from "pino";
 import type { Config } from "../config.ts";
@@ -77,9 +78,13 @@ export class PerpTracker {
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
 
+    /** An account that can't be read fails every poll, so it is logged when it starts, once an hour, and when it clears. */
+    readonly #outage: ReturnType<typeof outageLog>;
+
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#outage = outageLog(deps.logger, this.#now);
     }
 
     start(): void {
@@ -229,9 +234,14 @@ export class PerpTracker {
             this.#spend(STATE_WEIGHT);
             try {
                 await abortable(this.#poll(target.address, byIndex.get(target.index)!, at, signal), signal);
+                this.#outage.ok(`read:${target.address}`, "Reading a Hyperliquid account for tracking works again", {
+                    address: target.address,
+                });
             } catch (error) {
                 if (!signal?.aborted)
-                    this.#deps.logger.warn(
+                    this.#outage.failed(
+                        `read:${target.address}`,
+                        "warn",
                         {
                             event: "perp.track.read_failed",
                             index: target.index,

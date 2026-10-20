@@ -114,7 +114,11 @@ describe("what is dropped from a good answer", () => {
         await reader.topEvents();
         expect(warn).toHaveBeenCalledTimes(1);
         expect(warn).toHaveBeenCalledWith(
-            { event: "9", skipped: 1, samples: ["market b outcomes: outcomes is not JSON: Yes,No"] },
+            {
+                skipped: 1,
+                events: 1,
+                samples: [{ event: "9", why: "market b outcomes: outcomes is not JSON: Yes,No" }],
+            },
             "Polymarket markets failed our schema and were skipped",
         );
     });
@@ -124,7 +128,6 @@ describe("the trending list while Polymarket is down", () => {
     test("says why it is empty, logs the outage once, and logs when it ends", async () => {
         const logger = pino({ level: "silent" });
         const warn = vi.spyOn(logger, "warn");
-        const info = vi.spyOn(logger, "info");
         let clock = 1_000_000;
         let up = false;
         const { top } = JSON.parse(
@@ -158,6 +161,6 @@ describe("the trending list while Polymarket is down", () => {
         clock += 60_000;
         await markets.tick();
         expect(markets.trending().unavailableReason).toBeUndefined();
-        expect(info).toHaveBeenCalledWith({ downForSec: 120 }, "Polymarket's top events can be read again");
+        expect(warn).toHaveBeenCalledWith({ downForSec: 120 }, "Polymarket's top events can be read again");
     });
 });

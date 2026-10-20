@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
+import { outageLog } from "../log-throttle.ts";
 import type { SwapCatalogView } from "../protocol.ts";
 import { COINS, NETWORKS } from "./coins.ts";
 import { LifiError, type Lifi } from "./lifi.ts";
@@ -29,13 +30,18 @@ export type PriceStatus =
     | { reason: "never_read"; ageMs: null }
     | { reason: "stale" | "no_price" | "not_listed"; ageMs: number };
 
+const SYNC_KEYS = ["sync", "sync:key", "sync:stale"];
+
 /** Keeps the swap coins' live USD prices from LI.FI's token list and serves the coins with them. */
+
 export class SwapCatalog {
     readonly #deps: Deps;
     readonly #now: () => number;
     #prices = new Map<string, number | null>();
     #readAt: number | null = null;
     #failures = 0;
+    /** A failing sync is logged when it starts, once an hour while it lasts, and when it clears. */
+    readonly #outage: ReturnType<typeof outageLog>;
     #stale = false;
     #stop: AbortController | null = null;
     #loop: Promise<void> | null = null;
@@ -43,6 +49,7 @@ export class SwapCatalog {
     constructor(deps: Deps) {
         this.#deps = deps;
         this.#now = deps.now ?? Date.now;
+        this.#outage = outageLog(deps.logger, this.#now);
     }
 
     start() {
@@ -94,8 +101,10 @@ export class SwapCatalog {
 
             this.#prices = prices;
             this.#readAt = this.#now();
-            if (this.#failures > 0)
-                this.#deps.logger.info(
+            const wasFailing = SYNC_KEYS.some((key) => this.#outage.isDown(key));
+            SYNC_KEYS.forEach((key) => this.#outage.clear(key));
+            if (wasFailing)
+                this.#deps.logger.warn(
                     { failures: this.#failures },
                     "LI.FI's token list is being read again, swap prices are fresh",
                 );
@@ -117,18 +126,25 @@ export class SwapCatalog {
             if (error instanceof LifiError && error.kind === "unauthorized") {
                 // Nothing will read until the operator fixes the key
                 this.#stale ||= stale;
-                this.#deps.logger.error(context, "LI.FI rejected our API key, so swap prices can't be read");
+                this.#outage.failed(
+                    "sync:key",
+                    "error",
+                    context,
+                    "LI.FI rejected our API key, so swap prices can't be read",
+                );
             }
             // Once the prices are too old to trade on, every trade is refused, so that is an error and says so once
             else if (stale && !this.#stale) {
                 this.#stale = true;
-                this.#deps.logger.error(
+                this.#outage.failed(
+                    "sync:stale",
+                    "error",
                     context,
                     ageMs === null
                         ? "Swap prices have never been read: LI.FI's token list is failing, trades are refused"
                         : "Swap prices are stale: LI.FI's token list is unread, trades are refused",
                 );
-            } else this.#deps.logger.warn(context, "Couldn't read LI.FI's token list");
+            } else this.#outage.failed("sync", "warn", context, "Couldn't read LI.FI's token list");
         }
     }
 
