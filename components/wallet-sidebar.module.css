@@ -434,6 +434,38 @@
     z-index: 1;
 }
 
+/* What the balance is made of, above the history and dealt out like one of its rows. */
+.split {
+    margin: 12px 4px 0;
+    padding: 9px 16px;
+    border-radius: 21px;
+    background: var(--pill-hover);
+    box-shadow: 0 4px 10px -6px rgb(0 0 0 / 0.2);
+    transform-origin: 50% 0;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+
+.splitPart {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    line-height: 26px;
+}
+
+.splitPart > dt {
+    color: var(--muted);
+}
+
+.splitPart > dd {
+    font-weight: 500;
+}
+
+/* Holds the history and its edge overlays, so the blur bands sit on the list and not over the split above it. */
+.historyList {
+    position: relative;
+}
+
 /* Side padding keeps the row shadows from being clipped; the bottom
    padding is the gap above the sidebar's edge, inside the scroll area so
    the blur band covers it too. */
@@ -912,7 +944,7 @@
 
 /* The history is inset from the sidebar's sides; its blur band still
    spans the full width, so the band has no visible side edges. */
-.historyFrame > .edge {
+.historyList > .edge {
     left: -18px;
     right: -18px;
 }

@@ -196,6 +196,32 @@ test("the balance is the account's USDC on the server", async ({ page }) => {
     await expect(sidebar(page).getByText(HISTORY_BALANCE.slice(0, -3))).toBeVisible();
 });
 
+test("an open position keeps the balance whole, and hovering or tapping it shows the cash and the positions", async ({
+    page,
+    isMobile,
+}) => {
+    // $500 in, and a $10 prediction bought from it
+    await openWallet(page, { positions: 1 });
+    await expect(balanceButton(page)).toHaveAccessibleName(/, \$490\.00 cash, show deposits$/);
+
+    if (isMobile) await balanceButton(page).tap();
+    else await balanceButton(page).hover();
+    const split = sidebar(page).getByRole("group", { name: "Balance breakdown" });
+    const part = (label: string) => split.locator("div").filter({ has: page.locator("dt", { hasText: label }) });
+    await expect(part("Cash").locator("dd")).toHaveText("$490.00");
+    // The prediction counts at what it would sell for, and there are no coins to count
+    await expect(part("Positions").locator("dd")).toHaveText(/^\$\d+\.\d\d$/);
+    await expect(part("Coins")).toHaveCount(0);
+    const positions = Number((await part("Positions").locator("dd").textContent())!.replace(/[$,]/g, ""));
+    expect(positions).toBeGreaterThan(5);
+    await expect(balanceButton(page)).toHaveAccessibleName(
+        `Balance ${usd(490 + positions)}, $490.00 cash, show deposits`,
+    );
+    // The deposit history still deals out under it
+    await expect(sidebar(page).getByRole("list", { name: "History" }).getByRole("listitem")).toHaveCount(1);
+    await shoot(page, "split");
+});
+
 test("a fresh account has a zero balance and no deposits to show", async ({ page, isMobile }) => {
     await openWallet(page);
     await expect(balanceButton(page)).toHaveAccessibleName("Balance $0.00, show deposits");

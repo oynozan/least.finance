@@ -98,7 +98,9 @@ async function expectWallet(page: Page) {
 const row = (page: Page, picked: Picked) =>
     positions(page).getByRole("listitem").filter({ hasText: picked.market.title });
 const pending = (page: Page, picked: Picked) => row(page, picked).filter({ hasText: "Pending" });
-const balanceName = (usd: string) => `Balance $${usd}, show deposits`;
+/** The balance button's name: the total, and the cash as well while positions add to it. */
+const balanceName = (usd: string, cash?: string) =>
+    cash ? `Balance $${usd}, $${cash} cash, show deposits` : `Balance $${usd}, show deposits`;
 
 test.beforeEach(async ({ page }) => {
     await mockPrivy(page);
@@ -107,7 +109,7 @@ test.beforeEach(async ({ page }) => {
     await seedDeposits(addressOf(page), [{ amount: "500", daysAgo: 0 }]);
 });
 
-test("a prediction lowers the balance and adds a position at once, while the fake holds the order", async ({
+test("a prediction moves its stake from cash into a position at once, while the fake holds the order", async ({
     page,
 }) => {
     const picked = await pickMarket(0);
@@ -117,7 +119,7 @@ test("a prediction lowers the balance and adds a position at once, while the fak
     await predict(page, picked);
     await confirm(page);
 
-    await expect(balanceButton(page)).toHaveAccessibleName(balanceName("490.00"));
+    await expect(balanceButton(page)).toHaveAccessibleName(balanceName("500.00", "490.00"));
     await expect(row(page, picked)).toHaveCount(1);
     await expect(row(page, picked)).toContainText("Pending");
     await expect(row(page, picked)).toContainText(picked.outcome.label);
@@ -137,7 +139,8 @@ test("a prediction lowers the balance and adds a position at once, while the fak
     await expect(pending(page, picked)).toHaveCount(0);
     await expect(row(page, picked)).toHaveCount(1);
     await expect(positionFact(row(page, picked), "Shares")).toHaveText(/^\d[\d.,]*$/);
-    await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$49\d\.\d\d, show deposits$/);
+    // Filled, the position counts at what it would sell for
+    await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$4\d\d\.\d\d, \$490\.00 cash, show deposits$/);
 });
 
 test("a rejected prediction replaces the done line in the review, then rolls back", async ({ page }) => {
@@ -188,7 +191,7 @@ test("a prediction in flight survives a reload", async ({ page }) => {
     await expect(sidebar(page)).toHaveAttribute("data-open", "true");
     await expect(row(page, picked)).toContainText("Pending");
     await expect(row(page, picked)).toHaveCount(1);
-    await expect(balanceButton(page)).toHaveAccessibleName(balanceName("490.00"));
+    await expect(balanceButton(page)).toHaveAccessibleName(balanceName("500.00", "490.00"));
 
     await releaseOrder(picked.outcome.tokenId, "fill");
     await expect(pending(page, picked)).toHaveCount(0);
@@ -270,21 +273,27 @@ const balanceOf = async (page: Page) => {
     const name = (await balanceButton(page).getAttribute("aria-label")) ?? (await balanceButton(page).innerText());
     return Number(/\$([\d,]+\.\d\d)/.exec(name)![1]!.replace(/,/g, ""));
 };
+/** The cash, which the balance's name says beside the total while positions add to it; without any, the total is the cash. */
+const cashOf = async (page: Page) => {
+    const name = (await balanceButton(page).getAttribute("aria-label"))!;
+    const cash = /, \$([\d,]+\.\d\d) cash/.exec(name) ?? /\$([\d,]+\.\d\d)/.exec(name);
+    return Number(cash![1]!.replace(/,/g, ""));
+};
 
-test("closing a position credits the balance at once and the row goes", async ({ page, isMobile }) => {
+test("closing a position credits the cash at once and the row goes", async ({ page, isMobile }) => {
     const picked = await pickMarket(6);
     await buyAndFill(page, picked);
-    const before = await balanceOf(page);
+    const before = await cashOf(page);
 
     await nextOrder(picked.outcome.tokenId, "hold");
     await reveal(page, picked, isMobile);
     await closeButton(page, picked).click();
     await expect(row(page, picked)).toHaveCount(0);
-    await expect.poll(() => balanceOf(page)).toBeGreaterThan(before);
+    await expect.poll(() => cashOf(page)).toBeGreaterThan(before);
 
     await releaseOrder(picked.outcome.tokenId, "fill");
     await expect(row(page, picked)).toHaveCount(0);
-    await expect.poll(() => balanceOf(page)).toBeGreaterThan(before);
+    await expect.poll(() => cashOf(page)).toBeGreaterThan(before);
 });
 
 test("a rejected close puts the position back with the message", async ({ page, isMobile }) => {
@@ -331,15 +340,21 @@ test("a resolved win leaves the open positions and raises the balance", async ({
     await expect.poll(() => balanceOf(page)).toBeGreaterThan(before);
 });
 
-test("a resolved loss leaves the open positions", async ({ page, isMobile }) => {
+test("a resolved loss leaves the open positions and the balance, and the cash stays as it was", async ({
+    page,
+    isMobile,
+}) => {
     const picked = await pickMarket(isMobile ? 15 : 14);
     await buyAndFill(page, picked);
-    const before = await balanceOf(page);
+    const [total, cash] = [await balanceOf(page), await cashOf(page)];
 
     await resolveMarket(marketIdOf(picked.outcome.tokenId), ["0", "1"]);
     await resolveNow();
     await expect(row(page, picked)).toHaveCount(0);
-    expect(await balanceOf(page)).toBe(before);
+    // The lost position's worth leaves the total, which is the cash alone again
+    await expect.poll(() => balanceOf(page)).toBe(cash);
+    expect(cash).toBeLessThan(total);
+    expect(await cashOf(page)).toBe(cash);
 });
 
 test("a buy restored by a reload shows no amount in place of shares", async ({ page }) => {

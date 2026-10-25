@@ -15,6 +15,7 @@ import {
 } from "motion/react";
 import { sameWallet as sameAddress } from "@/lib/account/balances";
 import { toUsdc, type HistoryRow, type PendingWithdrawal } from "@/lib/account/state";
+import { walletWorth, type Worth } from "@/lib/account/worth";
 import type { ApiError } from "@/lib/account/state";
 import type {
     CoinBalance,
@@ -215,6 +216,13 @@ function SignedInWallet() {
             [...livePredictionRows(predictions, optimisticTrades), ...livePerpRows(perps, marks)].sort(newestFirst),
         [predictions, perps, optimisticTrades, marks],
     );
+    const worth = walletWorth({
+        cash: account.balance,
+        holdings: account.holdings,
+        priceOf,
+        positions,
+        sellPriceOf: (p) => marketOf(p, known).sellPrice,
+    });
 
     // Remount the animated parts on every open so they replay their entrance.
     const [openings, setOpenings] = useState(0);
@@ -249,7 +257,7 @@ function SignedInWallet() {
 
             <WalletSection
                 key={`wallet-${openings}`}
-                balance={account.balance}
+                worth={worth}
                 history={account.history}
                 minDeposit={account.state.status === "ready" ? Number(account.state.rules.minDeposit) : null}
                 accountProblem={account.state.status === "failed" ? account.state.error.message : null}
@@ -333,8 +341,8 @@ function SignedInWallet() {
 }
 
 type WalletSectionProps = {
-    /** The account's USDC, deposits on their way included; undefined while loading and null when it couldn't be read. */
-    balance: number | null | undefined;
+    /** The account's cash, coins and open positions in dollars; undefined while the cash is loading and null when it couldn't be read. */
+    worth: Worth | null | undefined;
     history: HistoryRow[];
     /** Null until the account has loaded, and deposits can't start before then. */
     minDeposit: number | null;
@@ -373,9 +381,9 @@ type WalletSectionProps = {
     onStartWithdraw: () => void;
 };
 
-/** Balance and the deposit button; hovering it deals out past deposits. */
+/** Balance and the deposit button; hovering it deals out what the balance is made of and past deposits. */
 function WalletSection({
-    balance,
+    worth,
     history,
     minDeposit,
     accountProblem,
@@ -431,6 +439,8 @@ function WalletSection({
         [history, withdrawals, pendingWithdrawals],
     );
     const status = notice ? null : accountProblem;
+    // Only worth showing when something besides cash adds to the total.
+    const split = worth && (shownPart(worth.coins) || shownPart(worth.positions)) ? worth : null;
 
     // A bridged deposit's progress, until it has ended for a while or the next deposit starts.
     const [dismissed, setDismissed] = useState<string | null>(null);
@@ -456,7 +466,8 @@ function WalletSection({
             className={styles.wallet}
             aria-label="Balance"
             data-history={showHistory || choosing ? "open" : "closed"}
-            onPointerEnter={(event) => canHover(event) && setHovered(true)}
+            // A move, not an enter: the section growing under a resting pointer, as a refusal line does, would open it unasked
+            onPointerMove={(event) => canHover(event) && setHovered(true)}
             onPointerLeave={() => setHovered(false)}
             // Keyboard focus only: a tap also focuses, and would pin it open.
             onFocus={(event) => setFocused(event.target.matches(":focus-visible"))}
@@ -469,10 +480,15 @@ function WalletSection({
                 type="button"
                 className={styles.balanceButton}
                 aria-expanded={showHistory}
-                aria-label={`Balance ${balanceLabel(balance)}, show deposits`}
+                // The cash is said too when the total holds more, since only the cash can be spent at once
+                aria-label={
+                    split
+                        ? `Balance ${formatUsd(split.total)}, ${formatUsd(split.cash)} cash, show deposits`
+                        : `Balance ${balanceLabel(worth && worth.total)}, show deposits`
+                }
                 onPointerUp={(event) => !canHover(event) && setPinned((p) => !p)}
             >
-                <Balance value={balance ?? 0} />
+                <Balance value={worth?.total ?? 0} />
             </button>
 
             {depositing ? (
@@ -579,7 +595,7 @@ function WalletSection({
                 )}
             </AnimatePresence>
             <AnimatePresence>
-                {showHistory && entries.length > 0 && (
+                {showHistory && (split || entries.length > 0) && (
                     <motion.div
                         key="history"
                         className={styles.historyFrame}
@@ -587,48 +603,84 @@ function WalletSection({
                         animate="shown"
                         exit="hidden"
                     >
-                        <ol ref={historyRef} className={styles.history} aria-label="History">
-                            <AnimatePresence>
-                                {entries.map((row, i) => {
-                                    const key = row.kind === "deposit" ? row.key : `withdrawal:${row.key}`;
-                                    // Where it came from or went to: shown under the row while it's pointed at, focused or tapped.
-                                    const detailed = row.kind === "withdrawal" || !!row.origin;
-                                    return (
-                                        <motion.li
-                                            key={key}
-                                            layout
-                                            custom={i}
-                                            variants={depositRow}
-                                            className={styles.depositRow}
-                                            data-pending={
-                                                (row.kind === "deposit" ? row.pending : row.state === "sending") ||
-                                                undefined
-                                            }
-                                            data-open={(detailed && openRow === key) || undefined}
-                                            tabIndex={detailed ? 0 : undefined}
-                                            // A mouse opens it by pointing; a tap opens it and the next one closes it.
-                                            onPointerUp={(event) =>
-                                                detailed &&
-                                                event.pointerType !== "mouse" &&
-                                                setOpenRow((open) => (open === key ? null : key))
-                                            }
-                                            style={{ zIndex: entries.length - i }}
-                                        >
-                                            {row.kind === "deposit" ? (
-                                                <DepositEntryRow row={row} />
-                                            ) : (
-                                                <WithdrawalEntryRow row={row} />
-                                            )}
-                                        </motion.li>
-                                    );
-                                })}
-                            </AnimatePresence>
-                        </ol>
-                        <ScrollEdges />
+                        {split && <WorthSplit worth={split} />}
+                        {entries.length > 0 && (
+                            <div className={styles.historyList}>
+                                <ol ref={historyRef} className={styles.history} aria-label="History">
+                                    <AnimatePresence>
+                                        {entries.map((row, i) => {
+                                            const key = row.kind === "deposit" ? row.key : `withdrawal:${row.key}`;
+                                            // Where it came from or went to: shown under the row while it's pointed at, focused or tapped.
+                                            const detailed = row.kind === "withdrawal" || !!row.origin;
+                                            return (
+                                                <motion.li
+                                                    key={key}
+                                                    layout
+                                                    custom={split ? i + 1 : i}
+                                                    variants={depositRow}
+                                                    className={styles.depositRow}
+                                                    data-pending={
+                                                        (row.kind === "deposit"
+                                                            ? row.pending
+                                                            : row.state === "sending") || undefined
+                                                    }
+                                                    data-open={(detailed && openRow === key) || undefined}
+                                                    tabIndex={detailed ? 0 : undefined}
+                                                    // A mouse opens it by pointing; a tap opens it and the next one closes it.
+                                                    onPointerUp={(event) =>
+                                                        detailed &&
+                                                        event.pointerType !== "mouse" &&
+                                                        setOpenRow((open) => (open === key ? null : key))
+                                                    }
+                                                    style={{ zIndex: entries.length - i }}
+                                                >
+                                                    {row.kind === "deposit" ? (
+                                                        <DepositEntryRow row={row} />
+                                                    ) : (
+                                                        <WithdrawalEntryRow row={row} />
+                                                    )}
+                                                </motion.li>
+                                            );
+                                        })}
+                                    </AnimatePresence>
+                                </ol>
+                                <ScrollEdges />
+                            </div>
+                        )}
                     </motion.div>
                 )}
             </AnimatePresence>
         </section>
+    );
+}
+
+/** A part under a cent reads as $0.00, so it isn't shown. */
+const shownPart = (usd: number) => usd >= 0.005;
+
+/** What the total is made of, dealt out above the history like one of its rows: the cash, then coins and positions where there are any. */
+function WorthSplit({ worth }: { worth: Worth }) {
+    const parts: [label: string, usd: number][] = [
+        ["Cash", worth.cash],
+        ["Coins", worth.coins],
+        ["Positions", worth.positions],
+    ];
+    return (
+        <motion.dl
+            role="group"
+            aria-label="Balance breakdown"
+            className={styles.split}
+            custom={0}
+            variants={depositRow}
+        >
+            {parts
+                .filter(([label, usd]) => label === "Cash" || shownPart(usd))
+                .map(([label, usd]) => (
+                    <div key={label} className={styles.splitPart}>
+                        <dt>{label}</dt>
+                        <dd>{formatUsd(usd)}</dd>
+                    </div>
+                ))}
+        </motion.dl>
     );
 }
 

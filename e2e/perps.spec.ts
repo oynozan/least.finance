@@ -22,7 +22,9 @@ import { addressOf, installWallet, mockArcRpc, mockPrivy } from "./privy-mock";
 test.describe.configure({ mode: "serial", timeout: 90_000 });
 test.skip(({ isMobile }) => isMobile, "the fake's order controls are shared by both projects");
 
-const balanceName = (usd: string) => `Balance $${usd}, show deposits`;
+/** The balance button's name: the total, and the cash as well while positions add to it. */
+const balanceName = (usd: string, cash?: string) =>
+    cash ? `Balance $${usd}, $${cash} cash, show deposits` : `Balance $${usd}, show deposits`;
 const long = (page: Page) => positionRows(page).filter({ hasText: "Long BTC at 5x" });
 const dock = (page: Page) => page.getByRole("navigation", { name: "Pages" });
 
@@ -82,7 +84,9 @@ test("Long and Short review shows the quote rows and a liquidation price", async
     expect(shortLiquidation).toBeGreaterThan(shortEntry);
 });
 
-test("confirm lowers the balance and adds the position at once while the fake holds the order", async ({ page }) => {
+test("confirm moves the collateral from cash into the position at once while the fake holds the order", async ({
+    page,
+}) => {
     await perpControl.holdNext();
     await page.goto("/");
     await connect(page);
@@ -90,7 +94,7 @@ test("confirm lowers the balance and adds the position at once while the fake ho
     await confirmPerp(page);
     await expect(sidebar(page)).toHaveAttribute("aria-label", "Wallet");
 
-    await expect(balanceButton(page)).toHaveAccessibleName(balanceName("400.00"));
+    await expect(balanceButton(page)).toHaveAccessibleName(balanceName("500.00", "400.00"));
     await expect(long(page)).toHaveCount(1);
     await expect(long(page)).toContainText("Pending");
     await expect(positionFact(long(page), "Position")).toHaveText(/^\$49[34]$/);
@@ -148,8 +152,10 @@ test("the real fill replaces the numbers in place", async ({ page }) => {
     await expect(entry).toHaveText(/^\$[\d,]+/);
     await expect(liquidation).toHaveText(/^\$[\d,]+/);
     expect([await entry.textContent(), await liquidation.textContent()]).not.toEqual(estimate);
-    // What the fill didn't use of the collateral comes back.
-    await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$400\.\d\d, show deposits$/);
+    // What the fill didn't use of the collateral comes back to the cash; the total counts the position at its mark.
+    await expect(balanceButton(page)).toHaveAccessibleName(
+        /^Balance \$(49\d|50\d)\.\d\d, \$400\.\d\d cash, show deposits$/,
+    );
 });
 
 test("a rejection removes the position and shows the message", async ({ page }) => {
@@ -183,7 +189,7 @@ test("a reload while held keeps the position", async ({ page }) => {
     await openSidebar(page);
     await expect(long(page)).toHaveCount(1);
     await expect(long(page)).toContainText("Pending");
-    await expect(balanceButton(page)).toHaveAccessibleName(balanceName("400.00"));
+    await expect(balanceButton(page)).toHaveAccessibleName(balanceName("500.00", "400.00"));
 });
 
 test("close raises the balance at once and restores the position when the fake rejects it", async ({
@@ -204,7 +210,9 @@ test("close raises the balance at once and restores the position when the fake r
     );
     await expect(long(page)).toHaveCount(1);
     await expect(positionFact(long(page), "Entry price")).toHaveText(/^\$/);
-    await expect(balanceButton(page)).toHaveAccessibleName(/^Balance \$400\.\d\d, show deposits$/);
+    await expect(balanceButton(page)).toHaveAccessibleName(
+        /^Balance \$(49\d|50\d)\.\d\d, \$400\.\d\d cash, show deposits$/,
+    );
 
     await long(page).hover();
     await long(page).getByRole("button", { name: "Close Long BTC at 5x" }).click();
