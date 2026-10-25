@@ -495,6 +495,9 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 }),
             readOwed: () => readOwed({ collections, priceOf: (symbol) => swapCatalog.priceOf(symbol) }),
             readFees: (now) => readFees({ collections, now }),
+            outcomeBid: async (eventId, tokenId) =>
+                (await markets.outcome(eventId, tokenId).catch(() => null))?.outcome.sellPrice ?? null,
+            priceOf: (symbol) => swapCatalog.priceOf(symbol),
             logger: logger.child({ component: "stats" }),
             now: overrides.now,
         });

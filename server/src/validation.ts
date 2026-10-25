@@ -66,6 +66,11 @@ export const marketHistoryQuery = z.object({
 });
 
 export const statsPnlQuery = z.object({ range: z.enum(["7D", "30D", "All"]).default("7D") });
+export const statsPositionsQuery = z.object({
+    page: z.coerce.number().int().min(1).max(500).default(1),
+    state: z.enum(["all", "open", "closed"]).default("all"),
+    kind: z.enum(["all", "predictions", "perps", "coins"]).default("all"),
+});
 
 const SWAP_SYMBOLS = new Set(COINS.map((coin) => coin.symbol));
 

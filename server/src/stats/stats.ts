@@ -1,10 +1,11 @@
 import type { Logger } from "pino";
 import type { Collections } from "../db/mongo.ts";
-import type { StatsFees, StatsPnlView, StatsRange, StatsView, StatsWallet } from "../protocol.ts";
+import type { StatsFees, StatsPnlView, StatsPositionsPage, StatsRange, StatsView, StatsWallet } from "../protocol.ts";
 import { WALLETS, type HeldReaders, type HeldWallet } from "./held.ts";
 import type { readFees } from "./fees.ts";
 import type { readOwed } from "./owed.ts";
 import { pnlPoints } from "./pnl.ts";
+import { positionsPage } from "./positions.ts";
 import { usdString } from "./units.ts";
 
 export const STATS_REFRESH_MS = 60_000;
@@ -18,6 +19,9 @@ type Deps = {
     readers: HeldReaders;
     readOwed: () => ReturnType<typeof readOwed>;
     readFees: (now: number) => ReturnType<typeof readFees>;
+    /** The best bid for an outcome token; null when it can't be read. */
+    outcomeBid?: (eventId: string, tokenId: string) => Promise<number | null>;
+    priceOf?: (symbol: string) => number | null;
     logger: Logger;
     now?: () => number;
     /** How long one wallet read may take; a test shortens it. */
@@ -90,6 +94,17 @@ export class StatsService {
             .sort({ at: 1 })
             .toArray();
         return pnlPoints(rows, range, now);
+    }
+
+    positions(ask: Parameters<typeof positionsPage>[1]): Promise<StatsPositionsPage> {
+        return positionsPage(
+            {
+                collections: this.#deps.collections,
+                outcomeBid: this.#deps.outcomeBid ?? (async () => null),
+                priceOf: this.#deps.priceOf ?? (() => null),
+            },
+            ask,
+        );
     }
 
     async #refresh(): Promise<void> {

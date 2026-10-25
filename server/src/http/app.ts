@@ -20,6 +20,7 @@ import {
     parse,
     priceHistory,
     statsPnlQuery,
+    statsPositionsQuery,
 } from "../validation.ts";
 
 const REQUEST_ID = /^[\w.:-]{1,64}$/;
@@ -237,6 +238,10 @@ export function createApp(services: Services): express.Express {
     app.get("/stats/pnl", noStore, limit(60, 60_000), async (req, res) => {
         const { range } = parse(statsPnlQuery, req.query);
         res.json(await services.stats.pnl(range));
+    });
+
+    app.get("/stats/positions", noStore, limit(60, 60_000), async (req, res) => {
+        res.json(await services.stats.positions(parse(statsPositionsQuery, req.query)));
     });
 
     // Public: the same for everyone, and it's only DefiLlama's and Hyperliquid's public prices.
