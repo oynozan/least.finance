@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NetworkLogo } from "@/components/network-icons";
 import { formatUsd } from "@/components/wallet-data";
 import { walletState } from "@/lib/stats/wallet";
@@ -12,6 +12,8 @@ const NETWORKS: Record<string, Network> = { Arc: 5042, Polygon: 137, Solana: "so
 
 function CopyButton({ address }: { address: string }) {
     const [copied, setCopied] = useState(false);
+    const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+    useEffect(() => () => clearTimeout(timer.current), []);
     return (
         <button
             type="button"
@@ -21,7 +23,8 @@ function CopyButton({ address }: { address: string }) {
                 void navigator.clipboard?.writeText(address).then(
                     () => {
                         setCopied(true);
-                        setTimeout(() => setCopied(false), 1500);
+                        clearTimeout(timer.current);
+                        timer.current = setTimeout(() => setCopied(false), 1500);
                     },
                     () => {},
                 );
@@ -38,6 +41,11 @@ function WalletRow({ wallet }: { wallet: StatsWallet }) {
     return (
         <li
             tabIndex={hasDetail ? 0 : undefined}
+            aria-label={
+                hasDetail
+                    ? `${wallet.label}, ${notSetUp ? "Not set up" : formatUsd(Number(wallet.usd))}${problem ? `, ${problem}` : ""}`
+                    : undefined
+            }
             className="group rounded-2xl px-3 py-2.5 outline-2 -outline-offset-2 outline-transparent focus-visible:outline-solid hover:bg-pill/60"
         >
             <div className="flex items-center gap-3">

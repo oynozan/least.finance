@@ -71,7 +71,8 @@ export function StatsScreen() {
                                         range={range}
                                         onRange={setRange}
                                         points={points}
-                                        changeUsd={shown ? Number(shown.changeUsd) : 0}
+                                        changeUsd={shown ? Number(shown.changeUsd) : null}
+                                        estimated={stats.estimated}
                                     />
                                 </motion.div>
                                 <motion.div
@@ -86,7 +87,7 @@ export function StatsScreen() {
                                     animate={{ opacity: 1, y: 0, scale: 1 }}
                                     transition={{ ...rise, delay: 0.16 }}
                                 >
-                                    <FeesCard fees={stats.fees[range]} />
+                                    <FeesCard fees={stats.fees[range]} range={range} />
                                 </motion.div>
                                 <motion.div
                                     initial={{ opacity: 0, y: 24, scale: 0.98 }}

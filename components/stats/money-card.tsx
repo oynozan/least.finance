@@ -24,16 +24,22 @@ type MoneyCardProps = {
     range: StatsRange;
     onRange: (range: StatsRange) => void;
     points: StatsPoint[];
-    changeUsd: number;
+    /** The range's change, or null while that range's line is still on its way. */
+    changeUsd: number | null;
+    /** Some wallets couldn't be read, so the total leans on their last known amounts. */
+    estimated?: boolean;
 };
 
+const ESTIMATED = "Some wallets couldn't be read, so their last known amounts are used.";
+
 /** Our money: the total, the range's change, and the equity line under them. Scrubbing rolls the total to that point. */
-export function MoneyCard({ equityUsd, range, onRange, points, changeUsd }: MoneyCardProps) {
+export function MoneyCard({ equityUsd, range, onRange, points, changeUsd, estimated = false }: MoneyCardProps) {
     const [pointed, setPointed] = useState<number | null>(null);
     // A fresher series can have fewer points than the one being pointed at.
     const active = pointed !== null && pointed < points.length ? pointed : null;
     const total = active !== null ? points[active]!.usd : equityUsd;
-    const change = Math.round(changeUsd * 100) / 100;
+    const loading = changeUsd === null;
+    const change = Math.round((changeUsd ?? 0) * 100) / 100;
     const trend = trendOf(change);
 
     return (
@@ -43,14 +49,31 @@ export function MoneyCard({ equityUsd, range, onRange, points, changeUsd }: Mone
                     <h2 id="money-title" className="text-base font-medium tracking-[-0.01em] text-muted">
                         Our money
                     </h2>
-                    <p
-                        data-total={total}
-                        className="text-[clamp(40px,1.5rem+3vw,60px)] leading-none font-medium tracking-[-0.03em]"
-                    >
-                        <NumberFlow value={total} format={{ style: "currency", currency: "USD" }} willChange />
-                    </p>
+                    <div className="flex items-center gap-3">
+                        <p
+                            data-total={total}
+                            className="text-[clamp(40px,1.5rem+3vw,60px)] leading-none font-medium tracking-[-0.03em]"
+                        >
+                            <NumberFlow value={total} format={{ style: "currency", currency: "USD" }} willChange />
+                        </p>
+                        {estimated && (
+                            <span
+                                tabIndex={0}
+                                data-estimated=""
+                                className="group relative grid size-6 shrink-0 cursor-default place-items-center rounded-full outline-2 outline-offset-2 outline-transparent focus-visible:outline-solid"
+                            >
+                                <span aria-hidden="true" className="size-2.5 rounded-full bg-muted" />
+                                <span
+                                    role="tooltip"
+                                    className="pointer-events-none absolute top-full left-0 z-10 mt-1 w-[min(18rem,70vw)] rounded-2xl bg-pill px-3 py-2 text-[13px] leading-snug font-normal tracking-normal text-foreground opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100"
+                                >
+                                    {ESTIMATED}
+                                </span>
+                            </span>
+                        )}
+                    </div>
                     <p className="mt-1 flex h-8 items-center">
-                        {active !== null ? (
+                        {loading ? null : active !== null ? (
                             <span className="text-[15px] text-muted tabular-nums">{formatAt(points[active]!.at)}</span>
                         ) : (
                             <motion.span
@@ -77,13 +100,17 @@ export function MoneyCard({ equityUsd, range, onRange, points, changeUsd }: Mone
                     />
                 </div>
             </div>
-            <LineChart
-                label="Equity over time"
-                points={points}
-                changeUsd={changeUsd}
-                active={active}
-                onScrub={setPointed}
-            />
+            {loading ? (
+                <div aria-hidden="true" className="h-[clamp(160px,28vh,260px)] animate-pulse bg-pill/40" />
+            ) : (
+                <LineChart
+                    label="Equity over time"
+                    points={points}
+                    changeUsd={changeUsd}
+                    active={active}
+                    onScrub={setPointed}
+                />
+            )}
         </section>
     );
 }

@@ -23,6 +23,9 @@ type State = (typeof STATES)[number]["value"];
 type Kind = (typeof KINDS)[number]["value"];
 
 const TONE = { gain: "text-gain", loss: "text-loss", flat: "text-muted" } as const;
+const REFRESH_MS = 60_000;
+/** The six columns of a loading row, with the ones a narrow screen hides. */
+const PULSE = ["", "", "max-sm:hidden", "max-md:hidden", "", "max-sm:hidden"];
 const when = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 const cell = "py-2.5 transition-colors duration-150 group-hover:bg-pill";
 
@@ -41,16 +44,28 @@ function usePositions(state: State, kind: Kind) {
         setPage(1);
     }
 
+    // The page on show stays up through the minute's refresh, which never shows a failure.
     useEffect(() => {
-        const mine = ++latest.current;
-        void fetchPositions({ page, state, kind }).then((reply) => {
-            if (mine !== latest.current) return;
-            if (failed(reply)) setError(true);
-            else {
-                setData(reply);
-                setError(false);
-            }
-        });
+        let live = true;
+        const read = (background: boolean) => {
+            const mine = ++latest.current;
+            void fetchPositions({ page, state, kind }).then((reply) => {
+                if (!live || mine !== latest.current) return;
+                if (failed(reply)) {
+                    if (!background) setError(true);
+                } else {
+                    setData(reply);
+                    setError(false);
+                }
+            });
+        };
+        read(false);
+        const timer = setInterval(() => read(true), REFRESH_MS);
+        return () => {
+            clearInterval(timer);
+            // A reply still on its way lands on nothing.
+            live = false;
+        };
     }, [page, state, kind, tick]);
 
     const retry = useCallback(() => setTick((n) => n + 1), []);
@@ -107,10 +122,24 @@ export function PositionsCard() {
                             </th>
                         </tr>
                     </thead>
-                    <tbody>
-                        {data?.items.map((row) => (
-                            <Row key={row.id} row={row} />
-                        ))}
+                    <tbody aria-busy={data ? undefined : "true"}>
+                        {data
+                            ? data.items.map((row) => <Row key={row.id} row={row} />)
+                            : Array.from({ length: 6 }, (_, i) => (
+                                  <tr key={i} data-pulse="" aria-hidden="true">
+                                      {PULSE.map((hide, c) => (
+                                          <td key={c} className={`py-1 ${hide}`}>
+                                              <div
+                                                  className={`h-12 animate-pulse bg-pill/60 ${
+                                                      c === 0 ? "rounded-l-[24px]" : ""
+                                                  } ${c === 5 ? "rounded-r-[24px]" : ""} ${
+                                                      c === 4 ? "max-sm:rounded-r-[24px]" : ""
+                                                  }`}
+                                              />
+                                          </td>
+                                      ))}
+                                  </tr>
+                              ))}
                     </tbody>
                 </table>
             )}
