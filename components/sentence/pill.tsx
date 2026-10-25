@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type ReactNode, type Ref } from "react";
+import Link from "next/link";
 import { AnimatePresence, motion, useReducedMotion, type Transition } from "motion/react";
 import { iconVariants, layoutSpring, pillVariants, spring, wobble } from "./motion";
 
@@ -115,10 +116,43 @@ const TONE = {
     loss: "text-loss",
 } as const;
 
-/** A pill that opens something: springs on hover and press. */
-export function PillButton({ ref, onClick, tone = "default", problem, onHoverChange, ...props }: PillButtonProps) {
+/** Lightens on hover and keyboard focus, and while its picker is open. */
+const PILL_HOVER =
+    "group-hover:bg-pill-hover group-hover:[--badge-ring:var(--pill-hover)] group-focus-visible:bg-pill-hover group-focus-visible:[--badge-ring:var(--pill-hover)] group-aria-expanded:bg-pill-hover group-aria-expanded:[--badge-ring:var(--pill-hover)]";
+
+/**
+ * Springs a pressable pill on hover and press. The icon pose is state, not
+ * inherited from whileHover: an icon mounted by a swap has to join a hover
+ * that is already in progress.
+ */
+function usePillPress(onHoverChange?: (hovered: boolean) => void) {
     const [hovered, setHovered] = useState(false);
     const [pressed, setPressed] = useState(false);
+    const pose: IconPose = pressed ? "tap" : hovered ? "hover" : "rest";
+    const motionProps = {
+        variants: pillVariants,
+        initial: false,
+        whileHover: "hover",
+        whileTap: "tap",
+        transition: spring,
+        onHoverStart: () => {
+            setHovered(true);
+            onHoverChange?.(true);
+        },
+        onHoverEnd: () => {
+            setHovered(false);
+            onHoverChange?.(false);
+        },
+        onTapStart: () => setPressed(true),
+        onTap: () => setPressed(false),
+        onTapCancel: () => setPressed(false),
+    } as const;
+    return { pose, motionProps };
+}
+
+/** A pill that opens something: springs on hover and press. */
+export function PillButton({ ref, onClick, tone = "default", problem, onHoverChange, ...props }: PillButtonProps) {
+    const { pose, motionProps } = usePillPress(onHoverChange);
     const {
         contentKey,
         layoutKey,
@@ -134,10 +168,6 @@ export function PillButton({ ref, onClick, tone = "default", problem, onHoverCha
         "aria-invalid": invalid,
     } = props;
 
-    // The icon pose is state, not inherited from whileHover: an icon mounted
-    // by a swap has to join a hover that is already in progress.
-    const pose: IconPose = pressed ? "tap" : hovered ? "hover" : "rest";
-
     return (
         <motion.button
             ref={ref}
@@ -149,22 +179,7 @@ export function PillButton({ ref, onClick, tone = "default", problem, onHoverCha
             aria-controls={controls}
             aria-invalid={invalid || undefined}
             onClick={onClick}
-            variants={pillVariants}
-            initial={false}
-            whileHover="hover"
-            whileTap="tap"
-            onHoverStart={() => {
-                setHovered(true);
-                onHoverChange?.(true);
-            }}
-            onHoverEnd={() => {
-                setHovered(false);
-                onHoverChange?.(false);
-            }}
-            onTapStart={() => setPressed(true)}
-            onTap={() => setPressed(false)}
-            onTapCancel={() => setPressed(false)}
-            transition={spring}
+            {...motionProps}
             // No visible outline (the pill lightens instead); the transparent one
             // becomes a system focus ring in forced-colors mode.
             className={`group inline-flex max-w-full cursor-pointer outline-2 outline-offset-2 outline-transparent focus-visible:outline-solid ${TONE[tone]}`}
@@ -177,10 +192,33 @@ export function PillButton({ ref, onClick, tone = "default", problem, onHoverCha
                 trailing={trailing}
                 layoutTransition={layoutTransition}
                 problem={problem}
-                className={`group-hover:bg-pill-hover group-hover:[--badge-ring:var(--pill-hover)] group-focus-visible:bg-pill-hover group-focus-visible:[--badge-ring:var(--pill-hover)] group-aria-expanded:bg-pill-hover group-aria-expanded:[--badge-ring:var(--pill-hover)]`}
+                className={PILL_HOVER}
             >
                 {children}
             </PillBody>
         </motion.button>
+    );
+}
+
+const MotionLink = motion.create(Link);
+
+/** A pill that goes to another page, with a pill's springs. */
+export function PillLink({
+    href,
+    contentKey,
+    icon,
+    children,
+}: Pick<PillBodyProps, "contentKey" | "icon" | "children"> & { href: string }) {
+    const { pose, motionProps } = usePillPress();
+    return (
+        <MotionLink
+            href={href}
+            {...motionProps}
+            className="group inline-flex max-w-full cursor-pointer rounded-full outline-2 outline-offset-2 outline-transparent focus-visible:outline-solid"
+        >
+            <PillBody contentKey={contentKey} icon={icon} pose={pose} className={PILL_HOVER}>
+                {children}
+            </PillBody>
+        </MotionLink>
     );
 }

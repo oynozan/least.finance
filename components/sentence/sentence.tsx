@@ -8,6 +8,10 @@ import { layoutSpring } from "./motion";
 const enterSpring: Transition = { type: "spring", visualDuration: 0.35, bounce: 0.35 };
 const exitTween: Transition = { duration: 0.16, ease: "easeIn" };
 
+/** A page's sentence lettering: large, tight and centered, scaled to the window. */
+export const sentenceType =
+    "w-[min(18em,100%)] text-center text-[clamp(28px,min(max(min(1rem+2.6vw,47px),2.75vw),9vh),120px)] leading-[1.36] font-medium tracking-[-0.02em] text-balance [word-spacing:-0.07em] pointer-coarse:leading-[1.5]";
+
 type SentenceProps = {
     parts: readonly SentencePart[];
     renderVerb: () => ReactNode;
@@ -23,6 +27,13 @@ type SentenceProps = {
 export function Sentence({ parts, renderVerb, renderSlot, className = "" }: SentenceProps) {
     const groupId = useId();
     const reduce = useReducedMotion() ?? false;
+    // A mark that appears twice (two sentences' full stops) is two marks: the nth of each keeps its identity.
+    const marks = new Map<string, number>();
+    const markId = (glue: string) => {
+        const nth = marks.get(glue) ?? 0;
+        marks.set(glue, nth + 1);
+        return `${glue}:${nth}`;
+    };
 
     return (
         // Positioned, so leaving items can be pinned where they were; a definite
@@ -32,7 +43,14 @@ export function Sentence({ parts, renderVerb, renderSlot, className = "" }: Sent
                 <AnimatePresence mode="popLayout" initial={false}>
                     {parts.flatMap((part, i) => {
                         const nodes = [
-                            <Item key={part.key} itemKey={part.key} index={i} reduce={reduce} glue={part.glue}>
+                            <Item
+                                key={part.key}
+                                itemKey={part.key}
+                                index={i}
+                                reduce={reduce}
+                                glue={part.glue}
+                                glueId={part.glue && markId(part.glue)}
+                            >
                                 {part.kind === "word"
                                     ? part.text
                                     : part.kind === "verb"
@@ -56,11 +74,13 @@ type ItemProps = {
     index: number;
     reduce: boolean;
     glue: string;
+    /** The mark's identity, so it glides to whichever item carries it next. */
+    glueId: string;
     children: ReactNode;
     ref?: Ref<HTMLSpanElement>;
 };
 
-function Item({ itemKey, index, reduce, glue, children, ref }: ItemProps) {
+function Item({ itemKey, index, reduce, glue, glueId, children, ref }: ItemProps) {
     const isPresent = useIsPresent();
     return (
         <motion.span
@@ -91,7 +111,7 @@ function Item({ itemKey, index, reduce, glue, children, ref }: ItemProps) {
             {children}
             {glue && (
                 // One identity per mark, even when the template moves it to another item.
-                <motion.span layoutId={`glue:${glue}`} className="inline-block" transition={{ layout: layoutSpring }}>
+                <motion.span layoutId={`glue:${glueId}`} className="inline-block" transition={{ layout: layoutSpring }}>
                     {glue}
                 </motion.span>
             )}
