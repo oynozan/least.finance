@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import NumberFlow from "@number-flow/react";
 import { motion, type Transition } from "motion/react";
 import { Segmented } from "@/components/segmented";
@@ -35,6 +35,7 @@ const ESTIMATED = "Some wallets couldn't be read, so their last known amounts ar
 /** Our money: the total, the range's change, and the equity line under them. Scrubbing rolls the total to that point. */
 export function MoneyCard({ equityUsd, range, onRange, points, changeUsd, estimated = false }: MoneyCardProps) {
     const [pointed, setPointed] = useState<number | null>(null);
+    const tipId = useId();
     // A fresher series can have fewer points than the one being pointed at.
     const active = pointed !== null && pointed < points.length ? pointed : null;
     const total = active !== null ? points[active]!.usd : equityUsd;
@@ -49,7 +50,7 @@ export function MoneyCard({ equityUsd, range, onRange, points, changeUsd, estima
                     <h2 id="money-title" className="text-base font-medium tracking-[-0.01em] text-muted">
                         Our money
                     </h2>
-                    <div className="flex items-center gap-3">
+                    <div className="relative flex items-center gap-3">
                         <p
                             data-total={total}
                             className="text-[clamp(40px,1.5rem+3vw,60px)] leading-none font-medium tracking-[-0.03em]"
@@ -60,12 +61,14 @@ export function MoneyCard({ equityUsd, range, onRange, points, changeUsd, estima
                             <span
                                 tabIndex={0}
                                 data-estimated=""
-                                className="group relative grid size-6 shrink-0 cursor-default place-items-center rounded-full outline-2 outline-offset-2 outline-transparent focus-visible:outline-solid"
+                                aria-describedby={tipId}
+                                className="group z-10 grid size-6 shrink-0 cursor-default place-items-center rounded-full outline-2 outline-offset-2 outline-transparent focus-visible:outline-solid"
                             >
                                 <span aria-hidden="true" className="size-2.5 rounded-full bg-muted" />
                                 <span
+                                    id={tipId}
                                     role="tooltip"
-                                    className="pointer-events-none absolute top-full left-0 z-10 mt-1 w-[min(18rem,70vw)] rounded-2xl bg-pill px-3 py-2 text-[13px] leading-snug font-normal tracking-normal text-foreground opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100"
+                                    className="pointer-events-none absolute top-full left-0 z-10 mt-1 w-max max-w-[min(18rem,100%)] rounded-2xl bg-pill px-3 py-2 text-[13px] leading-snug font-normal tracking-normal text-foreground opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100"
                                 >
                                     {ESTIMATED}
                                 </span>

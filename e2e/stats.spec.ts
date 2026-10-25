@@ -241,6 +241,12 @@ test.describe("a stats view with unread wallets", () => {
         if (test.info().project.name === "mobile") await dot.focus();
         else await dot.hover();
         await expect(tip).toHaveCSS("opacity", "1");
+        const box = (await tip.boundingBox())!;
+        const money = (await card(page, "Our money").boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(money.x);
+        expect(box.y).toBeGreaterThanOrEqual(money.y);
+        expect(box.x + box.width).toBeLessThanOrEqual(money.x + money.width);
+        expect(box.y + box.height).toBeLessThanOrEqual(money.y + money.height);
         await page.screenshot({ path: `e2e/screenshots/${test.info().project.name}-stats-estimated.png` });
         await dot.blur();
         await page.mouse.move(0, 0);
