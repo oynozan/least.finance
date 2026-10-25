@@ -65,6 +65,8 @@ export const marketHistoryQuery = z.object({
         }),
 });
 
+export const statsPnlQuery = z.object({ range: z.enum(["7D", "30D", "All"]).default("7D") });
+
 const SWAP_SYMBOLS = new Set(COINS.map((coin) => coin.symbol));
 
 /** The most coins one price history request names; the web asks for one at a time, and each uncached perp market is a Hyperliquid read. */

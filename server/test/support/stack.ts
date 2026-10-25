@@ -25,6 +25,7 @@ import { startFakeDefiLlama, type FakeDefiLlama } from "./fake-defillama.ts";
 import { startFakeLifi, type FakeLifi } from "./fake-lifi.ts";
 import { startFakePolymarket, type FakePolymarket } from "./fake-polymarket.ts";
 import { startFakePrivy, type FakePrivy } from "./fake-privy.ts";
+import { fakeStatsReaders } from "./stats-readers.ts";
 import { startFakeSolanaRpc, type FakeSolanaRpc } from "./fake-solana-rpc.ts";
 import { TREASURY_GAS_RESERVE } from "../../src/withdrawals/withdrawals.ts";
 import { sourceChain } from "./source-chains.ts";
@@ -233,6 +234,7 @@ export async function startStack({
                 : []),
         ],
         trader,
+        statsReaders: fakeStatsReaders(),
         now,
     });
     // The first list is in before the first request, not a sync interval later.

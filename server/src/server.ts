@@ -57,6 +57,11 @@ import type { Services } from "./services.ts";
 import { Sessions } from "./sessions.ts";
 import { SwapCatalog } from "./swaps/catalog.ts";
 import { createTradingExecution } from "./trading/execution.ts";
+import { readFees } from "./stats/fees.ts";
+import { heldReaders, type HeldReaders } from "./stats/held.ts";
+import { createSpotReader } from "./stats/hyperliquid.ts";
+import { readOwed } from "./stats/owed.ts";
+import { StatsService } from "./stats/stats.ts";
 import { TradeService } from "./trading/trades.ts";
 import { createSwapClients } from "./swaps/clients.ts";
 import { createLifi } from "./swaps/lifi.ts";
@@ -103,6 +108,8 @@ type Overrides = {
     hyperliquid?: HyperliquidClient;
     /** Sends the signed payout transactions; tests wrap it to cut a broadcast short. */
     payoutBroadcast?: (rawTx: Hex) => Promise<Hex>;
+    /** Stands in for the readers of the wallets we hold money in, so no test reads a public RPC. */
+    statsReaders?: HeldReaders;
     /** The clock the balance refresh limits run on. */
     now?: () => number;
 };
@@ -468,6 +475,29 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         const ensureTrader = () => {
             if (!trader && !connecting && !closed) connectTrader();
         };
+        const stats = new StatsService({
+            collections,
+            readers:
+                overrides.statsReaders ??
+                heldReaders({
+                    keyring,
+                    collections,
+                    arc: client,
+                    polygon: swapClients.polygon,
+                    evm: swapClients,
+                    solana,
+                    hyperliquid: {
+                        state: (address) => perpClient.state(address),
+                        spotUsdcE6: createSpotReader(config.HYPERLIQUID_API_URL),
+                    },
+                    poolWallet: () => config.POLYMARKET_DEPOSIT_WALLET ?? null,
+                    priceOf: (symbol) => swapCatalog.priceOf(symbol),
+                }),
+            readOwed: () => readOwed({ collections, priceOf: (symbol) => swapCatalog.priceOf(symbol) }),
+            readFees: (now) => readFees({ collections, now }),
+            logger: logger.child({ component: "stats" }),
+            now: overrides.now,
+        });
         const services: Services = {
             config,
             logger,
@@ -489,6 +519,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
             perps,
             predictions: service,
             priceHistory,
+            stats,
             swapCatalog,
             sweeper,
             trades,
@@ -521,6 +552,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
         predictionReconciler.start();
         poolRebalancer?.start();
         execution.start();
+        stats.start();
         // Posted orders, unconfirmed redemptions and open pool moves need the trader even once trading is switched off
         const [posted, redeeming, moving] = await Promise.all([
             collections.predictionOrders.countDocuments({ state: "posted" }),
@@ -542,6 +574,7 @@ export async function startServer(config: Config, logger: Logger, overrides: Ove
                 service.stopOrders();
                 perps.stopOrders();
                 if (connecting) clearTimeout(connecting);
+                await stats.stop();
                 await execution.stop();
                 await poolRebalancer?.stop();
                 await predictionReconciler.stop();

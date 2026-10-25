@@ -38,6 +38,7 @@ import { startFakeSolanaRpc } from "../support/fake-solana-rpc.ts";
 import { installStub } from "../support/stub-token-messenger.ts";
 import { createIris } from "../../src/crosschain/iris.ts";
 import { ARC_USDC_ERC20, TOKEN_MESSENGER_V2 } from "../../src/withdrawals/cctp-burn.ts";
+import { fakeStatsReaders } from "../support/stats-readers.ts";
 import { startMongo } from "../support/mongo.ts";
 import { sourceChain } from "../support/source-chains.ts";
 import { chainHelpers, SWAP_PRICES, swapRpcEnv } from "../support/stack.ts";
@@ -140,6 +141,7 @@ const server = await startServer(config, pino({ level: config.LOG_LEVEL }), {
     prices: fixedPrices({ ETH: 3000, BNB: 600, SOL: 150, USDC: 1, USDT: 1 }),
     bridges: [bridge, solanaBridge],
     trader,
+    statsReaders: fakeStatsReaders(),
     payoutBroadcast: broadcastPayout,
 });
 const { services } = server;
@@ -156,6 +158,28 @@ const fundTreasury = (usdc: string) =>
     chain.client.setBalance({ address: treasuryAddress, value: parseUnits(usdc, 18) + TREASURY_GAS_RESERVE });
 // Withdrawals in the specs never meet a short treasury.
 await fundTreasury("100000");
+// Snapshots across recent hours and days, so the stats chart has a line to draw.
+{
+    const hour = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+    const hoursAgo = [
+        ...Array.from({ length: 48 }, (_, i) => i + 1),
+        ...Array.from({ length: 20 }, (_, i) => 72 + i * 24),
+    ];
+    await services.database.collections.statsSnapshots.insertMany(
+        hoursAgo.map((h, i) => {
+            const heldUsd = 2600 + (hoursAgo.length - i) * 3;
+            return {
+                at: new Date(hour - h * 3_600_000),
+                heldUsd,
+                owedUsd: 2400,
+                equityUsd: heldUsd - 2400,
+                estimated: false,
+                parts: { treasury: heldUsd - 1000 },
+                owed: { cash: 2400 },
+            };
+        }) as never,
+    );
+}
 const sources = { 1: sourceChain(ethereum.url, 1), 56: sourceChain(bnb.url, 56) };
 const rpcUrls: Record<number, string> = { 1: ethereum.url, 56: bnb.url, [ARC_CHAIN_ID]: emulator.url };
 

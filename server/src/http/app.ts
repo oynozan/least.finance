@@ -19,6 +19,7 @@ import {
     marketSearch,
     parse,
     priceHistory,
+    statsPnlQuery,
 } from "../validation.ts";
 
 const REQUEST_ID = /^[\w.:-]{1,64}$/;
@@ -224,6 +225,18 @@ export function createApp(services: Services): express.Express {
     // Public: the markets and their leverage caps are the same for everyone.
     app.get("/perps/markets", noStore, limit(120, 60_000), (_req, res) => {
         res.json(services.perpMarkets.view());
+    });
+
+    // Public: the same for everyone; the operator's own figures, with no person's name or address in them.
+    app.get("/stats", noStore, limit(60, 60_000), (_req, res) => {
+        const view = services.stats.view();
+        if (!view) throw new AppError("unavailable", "Stats are still loading.");
+        res.json(view);
+    });
+
+    app.get("/stats/pnl", noStore, limit(60, 60_000), async (req, res) => {
+        const { range } = parse(statsPnlQuery, req.query);
+        res.json(await services.stats.pnl(range));
     });
 
     // Public: the same for everyone, and it's only DefiLlama's and Hyperliquid's public prices.

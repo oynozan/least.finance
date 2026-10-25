@@ -18,6 +18,7 @@ import type { PnlService } from "./pnl/pnl.ts";
 import type { PredictionService } from "./predictions/predictions.ts";
 import type { PriceHistory } from "./prices/history.ts";
 import type { Sessions } from "./sessions.ts";
+import type { StatsService } from "./stats/stats.ts";
 import type { SwapCatalog } from "./swaps/catalog.ts";
 import type { Withdrawals } from "./withdrawals/withdrawals.ts";
 import type { TradeService } from "./trading/trades.ts";
@@ -46,6 +47,7 @@ export type Services = {
     predictions: PredictionService;
     priceHistory: PriceHistory;
     swapCatalog: SwapCatalog;
+    stats: StatsService;
     sweeper: Sweeper;
     trades: TradeService;
     withdrawals: Withdrawals;

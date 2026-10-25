@@ -2,6 +2,7 @@ import { pino } from "pino";
 import { afterEach, beforeAll, afterAll, expect, inject, test, vi } from "vitest";
 import { parseUnits, type Address, type Hash } from "viem";
 import { fromDecimal } from "../../src/db/money.ts";
+import { fakeStatsReaders } from "../support/stats-readers.ts";
 import { startServer, type RunningServer } from "../../src/server.ts";
 import { startStack, type Stack, type User } from "../support/stack.ts";
 
@@ -70,7 +71,7 @@ async function restart(whileDown: () => Promise<void> = async () => undefined) {
     const config = live().services.config;
     await live().close();
     await whileDown();
-    const server = await startServer(config, silent);
+    const server = await startServer(config, silent, { statsReaders: fakeStatsReaders() });
     extra.push(server);
     current = server;
     return server;
@@ -116,7 +117,7 @@ test("every deposit is credited when the chain caps the results of a log query",
             await client.waitForTransactionReceipt({ hash, pollingInterval: 20 });
         }
         const before = capped.emulator.logQueries;
-        const server = await startServer(config, silent);
+        const server = await startServer(config, silent, { statsReaders: fakeStatsReaders() });
         extra.push(server);
         try {
             const db = server.services.database.collections;
@@ -160,7 +161,7 @@ test("a range the chain refuses as too wide is split until it passes", async () 
             });
             await client.waitForTransactionReceipt({ hash, pollingInterval: 20 });
         }
-        const server = await startServer(config, silent);
+        const server = await startServer(config, silent, { statsReaders: fakeStatsReaders() });
         extra.push(server);
         try {
             const db = server.services.database.collections;

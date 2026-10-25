@@ -9,6 +9,7 @@ import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { afterAll, beforeAll, describe, expect, inject, test, vi } from "vitest";
 import { loadConfig } from "../../src/config.ts";
 import type { AccountView, DepositView } from "../../src/protocol.ts";
+import { fakeStatsReaders } from "../support/stats-readers.ts";
 import { startServer } from "../../src/server.ts";
 import { startStack, type AppSocket, type Stack, type User } from "../support/stack.ts";
 
@@ -53,7 +54,7 @@ describe("the chain scan", () => {
     test("credits deposits from the next RPC while the first is down", async () => {
         // The stack's own server scans through the emulator; this one puts a dead RPC first.
         const config = { ...s.server.services.config, PORT: 0, ARC_RPC_URLS: [DEAD_RPC, s.emulator.url] };
-        const second = await startServer(config, pino({ level: "silent" }));
+        const second = await startServer(config, pino({ level: "silent" }), { statsReaders: fakeStatsReaders() });
         try {
             const user = await s.user();
             const socket = await s.socket(user);
@@ -108,7 +109,7 @@ describe("the chain scan", () => {
         await new Promise<void>((resolve) => keyed.listen(0, "127.0.0.1", resolve));
         const url = `http://127.0.0.1:${(keyed.address() as AddressInfo).port}/v2/SECRETKEY123?dkey=QUERYSECRET`;
         const config = { ...s.server.services.config, PORT: 0, ARC_RPC_URLS: [url] };
-        const scanning = await startServer(config, pino({ level: "silent" }));
+        const scanning = await startServer(config, pino({ level: "silent" }), { statsReaders: fakeStatsReaders() });
         try {
             await vi.waitFor(() => expect(scanning.services.watcher.status().lastSuccessAt).not.toBeNull());
             down = true;
@@ -164,7 +165,7 @@ describe("access tokens", () => {
     test("an unreachable key set is unavailable, not a sign-out", async () => {
         const s = await stack({ PRIVY_VERIFICATION_KEY: "" });
         const config = { ...s.server.services.config, PORT: 0, PRIVY_API_URL: DEAD_RPC };
-        const cut = await startServer(config, pino({ level: "silent" }));
+        const cut = await startServer(config, pino({ level: "silent" }), { statsReaders: fakeStatsReaders() });
         try {
             const user = await s.user();
             const response = await fetch(`${cut.url}/v1/account`, {
@@ -193,7 +194,9 @@ describe("access tokens", () => {
             ARC_RPC_URLS: s.emulator.url,
             DEPOSIT_MNEMONIC: generateMnemonic(wordlist),
         });
-        await expect(startServer(config, pino({ level: "silent" }))).rejects.toThrow(/PRIVY_VERIFICATION_KEY/);
+        await expect(
+            startServer(config, pino({ level: "silent" }), { statsReaders: fakeStatsReaders() }),
+        ).rejects.toThrow(/PRIVY_VERIFICATION_KEY/);
     });
 });
 

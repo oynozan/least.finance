@@ -17,3 +17,9 @@ export const usdFromE6 = (e6: bigint) => scaled(e6, E6);
 
 /** 18-decimal units-decimals (`trades.spreadUSD`, `trades.usd`, `holdings.units`) as a dollar amount. */
 export const usdFromUnits = (unitsDecimal: bigint) => scaled(unitsDecimal, WEI);
+
+/** A dollar number as the plain decimal string the API sends: up to six places, no trailing zeros. */
+export function usdString(usd: number): string {
+    const text = usd.toFixed(6).replace(/\.?0+$/, "");
+    return text === "-0" || text === "" ? "0" : text;
+}
