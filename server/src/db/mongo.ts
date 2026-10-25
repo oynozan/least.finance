@@ -539,6 +539,19 @@ export type Collections = {
     skippedDeposits: Collection<SkippedDepositDoc>;
     cursors: Collection<CursorDoc>;
     counters: Collection<CounterDoc>;
+    statsSnapshots: Collection<StatsSnapshotDoc>;
+};
+
+/** One hourly record of our money; `at` is on the hour, and the amounts are dollars. */
+export type StatsSnapshotDoc = {
+    _id: ObjectId;
+    at: Date;
+    heldUsd: number;
+    owedUsd: number;
+    equityUsd: number;
+    estimated: boolean;
+    parts: Record<string, number>;
+    owed: Record<string, number>;
 };
 
 export type Database = {
@@ -590,6 +603,7 @@ export async function connectDatabase(uri: string, dbName: string): Promise<Data
             skippedDeposits: db.collection("skipped_deposits"),
             cursors: db.collection("cursors"),
             counters: db.collection("counters"),
+            statsSnapshots: db.collection("stats_snapshots"),
         };
         const migration = await mergeAccountsByPerson(client, collections);
         await expireOpenSwapOrders(collections);
@@ -636,6 +650,7 @@ async function ensureIndexes({
     hedges,
     coinWithdrawals,
     skippedDeposits,
+    statsSnapshots,
 }: Collections) {
     await Promise.all([
         accounts.createIndexes([
@@ -726,6 +741,7 @@ async function ensureIndexes({
             { key: { accountId: 1, _id: -1 }, name: "account_trades" },
         ]),
         hedges.createIndexes([{ key: { state: 1, createdAt: 1 }, name: "state_created" }]),
+        statsSnapshots.createIndexes([{ key: { at: -1 }, name: "at_unique", unique: true }]),
         coinWithdrawals.createIndexes([
             { key: { accountId: 1, requestId: 1 }, name: "request_unique", unique: true },
             { key: { state: 1, createdAt: 1 }, name: "state_created" },

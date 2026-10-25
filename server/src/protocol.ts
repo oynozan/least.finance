@@ -625,3 +625,44 @@ export type ActivityItem =
 
 /** Newest first, with `next` an opaque cursor for older items and null on the last page */
 export type ActivityPage = { items: ActivityItem[]; next: string | null };
+
+/** The /stats page: ranges, the balances we hold, what we owe, the fees we've earned and every position. */
+export type StatsRange = "7D" | "30D" | "All";
+export type StatsWallet = {
+    id: string;
+    label: string;
+    network: string;
+    address: string | null;
+    usd: string;
+    parts: { symbol: string; amount: string; usd: string | null }[];
+    error: string | null;
+    readAt: string | null;
+};
+export type StatsOwedLine = { id: string; label: string; usd: string };
+export type StatsFees = { totalUsd: string; spreadUsd: string; perpUsd: string };
+export type StatsView = {
+    at: string;
+    heldUsd: string;
+    owedUsd: string;
+    equityUsd: string;
+    estimated: boolean;
+    wallets: StatsWallet[];
+    owed: StatsOwedLine[];
+    fees: Record<StatsRange, StatsFees>;
+};
+export type StatsPnlView = { range: StatsRange; points: { at: string; equityUsd: string }[]; changeUsd: string };
+export type StatsPositionKind = "prediction" | "perp" | "coin";
+export type StatsPositionRow = {
+    id: string;
+    kind: StatsPositionKind;
+    account: string;
+    title: string;
+    detail: string;
+    size: string;
+    valueUsd: string | null;
+    pnlUsd: string | null;
+    state: string;
+    openedAt: string;
+    closedAt: string | null;
+};
+export type StatsPositionsPage = { items: StatsPositionRow[]; page: number; pages: number; total: number };
