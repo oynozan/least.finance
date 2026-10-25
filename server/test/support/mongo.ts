@@ -8,7 +8,13 @@ const SYSTEM_MONGOD = ["/opt/homebrew/bin/mongod", "/usr/local/bin/mongod", "/us
 export async function startMongo() {
     const systemBinary = process.env.MONGOMS_SYSTEM_BINARY ?? SYSTEM_MONGOD.find((path) => existsSync(path));
     const replSet = await MongoMemoryReplSet.create({
-        replSet: { count: 1, storageEngine: "wiredTiger" },
+        replSet: {
+            count: 1,
+            storageEngine: "wiredTiger",
+            // Its diagnostics recorder aborts mongod 7.0 minutes into a full run, once every file's database leaves tens of
+            // thousands of tables behind; a throwaway database has no use for it
+            args: ["--setParameter", "diagnosticDataCollectionEnabled=false"],
+        },
         binary: systemBinary ? { systemBinary, version: versionOf(systemBinary) } : undefined,
     });
     return { uri: replSet.getUri(), stop: () => replSet.stop().then(() => undefined) };
