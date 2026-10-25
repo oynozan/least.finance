@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { pageWindow } from "@/components/stats/pager";
 import { fitY, toPoints } from "@/lib/stats/chart";
 import { walletState } from "@/lib/stats/wallet";
 import type { StatsPnlView } from "@/server/src/protocol";
@@ -60,4 +61,19 @@ test("a wallet the server calls Not set up is muted, not a problem", () => {
 test("any other read error is a problem, and a clean wallet with no address or dollars is neither", () => {
     expect(walletState({ error: "RPC timed out" })).toEqual({ notSetUp: false, problem: "RPC timed out" });
     expect(walletState({ error: null })).toEqual({ notSetUp: false, problem: null });
+});
+
+test("pageWindow shows up to 5 numbers with the current page in the middle where it can be", () => {
+    expect(pageWindow(1, 10)).toEqual([1, 2, 3, 4, 5]);
+    expect(pageWindow(2, 10)).toEqual([1, 2, 3, 4, 5]);
+    expect(pageWindow(3, 10)).toEqual([1, 2, 3, 4, 5]);
+    expect(pageWindow(5, 10)).toEqual([3, 4, 5, 6, 7]);
+    expect(pageWindow(9, 10)).toEqual([6, 7, 8, 9, 10]);
+    expect(pageWindow(10, 10)).toEqual([6, 7, 8, 9, 10]);
+});
+
+test("pageWindow shows every page when there are five or fewer", () => {
+    expect(pageWindow(1, 1)).toEqual([1]);
+    expect(pageWindow(2, 3)).toEqual([1, 2, 3]);
+    expect(pageWindow(5, 5)).toEqual([1, 2, 3, 4, 5]);
 });
