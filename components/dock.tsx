@@ -46,6 +46,8 @@ export function Dock() {
     const { wallet } = useTrade();
     const pointerX = useMotionValue(Infinity);
     const canReview = pathname === "/" && wallet.status === "connected";
+    // While Review slides in or out its button keeps its own width, so the label is revealed, not squeezed.
+    const [sliding, setSliding] = useState(false);
 
     return (
         <MotionConfig reducedMotion="user">
@@ -67,11 +69,14 @@ export function Dock() {
                         <motion.div
                             key="review"
                             // Clipped while it slides open; the margin leaves room for its hover swell.
-                            className="flex min-w-0 items-center self-center [overflow-clip-margin:12px] [overflow:clip]"
+                            className="group/review flex min-w-0 items-center self-center [overflow-clip-margin:12px] [overflow:clip]"
+                            data-sliding={sliding || undefined}
                             initial={{ width: 0, opacity: 0 }}
                             animate={{ width: "auto", opacity: 1 }}
                             exit={{ width: 0, opacity: 0 }}
                             transition={slide}
+                            onAnimationStart={() => setSliding(true)}
+                            onAnimationComplete={() => setSliding(false)}
                         >
                             <span aria-hidden="true" className="mr-2 ml-1 h-7 w-px shrink-0 rounded-full bg-white/10" />
                             <ReviewButton />

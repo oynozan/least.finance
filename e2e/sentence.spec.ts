@@ -271,6 +271,52 @@ test("the dock says the way out until the sentence is complete and valid", async
     await expect(review(page)).toHaveText("Review");
 });
 
+test("the dock's button keeps to one line, sliding in and where a phone has no room for its words", async ({
+    page,
+}) => {
+    await fund(page);
+    await pick(page, "Swap", /^Buy/);
+    await setAmount(page, "1250");
+    // Every frame from connecting on: how many lines the button's words take.
+    await page.evaluate(() => {
+        const lines: number[] = [];
+        const state = window as unknown as { __lines: number[]; __stop?: boolean };
+        state.__lines = lines;
+        const tick = () => {
+            const words = document.querySelector('nav[aria-label="Pages"] button[data-action] span');
+            if (words) {
+                const height = words.getBoundingClientRect().height;
+                lines.push(Math.round(height / parseFloat(getComputedStyle(words).lineHeight)));
+            }
+            if (!state.__stop) requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+    });
+    await connect(page);
+    // It slid in already blocked, saying the way out.
+    await expect(review(page)).toHaveText("Not enough USDC");
+    await page.waitForTimeout(600);
+    const lines = await page.evaluate(() => {
+        const state = window as unknown as { __lines: number[]; __stop?: boolean };
+        state.__stop = true;
+        return state.__lines;
+    });
+    expect(lines.length).toBeGreaterThan(10);
+    expect(Math.max(...lines)).toBe(1);
+
+    // On the narrowest phones its words end in an ellipsis, on one line, and the dock stays on screen.
+    await page.setViewportSize({ width: 320, height: 640 });
+    const words = review(page).locator("span");
+    await expect.poll(() => words.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    expect(
+        await words.evaluate((el) => el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+    ).toBeCloseTo(1, 1);
+    const dock = (await page.getByRole("navigation", { name: "Pages" }).boundingBox())!;
+    expect(dock.x).toBeGreaterThanOrEqual(0);
+    expect(dock.x + dock.width).toBeLessThanOrEqual(320);
+    await expect(review(page)).toHaveAccessibleDescription("You have $500.00 USDC to spend.");
+});
+
 test("a swap's review shows what you pay and get, folds the rest away until pointed at, and confirms from the balance", async ({
     page,
     isMobile,
@@ -389,7 +435,11 @@ test("sliding holds the amount pill at its widest and moves the sentence with it
         requestAnimationFrame(tick);
     });
     const frames = () =>
-        page.evaluate(() => (window as unknown as { __frames: { label: string; width: number; gap: number; sameLine: boolean }[] }).__frames.splice(0));
+        page.evaluate(() =>
+            (
+                window as unknown as { __frames: { label: string; width: number; gap: number; sameLine: boolean }[] }
+            ).__frames.splice(0),
+        );
 
     await page.mouse.down();
     for (let i = 0; i <= 32; i++) {

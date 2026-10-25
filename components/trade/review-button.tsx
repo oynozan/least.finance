@@ -33,8 +33,9 @@ export function ReviewButton() {
                 aria-haspopup={action.kind === "open" ? "dialog" : undefined}
                 title={action.kind === "review" ? undefined : action.message}
                 data-action={action.kind}
-                // On a phone a long way out wraps to a second line rather than push the dock off the screen.
-                className={`h-12 min-w-0 rounded-full px-4 text-[15px] leading-[1.05] font-semibold tracking-[-0.01em] outline-2 outline-offset-2 outline-transparent transition-colors duration-200 focus-visible:outline-solid sm:px-6 sm:text-[17px] sm:whitespace-nowrap ${
+                // One line always: where a phone has no room for all of a long way out, it ends in an ellipsis, and the
+                // description says it whole. Sliding open, it keeps its width and the dock's edge reveals it.
+                className={`h-12 min-w-0 rounded-full px-4 text-[15px] leading-[1.3] font-semibold tracking-[-0.01em] whitespace-nowrap outline-2 outline-offset-2 outline-transparent transition-colors duration-200 group-data-[sliding]/review:shrink-0 focus-visible:outline-solid sm:px-6 sm:text-[17px] ${
                     blocked
                         ? "cursor-default bg-pill text-muted"
                         : action.kind === "open"
@@ -51,9 +52,7 @@ export function ReviewButton() {
                     else show("review");
                 }}
             >
-                <span className="line-clamp-2 text-balance sm:line-clamp-none">
-                    {action.kind === "review" ? "Review" : action.label}
-                </span>
+                <span className="block truncate">{action.kind === "review" ? "Review" : action.label}</span>
             </motion.button>
             {action.kind !== "review" && (
                 <span id={reasonId} className="sr-only">
