@@ -215,7 +215,7 @@ test("a deposit sent while the server was down is credited after it restarts, an
 
 test("two servers scanning one database credit every deposit exactly once", async () => {
     const a = live();
-    const b = await startServer({ ...a.services.config, PORT: 0 }, silent);
+    const b = await startServer({ ...a.services.config, PORT: 0 }, silent, { statsReaders: fakeStatsReaders() });
     extra.push(b);
     const credited = { a: 0, b: 0 };
     a.services.bus.on("deposit:credited", () => credited.a++);
@@ -236,7 +236,7 @@ test("two servers scanning one database credit every deposit exactly once", asyn
 
 test("a server learns an account opened by another through the registry refresh", async () => {
     const a = live();
-    const b = await startServer({ ...a.services.config, PORT: 0 }, silent);
+    const b = await startServer({ ...a.services.config, PORT: 0 }, silent, { statsReaders: fakeStatsReaders() });
     extra.push(b);
     // Only B scans, so a credit proves B found the account on its own.
     await a.services.watcher.stop();

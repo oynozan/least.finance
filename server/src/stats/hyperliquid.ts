@@ -8,7 +8,9 @@ export function decimalToE6(value: string): bigint {
 
 /** Reads the USDC in an address's Spot balance, which the perps clearinghouse read doesn't show. */
 export function createSpotReader(apiUrl: string) {
-    const info = new InfoClient({ transport: new HttpTransport({ isTestnet: apiUrl.includes("testnet") }) });
+    const info = new InfoClient({
+        transport: new HttpTransport({ apiUrl, isTestnet: new URL(apiUrl).hostname.includes("testnet") }),
+    });
     return async (address: string): Promise<bigint> => {
         const spot = await info.spotClearinghouseState({ user: address as `0x${string}` });
         const usdc = spot.balances.find((b) => b.coin === "USDC");

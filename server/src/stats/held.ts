@@ -19,6 +19,17 @@ export type HeldWallet = {
     error: string | null;
 };
 
+/** The label and network of each wallet, the one place they are written. */
+export const WALLETS: Record<HeldWallet["id"], { label: string; network: string }> = {
+    treasury: { label: "Arc treasury", network: "Arc" },
+    deposits: { label: "Deposit addresses", network: "Arc" },
+    pool: { label: "Polymarket pool", network: "Polygon" },
+    hyperliquid: { label: "Hyperliquid float", network: "Hyperliquid" },
+    inventoryEvm: { label: "Coin inventory (EVM)", network: "EVM" },
+    inventorySolana: { label: "Coin inventory (Solana)", network: "Solana" },
+    transit: { label: "In transit", network: "Bridge" },
+};
+
 export type HeldReaders = Record<HeldWallet["id"], () => Promise<HeldWallet>>;
 
 type Deps = {
@@ -86,11 +97,11 @@ export function heldReaders(deps: Deps): HeldReaders {
     const solanaInventory = deps.keyring.inventorySolana().address;
 
     return {
-        treasury: guarded({ id: "treasury", label: "Arc treasury", network: "Arc", address: treasury }, async () => ({
+        treasury: guarded({ id: "treasury", ...WALLETS.treasury, address: treasury }, async () => ({
             usd: usdFromWei(await deps.arc.getBalance({ address: treasury })),
         })),
 
-        deposits: guarded({ id: "deposits", label: "Deposit addresses", network: "Arc", address: null }, async () => {
+        deposits: guarded({ id: "deposits", ...WALLETS.deposits, address: null }, async () => {
             const rows = await deps.collections.accounts.find({}, { projection: { depositAddress: 1 } }).toArray();
             let wei = 0n;
             for (let at = 0; at < rows.length; at += ARC_READS_AT_ONCE) {
@@ -106,7 +117,7 @@ export function heldReaders(deps: Deps): HeldReaders {
 
         pool: async () => {
             const address = deps.poolWallet();
-            const wallet = { id: "pool" as const, label: "Polymarket pool", network: "Polygon", address };
+            const wallet = { id: "pool" as const, ...WALLETS.pool, address };
             if (!address) return { ...wallet, usd: 0, parts: [], error: "Not set up" };
             return guarded(wallet, async () => {
                 const read = (token: Address) =>
@@ -126,72 +137,64 @@ export function heldReaders(deps: Deps): HeldReaders {
             })();
         },
 
-        hyperliquid: guarded(
-            { id: "hyperliquid", label: "Hyperliquid float", network: "Hyperliquid", address: hlMaster },
-            async () => {
-                const [perps, spot] = await Promise.all([
-                    deps.hyperliquid.state(hlMaster),
-                    deps.hyperliquid.spotUsdcE6(hlMaster),
-                ]);
-                const perpsE6 = perps?.accountValueE6 ?? 0n;
-                return {
-                    usd: usdFromE6(perpsE6 + spot),
-                    parts: [
-                        { symbol: "Perps", amount: formatUnits(perpsE6, 6), usd: usdFromE6(perpsE6) },
-                        { symbol: "Spot", amount: formatUnits(spot, 6), usd: usdFromE6(spot) },
-                    ],
-                };
-            },
-        ),
+        hyperliquid: guarded({ id: "hyperliquid", ...WALLETS.hyperliquid, address: hlMaster }, async () => {
+            const [perps, spot] = await Promise.all([
+                deps.hyperliquid.state(hlMaster),
+                deps.hyperliquid.spotUsdcE6(hlMaster),
+            ]);
+            const perpsE6 = perps?.accountValueE6 ?? 0n;
+            return {
+                usd: usdFromE6(perpsE6 + spot),
+                parts: [
+                    { symbol: "Perps", amount: formatUnits(perpsE6, 6), usd: usdFromE6(perpsE6) },
+                    { symbol: "Spot", amount: formatUnits(spot, 6), usd: usdFromE6(spot) },
+                ],
+            };
+        }),
 
-        inventoryEvm: guarded(
-            { id: "inventoryEvm", label: "Coin inventory (EVM)", network: "EVM", address: inventory },
-            async () => {
-                const parts: HeldWallet["parts"] = [];
-                // One network at a time, so a public RPC isn't hit by every network's tokens at once.
-                for (const network of NETWORKS) {
-                    if (network.kind !== "evm") continue;
-                    const id = network.id as EvmNetworkId;
-                    const client = deps.evm[id];
-                    const reads: Promise<ReturnType<typeof priced>>[] = [];
-                    const extra = EXTRA_NATIVE[id];
-                    if (extra) {
-                        reads.push(client.getBalance({ address: inventory }).then((raw) => priced(extra, raw, 18)));
-                    }
-                    for (const coin of COINS) {
-                        for (const entry of coin.entries) {
-                            if (entry.network !== id) continue;
-                            if (entry.address === NATIVE_EVM) {
-                                reads.push(
-                                    client
-                                        .getBalance({ address: inventory })
-                                        .then((raw) => priced(coin.symbol, raw, 18)),
-                                );
-                            } else if (id === "arc" && coin.symbol === "USDC") {
-                                // Arc's USDC ERC-20 mirrors the native balance already read above.
-                                continue;
-                            } else {
-                                reads.push(
-                                    client
-                                        .readContract({
-                                            address: entry.address as Address,
-                                            abi: erc20Abi,
-                                            functionName: "balanceOf",
-                                            args: [inventory],
-                                        })
-                                        .then((raw) => priced(coin.symbol, raw, entry.decimals)),
-                                );
-                            }
+        inventoryEvm: guarded({ id: "inventoryEvm", ...WALLETS.inventoryEvm, address: inventory }, async () => {
+            const parts: HeldWallet["parts"] = [];
+            // One network at a time, so a public RPC isn't hit by every network's tokens at once.
+            for (const network of NETWORKS) {
+                if (network.kind !== "evm") continue;
+                const id = network.id as EvmNetworkId;
+                const client = deps.evm[id];
+                const reads: Promise<ReturnType<typeof priced>>[] = [];
+                const extra = EXTRA_NATIVE[id];
+                if (extra) {
+                    reads.push(client.getBalance({ address: inventory }).then((raw) => priced(extra, raw, 18)));
+                }
+                for (const coin of COINS) {
+                    for (const entry of coin.entries) {
+                        if (entry.network !== id) continue;
+                        if (entry.address === NATIVE_EVM) {
+                            reads.push(
+                                client.getBalance({ address: inventory }).then((raw) => priced(coin.symbol, raw, 18)),
+                            );
+                        } else if (id === "arc" && coin.symbol === "USDC") {
+                            // Arc's USDC ERC-20 mirrors the native balance already read above.
+                            continue;
+                        } else {
+                            reads.push(
+                                client
+                                    .readContract({
+                                        address: entry.address as Address,
+                                        abi: erc20Abi,
+                                        functionName: "balanceOf",
+                                        args: [inventory],
+                                    })
+                                    .then((raw) => priced(coin.symbol, raw, entry.decimals)),
+                            );
                         }
                     }
-                    for (const { part } of await Promise.all(reads)) if (part.amount !== "0") parts.push(part);
                 }
-                return { usd: total(parts), parts };
-            },
-        ),
+                for (const { part } of await Promise.all(reads)) if (part.amount !== "0") parts.push(part);
+            }
+            return { usd: total(parts), parts };
+        }),
 
         inventorySolana: guarded(
-            { id: "inventorySolana", label: "Coin inventory (Solana)", network: "Solana", address: solanaInventory },
+            { id: "inventorySolana", ...WALLETS.inventorySolana, address: solanaInventory },
             async () => {
                 const reads: Promise<ReturnType<typeof priced>>[] = [];
                 for (const coin of COINS) {
@@ -209,7 +212,7 @@ export function heldReaders(deps: Deps): HeldReaders {
             },
         ),
 
-        transit: guarded({ id: "transit", label: "In transit", network: "Bridge", address: null }, async () => {
+        transit: guarded({ id: "transit", ...WALLETS.transit, address: null }, async () => {
             const since = new Date(Date.now() - IN_FLIGHT_MAX_MS);
             const [moves, perps] = await Promise.all([
                 deps.collections.poolRebalances

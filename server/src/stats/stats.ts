@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 import type { Collections } from "../db/mongo.ts";
 import type { StatsFees, StatsPnlView, StatsRange, StatsView, StatsWallet } from "../protocol.ts";
-import type { HeldReaders, HeldWallet } from "./held.ts";
+import { WALLETS, type HeldReaders, type HeldWallet } from "./held.ts";
 import type { readFees } from "./fees.ts";
 import type { readOwed } from "./owed.ts";
 import { pnlPoints } from "./pnl.ts";
@@ -182,34 +182,32 @@ export class StatsService {
         };
     }
 
-    /** Writes this hour's record unless it's there; a restart in the hour finds it and adds nothing. */
+    /** Writes this hour's record; an estimated one is replaced by the first complete read of the hour, and only a complete one ends the hour's writing. */
     async #snapshot(now: number, view: StatsView): Promise<void> {
         const hour = Math.floor(now / HOUR) * HOUR;
         if (this.#snapshotHour === hour) return;
         const owed = this.#owed!;
-        await this.#deps.collections.statsSnapshots.updateOne(
-            { at: new Date(hour) },
-            {
-                $setOnInsert: {
-                    heldUsd: Number(view.heldUsd),
-                    owedUsd: Number(view.owedUsd),
-                    equityUsd: Number(view.equityUsd),
-                    estimated: view.estimated,
-                    parts: Object.fromEntries([...this.#kept].map(([id, k]) => [id, k.wallet.usd])),
-                    owed: Object.fromEntries(owed.lines.map((line) => [line.id, line.usd])),
-                },
-            },
-            { upsert: true },
-        );
+        const values = {
+            heldUsd: Number(view.heldUsd),
+            owedUsd: Number(view.owedUsd),
+            equityUsd: Number(view.equityUsd),
+            estimated: view.estimated,
+            parts: Object.fromEntries([...this.#kept].map(([id, k]) => [id, k.wallet.usd])),
+            owed: Object.fromEntries(owed.lines.map((line) => [line.id, line.usd])),
+        };
+        const { statsSnapshots } = this.#deps.collections;
+        const at = new Date(hour);
+        await statsSnapshots.updateOne({ at }, { $setOnInsert: values }, { upsert: true });
+        if (view.estimated) return;
+        await statsSnapshots.updateOne({ at, estimated: true }, { $set: values });
         this.#snapshotHour = hour;
     }
 }
 
-function failedRead(id: string, error: unknown): HeldWallet {
+function failedRead(id: HeldWallet["id"], error: unknown): HeldWallet {
     return {
-        id: id as HeldWallet["id"],
-        label: id,
-        network: "",
+        id,
+        ...WALLETS[id],
         address: null,
         usd: 0,
         parts: [],

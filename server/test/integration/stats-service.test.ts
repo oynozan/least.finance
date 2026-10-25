@@ -147,3 +147,41 @@ test("pnlPoints: All is daily, capped at 200 points, and keeps the newest", () =
         [{ at: new Date(Date.UTC(2026, 0, 1, 23)).toISOString(), equityUsd: "1" }],
     );
 });
+
+test("a first read that fails shows the wallet's real label and network, and a complete read replaces the estimated hour", async () => {
+    const clock = { now: Date.UTC(2026, 0, 5, 10, 5) };
+    let fail = true;
+    const stats = service(
+        readers({
+            hyperliquid: async () => {
+                if (fail) throw new Error("down");
+                return wallet("hyperliquid", 5);
+            },
+        }),
+        clock,
+    );
+    await stats.refresh();
+    const first = stats.view()!.wallets.find((w) => w.id === "hyperliquid")!;
+    expect(first).toMatchObject({
+        label: "Hyperliquid float",
+        network: "Hyperliquid",
+        usd: "0",
+        error: "down",
+        readAt: null,
+    });
+    const at = new Date(Math.floor(clock.now / HOUR) * HOUR);
+    const { statsSnapshots } = database.collections;
+    expect(await statsSnapshots.findOne({ at })).toMatchObject({ estimated: true, heldUsd: 130 });
+
+    fail = false;
+    clock.now += 60_000;
+    await stats.refresh();
+    expect(await statsSnapshots.countDocuments({ at })).toBe(1);
+    expect(await statsSnapshots.findOne({ at })).toMatchObject({ estimated: false, heldUsd: 135, equityUsd: 85 });
+
+    // The hour is done: a later failure leaves the complete record alone.
+    fail = true;
+    clock.now += 60_000;
+    await stats.refresh();
+    expect(await statsSnapshots.findOne({ at })).toMatchObject({ estimated: false, heldUsd: 135 });
+});
