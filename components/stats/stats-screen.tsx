@@ -8,6 +8,7 @@ import type { ApiError, StatsPnlView, StatsRange, StatsView } from "@/server/src
 import { BalancesCard } from "./balances-card";
 import { FeesCard } from "./fees-card";
 import { MoneyCard } from "./money-card";
+import { PositionsCard } from "./positions-card";
 
 const rise: Transition = { type: "spring", visualDuration: 0.45, bounce: 0.25 };
 const REFRESH_MS = 60_000;
@@ -86,6 +87,13 @@ export function StatsScreen() {
                                     transition={{ ...rise, delay: 0.16 }}
                                 >
                                     <FeesCard fees={stats.fees[range]} />
+                                </motion.div>
+                                <motion.div
+                                    initial={{ opacity: 0, y: 24, scale: 0.98 }}
+                                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                                    transition={{ ...rise, delay: 0.24 }}
+                                >
+                                    <PositionsCard />
                                 </motion.div>
                             </>
                         ) : error ? (
