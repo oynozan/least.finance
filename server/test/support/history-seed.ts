@@ -53,8 +53,8 @@ function objectIdAt(at: Date) {
     return new ObjectId(bytes);
 }
 
-// An open perp is unique on (index, asset), so each seeded perp takes the next index
-let perpIndex = 0;
+// An open perp is unique on (index, asset). Seeded perps start far above any index the app allocates, so a spec that opens perps through the app can't collide with them.
+let perpIndex = 100_000;
 
 function deposit(accountId: ObjectId, row: Extract<SeedRow, { kind: "deposit" }>): DepositDoc {
     return {

@@ -3,7 +3,7 @@ import { ObjectId } from "mongodb";
 import { afterAll, afterEach, beforeAll, expect, inject, test } from "vitest";
 import { connectDatabase, type Database } from "../../src/db/mongo.ts";
 import { toDecimal } from "../../src/db/money.ts";
-import { positionsPage } from "../../src/stats/positions.ts";
+import { coinText, positionsPage } from "../../src/stats/positions.ts";
 import { toUnitsDecimal } from "../../src/trading/units.ts";
 import { startStack, type Stack } from "../support/stack.ts";
 
@@ -241,4 +241,44 @@ test("GET /stats/positions serves a page and refuses bad input", async () => {
         expect(response.status, bad).toBe(400);
         expect(((await response.json()) as any).error.code).toBe("bad_request");
     }
+});
+
+test("a liquidated perp without proceeds is worth 0 and loses its collateral", async () => {
+    const c = await fresh();
+    await c.perpPositions.insertOne(perp(1, { state: "liquidated", active: false, proceeds: null, settledAt: at(3) }));
+    const [row] = (await positionsPage(deps(c), all)).items;
+    expect(row).toMatchObject({ valueUsd: "0", pnlUsd: "-10", state: "liquidated" });
+});
+
+test("a prediction whose bid lookup rejects has a null value and PnL", async () => {
+    const c = await fresh();
+    await c.positions.insertOne(prediction(1));
+    const rejecting = {
+        ...deps(c),
+        outcomeBid: async (): Promise<number | null> => {
+            throw new Error("gone");
+        },
+    };
+    const [row] = (await positionsPage(rejecting, all)).items;
+    expect(row).toMatchObject({ valueUsd: null, pnlUsd: null });
+});
+
+test("coin sizes show at most 6 decimals, and a tiny amount never reads 0", async () => {
+    const c = await fresh();
+    await c.holdings.insertMany([
+        { ...(holding(1, "ETH", 0n) as object), units: toUnitsDecimal(118_980_021_105_762n) } as never,
+        { ...(holding(2, "BTC", 0n) as object), units: toUnitsDecimal(1_234_000_000_000n) } as never,
+    ]);
+    const items = (await positionsPage(deps(c), all)).items;
+    expect(items.find((i) => i.title === "ETH")!.size).toBe("0.000119 ETH");
+    expect(items.find((i) => i.title === "BTC")!.size).toBe("0.000001 BTC");
+    expect(coinText(0n)).toBe("0");
+    expect(coinText(3n * WEI)).toBe("3");
+    expect(coinText(1_500_000_000_000_000_000n)).toBe("1.5");
+    expect(coinText(123_456_789_000_000_000_000n)).toBe("123.456789");
+    expect(coinText(1_234_567_890_000_000_000n)).toBe("1.234568");
+    expect(coinText(400_000_000_000n)).toBe("0.0000004");
+    expect(coinText(123_456_789n)).toBe("0.00000000012");
+    expect(coinText(1n)).toBe("0.000000000000000001");
+    expect(coinText(499_999_999_999n)).toBe("0.00000049");
 });

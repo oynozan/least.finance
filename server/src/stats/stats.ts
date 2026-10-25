@@ -11,6 +11,9 @@ import { usdString } from "./units.ts";
 export const STATS_REFRESH_MS = 60_000;
 export const DEPOSITS_REFRESH_MS = 600_000;
 export const STATS_READ_TIMEOUT_MS = 20_000;
+export const DEPOSITS_READ_TIMEOUT_MS = 60_000;
+/** Up to this many accounts, the deposit addresses are read on every refresh; above it, every `DEPOSITS_REFRESH_MS`. */
+export const DEPOSITS_EVERY_REFRESH_MAX_ACCOUNTS = 300;
 const HOUR = 3_600_000;
 const RANGES: StatsRange[] = ["7D", "30D", "All"];
 
@@ -26,6 +29,8 @@ type Deps = {
     now?: () => number;
     /** How long one wallet read may take; a test shortens it. */
     readTimeoutMs?: number;
+    /** The pause between two refreshes of the timer; a test shortens it. */
+    refreshMs?: number;
 };
 
 type Kept = { wallet: HeldWallet; readAt: number | null; failed: boolean };
@@ -38,6 +43,12 @@ export class StatsService {
     readonly #now: () => number;
     #kept = new Map<string, Kept>();
     #depositsReadAt: number | null = null;
+    /** After a failed deposits read, no new one starts before this. */
+    #depositsRetryAt = 0;
+    /** Reads that are still running, so a slow one is waited on, not doubled. */
+    #inflight = new Map<keyof HeldReaders, Promise<HeldWallet>>();
+    #owedStale = false;
+    #feesStale = false;
     #owed: Owed | null = null;
     #fees: Fees | null = null;
     #view: StatsView | null = null;
@@ -57,7 +68,7 @@ export class StatsService {
         const tick = () => {
             this.#timer = null;
             void this.refresh().finally(() => {
-                if (!this.#stopped) this.#timer = setTimeout(tick, STATS_REFRESH_MS);
+                if (!this.#stopped) this.#timer = setTimeout(tick, this.#deps.refreshMs ?? STATS_REFRESH_MS);
             });
         };
         tick();
@@ -110,22 +121,31 @@ export class StatsService {
     async #refresh(): Promise<void> {
         const now = this.#now();
         const { readers } = this.#deps;
-        const depositsDue = this.#depositsReadAt === null || now - this.#depositsReadAt >= DEPOSITS_REFRESH_MS;
+        const depositsDue = await this.#depositsDue(now);
 
         const ids = (Object.keys(readers) as (keyof HeldReaders)[]).filter((id) => id !== "deposits" || depositsDue);
         const [wallets, owed, fees] = await Promise.all([
             Promise.all(
                 ids.map((id) =>
-                    withDeadline(readers[id](), this.#deps.readTimeoutMs ?? STATS_READ_TIMEOUT_MS).catch(
-                        (error: unknown) => failedRead(id, error),
-                    ),
+                    withDeadline(
+                        this.#read(id),
+                        id === "deposits"
+                            ? (this.#deps.readTimeoutMs ?? DEPOSITS_READ_TIMEOUT_MS)
+                            : (this.#deps.readTimeoutMs ?? STATS_READ_TIMEOUT_MS),
+                    ).catch((error: unknown) => failedRead(id, error)),
                 ),
             ),
-            this.#deps.readOwed().catch((error: unknown) => this.#readFailed("owed", error)),
-            this.#deps.readFees(now).catch((error: unknown) => this.#readFailed("fees", error)),
+            Promise.resolve()
+                .then(() => this.#deps.readOwed())
+                .catch((error: unknown) => this.#readFailed("owed", error)),
+            Promise.resolve()
+                .then(() => this.#deps.readFees(now))
+                .catch((error: unknown) => this.#readFailed("fees", error)),
         ]);
         if (owed) this.#owed = owed;
         if (fees) this.#fees = fees;
+        this.#owedStale = !owed;
+        this.#feesStale = !fees;
         // Nothing to show without what we owe, and this is the first read.
         if (!this.#owed || !this.#fees) return;
 
@@ -144,12 +164,39 @@ export class StatsService {
             }
             if (failed) this.#deps.logger.warn({ wallet: wallet.id, reason: wallet.error }, "Couldn't read a wallet");
         }
-        if (depositsDue && this.#kept.get("deposits") && !this.#kept.get("deposits")!.failed)
-            this.#depositsReadAt = now;
+        if (depositsDue) {
+            if (this.#kept.get("deposits")?.failed) this.#depositsRetryAt = now + DEPOSITS_REFRESH_MS;
+            else if (this.#kept.get("deposits")) this.#depositsReadAt = now;
+        }
 
         const view = this.#build(now);
         this.#view = view;
         await this.#snapshot(now, view);
+    }
+
+    /** Few accounts: every refresh, so a deposit and its sweep never show apart. Many: every 10 minutes. */
+    async #depositsDue(now: number): Promise<boolean> {
+        if (now < this.#depositsRetryAt) return false;
+        if (this.#depositsReadAt === null) return true;
+        const accounts = await this.#deps.collections.accounts
+            .countDocuments({ depositAddress: { $exists: true } }, { limit: DEPOSITS_EVERY_REFRESH_MAX_ACCOUNTS + 1 })
+            .catch(() => Infinity);
+        if (accounts <= DEPOSITS_EVERY_REFRESH_MAX_ACCOUNTS) return true;
+        return now - this.#depositsReadAt >= DEPOSITS_REFRESH_MS;
+    }
+
+    /** Starts a wallet's read unless an earlier one is still running, which is reused. */
+    #read(id: keyof HeldReaders): Promise<HeldWallet> {
+        let work = this.#inflight.get(id);
+        if (!work) {
+            work = Promise.resolve().then(() => this.#deps.readers[id]());
+            this.#inflight.set(id, work);
+            const done = () => {
+                if (this.#inflight.get(id) === work) this.#inflight.delete(id);
+            };
+            work.then(done, done);
+        }
+        return work;
     }
 
     #readFailed(what: string, error: unknown): null {
@@ -186,8 +233,12 @@ export class StatsService {
             heldUsd: usdString(heldUsd),
             owedUsd: usdString(owedUsd),
             equityUsd: usdString(heldUsd - owedUsd),
-            // A failed wallet read or a coin with no price makes the totals a best guess.
-            estimated: kept.some((k) => k.failed) || owed.unpriced.length > 0,
+            // A failed read (wallet, owed or fees) or a coin with no price makes the totals a best guess.
+            estimated:
+                kept.some((k) => k.failed || k.wallet.parts.some((p) => p.usd === null)) ||
+                owed.unpriced.length > 0 ||
+                this.#owedStale ||
+                this.#feesStale,
             wallets,
             owed: owed.lines.map((line) => ({ id: line.id, label: line.label, usd: usdString(line.usd) })),
             fees: Object.fromEntries(RANGES.map((range) => [range, fee(this.#fees![range])])) as Record<

@@ -30,6 +30,25 @@ const SORT = { openedAt: -1, _id: -1 } as const;
 /** The last 6 hex of an account id; never anything that names a person. */
 const accountCode = (id: ObjectId) => id.toHexString().slice(-6);
 const money = (usd: number | null) => (usd === null ? null : usdString(usd));
+/** Coin units to at most 6 decimals, trimmed; a tiny nonzero amount keeps 2 significant digits, so it never reads 0. */
+export function coinText(scaled: bigint): string {
+    if (scaled === 0n) return "0";
+    const negative = scaled < 0n;
+    const abs = negative ? -scaled : scaled;
+    const unit = 10n ** 12n;
+    const rounded = (abs + unit / 2n) / unit;
+    let text: string;
+    if (rounded > 0n) {
+        const digits = rounded.toString().padStart(7, "0");
+        const fraction = digits.slice(-6).replace(/0+$/, "");
+        text = `${digits.slice(0, -6)}${fraction ? `.${fraction}` : ""}`;
+    } else {
+        const fraction = abs.toString().padStart(18, "0");
+        const first = fraction.search(/[1-9]/);
+        text = `0.${fraction.slice(0, first + 2).replace(/0+$/, "")}`;
+    }
+    return `${negative ? "-" : ""}${text}`;
+}
 const e6Text = (e6: bigint) => formatUnits18(e6 * 10n ** 12n);
 
 /** One page of every position, newest first: the top `page × 20` of each filtered source, merged and sliced. */
@@ -102,6 +121,9 @@ export async function positionsPage(deps: Deps, ask: Ask): Promise<StatsPosition
                         const proceeds = fromDecimal(doc.proceeds);
                         value = usdFromWei(proceeds);
                         pnl = usdFromWei(proceeds - collateral);
+                    } else if (doc.state === "liquidated") {
+                        value = 0;
+                        pnl = -usdFromWei(collateral);
                     }
                     return {
                         id: doc._id.toHexString(),
@@ -142,7 +164,7 @@ export async function positionsPage(deps: Deps, ask: Ask): Promise<StatsPosition
                         account: accountCode(doc.accountId),
                         title: doc.symbol,
                         detail: "",
-                        size: `${formatUnits18(units)} ${doc.symbol}`,
+                        size: `${coinText(units)} ${doc.symbol}`,
                         valueUsd: money(price === null ? null : usdFromUnits(units) * price),
                         pnlUsd: null,
                         state: "open",
