@@ -136,7 +136,11 @@ export function LineChart({ points, changeUsd, active, onScrub, label }: LineCha
                 <span
                     aria-hidden="true"
                     className="absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-panel"
-                    style={{ left: `${(x / WIDTH) * 100}%`, top: `${(y / HEIGHT) * 100}%`, background: tone }}
+                    style={{
+                        left: `clamp(8px, ${(x / WIDTH) * 100}%, calc(100% - 8px))`,
+                        top: `clamp(8px, ${(y / HEIGHT) * 100}%, calc(100% - 8px))`,
+                        background: tone,
+                    }}
                 />
             )}
         </div>

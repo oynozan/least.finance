@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { fitY, toPoints } from "@/lib/stats/chart";
+import { walletState } from "@/lib/stats/wallet";
 import type { StatsPnlView } from "@/server/src/protocol";
 
 test("fitY pads the span by 8% on each side", () => {
@@ -50,4 +51,13 @@ test("toPoints drops a point whose figure is not a number", () => {
         ],
     };
     expect(toPoints(view)).toHaveLength(1);
+});
+
+test("a wallet the server calls Not set up is muted, not a problem", () => {
+    expect(walletState({ error: "Not set up" })).toEqual({ notSetUp: true, problem: null });
+});
+
+test("any other read error is a problem, and a clean wallet with no address or dollars is neither", () => {
+    expect(walletState({ error: "RPC timed out" })).toEqual({ notSetUp: false, problem: "RPC timed out" });
+    expect(walletState({ error: null })).toEqual({ notSetUp: false, problem: null });
 });

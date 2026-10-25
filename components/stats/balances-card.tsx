@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { NetworkLogo } from "@/components/network-icons";
 import { formatUsd } from "@/components/wallet-data";
+import { walletState } from "@/lib/stats/wallet";
 import type { Network } from "@/lib/wallet/network";
 import type { StatsOwedLine, StatsWallet } from "@/server/src/protocol";
 
@@ -32,14 +33,8 @@ function CopyButton({ address }: { address: string }) {
 }
 
 function WalletRow({ wallet }: { wallet: StatsWallet }) {
-    // Deposit addresses are many, so they have no one address to be missing.
-    const notSetUp =
-        wallet.address === null &&
-        wallet.id !== "deposits" &&
-        wallet.id !== "transit" &&
-        !wallet.error &&
-        Number(wallet.usd) === 0;
-    const hasDetail = wallet.address !== null || wallet.error !== null;
+    const { notSetUp, problem } = walletState(wallet);
+    const hasDetail = wallet.address !== null || problem !== null;
     return (
         <li
             tabIndex={hasDetail ? 0 : undefined}
@@ -49,7 +44,7 @@ function WalletRow({ wallet }: { wallet: StatsWallet }) {
                 <NetworkLogo network={NETWORKS[wallet.network]} className="size-8" />
                 <span className="min-w-0 flex-1 truncate text-[17px] font-medium tracking-[-0.01em]">
                     {wallet.label}
-                    {wallet.error && (
+                    {problem && (
                         <span
                             aria-hidden="true"
                             className="ml-2 inline-block size-2 rounded-full bg-loss align-middle"
@@ -70,7 +65,7 @@ function WalletRow({ wallet }: { wallet: StatsWallet }) {
                                     <CopyButton address={wallet.address} />
                                 </span>
                             )}
-                            {wallet.error && <span className="text-loss">{wallet.error}</span>}
+                            {problem && <span className="text-loss">{problem}</span>}
                         </div>
                     </div>
                 </div>

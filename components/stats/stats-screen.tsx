@@ -48,7 +48,9 @@ function useStats(range: StatsRange) {
 export function StatsScreen() {
     const [range, setRange] = useState<StatsRange>("30D");
     const { stats, pnl, error, retry } = useStats(range);
-    const points = useMemo(() => (pnl ? toPoints(pnl) : []), [pnl]);
+    // The last range's line never shows under the new selection.
+    const shown = pnl?.range === range ? pnl : null;
+    const points = useMemo(() => (shown ? toPoints(shown) : []), [shown]);
 
     return (
         <MotionConfig reducedMotion="user">
@@ -68,7 +70,7 @@ export function StatsScreen() {
                                         range={range}
                                         onRange={setRange}
                                         points={points}
-                                        changeUsd={pnl ? Number(pnl.changeUsd) : 0}
+                                        changeUsd={shown ? Number(shown.changeUsd) : 0}
                                     />
                                 </motion.div>
                                 <motion.div

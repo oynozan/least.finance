@@ -38,7 +38,7 @@ export function MoneyCard({ equityUsd, range, onRange, points, changeUsd }: Mone
 
     return (
         <section aria-labelledby="money-title" className="overflow-hidden rounded-[34px] bg-panel">
-            <div className="flex flex-wrap items-start justify-between gap-4 p-6 pb-8 sm:p-8 sm:pb-10">
+            <div className="flex flex-col gap-4 p-6 pb-8 sm:flex-row sm:items-start sm:justify-between sm:p-8 sm:pb-10">
                 <div className="flex min-w-0 flex-col gap-2">
                     <h2 id="money-title" className="text-base font-medium tracking-[-0.01em] text-muted">
                         Our money
@@ -65,15 +65,17 @@ export function MoneyCard({ equityUsd, range, onRange, points, changeUsd }: Mone
                         )}
                     </p>
                 </div>
-                <Segmented
-                    label="Range"
-                    options={RANGES}
-                    value={range}
-                    onChange={(next) => {
-                        onRange(next);
-                        setPointed(null);
-                    }}
-                />
+                <div className="flex self-start">
+                    <Segmented
+                        label="Range"
+                        options={RANGES}
+                        value={range}
+                        onChange={(next) => {
+                            onRange(next);
+                            setPointed(null);
+                        }}
+                    />
+                </div>
             </div>
             <LineChart
                 label="Equity over time"
